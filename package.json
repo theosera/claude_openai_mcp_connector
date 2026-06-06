@@ -1,0 +1,38 @@
+{
+  "name": "claude-openai-mcp-connector",
+  "version": "0.1.0",
+  "description": "Local MCP server for safely sharing a private Markdown knowledge vault with Claude, ChatGPT-compatible clients, and Codex.",
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "bin": {
+    "claude-openai-mcp-connector": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    ".env.example"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx src/index.ts"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.4",
+    "diff": "^7.0.0",
+    "dotenv": "^16.4.7",
+    "gray-matter": "^4.0.3",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/diff": "^7.0.0",
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
