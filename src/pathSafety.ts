@@ -35,13 +35,15 @@ export function assertRelativePath(value: string): string {
     throw new Error("Path contains control characters.");
   }
 
-  // Validate the raw form *and* a percent-decoded form. A downstream layer that
-  // URL-decodes (`%2e%2e` -> `..`, `%2f` -> `/`) must not be able to turn an
-  // "inside" path into an escape. We only ever *operate* on the raw NFC path;
-  // the decoded form is validated but never used for filesystem operations.
-  // NFC normalization stops a decomposed (NFD, e.g. macOS HFS+) `..` from
-  // dodging the literal check below.
-  for (const candidate of [cleaned, safeDecode(cleaned)]) {
+  // Validate the raw form *and* a leniently percent-decoded form. A downstream
+  // layer that URL-decodes (`%2e%2e` -> `..`, `%2f` -> `/`) must not be able to
+  // turn an "inside" path into an escape. We decode *leniently* (decode valid
+  // %XX, leave malformed escapes such as `%ZZ` literal) so an encoded traversal
+  // that also carries a malformed escape can't dodge the check by making a
+  // strict decoder throw. We only ever *operate* on the raw NFC path; the
+  // decoded form is validated but never used for filesystem operations. NFC
+  // normalization stops a decomposed (NFD, e.g. macOS HFS+) `..` from dodging it.
+  for (const candidate of [cleaned, lenientPercentDecode(cleaned)]) {
     assertNoEscape(candidate.normalize("NFC"));
   }
 
@@ -98,12 +100,20 @@ function assertNoEscape(candidate: string): void {
   }
 }
 
-function safeDecode(value: string): string {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    // Malformed percent-encoding — fall back to the raw string so the literal
-    // checks still run (and reject if it was an escape attempt).
-    return value;
-  }
+// Lenient percent-decode used only for traversal validation: decode every valid
+// %XX escape and leave malformed ones (e.g. `%ZZ`) as literal text — mirroring
+// lenient decoders such as Node's querystring.unescape. Validating against this
+// (rather than strict decodeURIComponent, which throws all-or-nothing on a
+// single bad escape and would let an encoded traversal slip past) keeps the
+// guard fail-closed for inputs like `%2e%2e%2fsecret%ZZ.md`.
+function lenientPercentDecode(value: string): string {
+  return value.replace(/%[0-9a-fA-F]{2}/g, (escape) => {
+    try {
+      return decodeURIComponent(escape);
+    } catch {
+      // e.g. a lone multibyte lead byte like `%E2` — leave it literal. It can
+      // never form a `.`/`/`/`\` traversal token, so this is safe.
+      return escape;
+    }
+  });
 }

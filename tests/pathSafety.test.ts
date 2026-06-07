@@ -43,6 +43,19 @@ describe("assertRelativePath", () => {
     expect(() => assertRelativePath("..%2f..%2fetc%2fpasswd")).toThrow(/escapes/);
   });
 
+  it("rejects an encoded traversal carrying a malformed escape (fail-closed)", () => {
+    // decodeURIComponent throws on `%ZZ`; a lenient downstream decoder would
+    // still yield `../secret%ZZ.md`, so the guard must reject — not fall back to
+    // validating only the raw string.
+    expect(() => assertRelativePath("%2e%2e%2fsecret%ZZ.md")).toThrow(/escapes/);
+  });
+
+  it("accepts a legitimate filename containing a stray percent sign", () => {
+    // `%do` is not a valid escape; lenient decode leaves it literal, so this is
+    // not treated as traversal (guards against over-rejection).
+    expect(assertRelativePath("100%done.md")).toBe(path.normalize("100%done.md"));
+  });
+
   it("rejects control characters and NUL bytes", () => {
     expect(() => assertRelativePath(`a${String.fromCharCode(0)}b.md`)).toThrow(/control/);
     expect(() => assertRelativePath(`a${String.fromCharCode(9)}b.md`)).toThrow(/control/);
