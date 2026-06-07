@@ -20,3 +20,18 @@ pnpm-debug.log*
 vault/
 knowledge/
 data/
+
+# Secrets / credentials — never commit (defense in depth with .claude/settings.json
+# read-deny rules). .env / .env.* are already excluded above (.env.example allowed).
+*.key
+*.pem
+credentials*.json
+service-account*.json
+*token*.json
+secrets/
+secrets.json
+secrets.yaml
+secrets.yml
+
+# Local Claude Code overrides (personal vault path / endpoints) — never shared.
+.claude/settings.local.json

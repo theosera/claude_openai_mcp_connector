@@ -1,0 +1,25 @@
+# CODEOWNERS — require owner review for CI/CD and security-critical surfaces.
+#
+# `.github/` (workflows / Actions / Dependabot) is the highest-value target for
+# supply-chain attacks ("poisoned pipeline execution"): one PR that rewrites a
+# workflow can exfiltrate secrets / tokens. Gating it behind code-owner review
+# mechanically blocks that class of attack. Takes effect once branch protection
+# enables "Require review from Code Owners".
+#
+# Syntax: <pattern> <owner...>  — last match wins (most specific line applies).
+
+# CI / GitHub Actions / Dependabot automation.
+/.github/                @theosera
+
+# CODEOWNERS itself (self-defense against tampering).
+/.github/CODEOWNERS      @theosera
+
+# Agent guardrails + security policy — weakening these weakens the whole posture.
+/SECURITY.md             @theosera
+/CLAUDE.md               @theosera
+/CLAUDE.global.md        @theosera
+/.claude/                @theosera
+
+# Security boundary code: path containment + frontmatter field allowlist.
+/src/pathSafety.ts       @theosera
+/src/frontmatter.ts      @theosera

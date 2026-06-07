@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createTwoFilesPatch } from "diff";
-import { parseMarkdown, serializeMarkdown, titleFromMarkdown } from "./frontmatter.js";
+import { assertFrontmatterPatch, parseMarkdown, serializeMarkdown, titleFromMarkdown } from "./frontmatter.js";
 import { extractAllLocalLinks } from "./markdownLinks.js";
 import { searchDocuments, type SearchFilters } from "./search.js";
 import type { AppConfig } from "./config.js";
@@ -117,11 +117,14 @@ export class KnowledgeStore {
     reason: string;
   }): Promise<PlannedPatch> {
     const document = await this.fetch(input.id_or_path);
+    // Reject any non-allowlisted frontmatter key before it can reach the file
+    // (frontmatter field-injection defense). `id` / `updated_at` stay server-owned.
+    const frontmatterPatch = assertFrontmatterPatch(input.frontmatter_patch ?? {});
     const currentRaw = await fs.readFile(document.absolutePath, "utf8");
     const expectedSha = sha256(currentRaw);
     const newMetadata: DocumentMetadata = {
       ...document.frontmatter,
-      ...(input.frontmatter_patch ?? {}),
+      ...frontmatterPatch,
       updated_at: new Date().toISOString()
     };
     const newContent = serializeMarkdown(newMetadata, input.new_body);

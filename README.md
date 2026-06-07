@@ -63,6 +63,30 @@ env = { KNOWLEDGE_ROOT = "/absolute/path/to/private/vault" }
 - `apply_planned_update`
 - `trace_sources`
 
+## Security
+
+The vault is driven by an untrusted MCP client (an LLM), so security is enforced
+in code and pinned by tests:
+
+- **Path containment** — every file access is confined to `KNOWLEDGE_ROOT` by a
+  multi-phase guard (length cap, control/NUL rejection, percent-decode
+  validation, NFC normalization, absolute/`~`/`..` rejection, realpath prefix
+  check, symlink-escape check). Violations fail closed (`src/pathSafety.ts`).
+- **Frontmatter allowlist** — `plan_document_update` only accepts the
+  `client` / `project` / `title` / `tags` / `source_refs` keys; `id` and
+  `updated_at` are server-owned (blocks YAML field injection).
+- **Stale-safe, non-destructive writes** — edits go through `plan` → `apply`
+  with a SHA-256 staleness check; creates never overwrite (`flag: "wx"`).
+- **Untrusted content boundary** — the server `instructions` declare returned
+  content is data, never commands.
+
+Supply-chain & governance: GitHub Actions are SHA-pinned, workflows run with
+`permissions: contents: read`, CODEOWNERS gates `.github/`, Dependabot + CodeQL
+are enabled, and a 3-layer Claude Code agent governance model
+(`CLAUDE.global.md` → `CLAUDE.md` → `.claude/skills/`) keeps the AI workflow
+inside the same guardrails. See [`SECURITY.md`](./SECURITY.md) for the full
+threat model and the curated mapping to the Reusable Security Baseline.
+
 ## Public Repo Safety
 
 This repo intentionally ignores `vault/`, `knowledge/`, and `data/` to reduce the chance of committing private Markdown data. Tests use synthetic fixtures only.
