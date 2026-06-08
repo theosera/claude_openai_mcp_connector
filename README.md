@@ -37,31 +37,138 @@ MCP_PATCH_STATE_DIR=.mcp-state/patches
 
 Do not commit `.env`, private vault URLs, private vault paths, or real note content.
 
-## Run
+## Transports
+
+The same server speaks two transports, selected with `MCP_TRANSPORT`:
+
+| `MCP_TRANSPORT` | Use for | Tools |
+| --- | --- | --- |
+| `stdio` (default) | Local CLI / desktop clients: **Claude Code**, **Codex CLI**, **Claude Desktop** | full (read + write) |
+| `http` | Remote **Chat connectors**: **ChatGPT**, **Claude.ai** | read-only by default; writes require `MCP_HTTP_ALLOW_WRITE=1` |
+
+Chat connectors cannot launch a local process, so they require the HTTP
+transport reachable over HTTPS. Authentication differs by client:
+
+| Client | Transport | Auth it accepts |
+| --- | --- | --- |
+| Claude Code / Codex / Claude Desktop | stdio | none (local process) |
+| Claude Desktop / Claude Code (remote), Claude **API** connector | HTTP | **static bearer** (`MCP_AUTH_TOKEN`) |
+| **ChatGPT** (web, Developer mode), **Claude.ai** (web) | HTTP | **OAuth 2.1 only** — they cannot send a user-pasted bearer or custom header |
+
+So the HTTP endpoint supports **both**: a static bearer (for Desktop/Code/API)
+*and* a built-in OAuth 2.1 authorization server (for ChatGPT/Claude.ai web). It
+binds to `127.0.0.1`; expose it to the internet only through an explicit HTTPS
+tunnel.
+
+### Run (stdio — local CLI clients)
 
 ```bash
 pnpm run build
-node dist/index.js
+KNOWLEDGE_ROOT=/abs/path/to/vault node dist/index.js
 ```
 
-Example Codex project config:
+### Run (HTTP — for ChatGPT / Claude.ai web, with OAuth)
+
+Open the tunnel **first** so you know the public URL, then start the server with
+that URL as the OAuth issuer:
+
+```bash
+# Terminal 1 — tunnel 127.0.0.1:8787 to a public HTTPS URL
+cloudflared tunnel --url http://127.0.0.1:8787
+# -> https://<random>.trycloudflare.com   (copy this)
+```
+
+```bash
+# Terminal 2 — start the connector pointing at that public URL
+pnpm run build
+MCP_TRANSPORT=http \
+MCP_HTTP_PORT=8787 \
+MCP_HTTP_PUBLIC_URL="https://<random>.trycloudflare.com" \
+MCP_OAUTH_ENABLED=1 \
+MCP_OAUTH_PASSWORD="<choose-a-vault-login-password>" \
+MCP_AUTH_TOKEN="$(openssl rand -hex 32)" \
+KNOWLEDGE_ROOT=/abs/path/to/vault \
+node dist/index.js
+# Listening on http://127.0.0.1:8787/mcp (write=off, oauth=on)
+```
+
+`MCP_HTTP_PUBLIC_URL` is the OAuth issuer and is auto-added to the
+DNS-rebinding allowlist. The MCP endpoint to register is
+`https://<random>.trycloudflare.com/mcp`.
+
+> Verify before registering: `GET /.well-known/oauth-protected-resource` returns
+> JSON, and an unauthenticated `POST /mcp` returns `401` with a
+> `WWW-Authenticate: Bearer resource_metadata="…"` header (this is what makes the
+> web clients start the OAuth flow).
+
+## Client registration
+
+### Claude Code (CLI, stdio)
+
+```bash
+claude mcp add vault -- node /abs/path/to/claude_openai_mcp_connector/dist/index.js
+# set KNOWLEDGE_ROOT in the spawned env, e.g. via a wrapper or:
+claude mcp add vault --env KNOWLEDGE_ROOT=/abs/path/to/vault -- node /abs/.../dist/index.js
+```
+
+### Codex CLI (stdio)
 
 ```toml
+# ~/.codex/config.toml
 [mcp_servers.claude-openai-vault]
 command = "node"
-args = ["/absolute/path/to/claude_openai_mcp_connector/dist/index.js"]
-env = { KNOWLEDGE_ROOT = "/absolute/path/to/private/vault" }
+args = ["/abs/path/to/claude_openai_mcp_connector/dist/index.js"]
+env = { KNOWLEDGE_ROOT = "/abs/path/to/private/vault" }
 ```
+
+### Claude Desktop (stdio)
+
+```jsonc
+// claude_desktop_config.json
+{
+  "mcpServers": {
+    "claude-openai-vault": {
+      "command": "node",
+      "args": ["/abs/path/to/claude_openai_mcp_connector/dist/index.js"],
+      "env": { "KNOWLEDGE_ROOT": "/abs/path/to/private/vault" }
+    }
+  }
+}
+```
+
+### ChatGPT (web, Developer mode — HTTP + OAuth)
+
+1. Run the HTTP transport with OAuth + tunnel (above).
+2. ChatGPT → **Settings → Connectors → Developer mode** (enable it).
+3. **Create / Add custom connector** → MCP server URL =
+   `https://<random>.trycloudflare.com/mcp`. Choose **OAuth** as the auth method.
+4. ChatGPT auto-discovers the OAuth endpoints, dynamically registers itself, and
+   opens the login page — enter your `MCP_OAUTH_PASSWORD` to authorize.
+5. The connector then uses the issued token. The ChatGPT-compatible `search` /
+   `fetch` tools are exposed alongside the native tools.
+
+### Claude.ai (web, custom connector — HTTP + OAuth)
+
+1. Claude.ai → **Settings → Connectors → Add custom connector**.
+2. URL = `https://<random>.trycloudflare.com/mcp`.
+3. Connect → Claude runs the OAuth flow → enter your `MCP_OAUTH_PASSWORD`.
+4. Read-only unless the server was started with `MCP_HTTP_ALLOW_WRITE=1`.
+
+> **Note on static bearer:** ChatGPT/Claude.ai **web** do not let you paste a
+> bearer token or custom header — they require the OAuth flow above. The static
+> `MCP_AUTH_TOKEN` bearer is for Claude Desktop / Claude Code (remote) and the
+> Claude **API** MCP connector (`authorization_token`).
 
 ## Tools
 
 - `search_documents`
 - `fetch_document`
 - `list_projects`
-- `create_document`
-- `plan_document_update`
-- `apply_planned_update`
 - `trace_sources`
+- `create_document` *(write — stdio, or HTTP only with `MCP_HTTP_ALLOW_WRITE=1`)*
+- `plan_document_update` *(write)*
+- `apply_planned_update` *(write)*
+- `search` / `fetch` — ChatGPT-connector-compatible read-only aliases
 
 ## Security
 
@@ -82,6 +189,19 @@ in code and pinned by tests:
   with a SHA-256 staleness check; creates never overwrite (`flag: "wx"`).
 - **Untrusted content boundary** — the server `instructions` declare returned
   content is data, never commands.
+- **Authenticated, locked-down HTTP transport** — the remote endpoint requires a
+  bearer token (`MCP_AUTH_TOKEN`, constant-time compare, fail-closed if unset),
+  binds to `127.0.0.1` by default, enables DNS-rebinding protection
+  (`allowedHosts`/`allowedOrigins`), caps request body size, and is **read-only
+  unless explicitly opted into writes** — so exposing the vault to a Chat client
+  never widens the local tool surface by accident.
+- **OAuth 2.1 authorization server** (opt-in, for ChatGPT/Claude.ai web) — PKCE
+  S256 mandatory, single-use short-TTL authorization codes bound to
+  client/redirect/challenge, exact-match https/loopback redirect URIs (no open
+  redirect), a constant-time login-password gate (fail-closed if unset), opaque
+  256-bit tokens with rotation, and no secrets logged
+  (`src/oauth/`). Issued tokens are validated on `/mcp` exactly like the static
+  bearer.
 
 Supply-chain & governance: GitHub Actions are SHA-pinned, workflows run with
 `permissions: contents: read`, CODEOWNERS gates `.github/`, Dependabot + CodeQL

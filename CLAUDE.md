@@ -13,12 +13,17 @@ conventions / feature knowledge live in `.claude/skills/` and load on demand.
 
 ## What this repo is (1段落)
 
-Local **stdio MCP server** that exposes a *private* Markdown knowledge vault
-(`KNOWLEDGE_ROOT`) to MCP clients (Codex / Claude Desktop / Claude Code / future
-ChatGPT・Claude remote connectors). **The code repo is public; the vault is
-private** and referenced only through `KNOWLEDGE_ROOT` — never committed. Tools:
-`search_documents` / `fetch_document` / `list_projects` / `create_document` /
-`plan_document_update` → `apply_planned_update` (two-step) / `trace_sources`.
+**MCP server** that exposes a *private* Markdown knowledge vault
+(`KNOWLEDGE_ROOT`) to MCP clients over two transports: **stdio** (local CLI/
+desktop: Codex / Claude Desktop / Claude Code) and an authenticated **Streamable
+HTTP** endpoint (remote Chat connectors: ChatGPT / Claude.ai). **The code repo is
+public; the vault is private** and referenced only through `KNOWLEDGE_ROOT` —
+never committed. Tools: `search_documents` / `fetch_document` / `list_projects` /
+`trace_sources` / `create_document` / `plan_document_update` →
+`apply_planned_update` (two-step, write) / `search`・`fetch` (ChatGPT-compatible
+read-only aliases). HTTP is **read-only + bearer-authed by default** (writes
+opt-in via `MCP_HTTP_ALLOW_WRITE`)。ChatGPT/Claude.ai web は static bearer 不可なので、
+HTTP は **opt-in の OAuth 2.1 authorization server** (`src/oauth/`、PKCE S256) も内蔵する。
 
 ## スキル発火表 (★着手前に必ずロード)
 
@@ -27,7 +32,7 @@ private** and referenced only through `KNOWLEDGE_ROOT` — never committed. Tool
 
 | 発火条件 (このタスクを始める前に) | 必ずロードするスキル |
 |---|---|
-| MCP のセキュリティ境界コードを書く/直す/レビューする — `src/pathSafety.ts` / `src/knowledgeStore.ts` (walk・write・two-step apply) / `src/frontmatter.ts` (frontmatter allowlist) / `src/config.ts` / `tests/pathSafety.test.ts` / 新しい MCP tool を `src/index.ts` に追加 | `mcp-vault-security` |
+| MCP のセキュリティ境界コードを書く/直す/レビューする — `src/pathSafety.ts` / `src/knowledgeStore.ts` (walk・write・two-step apply) / `src/frontmatter.ts` (frontmatter allowlist) / `src/config.ts` / `tests/pathSafety.test.ts` / 新しい MCP tool を `src/index.ts`・`src/server.ts` に追加 / **HTTP transport (`src/httpServer.ts` = auth gate・loopback bind・DNS-rebinding・read-only 出し分け / `src/httpAuth.ts` = bearer 照合 / `tests/httpServer.test.ts`)** / **OAuth 2.1 (`src/oauth/*.ts` = PKCE・auth code・token・redirect policy・login gate / `src/config.ts` の `loadOAuthConfig` / `tests/oauth.test.ts`)** | `mcp-vault-security` |
 
 > skill 構成はフラット固定 (`.claude/skills/<name>/SKILL.md`)。中間カテゴリ
 > ディレクトリで機能グループ化しない (Claude Code の nested 検出は既知の不具合で
