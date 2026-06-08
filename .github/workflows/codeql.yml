@@ -32,13 +32,13 @@ jobs:
       # supply-chain policy, GitHub-official actions may use a major tag while
       # third-party actions must be full-SHA pinned.
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: javascript-typescript
           # security-and-quality is a superset of the default security queries.
           queries: security-and-quality
 
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4
         with:
           category: "/language:javascript-typescript"
