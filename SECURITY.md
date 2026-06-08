@@ -1,8 +1,10 @@
 # Security
 
-This is a **public code repository** for a local **stdio MCP server** that
-exposes a **private** Markdown vault (`KNOWLEDGE_ROOT`) to MCP clients (Codex /
-Claude Desktop / Claude Code / future ChatGPT・Claude remote connectors). Real
+This is a **public code repository** for an MCP server that exposes a
+**private** Markdown vault (`KNOWLEDGE_ROOT`) to MCP clients over two transports:
+**stdio** for local CLI/desktop clients (Codex / Claude Desktop / Claude Code)
+and an authenticated **Streamable HTTP** endpoint for remote Chat connectors
+(ChatGPT / Claude.ai). Real
 note content, the vault path, and any private repo URL are **never committed**;
 tests use only the synthetic fixtures under `fixtures/synthetic-vault/`.
 
@@ -22,6 +24,7 @@ and *safely* create / update Markdown files confined to one root, driven by an
 | T5 | Secret / private-vault leak into the public repo | `.gitignore` (vault / keys / tokens / env), `.claude/settings.json` read-deny (Read **and** Bash), explicit-file-add discipline (no `git add -A`, no `--no-verify`). | `.gitignore`, `.claude/settings.json`, `CLAUDE.md` |
 | T6 | Supply-chain: poisoned Action / stale pin / tag swap / vulnerable dependency | Third-party Actions full-SHA pinned (+ `# vX.Y.Z`); top-level `permissions: contents: read`; `concurrency`; advisory `pnpm audit`; Dependabot (npm + actions); CODEOWNERS on `.github/`; CodeQL SAST (push + PR + weekly). Dependencies kept advisory-clean (`pnpm audit --audit-level low`). | `.github/`, `package.json` |
 | T7 | Denial of service via symlink cycle / unbounded traversal | The vault directory walk tracks visited real paths and returns on revisit, so a `loop → root` symlink stops instead of recursing forever; the per-symlink realpath prefix check still rejects out-of-root targets (T1 is not weakened). | `src/knowledgeStore.ts` |
+| T8 | Unauthenticated / over-exposed remote HTTP endpoint (vault read or write by anyone who reaches the port; DNS-rebinding; write amplification over the network) | Bearer auth on every request (`MCP_AUTH_TOKEN`, constant-time compare, **fail-closed**: refuses to start without a token, 401 otherwise); binds to `127.0.0.1` by default; DNS-rebinding protection via `allowedHosts`/`allowedOrigins`; request-body size cap; **read-only tool surface unless `MCP_HTTP_ALLOW_WRITE=1`** (write tools are not even registered). | `src/httpServer.ts`, `src/httpAuth.ts`, `src/config.ts`, `src/server.ts` |
 
 ## Curated mapping to the Reusable Security Baseline
 
@@ -35,6 +38,10 @@ Selected (implemented here) — relevant to this connector:
   least-privilege permissions, concurrency, advisory `pnpm audit`, Dependabot,
   CODEOWNERS, CodeQL.
 - **§5.4 Untrusted-content boundary** → MCP server `instructions` (data, not commands).
+- **§4 Remote-transport authn / network exposure** → bearer-token auth
+  (constant-time, fail-closed), loopback bind, DNS-rebinding protection, body-size
+  cap, and default read-only surface for the HTTP transport (`src/httpServer.ts`,
+  `src/httpAuth.ts`).
 - **§6.3 Path-traversal defense** → `src/pathSafety.ts` (multi-phase, fail-closed) +
   a bounded, cycle-safe vault walk in `src/knowledgeStore.ts` (visited-real-path set).
 - **§6.6 Frontmatter allowlist** → `src/frontmatter.ts::assertFrontmatterPatch`
@@ -62,7 +69,7 @@ controls (ruff/mypy/pip-audit/uv, `sanitize.py`, Docker capture sandbox,
 Security behavior is pinned by tests, not just convention:
 
 ```bash
-pnpm test   # path traversal, symlink escape + cycle, frontmatter allowlist + value types, stale-patch, overwrite collision
+pnpm test   # path traversal, symlink escape + cycle, frontmatter allowlist + value types, stale-patch, overwrite collision, HTTP bearer auth + read-only tool surface
 ```
 
 ## Reporting a vulnerability
