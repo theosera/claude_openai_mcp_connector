@@ -117,6 +117,28 @@ describe("buildMcpServer tool surface", () => {
     expect(names).toContain("plan_document_update");
     expect(names).toContain("apply_planned_update");
   });
+
+  it("puts ChatGPT payloads at structuredContent top level, wraps native arrays under data", async () => {
+    const store = await makeStore();
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = buildMcpServer(store, { allowWrite: false, includeChatgptCompat: true });
+    await server.connect(serverTransport);
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await client.connect(clientTransport);
+
+    const search = await client.callTool({ name: "search", arguments: { query: "retrieval" } });
+    expect((search.structuredContent as { results?: unknown[] }).results).toBeDefined();
+
+    const hit = (search.structuredContent as { results: Array<{ id: string }> }).results[0];
+    const fetched = await client.callTool({ name: "fetch", arguments: { id: hit.id } });
+    expect((fetched.structuredContent as { id?: string }).id).toBe(hit.id);
+
+    // Native tool returns an array -> wrapped under data (structuredContent must be an object)
+    const native = await client.callTool({ name: "search_documents", arguments: { query: "retrieval" } });
+    expect(Array.isArray((native.structuredContent as { data?: unknown[] }).data)).toBe(true);
+
+    await client.close();
+  });
 });
 
 describe("HTTP transport integration", () => {
@@ -190,10 +212,11 @@ describe("HTTP transport integration", () => {
     expect(names).toContain("fetch");
     expect(names).not.toContain("create_document");
 
+    // ChatGPT contract: payload (results) lives at structuredContent top level.
     const result = await client.callTool({ name: "search", arguments: { query: "retrieval" } });
-    const structured = result.structuredContent as { data: { results: unknown[] } } | undefined;
-    expect(structured?.data.results).toBeDefined();
-    expect(Array.isArray(structured?.data.results)).toBe(true);
+    const structured = result.structuredContent as { results: unknown[] } | undefined;
+    expect(structured?.results).toBeDefined();
+    expect(Array.isArray(structured?.results)).toBe(true);
 
     await client.close();
   });

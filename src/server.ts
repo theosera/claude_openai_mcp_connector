@@ -105,7 +105,7 @@ export function buildMcpServer(store: KnowledgeStore, options: BuildServerOption
           query: z.string().default("")
         }
       },
-      async (input) => jsonResult(await chatgptSearch(store, input.query, { baseUrl: options.chatgptUrlBase }))
+      async (input) => chatgptResult(await chatgptSearch(store, input.query, { baseUrl: options.chatgptUrlBase }))
     );
 
     server.registerTool(
@@ -118,7 +118,7 @@ export function buildMcpServer(store: KnowledgeStore, options: BuildServerOption
           id: z.string()
         }
       },
-      async (input) => jsonResult(await chatgptFetch(store, input.id, { baseUrl: options.chatgptUrlBase }))
+      async (input) => chatgptResult(await chatgptFetch(store, input.id, { baseUrl: options.chatgptUrlBase }))
     );
   }
 
@@ -171,6 +171,8 @@ export function buildMcpServer(store: KnowledgeStore, options: BuildServerOption
   return server;
 }
 
+// General tools may return arrays/scalars; structuredContent must be an object,
+// so wrap under `data`.
 function jsonResult(value: unknown) {
   return {
     content: [
@@ -180,5 +182,22 @@ function jsonResult(value: unknown) {
       }
     ],
     structuredContent: { data: value }
+  };
+}
+
+// ChatGPT connector contract: the returned object itself must be the
+// structuredContent (e.g. `structuredContent.results` / `structuredContent.id`),
+// not wrapped — otherwise clients validating/reading structured output or
+// extracting citations won't find the required fields. The payload is always an
+// object here, so it is valid structuredContent directly.
+function chatgptResult(payload: object) {
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: JSON.stringify(payload, null, 2)
+      }
+    ],
+    structuredContent: payload as { [key: string]: unknown }
   };
 }

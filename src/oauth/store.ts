@@ -53,11 +53,24 @@ export interface OAuthStoreOptions {
   accessTokenTtlSec: number;
   refreshTokenTtlSec: number;
   codeTtlSec: number;
+  /** Hard cap per token map (default DEFAULT_MAX_TOKENS). Bounds memory. */
+  maxTokens?: number;
   now?: () => number;
 }
 
 function randomSecret(): string {
   return crypto.randomBytes(32).toString("base64url");
+}
+
+/** Evict the oldest entries (Map preserves insertion order) until size <= max. */
+function enforceCap<K, V>(map: Map<K, V>, max: number): void {
+  while (map.size > max) {
+    const oldest = map.keys().next().value as K | undefined;
+    if (oldest === undefined) {
+      break;
+    }
+    map.delete(oldest);
+  }
 }
 
 export class OAuthStore {
@@ -66,9 +79,11 @@ export class OAuthStore {
   private readonly accessTokens = new Map<string, AccessTokenRecord>();
   private readonly refreshTokens = new Map<string, RefreshTokenRecord>();
   private readonly now: () => number;
+  private readonly maxTokens: number;
 
   constructor(private readonly options: OAuthStoreOptions) {
     this.now = options.now ?? Date.now;
+    this.maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS;
   }
 
   registerClient(redirectUris: string[], clientName?: string): RegisteredClient {
@@ -131,9 +146,6 @@ export class OAuthStore {
 
   issueTokens(clientId: string, scope: string): IssuedTokens {
     this.prune();
-    if (this.accessTokens.size >= DEFAULT_MAX_TOKENS || this.refreshTokens.size >= DEFAULT_MAX_TOKENS) {
-      this.evictExpired();
-    }
     const accessToken = randomSecret();
     const refreshToken = randomSecret();
     this.accessTokens.set(accessToken, {
@@ -146,6 +158,11 @@ export class OAuthStore {
       scope,
       expiresAt: this.now() + this.options.refreshTokenTtlSec * 1000
     });
+    // Enforce the hard cap even when every entry is still live (pruning only
+    // removes expired ones): evict the oldest live tokens so a client minting
+    // tokens faster than they expire cannot grow the maps without bound.
+    enforceCap(this.accessTokens, this.maxTokens);
+    enforceCap(this.refreshTokens, this.maxTokens);
     return {
       accessToken,
       refreshToken,

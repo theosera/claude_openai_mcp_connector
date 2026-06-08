@@ -90,6 +90,19 @@ describe("OAuthStore", () => {
     expect(store.validateAccessToken(tokens.accessToken)).toBeNull();
   });
 
+  it("enforces the token cap even when all tokens are still live", () => {
+    const store = new OAuthStore({ ...opts, maxTokens: 3 });
+    const first = store.issueTokens("c", "vault.read");
+    let last = first;
+    for (let i = 0; i < 10; i++) {
+      last = store.issueTokens("c", "vault.read");
+    }
+    // The oldest live token is evicted once the cap (3) is exceeded...
+    expect(store.validateAccessToken(first.accessToken)).toBeNull();
+    // ...while the most recently issued token stays valid.
+    expect(store.validateAccessToken(last.accessToken)?.clientId).toBe("c");
+  });
+
   it("rotates refresh tokens and invalidates the old one", () => {
     const store = new OAuthStore(opts);
     const tokens = store.issueTokens("c", "vault.read");
