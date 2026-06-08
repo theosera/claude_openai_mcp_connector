@@ -13,6 +13,7 @@ import { startHttpServer } from "../src/httpServer.js";
 import { KnowledgeStore } from "../src/knowledgeStore.js";
 import { isAllowedRedirectUri, OAuthProvider } from "../src/oauth/provider.js";
 import { computeS256Challenge, verifyPkceS256 } from "../src/oauth/pkce.js";
+import { RateLimiter } from "../src/oauth/rateLimiter.js";
 import { OAuthStore } from "../src/oauth/store.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -43,6 +44,29 @@ async function freePort(): Promise<number> {
   });
 }
 
+describe("RateLimiter", () => {
+  it("allows up to the limit, then blocks until the window resets", () => {
+    let t = 0;
+    const limiter = new RateLimiter({ limit: 3, windowMs: 1000, now: () => t });
+    expect(limiter.hit("ip").allowed).toBe(true);
+    expect(limiter.hit("ip").allowed).toBe(true);
+    expect(limiter.hit("ip").allowed).toBe(true);
+    const blocked = limiter.hit("ip");
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.retryAfterSec).toBeGreaterThan(0);
+    // Window reset.
+    t += 1001;
+    expect(limiter.hit("ip").allowed).toBe(true);
+  });
+
+  it("tracks keys independently", () => {
+    const limiter = new RateLimiter({ limit: 1, windowMs: 1000 });
+    expect(limiter.hit("a").allowed).toBe(true);
+    expect(limiter.hit("a").allowed).toBe(false);
+    expect(limiter.hit("b").allowed).toBe(true);
+  });
+});
+
 describe("PKCE S256", () => {
   it("verifies a matching verifier/challenge and rejects mismatches", () => {
     const { verifier, challenge } = pkcePair();
@@ -71,7 +95,12 @@ describe("OAuthStore", () => {
 
   it("issues single-use authorization codes", () => {
     const store = new OAuthStore(opts);
-    const code = store.createAuthorizationCode({ clientId: "c", redirectUri: "https://x/cb", codeChallenge: "ch", scope: "" });
+    const code = store.createAuthorizationCode({
+      clientId: "c",
+      redirectUri: "https://x/cb",
+      codeChallenge: "ch",
+      scope: ""
+    });
     expect(store.consumeAuthorizationCode(code)?.clientId).toBe("c");
     expect(store.consumeAuthorizationCode(code)).toBeUndefined(); // already used
   });
@@ -79,7 +108,12 @@ describe("OAuthStore", () => {
   it("expires codes and access tokens", () => {
     let t = 1000;
     const store = new OAuthStore({ ...opts, now: () => t });
-    const code = store.createAuthorizationCode({ clientId: "c", redirectUri: "https://x/cb", codeChallenge: "ch", scope: "" });
+    const code = store.createAuthorizationCode({
+      clientId: "c",
+      redirectUri: "https://x/cb",
+      codeChallenge: "ch",
+      scope: ""
+    });
     t += 61_000;
     expect(store.consumeAuthorizationCode(code)).toBeUndefined();
 
@@ -161,7 +195,9 @@ describe("OAuthProvider flow", () => {
   it("rejects authorize with unknown client or bad PKCE method", () => {
     const { provider, clientId } = setup();
     const { challenge } = pkcePair();
-    expect(provider.authorizeGet(new URLSearchParams({ client_id: "nope", redirect_uri: "https://chatgpt.com/cb" })).status).toBe(400);
+    expect(
+      provider.authorizeGet(new URLSearchParams({ client_id: "nope", redirect_uri: "https://chatgpt.com/cb" })).status
+    ).toBe(400);
     const plain = authorizeParams(clientId, challenge);
     plain.set("code_challenge_method", "plain");
     expect(provider.authorizeGet(plain).status).toBe(400);

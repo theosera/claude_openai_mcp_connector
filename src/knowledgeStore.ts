@@ -7,11 +7,24 @@ import { extractAllLocalLinks } from "./markdownLinks.js";
 import { searchDocuments, type SearchFilters } from "./search.js";
 import type { AppConfig } from "./config.js";
 import type { DocumentMetadata, MarkdownDocument, PlannedPatch, ProjectSummary, SearchResult } from "./types.js";
-import { assertRelativePath, relativeToRoot, resolveExistingRoot, resolveInsideRoot, toPosixPath } from "./pathSafety.js";
+import {
+  assertRelativePath,
+  relativeToRoot,
+  resolveExistingRoot,
+  resolveInsideRoot,
+  toPosixPath
+} from "./pathSafety.js";
 
 export class KnowledgeStore {
   private readonly config: AppConfig;
   private rootRealPath?: string;
+  // Parse cache keyed by real path. Parsing every Markdown file on every query
+  // is the search bottleneck for large vaults; we re-parse a file only when its
+  // mtime/size changes. Path-containment checks still run on every access.
+  private readonly documentCache = new Map<
+    string,
+    { mtimeMs: number; sizeBytes: number; document: MarkdownDocument }
+  >();
 
   constructor(config: AppConfig) {
     this.config = config;
@@ -94,7 +107,9 @@ export class KnowledgeStore {
       updated_at: new Date().toISOString()
     };
 
-    const relativePath = toPosixPath(path.join("projects", slugSegment(input.client), slugSegment(input.project), `${slugSegment(input.title)}.md`));
+    const relativePath = toPosixPath(
+      path.join("projects", slugSegment(input.client), slugSegment(input.project), `${slugSegment(input.title)}.md`)
+    );
     const absolutePath = await this.resolveForWrite(relativePath);
 
     try {
@@ -102,7 +117,7 @@ export class KnowledgeStore {
       await fs.writeFile(absolutePath, serializeMarkdown(metadata, input.body), { encoding: "utf8", flag: "wx" });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-        throw new Error(`Document already exists: ${relativePath}`);
+        throw new Error(`Document already exists: ${relativePath}`, { cause: error });
       }
       throw error;
     }
@@ -128,7 +143,14 @@ export class KnowledgeStore {
       updated_at: new Date().toISOString()
     };
     const newContent = serializeMarkdown(newMetadata, input.new_body);
-    const diff = createTwoFilesPatch(document.relativePath, document.relativePath, currentRaw, newContent, "current", "planned");
+    const diff = createTwoFilesPatch(
+      document.relativePath,
+      document.relativePath,
+      currentRaw,
+      newContent,
+      "current",
+      "planned"
+    );
     const patch: PlannedPatch = {
       patch_id: crypto.randomUUID(),
       target_path: document.relativePath,
@@ -171,15 +193,15 @@ export class KnowledgeStore {
   }> {
     const document = await this.fetch(idOrPath);
     const documents = await this.listDocuments();
-    const linkTargets = new Set([
-      document.relativePath,
-      document.relativePath.replace(/\.md$/i, ""),
-      document.title
-    ]);
+    const linkTargets = new Set([document.relativePath, document.relativePath.replace(/\.md$/i, ""), document.title]);
 
     const backlinks = documents
       .filter((candidate) => candidate.relativePath !== document.relativePath)
-      .filter((candidate) => extractAllLocalLinks(candidate.body).some((link) => linkTargets.has(link) || linkTargets.has(ensureMarkdownExtension(link))))
+      .filter((candidate) =>
+        extractAllLocalLinks(candidate.body).some(
+          (link) => linkTargets.has(link) || linkTargets.has(ensureMarkdownExtension(link))
+        )
+      )
       .map((candidate) => ({ id: candidate.id, relativePath: candidate.relativePath, title: candidate.title }));
 
     return {
@@ -201,12 +223,23 @@ export class KnowledgeStore {
     const root = await this.root();
     const realPath = await fs.realpath(absolutePath);
     const relativePath = relativeToRoot(root, realPath);
-    const raw = await fs.readFile(realPath, "utf8");
     const stats = await fs.stat(realPath);
-    const parsed = parseMarkdown(raw);
-    const id = typeof parsed.frontmatter.id === "string" && parsed.frontmatter.id.trim() ? parsed.frontmatter.id.trim() : relativePath;
 
-    return {
+    // Serve from cache when the file is unchanged (mtime + size). Containment
+    // (realpath + relativeToRoot above) is re-validated on every call regardless.
+    const cached = this.documentCache.get(realPath);
+    if (cached && cached.mtimeMs === stats.mtimeMs && cached.sizeBytes === stats.size) {
+      return cached.document;
+    }
+
+    const raw = await fs.readFile(realPath, "utf8");
+    const parsed = parseMarkdown(raw);
+    const id =
+      typeof parsed.frontmatter.id === "string" && parsed.frontmatter.id.trim()
+        ? parsed.frontmatter.id.trim()
+        : relativePath;
+
+    const document: MarkdownDocument = {
       id,
       relativePath,
       absolutePath: realPath,
@@ -218,6 +251,8 @@ export class KnowledgeStore {
         modifiedAt: stats.mtime.toISOString()
       }
     };
+    this.documentCache.set(realPath, { mtimeMs: stats.mtimeMs, sizeBytes: stats.size, document });
+    return document;
   }
 
   private async resolveForExistingRead(relativePath: string): Promise<string> {
