@@ -47,9 +47,18 @@ The same server speaks two transports, selected with `MCP_TRANSPORT`:
 | `http` | Remote **Chat connectors**: **ChatGPT**, **Claude.ai** | read-only by default; writes require `MCP_HTTP_ALLOW_WRITE=1` |
 
 Chat connectors cannot launch a local process, so they require the HTTP
-transport reachable over HTTPS. Because the vault is private, the HTTP endpoint
-binds to `127.0.0.1` and **requires a bearer token** (`MCP_AUTH_TOKEN`); expose
-it to the internet only through an explicit HTTPS tunnel.
+transport reachable over HTTPS. Authentication differs by client:
+
+| Client | Transport | Auth it accepts |
+| --- | --- | --- |
+| Claude Code / Codex / Claude Desktop | stdio | none (local process) |
+| Claude Desktop / Claude Code (remote), Claude **API** connector | HTTP | **static bearer** (`MCP_AUTH_TOKEN`) |
+| **ChatGPT** (web, Developer mode), **Claude.ai** (web) | HTTP | **OAuth 2.1 only** — they cannot send a user-pasted bearer or custom header |
+
+So the HTTP endpoint supports **both**: a static bearer (for Desktop/Code/API)
+*and* a built-in OAuth 2.1 authorization server (for ChatGPT/Claude.ai web). It
+binds to `127.0.0.1`; expose it to the internet only through an explicit HTTPS
+tunnel.
 
 ### Run (stdio — local CLI clients)
 
@@ -58,25 +67,39 @@ pnpm run build
 KNOWLEDGE_ROOT=/abs/path/to/vault node dist/index.js
 ```
 
-### Run (HTTP — Chat connectors)
+### Run (HTTP — for ChatGPT / Claude.ai web, with OAuth)
+
+Open the tunnel **first** so you know the public URL, then start the server with
+that URL as the OAuth issuer:
 
 ```bash
+# Terminal 1 — tunnel 127.0.0.1:8787 to a public HTTPS URL
+cloudflared tunnel --url http://127.0.0.1:8787
+# -> https://<random>.trycloudflare.com   (copy this)
+```
+
+```bash
+# Terminal 2 — start the connector pointing at that public URL
 pnpm run build
 MCP_TRANSPORT=http \
-MCP_AUTH_TOKEN="$(openssl rand -hex 32)" \
 MCP_HTTP_PORT=8787 \
+MCP_HTTP_PUBLIC_URL="https://<random>.trycloudflare.com" \
+MCP_OAUTH_ENABLED=1 \
+MCP_OAUTH_PASSWORD="<choose-a-vault-login-password>" \
+MCP_AUTH_TOKEN="$(openssl rand -hex 32)" \
 KNOWLEDGE_ROOT=/abs/path/to/vault \
 node dist/index.js
-# Listening on http://127.0.0.1:8787/mcp  (GET /healthz for liveness)
+# Listening on http://127.0.0.1:8787/mcp (write=off, oauth=on)
 ```
 
-Then expose it over HTTPS with a tunnel and add the public hostname to
-`MCP_HTTP_ALLOWED_HOSTS`:
+`MCP_HTTP_PUBLIC_URL` is the OAuth issuer and is auto-added to the
+DNS-rebinding allowlist. The MCP endpoint to register is
+`https://<random>.trycloudflare.com/mcp`.
 
-```bash
-cloudflared tunnel --url http://127.0.0.1:8787   # or: ngrok http 8787
-# -> https://<random>.trycloudflare.com  (use .../mcp as the connector URL)
-```
+> Verify before registering: `GET /.well-known/oauth-protected-resource` returns
+> JSON, and an unauthenticated `POST /mcp` returns `401` with a
+> `WWW-Authenticate: Bearer resource_metadata="…"` header (this is what makes the
+> web clients start the OAuth flow).
 
 ## Client registration
 
@@ -113,18 +136,28 @@ env = { KNOWLEDGE_ROOT = "/abs/path/to/private/vault" }
 }
 ```
 
-### ChatGPT (Chat connector, HTTP)
+### ChatGPT (web, Developer mode — HTTP + OAuth)
 
-Run the HTTP transport + tunnel (above), then add a connector pointing at
-`https://<tunnel-host>/mcp` with an `Authorization: Bearer <MCP_AUTH_TOKEN>`
-header. The server exposes ChatGPT-compatible `search` and `fetch` tools
-(alongside the native tools), so it works in the standard connector flow as well
-as Developer Mode.
+1. Run the HTTP transport with OAuth + tunnel (above).
+2. ChatGPT → **Settings → Connectors → Developer mode** (enable it).
+3. **Create / Add custom connector** → MCP server URL =
+   `https://<random>.trycloudflare.com/mcp`. Choose **OAuth** as the auth method.
+4. ChatGPT auto-discovers the OAuth endpoints, dynamically registers itself, and
+   opens the login page — enter your `MCP_OAUTH_PASSWORD` to authorize.
+5. The connector then uses the issued token. The ChatGPT-compatible `search` /
+   `fetch` tools are exposed alongside the native tools.
 
-### Claude.ai (custom connector, HTTP)
+### Claude.ai (web, custom connector — HTTP + OAuth)
 
-Settings → Connectors → *Add custom connector* → URL `https://<tunnel-host>/mcp`,
-with the same bearer token. Read-only unless `MCP_HTTP_ALLOW_WRITE=1`.
+1. Claude.ai → **Settings → Connectors → Add custom connector**.
+2. URL = `https://<random>.trycloudflare.com/mcp`.
+3. Connect → Claude runs the OAuth flow → enter your `MCP_OAUTH_PASSWORD`.
+4. Read-only unless the server was started with `MCP_HTTP_ALLOW_WRITE=1`.
+
+> **Note on static bearer:** ChatGPT/Claude.ai **web** do not let you paste a
+> bearer token or custom header — they require the OAuth flow above. The static
+> `MCP_AUTH_TOKEN` bearer is for Claude Desktop / Claude Code (remote) and the
+> Claude **API** MCP connector (`authorization_token`).
 
 ## Tools
 
@@ -162,6 +195,13 @@ in code and pinned by tests:
   (`allowedHosts`/`allowedOrigins`), caps request body size, and is **read-only
   unless explicitly opted into writes** — so exposing the vault to a Chat client
   never widens the local tool surface by accident.
+- **OAuth 2.1 authorization server** (opt-in, for ChatGPT/Claude.ai web) — PKCE
+  S256 mandatory, single-use short-TTL authorization codes bound to
+  client/redirect/challenge, exact-match https/loopback redirect URIs (no open
+  redirect), a constant-time login-password gate (fail-closed if unset), opaque
+  256-bit tokens with rotation, and no secrets logged
+  (`src/oauth/`). Issued tokens are validated on `/mcp` exactly like the static
+  bearer.
 
 Supply-chain & governance: GitHub Actions are SHA-pinned, workflows run with
 `permissions: contents: read`, CODEOWNERS gates `.github/`, Dependabot + CodeQL

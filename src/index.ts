@@ -20,7 +20,8 @@ if (transport === "http") {
   // stderr only — stdout is reserved for protocol data on stdio, and we keep
   // logs free of the auth token or any vault content.
   process.stderr.write(
-    `MCP HTTP transport listening on http://${where}/mcp (write=${httpConfig.allowWrite ? "on" : "off"})\n`
+    `MCP HTTP transport listening on http://${where}/mcp ` +
+      `(write=${httpConfig.allowWrite ? "on" : "off"}, oauth=${httpConfig.oauth ? "on" : "off"})\n`
   );
 } else {
   // Local stdio transport for CLI clients (Claude Code, Codex, Claude Desktop).

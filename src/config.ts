@@ -1,6 +1,7 @@
 import path from "node:path";
 import process from "node:process";
 import dotenv from "dotenv";
+import type { OAuthConfig } from "./oauth/provider.js";
 
 dotenv.config();
 
@@ -43,6 +44,12 @@ export interface HttpConfig {
   allowedOrigins: string[];
   /** Optional public base used to build ChatGPT citation URLs. */
   chatgptUrlBase?: string;
+  /**
+   * OAuth 2.1 authorization server config. Present only when MCP_OAUTH_ENABLED
+   * is set — required for ChatGPT / Claude.ai web, which reject static bearers.
+   * When absent, only the static MCP_AUTH_TOKEN bearer is accepted.
+   */
+  oauth?: OAuthConfig;
 }
 
 /** Pick the transport from MCP_TRANSPORT (default stdio). */
@@ -92,6 +99,19 @@ export function loadHttpConfig(env: NodeJS.ProcessEnv = process.env): HttpConfig
     allowedHosts.push(`${host}:${port}`, `localhost:${port}`);
   }
 
+  const publicUrl = env.MCP_HTTP_PUBLIC_URL?.trim().replace(/\/+$/, "") || undefined;
+  const oauth = loadOAuthConfig(env, publicUrl);
+
+  // When OAuth is on, the public (tunnel) host receives the actual /mcp traffic,
+  // so it must be in the DNS-rebinding allowlist.
+  if (publicUrl) {
+    try {
+      allowedHosts.push(new URL(publicUrl).host);
+    } catch {
+      throw new Error(`Invalid MCP_HTTP_PUBLIC_URL="${publicUrl}".`);
+    }
+  }
+
   return {
     host,
     port,
@@ -99,6 +119,36 @@ export function loadHttpConfig(env: NodeJS.ProcessEnv = process.env): HttpConfig
     allowWrite: isTruthy(env.MCP_HTTP_ALLOW_WRITE),
     allowedHosts,
     allowedOrigins: splitList(env.MCP_HTTP_ALLOWED_ORIGINS),
-    chatgptUrlBase: env.MCP_HTTP_PUBLIC_URL?.trim() || undefined
+    chatgptUrlBase: publicUrl,
+    oauth
+  };
+}
+
+function loadOAuthConfig(env: NodeJS.ProcessEnv, publicUrl: string | undefined): OAuthConfig | undefined {
+  if (!isTruthy(env.MCP_OAUTH_ENABLED)) {
+    return undefined;
+  }
+  // Fail-closed: OAuth needs a public issuer URL and a login password. Without
+  // them we must not advertise a half-built authorization server.
+  if (!publicUrl) {
+    throw new Error("MCP_OAUTH_ENABLED requires MCP_HTTP_PUBLIC_URL (the public https issuer URL).");
+  }
+  if (!/^https:\/\//.test(publicUrl) && !/^http:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/.test(publicUrl)) {
+    throw new Error("MCP_HTTP_PUBLIC_URL must be https (or http loopback for local testing) when OAuth is enabled.");
+  }
+  const loginPassword = env.MCP_OAUTH_PASSWORD?.trim();
+  if (!loginPassword) {
+    throw new Error("MCP_OAUTH_ENABLED requires MCP_OAUTH_PASSWORD (the vault login password).");
+  }
+  const ttl = (value: string | undefined, fallback: number): number => {
+    const n = Number.parseInt(value?.trim() || String(fallback), 10);
+    return Number.isInteger(n) && n > 0 ? n : fallback;
+  };
+  return {
+    issuer: publicUrl,
+    loginPassword,
+    accessTokenTtlSec: ttl(env.MCP_OAUTH_ACCESS_TTL, 3600),
+    refreshTokenTtlSec: ttl(env.MCP_OAUTH_REFRESH_TTL, 2592000),
+    codeTtlSec: ttl(env.MCP_OAUTH_CODE_TTL, 60)
   };
 }

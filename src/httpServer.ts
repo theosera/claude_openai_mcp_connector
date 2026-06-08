@@ -3,8 +3,10 @@ import http from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { HttpConfig } from "./config.js";
-import { isAuthorizedHeader } from "./httpAuth.js";
+import { isAuthorizedHeader, parseBearer } from "./httpAuth.js";
 import type { KnowledgeStore } from "./knowledgeStore.js";
+import type { OAuthHttpResponse } from "./oauth/provider.js";
+import { OAuthProvider } from "./oauth/provider.js";
 import { buildMcpServer } from "./server.js";
 
 const MCP_PATH = "/mcp";
@@ -25,9 +27,12 @@ interface Session {
  */
 export async function startHttpServer(store: KnowledgeStore, config: HttpConfig): Promise<http.Server> {
   const sessions = new Map<string, Session>();
+  // OAuth 2.1 authorization server (only when configured). ChatGPT / Claude.ai
+  // web require it; Desktop / Code / API keep using the static bearer.
+  const oauth = config.oauth ? new OAuthProvider(config.oauth) : undefined;
 
   const httpServer = http.createServer((req, res) => {
-    handleRequest(req, res, store, config, sessions).catch((error) => {
+    handleRequest(req, res, store, config, sessions, oauth).catch((error) => {
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json" });
       }
@@ -46,7 +51,8 @@ async function handleRequest(
   res: http.ServerResponse,
   store: KnowledgeStore,
   config: HttpConfig,
-  sessions: Map<string, Session>
+  sessions: Map<string, Session>,
+  oauth: OAuthProvider | undefined
 ): Promise<void> {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
@@ -57,18 +63,26 @@ async function handleRequest(
     return;
   }
 
+  // OAuth 2.1 endpoints are unauthenticated by design (discovery / login /
+  // token). Handled before the bearer gate.
+  if (oauth && (await handleOAuthRoute(req, res, url, oauth))) {
+    return;
+  }
+
   if (url.pathname !== MCP_PATH) {
     res.writeHead(404, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: "not_found" }));
     return;
   }
 
-  // Auth gate: every MCP request must carry a valid bearer token.
-  if (!isAuthorizedHeader(req.headers.authorization, config.authToken)) {
-    res.writeHead(401, {
+  // Auth gate: accept either the static bearer (Desktop / Code / API) or a
+  // valid OAuth access token (ChatGPT / Claude.ai web).
+  if (!isMcpAuthorized(req.headers.authorization, config, oauth)) {
+    const headers: Record<string, string> = {
       "content-type": "application/json",
-      "www-authenticate": 'Bearer realm="mcp"'
-    });
+      "www-authenticate": oauth ? oauth.wwwAuthenticate() : 'Bearer realm="mcp"'
+    };
+    res.writeHead(401, headers);
     res.end(JSON.stringify({ error: "unauthorized" }));
     return;
   }
@@ -133,6 +147,78 @@ async function handleRequest(
   await transport.handleRequest(req, res, body);
 }
 
+/** Accept the static bearer OR a valid OAuth access token for /mcp. */
+function isMcpAuthorized(
+  authHeader: string | string[] | undefined,
+  config: HttpConfig,
+  oauth: OAuthProvider | undefined
+): boolean {
+  const header = headerValue(authHeader);
+  if (isAuthorizedHeader(header, config.authToken)) {
+    return true;
+  }
+  if (oauth) {
+    const token = parseBearer(header);
+    return oauth.store.validateAccessToken(token) !== null;
+  }
+  return false;
+}
+
+/**
+ * Route OAuth 2.1 endpoints. Returns true if the request was handled.
+ * Endpoints: AS/PR metadata discovery, dynamic client registration, the
+ * authorize login page (GET/POST), and the token endpoint.
+ */
+async function handleOAuthRoute(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  url: URL,
+  oauth: OAuthProvider
+): Promise<boolean> {
+  const { pathname } = url;
+  const method = req.method ?? "GET";
+
+  if (method === "GET" && pathname === "/.well-known/oauth-authorization-server") {
+    return sendOAuth(res, oauth.authorizationServerMetadata());
+  }
+  if (method === "GET" && pathname === "/.well-known/oauth-protected-resource") {
+    return sendOAuth(res, oauth.protectedResourceMetadata());
+  }
+  if (method === "POST" && pathname === "/register") {
+    const body = await readJsonBody(req, res);
+    if (body === BODY_ERROR) {
+      return true;
+    }
+    return sendOAuth(res, oauth.register(body));
+  }
+  if (pathname === "/authorize") {
+    if (method === "GET") {
+      return sendOAuth(res, oauth.authorizeGet(url.searchParams));
+    }
+    if (method === "POST") {
+      const form = await readFormBody(req, res);
+      if (form === BODY_ERROR) {
+        return true;
+      }
+      return sendOAuth(res, oauth.authorizePost(form));
+    }
+  }
+  if (method === "POST" && pathname === "/token") {
+    const form = await readFormBody(req, res);
+    if (form === BODY_ERROR) {
+      return true;
+    }
+    return sendOAuth(res, oauth.token(form));
+  }
+  return false;
+}
+
+function sendOAuth(res: http.ServerResponse, response: OAuthHttpResponse): true {
+  res.writeHead(response.status, response.headers);
+  res.end(response.body);
+  return true;
+}
+
 function headerValue(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) {
     return value[0];
@@ -169,4 +255,23 @@ async function readJsonBody(req: http.IncomingMessage, res: http.ServerResponse)
     res.end(JSON.stringify({ error: "invalid_json" }));
     return BODY_ERROR;
   }
+}
+
+/** Read an application/x-www-form-urlencoded body (size-capped) as params. */
+async function readFormBody(
+  req: http.IncomingMessage,
+  res: http.ServerResponse
+): Promise<URLSearchParams | typeof BODY_ERROR> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > MAX_BODY_BYTES) {
+      res.writeHead(413, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "payload_too_large" }));
+      return BODY_ERROR;
+    }
+    chunks.push(chunk as Buffer);
+  }
+  return new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
 }
