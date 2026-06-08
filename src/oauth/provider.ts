@@ -73,11 +73,18 @@ export class OAuthProvider {
     return this.config.allowWrite ? [SCOPE_READ, SCOPE_WRITE] : [SCOPE_READ];
   }
 
-  /** Granted scope = requested ∩ grantable, defaulting to read. Never exceeds policy. */
+  /**
+   * Granted scope = requested ∩ grantable. Defaulting to read applies ONLY when
+   * the client omits `scope` entirely; a non-empty but disjoint request (e.g.
+   * `vault.write` while writes are off, or an unrelated `openid`) yields no
+   * granted scope rather than silently handing back read it never asked for.
+   */
   private grantScope(requested: string): string {
-    const wanted = new Set(requested.split(/\s+/).filter(Boolean));
-    const granted = this.grantableScopes.filter((s) => wanted.has(s));
-    return granted.length > 0 ? granted.join(" ") : SCOPE_READ;
+    const wanted = requested.split(/\s+/).filter(Boolean);
+    if (wanted.length === 0) {
+      return SCOPE_READ;
+    }
+    return this.grantableScopes.filter((s) => wanted.includes(s)).join(" ");
   }
 
   /** RFC 8414 — Authorization Server Metadata. */

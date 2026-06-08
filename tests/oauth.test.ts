@@ -298,6 +298,16 @@ describe("OAuthProvider flow", () => {
     expect(JSON.parse(provider.protectedResourceMetadata().body).scopes_supported).toEqual(["vault.read"]);
   });
 
+  it("grants no scope for a non-empty but disjoint scope request", () => {
+    const { provider, clientId } = setup(); // allowWrite: false
+    // vault.write-only under a read-only policy -> empty (no silent read grant).
+    expect(exchange(provider, clientId, "vault.write").scope).toBe("");
+    // unrelated scope -> empty.
+    expect(exchange(provider, clientId, "openid").scope).toBe("");
+    // omitted scope still defaults to read.
+    expect(exchange(provider, clientId, "").scope).toBe("vault.read");
+  });
+
   it("grants vault.write only when the server write policy is on", () => {
     const provider = new OAuthProvider({ ...config, allowWrite: true });
     const clientId = JSON.parse(provider.register({ redirect_uris: ["https://chatgpt.com/cb"] }).body).client_id;
