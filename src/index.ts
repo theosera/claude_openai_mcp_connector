@@ -85,7 +85,7 @@ server.registerTool(
     inputSchema: {
       id_or_path: z.string(),
       new_body: z.string(),
-      frontmatter_patch: z.record(z.unknown()).optional(),
+      frontmatter_patch: z.record(z.string(), z.unknown()).optional(),
       reason: z.string()
     }
   },
