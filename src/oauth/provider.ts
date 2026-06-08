@@ -1,4 +1,4 @@
-import { isAuthorized } from "../httpAuth.js";
+import { verifyLoginPassword } from "../httpAuth.js";
 import { verifyPkceS256 } from "./pkce.js";
 import { OAuthStore } from "./store.js";
 
@@ -134,7 +134,7 @@ export class OAuthProvider {
       return htmlPage(check.status, "Authorization error", `<p>${escapeHtml(check.message)}</p>`);
     }
     const password = form.get("password") ?? "";
-    if (!isAuthorized(password, this.config.loginPassword)) {
+    if (!verifyLoginPassword(password, this.config.loginPassword)) {
       return this.renderLoginForm(check.params, "Incorrect password.");
     }
     const code = this.store.createAuthorizationCode({

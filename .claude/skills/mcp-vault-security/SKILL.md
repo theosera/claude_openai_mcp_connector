@@ -96,8 +96,10 @@ DCR + metadata discovery 必須**。`src/oauth/` の最小単一ユーザ AS。*
 3. **redirect_uri は exact-match + scheme 制限** — 登録済み値と完全一致のみ。`https` か
    loopback `http` のみ許可 (`isAllowedRedirectUri`) = open redirect 防止。不正 client/redirect は
    **redirect せず** 400 ページ (誤リダイレクトで code を漏らさない)。
-4. **login gate は constant-time + fail-closed** — vault アクセスは共有パスワード
-   (`MCP_OAUTH_PASSWORD`) で門番。`isAuthorized` で照合。`MCP_OAUTH_ENABLED` 時に issuer URL
+4. **login gate は slow-KDF + constant-time + fail-closed** — vault アクセスは共有パスワード
+   (`MCP_OAUTH_PASSWORD`) で門番。低エントロピーな password は `verifyLoginPassword`
+   (scrypt + `timingSafeEqual`) で照合し総当たりに計算コストを課す (高エントロピーな bearer
+   token のみ単発 sha256 の constant-time 比較で可)。`MCP_OAUTH_ENABLED` 時に issuer URL
    (`MCP_HTTP_PUBLIC_URL`) かパスワード未設定なら `loadOAuthConfig` が**起動拒否**。
 5. **token は opaque 256-bit + rotation** — access/refresh とも CSPRNG、TTL 失効、refresh は
    回転 (旧 refresh は無効化)。`/mcp` は static bearer **または** 有効 access token を受理。

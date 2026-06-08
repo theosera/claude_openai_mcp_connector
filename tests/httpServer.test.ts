@@ -9,7 +9,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { chatgptFetch, chatgptSearch, documentUrl } from "../src/chatgpt.js";
 import type { HttpConfig } from "../src/config.js";
-import { isAuthorized, isAuthorizedHeader, parseBearer } from "../src/httpAuth.js";
+import { isAuthorized, isAuthorizedHeader, parseBearer, verifyLoginPassword } from "../src/httpAuth.js";
 import { startHttpServer } from "../src/httpServer.js";
 import { KnowledgeStore } from "../src/knowledgeStore.js";
 import { buildMcpServer } from "../src/server.js";
@@ -29,10 +29,16 @@ describe("httpAuth", () => {
   it("parses bearer tokens case-insensitively and rejects malformed headers", () => {
     expect(parseBearer("Bearer abc123")).toBe("abc123");
     expect(parseBearer("bearer   abc123")).toBe("abc123");
+    expect(parseBearer("Bearer\tabc123")).toBe("abc123");
     expect(parseBearer("Basic abc123")).toBeNull();
     expect(parseBearer("Bearer ")).toBeNull();
+    expect(parseBearer("Bearerabc")).toBeNull(); // no separator
     expect(parseBearer(undefined)).toBeNull();
     expect(parseBearer(null)).toBeNull();
+    // Linear-time on pathological all-separator input (ReDoS guard).
+    const start = Date.now();
+    expect(parseBearer("Bearer" + "\t".repeat(100000))).toBeNull();
+    expect(Date.now() - start).toBeLessThan(1000);
   });
 
   it("authorizes only an exact token match (constant-time)", () => {
@@ -48,6 +54,14 @@ describe("httpAuth", () => {
     expect(isAuthorizedHeader("Bearer secret-token", "secret-token")).toBe(true);
     expect(isAuthorizedHeader("Bearer nope", "secret-token")).toBe(false);
     expect(isAuthorizedHeader(undefined, "secret-token")).toBe(false);
+  });
+
+  it("verifies the OAuth login password with a slow KDF", () => {
+    expect(verifyLoginPassword("hunter2", "hunter2")).toBe(true);
+    expect(verifyLoginPassword("hunter2", "hunter3")).toBe(false);
+    expect(verifyLoginPassword("", "hunter2")).toBe(false);
+    expect(verifyLoginPassword(null, "hunter2")).toBe(false);
+    expect(verifyLoginPassword("hunter2", "")).toBe(false);
   });
 });
 
