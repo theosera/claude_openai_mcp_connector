@@ -10,14 +10,37 @@ export const PATCHABLE_FRONTMATTER_KEYS = ["client", "project", "title", "tags",
 const PATCHABLE_FRONTMATTER_KEY_SET = new Set<string>(PATCHABLE_FRONTMATTER_KEYS);
 
 export function assertFrontmatterPatch(patch: Record<string, unknown>): Record<string, unknown> {
-  for (const key of Object.keys(patch)) {
+  const validated: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(patch)) {
     if (!PATCHABLE_FRONTMATTER_KEY_SET.has(key)) {
       throw new Error(
         `Frontmatter key not allowed in patch: ${key}. Allowed keys: ${PATCHABLE_FRONTMATTER_KEYS.join(", ")}.`
       );
     }
+
+    validated[key] = validatePatchValue(key, value);
   }
-  return patch;
+
+  return validated;
+}
+
+function validatePatchValue(key: string, value: unknown): unknown {
+  if (key === "client" || key === "project" || key === "title") {
+    if (typeof value !== "string") {
+      throw new Error(`Frontmatter key ${key} must be a string.`);
+    }
+    return value;
+  }
+
+  if (key === "tags" || key === "source_refs") {
+    if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+      throw new Error(`Frontmatter key ${key} must be an array of strings.`);
+    }
+    return value;
+  }
+
+  throw new Error(`Unsupported frontmatter key: ${key}.`);
 }
 
 export function parseMarkdown(raw: string): { frontmatter: DocumentMetadata; body: string } {

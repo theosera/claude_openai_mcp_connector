@@ -255,7 +255,15 @@ export class KnowledgeStore {
   }
 }
 
-async function walkMarkdownFiles(root: string, current: string = root): Promise<string[]> {
+async function walkMarkdownFiles(root: string, current: string = root, visited = new Set<string>()): Promise<string[]> {
+  const currentRealPath = await fs.realpath(current);
+  relativeToRoot(root, currentRealPath);
+
+  if (visited.has(currentRealPath)) {
+    return [];
+  }
+  visited.add(currentRealPath);
+
   const entries = await fs.readdir(current, { withFileTypes: true });
   const files: string[] = [];
 
@@ -269,14 +277,14 @@ async function walkMarkdownFiles(root: string, current: string = root): Promise<
       relativeToRoot(root, realPath);
       const stat = await fs.stat(realPath);
       if (stat.isDirectory()) {
-        files.push(...(await walkMarkdownFiles(root, realPath)));
+        files.push(...(await walkMarkdownFiles(root, realPath, visited)));
       } else if (stat.isFile() && realPath.endsWith(".md")) {
         files.push(realPath);
       }
       continue;
     }
     if (entry.isDirectory()) {
-      files.push(...(await walkMarkdownFiles(root, absolutePath)));
+      files.push(...(await walkMarkdownFiles(root, absolutePath, visited)));
     } else if (entry.isFile() && entry.name.endsWith(".md")) {
       files.push(absolutePath);
     }

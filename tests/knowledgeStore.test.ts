@@ -128,6 +128,28 @@ describe("KnowledgeStore", () => {
     ).rejects.toThrow(/not allowed/);
   });
 
+  it("rejects non-string scalar frontmatter patch values", async () => {
+    await expect(
+      store.planUpdate({
+        id_or_path: "claude-plan-001",
+        new_body: "body",
+        frontmatter_patch: { title: ["not", "a", "string"] },
+        reason: "type confusion attempt"
+      })
+    ).rejects.toThrow(/must be a string/);
+  });
+
+  it("rejects non-string-array frontmatter patch values", async () => {
+    await expect(
+      store.planUpdate({
+        id_or_path: "claude-plan-001",
+        new_body: "body",
+        frontmatter_patch: { tags: ["ok", { nested: "bad" }] },
+        reason: "nested metadata attempt"
+      })
+    ).rejects.toThrow(/array of strings/);
+  });
+
   it("traces source refs and backlinks", async () => {
     const traced = await store.traceSources("chatgpt-research-001");
 
@@ -147,5 +169,12 @@ describe("KnowledgeStore", () => {
     await fs.symlink(outside, path.join(root, "linked-outside"));
 
     await expect(store.listDocuments()).rejects.toThrow(/escapes/);
+  });
+
+  it("does not recurse forever on symlink cycles inside the vault", async () => {
+    await fs.symlink(root, path.join(root, "loop"));
+
+    const documents = await store.listDocuments();
+    expect(documents.map((document) => document.id).sort()).toEqual(["chatgpt-research-001", "claude-plan-001"]);
   });
 });
