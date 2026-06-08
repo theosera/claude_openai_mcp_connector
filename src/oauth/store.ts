@@ -27,6 +27,8 @@ export interface AuthorizationCode {
   redirectUri: string;
   codeChallenge: string;
   scope: string;
+  /** RFC 8707 audience this code (and the resulting token) is bound to. */
+  resource: string;
   expiresAt: number;
 }
 
@@ -40,12 +42,14 @@ export interface IssuedTokens {
 interface AccessTokenRecord {
   clientId: string;
   scope: string;
+  resource: string;
   expiresAt: number;
 }
 
 interface RefreshTokenRecord {
   clientId: string;
   scope: string;
+  resource: string;
   expiresAt: number;
 }
 
@@ -114,6 +118,7 @@ export class OAuthStore {
     redirectUri: string;
     codeChallenge: string;
     scope: string;
+    resource: string;
   }): string {
     this.prune();
     if (this.codes.size >= DEFAULT_MAX_CODES) {
@@ -126,6 +131,7 @@ export class OAuthStore {
       redirectUri: params.redirectUri,
       codeChallenge: params.codeChallenge,
       scope: params.scope,
+      resource: params.resource,
       expiresAt: this.now() + this.options.codeTtlSec * 1000
     });
     return code;
@@ -144,18 +150,20 @@ export class OAuthStore {
     return record;
   }
 
-  issueTokens(clientId: string, scope: string): IssuedTokens {
+  issueTokens(clientId: string, scope: string, resource: string): IssuedTokens {
     this.prune();
     const accessToken = randomSecret();
     const refreshToken = randomSecret();
     this.accessTokens.set(accessToken, {
       clientId,
       scope,
+      resource,
       expiresAt: this.now() + this.options.accessTokenTtlSec * 1000
     });
     this.refreshTokens.set(refreshToken, {
       clientId,
       scope,
+      resource,
       expiresAt: this.now() + this.options.refreshTokenTtlSec * 1000
     });
     // Enforce the hard cap even when every entry is still live (pruning only
@@ -171,8 +179,10 @@ export class OAuthStore {
     };
   }
 
-  /** Validate an access token. Returns the bound client/scope or null. */
-  validateAccessToken(token: string | null | undefined): { clientId: string; scope: string } | null {
+  /** Validate an access token. Returns the bound client/scope/resource or null. */
+  validateAccessToken(
+    token: string | null | undefined
+  ): { clientId: string; scope: string; resource: string } | null {
     if (!token) {
       return null;
     }
@@ -184,7 +194,7 @@ export class OAuthStore {
       this.accessTokens.delete(token);
       return null;
     }
-    return { clientId: record.clientId, scope: record.scope };
+    return { clientId: record.clientId, scope: record.scope, resource: record.resource };
   }
 
   /** Refresh-token rotation: the presented refresh token is invalidated. */
@@ -197,7 +207,7 @@ export class OAuthStore {
     if (record.expiresAt <= this.now() || record.clientId !== clientId) {
       return null;
     }
-    return this.issueTokens(clientId, record.scope);
+    return this.issueTokens(clientId, record.scope, record.resource);
   }
 
   private prune(): void {

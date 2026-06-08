@@ -99,8 +99,9 @@ export function loadHttpConfig(env: NodeJS.ProcessEnv = process.env): HttpConfig
     allowedHosts.push(`${host}:${port}`, `localhost:${port}`);
   }
 
+  const allowWrite = isTruthy(env.MCP_HTTP_ALLOW_WRITE);
   const publicUrl = env.MCP_HTTP_PUBLIC_URL?.trim().replace(/\/+$/, "") || undefined;
-  const oauth = loadOAuthConfig(env, publicUrl);
+  const oauth = loadOAuthConfig(env, publicUrl, allowWrite);
 
   // When OAuth is on, the public (tunnel) host receives the actual /mcp traffic,
   // so it must be in the DNS-rebinding allowlist.
@@ -116,7 +117,7 @@ export function loadHttpConfig(env: NodeJS.ProcessEnv = process.env): HttpConfig
     host,
     port,
     authToken,
-    allowWrite: isTruthy(env.MCP_HTTP_ALLOW_WRITE),
+    allowWrite,
     allowedHosts,
     allowedOrigins: splitList(env.MCP_HTTP_ALLOWED_ORIGINS),
     chatgptUrlBase: publicUrl,
@@ -124,7 +125,11 @@ export function loadHttpConfig(env: NodeJS.ProcessEnv = process.env): HttpConfig
   };
 }
 
-function loadOAuthConfig(env: NodeJS.ProcessEnv, publicUrl: string | undefined): OAuthConfig | undefined {
+function loadOAuthConfig(
+  env: NodeJS.ProcessEnv,
+  publicUrl: string | undefined,
+  allowWrite: boolean
+): OAuthConfig | undefined {
   if (!isTruthy(env.MCP_OAUTH_ENABLED)) {
     return undefined;
   }
@@ -149,6 +154,7 @@ function loadOAuthConfig(env: NodeJS.ProcessEnv, publicUrl: string | undefined):
     loginPassword,
     accessTokenTtlSec: ttl(env.MCP_OAUTH_ACCESS_TTL, 3600),
     refreshTokenTtlSec: ttl(env.MCP_OAUTH_REFRESH_TTL, 2592000),
-    codeTtlSec: ttl(env.MCP_OAUTH_CODE_TTL, 60)
+    codeTtlSec: ttl(env.MCP_OAUTH_CODE_TTL, 60),
+    allowWrite
   };
 }

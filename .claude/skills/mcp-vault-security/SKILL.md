@@ -101,11 +101,17 @@ DCR + metadata discovery 必須**。`src/oauth/` の最小単一ユーザ AS。*
    (scrypt + `timingSafeEqual`) で照合し総当たりに計算コストを課す (高エントロピーな bearer
    token のみ単発 sha256 の constant-time 比較で可)。`MCP_OAUTH_ENABLED` 時に issuer URL
    (`MCP_HTTP_PUBLIC_URL`) かパスワード未設定なら `loadOAuthConfig` が**起動拒否**。
-5. **token は opaque 256-bit + rotation** — access/refresh とも CSPRNG、TTL 失効、refresh は
-   回転 (旧 refresh は無効化)。`/mcp` は static bearer **または** 有効 access token を受理。
-   401 時は `WWW-Authenticate: Bearer resource_metadata="…"` で discovery を指す。
-6. **容量上限 + prune** — clients/codes/tokens を各上限でキャップし期限切れを掃除 (DCR/token
-   濫造による memory DoS 防止)。code/token/password を**ログに出さない**。
+5. **token は opaque 256-bit + rotation + audience/scope 束縛** — access/refresh とも CSPRNG、
+   TTL 失効、refresh は回転 (旧 refresh は無効化)。token は **canonical resource `${issuer}/mcp`
+   に audience-bound (RFC 8707)**。`/mcp` は static bearer **または** 「有効 access token かつ
+   audience 一致」を受理 (`authenticate`)。401 時は `WWW-Authenticate: Bearer resource_metadata="…"`。
+   **scope enforcement**: granted scope = 要求 ∩ サーバ許可 (`vault.write` は `allowWrite` 時のみ)。
+   session init 時に `allowWrite = config.allowWrite && token に vault.write` で **write tool を
+   未登録**にする (read-scope token は write tool を discover も呼び出しもできない)。
+6. **容量上限 + prune + DCR 入力上限 + consent hardening** — clients/codes/tokens を各上限で
+   キャップし期限切れ掃除。DCR は redirect_uris 個数/長さ・client_name 長を制限。consent/login
+   ページに `CSP frame-ancestors 'none'` + `X-Frame-Options: DENY` + `Referrer-Policy: no-referrer`。
+   code/token/password を**ログに出さない**。
 
 ## コードのどこ (file → 不変条件)
 

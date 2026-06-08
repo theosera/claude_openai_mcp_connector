@@ -22,6 +22,8 @@ export interface OAuthConfig {
   accessTokenTtlSec: number;
   refreshTokenTtlSec: number;
   codeTtlSec: number;
+  /** Whether the server may grant the vault.write scope (mirrors allowWrite). */
+  allowWrite: boolean;
 }
 
 export interface OAuthHttpResponse {
@@ -31,6 +33,14 @@ export interface OAuthHttpResponse {
 }
 
 const MCP_RESOURCE_PATH = "/mcp";
+
+export const SCOPE_READ = "vault.read";
+export const SCOPE_WRITE = "vault.write";
+
+// Dynamic Client Registration input caps (DoS / abuse bound).
+const MAX_REDIRECT_URIS = 5;
+const MAX_REDIRECT_URI_LENGTH = 2048;
+const MAX_CLIENT_NAME_LENGTH = 256;
 
 export class OAuthProvider {
   readonly store: OAuthStore;
@@ -53,6 +63,23 @@ export class OAuthProvider {
     return `${this.config.issuer}/.well-known/oauth-protected-resource`;
   }
 
+  /** The single RFC 8707 resource (audience) this AS issues tokens for. */
+  get canonicalResource(): string {
+    return `${this.config.issuer}${MCP_RESOURCE_PATH}`;
+  }
+
+  /** Scopes the server is willing to grant, given the write policy. */
+  private get grantableScopes(): string[] {
+    return this.config.allowWrite ? [SCOPE_READ, SCOPE_WRITE] : [SCOPE_READ];
+  }
+
+  /** Granted scope = requested ∩ grantable, defaulting to read. Never exceeds policy. */
+  private grantScope(requested: string): string {
+    const wanted = new Set(requested.split(/\s+/).filter(Boolean));
+    const granted = this.grantableScopes.filter((s) => wanted.has(s));
+    return granted.length > 0 ? granted.join(" ") : SCOPE_READ;
+  }
+
   /** RFC 8414 — Authorization Server Metadata. */
   authorizationServerMetadata(): OAuthHttpResponse {
     return json(200, {
@@ -64,17 +91,17 @@ export class OAuthProvider {
       grant_types_supported: ["authorization_code", "refresh_token"],
       code_challenge_methods_supported: ["S256"],
       token_endpoint_auth_methods_supported: ["none"],
-      scopes_supported: ["vault.read", "vault.write"]
+      scopes_supported: this.grantableScopes
     });
   }
 
   /** RFC 9728 — Protected Resource Metadata. */
   protectedResourceMetadata(): OAuthHttpResponse {
     return json(200, {
-      resource: `${this.config.issuer}${MCP_RESOURCE_PATH}`,
+      resource: this.canonicalResource,
       authorization_servers: [this.config.issuer],
       bearer_methods_supported: ["header"],
-      scopes_supported: ["vault.read", "vault.write"]
+      scopes_supported: this.grantableScopes
     });
   }
 
@@ -90,13 +117,25 @@ export class OAuthProvider {
     if (redirectUris.length === 0) {
       return json(400, { error: "invalid_redirect_uri", error_description: "redirect_uris is required" });
     }
+    if (redirectUris.length > MAX_REDIRECT_URIS) {
+      return json(400, {
+        error: "invalid_redirect_uri",
+        error_description: `at most ${MAX_REDIRECT_URIS} redirect_uris are allowed`
+      });
+    }
     for (const uri of redirectUris) {
+      if (uri.length > MAX_REDIRECT_URI_LENGTH) {
+        return json(400, { error: "invalid_redirect_uri", error_description: "redirect_uri is too long" });
+      }
       if (!isAllowedRedirectUri(uri)) {
         return json(400, {
           error: "invalid_redirect_uri",
           error_description: "redirect_uris must be https or loopback http"
         });
       }
+    }
+    if (typeof record.client_name === "string" && record.client_name.length > MAX_CLIENT_NAME_LENGTH) {
+      return json(400, { error: "invalid_client_metadata", error_description: "client_name is too long" });
     }
     const clientName = typeof record.client_name === "string" ? record.client_name : undefined;
     const client = this.store.registerClient(redirectUris, clientName);
@@ -141,7 +180,8 @@ export class OAuthProvider {
       clientId: check.params.clientId,
       redirectUri: check.params.redirectUri,
       codeChallenge: check.params.codeChallenge,
-      scope: check.params.scope
+      scope: this.grantScope(check.params.scope),
+      resource: check.params.resource
     });
     const location = new URL(check.params.redirectUri);
     location.searchParams.set("code", code);
@@ -179,7 +219,7 @@ export class OAuthProvider {
     if (!verifyPkceS256(codeVerifier, record.codeChallenge)) {
       return json(400, { error: "invalid_grant", error_description: "PKCE verification failed" });
     }
-    const tokens = this.store.issueTokens(record.clientId, record.scope);
+    const tokens = this.store.issueTokens(record.clientId, record.scope, record.resource);
     return tokenResponse(tokens);
   }
 
@@ -219,6 +259,13 @@ export class OAuthProvider {
     if (!codeChallenge) {
       return { ok: false, status: 400, message: "code_challenge is required." };
     }
+    // RFC 8707 resource indicator. If the client sends one it must match the
+    // single resource this AS serves; otherwise we bind to the canonical
+    // resource so the resulting token is always audience-scoped to /mcp.
+    const requestedResource = params.get("resource");
+    if (requestedResource && requestedResource !== this.canonicalResource) {
+      return { ok: false, status: 400, message: "resource does not match this server." };
+    }
     return {
       ok: true,
       params: {
@@ -226,7 +273,8 @@ export class OAuthProvider {
         redirectUri,
         codeChallenge,
         scope: params.get("scope") ?? "",
-        state: params.get("state") ?? ""
+        state: params.get("state") ?? "",
+        resource: this.canonicalResource
       }
     };
   }
@@ -247,6 +295,7 @@ export class OAuthProvider {
         <input type="hidden" name="response_type" value="code" />
         ${hidden("scope", params.scope)}
         ${hidden("state", params.state)}
+        ${hidden("resource", params.resource)}
         <label>Password <input type="password" name="password" autofocus required /></label>
         <button type="submit">Authorize</button>
       </form>`;
@@ -260,6 +309,7 @@ interface AuthorizeParams {
   codeChallenge: string;
   scope: string;
   state: string;
+  resource: string;
 }
 
 /** Only https, or http on loopback (for local testing), may be a redirect target. */
@@ -314,7 +364,20 @@ function htmlPage(status: number, title: string, inner: string): OAuthHttpRespon
     `label{display:block;margin:1rem 0}input{font-size:1rem;padding:.4rem;width:100%}` +
     `button{font-size:1rem;padding:.5rem 1rem;cursor:pointer}</style></head>` +
     `<body>${inner}</body></html>`;
-  return { status, headers: { "content-type": "text/html; charset=utf-8" }, body };
+  return {
+    status,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      // Consent-UI hardening (clickjacking / leakage). The page needs only its
+      // own inline <style> and to POST back to /authorize.
+      "content-security-policy":
+        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "x-frame-options": "DENY",
+      "referrer-policy": "no-referrer",
+      "cache-control": "no-store"
+    },
+    body
+  };
 }
 
 function escapeHtml(value: string): string {

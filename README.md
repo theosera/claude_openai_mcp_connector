@@ -85,16 +85,23 @@ MCP_TRANSPORT=http \
 MCP_HTTP_PORT=8787 \
 MCP_HTTP_PUBLIC_URL="https://<random>.trycloudflare.com" \
 MCP_OAUTH_ENABLED=1 \
-MCP_OAUTH_PASSWORD="<choose-a-vault-login-password>" \
+MCP_OAUTH_PASSWORD="replace-with-a-strong-passphrase-you-choose" \
 MCP_AUTH_TOKEN="$(openssl rand -hex 32)" \
 KNOWLEDGE_ROOT=/abs/path/to/vault \
 node dist/index.js
 # Listening on http://127.0.0.1:8787/mcp (write=off, oauth=on)
 ```
 
+Set `MCP_OAUTH_PASSWORD` to a strong passphrase **you choose** — you type it on
+the OAuth consent screen when a web client connects. It must be non-empty (the
+server refuses to start otherwise).
+
 `MCP_HTTP_PUBLIC_URL` is the OAuth issuer and is auto-added to the
 DNS-rebinding allowlist. The MCP endpoint to register is
-`https://<random>.trycloudflare.com/mcp`.
+`https://<random>.trycloudflare.com/mcp`. Tokens are **audience-bound** to that
+`/mcp` resource and **scope-gated**: a connector only receives `vault.write`
+when the server is started with `MCP_HTTP_ALLOW_WRITE=1` (otherwise it is
+read-only regardless of what the client requests).
 
 > Verify before registering: `GET /.well-known/oauth-protected-resource` returns
 > JSON, and an unauthenticated `POST /mcp` returns `401` with a
@@ -198,10 +205,14 @@ in code and pinned by tests:
 - **OAuth 2.1 authorization server** (opt-in, for ChatGPT/Claude.ai web) — PKCE
   S256 mandatory, single-use short-TTL authorization codes bound to
   client/redirect/challenge, exact-match https/loopback redirect URIs (no open
-  redirect), a constant-time login-password gate (fail-closed if unset), opaque
-  256-bit tokens with rotation, and no secrets logged
-  (`src/oauth/`). Issued tokens are validated on `/mcp` exactly like the static
-  bearer.
+  redirect), a slow-KDF (scrypt) login-password gate (fail-closed if unset),
+  opaque 256-bit tokens with rotation, capped DCR inputs, and no secrets logged
+  (`src/oauth/`). Tokens are **audience-bound** (RFC 8707) to the canonical
+  `/mcp` resource and **scope-gated** (`vault.read` / `vault.write`): a
+  read-scoped token's session never registers the write tools, so writes need
+  both `MCP_HTTP_ALLOW_WRITE=1` *and* a `vault.write` token. The consent page
+  sends `Content-Security-Policy: frame-ancestors 'none'`, `X-Frame-Options:
+  DENY`, and `Referrer-Policy: no-referrer`.
 
 Supply-chain & governance: GitHub Actions are SHA-pinned, workflows run with
 `permissions: contents: read`, CODEOWNERS gates `.github/`, Dependabot + CodeQL
