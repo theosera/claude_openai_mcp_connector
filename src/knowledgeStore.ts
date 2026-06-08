@@ -223,36 +223,48 @@ export class KnowledgeStore {
     const root = await this.root();
     const realPath = await fs.realpath(absolutePath);
     const relativePath = relativeToRoot(root, realPath);
-    const stats = await fs.stat(realPath);
 
-    // Serve from cache when the file is unchanged (mtime + size). Containment
-    // (realpath + relativeToRoot above) is re-validated on every call regardless.
+    // Fast path: a pure metadata stat decides cache validity (mtime + size).
+    // Containment (realpath + relativeToRoot above) is re-validated every call.
     const cached = this.documentCache.get(realPath);
-    if (cached && cached.mtimeMs === stats.mtimeMs && cached.sizeBytes === stats.size) {
-      return cached.document;
+    if (cached) {
+      const meta = await fs.stat(realPath);
+      if (cached.mtimeMs === meta.mtimeMs && cached.sizeBytes === meta.size) {
+        return cached.document;
+      }
     }
 
-    const raw = await fs.readFile(realPath, "utf8");
-    const parsed = parseMarkdown(raw);
-    const id =
-      typeof parsed.frontmatter.id === "string" && parsed.frontmatter.id.trim()
-        ? parsed.frontmatter.id.trim()
-        : relativePath;
+    // Cache miss: read the content and stat it through a single file handle so
+    // the stored mtime/size always describe exactly the bytes we parsed — a
+    // separate stat() then readFile() could disagree if the file changed in
+    // between (TOCTOU), caching content under a mismatched signature.
+    const handle = await fs.open(realPath, "r");
+    try {
+      const raw = await handle.readFile("utf8");
+      const stats = await handle.stat();
+      const parsed = parseMarkdown(raw);
+      const id =
+        typeof parsed.frontmatter.id === "string" && parsed.frontmatter.id.trim()
+          ? parsed.frontmatter.id.trim()
+          : relativePath;
 
-    const document: MarkdownDocument = {
-      id,
-      relativePath,
-      absolutePath: realPath,
-      frontmatter: parsed.frontmatter,
-      body: parsed.body,
-      title: titleFromMarkdown(relativePath, parsed.frontmatter, parsed.body),
-      stats: {
-        sizeBytes: stats.size,
-        modifiedAt: stats.mtime.toISOString()
-      }
-    };
-    this.documentCache.set(realPath, { mtimeMs: stats.mtimeMs, sizeBytes: stats.size, document });
-    return document;
+      const document: MarkdownDocument = {
+        id,
+        relativePath,
+        absolutePath: realPath,
+        frontmatter: parsed.frontmatter,
+        body: parsed.body,
+        title: titleFromMarkdown(relativePath, parsed.frontmatter, parsed.body),
+        stats: {
+          sizeBytes: stats.size,
+          modifiedAt: stats.mtime.toISOString()
+        }
+      };
+      this.documentCache.set(realPath, { mtimeMs: stats.mtimeMs, sizeBytes: stats.size, document });
+      return document;
+    } finally {
+      await handle.close();
+    }
   }
 
   private async resolveForExistingRead(relativePath: string): Promise<string> {
