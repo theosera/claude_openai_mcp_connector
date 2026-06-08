@@ -31,6 +31,9 @@ injection」「③ 既存ノートの破壊的/stale 上書き」「④ public r
    root 配下か `path.relative` で確認 (`..`/絶対なら throw)。
 7. **symlink escape 照合** (`walkMarkdownFiles` / `readDocument` / write 経路) — symlink は
    realpath して root 配下を確認、外を指すなら throw。
+8. **symlink cycle 安全 (DoS 防止)** — `walkMarkdownFiles` は訪問済み realpath の `visited`
+   set を持ち、再訪したら `[]` を返して打ち切る (`loop → root` で無限再帰させない)。escape
+   照合 (7) は**温存** — cycle 対策の都合で root 外 symlink を通してはならない。
 - 違反は**例外で fail-closed** (sentinel fallback しない = MCP は黙って別物を返さない)。
 - **新しい read/write 経路を足したら必ずこのガードを通す**。root 外の生パスで `fs` を
   直接呼ばない。
@@ -40,7 +43,9 @@ injection」「③ 既存ノートの破壊的/stale 上書き」「④ public r
 入力**。`src/frontmatter.ts::assertFrontmatterPatch` が許可キー
 (`PATCHABLE_FRONTMATTER_KEYS` = `client` / `project` / `title` / `tags` / `source_refs`)
 以外を reject。`id` (同一性) と `updated_at` (サーバ stamp) は patch 不可。未知キーを
-黙って通すと frontmatter に任意フィールドを注入できてしまう。
+黙って通すと frontmatter に任意フィールドを注入できてしまう。**値型も検証**する
+(`validatePatchValue`: `client`/`project`/`title` = string、`tags`/`source_refs` = string[])
+— キー allowlist だけでは nested object / 型不一致を YAML に注入できてしまうため。
 
 ### INV-3 Two-step stale-safe write
 既存ファイル編集は必ず 2 段階:
@@ -76,9 +81,9 @@ injection」「③ 既存ノートの破壊的/stale 上書き」「④ public r
 
 ## テストで固定する (規約でなく実行可能な保証)
 セキュリティ挙動は `pnpm test` (vitest) で pin する。最低限カバー:
-- path traversal (`../`, encoded `%2e%2e`, 絶対, `~`, NUL/制御文字, 超過長) → reject
-- symlink escape (root 外を指す symlink) → reject
-- frontmatter allowlist (未知キー patch) → reject
+- path traversal (`../`, encoded `%2e%2e`, malformed escape `%ZZ`, 絶対, `~`, NUL/制御文字, 超過長) → reject
+- symlink escape (root 外を指す symlink) → reject / symlink cycle (`loop → root`) → 無限再帰せず完了
+- frontmatter allowlist (未知キー patch) → reject / 値型違反 (非 string / 非 string[]) → reject
 - two-step: plan→apply 成功 / 外部編集後 apply → stale reject
 - overwrite: 同一 create 2 回目 → already exists
 

@@ -16,11 +16,12 @@ and *safely* create / update Markdown files confined to one root, driven by an
 | # | Threat | Control | Where |
 |---|---|---|---|
 | T1 | Path traversal / symlink escape out of the vault | Multi-phase path guard: length cap → control/NUL reject → percent-decode validation → NFC normalize → absolute/`~`/`..` reject → realpath prefix check → symlink-escape check. Fail-closed (throws, no silent fallback). | `src/pathSafety.ts`, `src/knowledgeStore.ts` |
-| T2 | Frontmatter / YAML field injection via an edit | `frontmatter_patch` allowlist — only `client` / `project` / `title` / `tags` / `source_refs`; `id` and `updated_at` are server-owned. Unknown key → reject. | `src/frontmatter.ts`, `src/knowledgeStore.ts` |
+| T2 | Frontmatter / YAML field injection (incl. type confusion) via an edit | `frontmatter_patch` allowlist — only `client` / `project` / `title` / `tags` / `source_refs`; `id` and `updated_at` are server-owned; unknown key → reject. Values are type-checked: `client`/`project`/`title` = string, `tags`/`source_refs` = string[] (blocks nested-object / wrong-type YAML injection). | `src/frontmatter.ts`, `src/knowledgeStore.ts` |
 | T3 | Destructive / lost-update overwrite of a note | Two-step `plan_document_update` → `apply_planned_update` with an `expected_sha256` staleness check (refuses to apply if the file changed); create uses `flag: "wx"` (never overwrites); `patch_id` validated as a UUID. | `src/knowledgeStore.ts` |
 | T4 | Prompt injection via vault content returned to the LLM | Server `instructions` declare that returned bodies / frontmatter are vault **data**, not commands to execute or fetch. | `src/index.ts` |
 | T5 | Secret / private-vault leak into the public repo | `.gitignore` (vault / keys / tokens / env), `.claude/settings.json` read-deny (Read **and** Bash), explicit-file-add discipline (no `git add -A`, no `--no-verify`). | `.gitignore`, `.claude/settings.json`, `CLAUDE.md` |
-| T6 | Supply-chain: poisoned Action / stale pin / tag swap | Third-party Actions full-SHA pinned (+ `# vX.Y.Z`); top-level `permissions: contents: read`; `concurrency`; advisory `pnpm audit`; Dependabot (npm + actions); CODEOWNERS on `.github/`; CodeQL SAST (push + PR + weekly). | `.github/` |
+| T6 | Supply-chain: poisoned Action / stale pin / tag swap / vulnerable dependency | Third-party Actions full-SHA pinned (+ `# vX.Y.Z`); top-level `permissions: contents: read`; `concurrency`; advisory `pnpm audit`; Dependabot (npm + actions); CODEOWNERS on `.github/`; CodeQL SAST (push + PR + weekly). Dependencies kept advisory-clean (`pnpm audit --audit-level low`). | `.github/`, `package.json` |
+| T7 | Denial of service via symlink cycle / unbounded traversal | The vault directory walk tracks visited real paths and returns on revisit, so a `loop → root` symlink stops instead of recursing forever; the per-symlink realpath prefix check still rejects out-of-root targets (T1 is not weakened). | `src/knowledgeStore.ts` |
 
 ## Curated mapping to the Reusable Security Baseline
 
@@ -34,9 +35,12 @@ Selected (implemented here) — relevant to this connector:
   least-privilege permissions, concurrency, advisory `pnpm audit`, Dependabot,
   CODEOWNERS, CodeQL.
 - **§5.4 Untrusted-content boundary** → MCP server `instructions` (data, not commands).
-- **§6.3 Path-traversal defense** → `src/pathSafety.ts` (multi-phase, fail-closed).
-- **§6.6 Frontmatter allowlist** → `src/frontmatter.ts::assertFrontmatterPatch`.
-- **§10 Security test coverage** → `tests/pathSafety.test.ts` + `tests/knowledgeStore.test.ts`.
+- **§6.3 Path-traversal defense** → `src/pathSafety.ts` (multi-phase, fail-closed) +
+  a bounded, cycle-safe vault walk in `src/knowledgeStore.ts` (visited-real-path set).
+- **§6.6 Frontmatter allowlist** → `src/frontmatter.ts::assertFrontmatterPatch`
+  (key allowlist + per-key value-type validation).
+- **§10 Security test coverage** → `tests/pathSafety.test.ts` + `tests/knowledgeStore.test.ts`
+  (incl. symlink-cycle traversal and frontmatter value-type cases).
 
 Intentionally **not** ported (out of scope for this connector): Python-specific
 controls (ruff/mypy/pip-audit/uv, `sanitize.py`, Docker capture sandbox,
@@ -58,7 +62,7 @@ controls (ruff/mypy/pip-audit/uv, `sanitize.py`, Docker capture sandbox,
 Security behavior is pinned by tests, not just convention:
 
 ```bash
-pnpm test   # path traversal, symlink escape, frontmatter allowlist, stale-patch, overwrite collision
+pnpm test   # path traversal, symlink escape + cycle, frontmatter allowlist + value types, stale-patch, overwrite collision
 ```
 
 ## Reporting a vulnerability

@@ -71,10 +71,13 @@ in code and pinned by tests:
 - **Path containment** — every file access is confined to `KNOWLEDGE_ROOT` by a
   multi-phase guard (length cap, control/NUL rejection, percent-decode
   validation, NFC normalization, absolute/`~`/`..` rejection, realpath prefix
-  check, symlink-escape check). Violations fail closed (`src/pathSafety.ts`).
+  check, symlink-escape check). Violations fail closed (`src/pathSafety.ts`). The
+  vault walk is also cycle-safe (tracks visited real paths) so a symlink loop
+  can't cause unbounded recursion.
 - **Frontmatter allowlist** — `plan_document_update` only accepts the
   `client` / `project` / `title` / `tags` / `source_refs` keys; `id` and
-  `updated_at` are server-owned (blocks YAML field injection).
+  `updated_at` are server-owned, and each value is type-checked (string vs
+  string[]) — blocks YAML field injection and type confusion.
 - **Stale-safe, non-destructive writes** — edits go through `plan` → `apply`
   with a SHA-256 staleness check; creates never overwrite (`flag: "wx"`).
 - **Untrusted content boundary** — the server `instructions` declare returned
