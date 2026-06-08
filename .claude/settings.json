@@ -1,0 +1,59 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./**/.env)",
+      "Read(./**/.env.*)",
+
+      "Read(./credentials*.json)",
+      "Read(./**/credentials*.json)",
+      "Read(./service-account*.json)",
+      "Read(./**/service-account*.json)",
+
+      "Read(./token*.json)",
+      "Read(./**/token*.json)",
+      "Read(./**/*token*.json)",
+
+      "Read(./**/*.key)",
+      "Read(./**/*.pem)",
+      "Read(./**/id_rsa)",
+      "Read(./**/id_ed25519)",
+
+      "Read(./**/secrets.json)",
+      "Read(./**/secrets.yaml)",
+      "Read(./**/secrets.yml)",
+
+      "Bash(cat .env)",
+      "Bash(cat .env.*)",
+      "Bash(cat **/.env)",
+      "Bash(cat **/.env.*)",
+      "Bash(cat **/credentials*.json)",
+      "Bash(cat **/token*.json)",
+      "Bash(cat **/*.key)",
+      "Bash(cat **/*.pem)",
+      "Bash(cat **/id_rsa)",
+      "Bash(cat **/id_ed25519)",
+
+      "Bash(head .env*)",
+      "Bash(head **/.env*)",
+      "Bash(head **/credentials*)",
+      "Bash(head **/token*)",
+
+      "Bash(tail .env*)",
+      "Bash(tail **/.env*)",
+
+      "Bash(less .env*)",
+      "Bash(less **/credentials*)",
+
+      "Bash(more .env*)",
+
+      "Bash(grep * .env*)",
+      "Bash(grep * **/credentials*)",
+      "Bash(grep * **/token*)",
+
+      "Bash(awk * .env*)",
+      "Bash(sed * .env*)"
+    ]
+  }
+}

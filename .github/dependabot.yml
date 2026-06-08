@@ -1,0 +1,31 @@
+# Dependabot — keep npm dependencies and SHA-pinned Actions current.
+#
+# Actions in .github/workflows/* are pinned to commit SHAs (supply-chain
+# hardening); floating tags are intentionally not followed, so without Dependabot
+# those pins silently go stale. This opens weekly PRs (grouped to reduce noise)
+# bumping action SHAs + their `# vX.Y.Z` comments and npm deps. PRs that touch
+# .github/ are CODEOWNERS-gated → reviewed before merge.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      npm:
+        patterns:
+          - "*"

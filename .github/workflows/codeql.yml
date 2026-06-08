@@ -1,0 +1,44 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  schedule:
+    # Weekly re-scan so newly-shipped query patterns catch already-merged code.
+    - cron: "30 4 * * 1"  # Mondays 04:30 UTC
+
+# Least privilege at the top level; the analyze job re-elevates only what it needs.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (javascript-typescript)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write  # upload SARIF to the code-scanning dashboard
+      actions: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      # github/codeql-action is a GitHub-official action (github/* org); per the
+      # supply-chain policy, GitHub-official actions may use a major tag while
+      # third-party actions must be full-SHA pinned.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          # security-and-quality is a superset of the default security queries.
+          queries: security-and-quality
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:javascript-typescript"

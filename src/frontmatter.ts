@@ -1,6 +1,48 @@
 import matter from "gray-matter";
 import type { DocumentMetadata } from "./types.js";
 
+// Keys a client may patch on an existing document via plan_document_update.
+// `id` (document identity) and `updated_at` (server-stamped) are intentionally
+// excluded. Any other key is rejected to block frontmatter/YAML field injection
+// from an untrusted MCP client (Reusable Security Baseline: frontmatter allowlist).
+export const PATCHABLE_FRONTMATTER_KEYS = ["client", "project", "title", "tags", "source_refs"] as const;
+
+const PATCHABLE_FRONTMATTER_KEY_SET = new Set<string>(PATCHABLE_FRONTMATTER_KEYS);
+
+export function assertFrontmatterPatch(patch: Record<string, unknown>): Record<string, unknown> {
+  const validated: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(patch)) {
+    if (!PATCHABLE_FRONTMATTER_KEY_SET.has(key)) {
+      throw new Error(
+        `Frontmatter key not allowed in patch: ${key}. Allowed keys: ${PATCHABLE_FRONTMATTER_KEYS.join(", ")}.`
+      );
+    }
+
+    validated[key] = validatePatchValue(key, value);
+  }
+
+  return validated;
+}
+
+function validatePatchValue(key: string, value: unknown): unknown {
+  if (key === "client" || key === "project" || key === "title") {
+    if (typeof value !== "string") {
+      throw new Error(`Frontmatter key ${key} must be a string.`);
+    }
+    return value;
+  }
+
+  if (key === "tags" || key === "source_refs") {
+    if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+      throw new Error(`Frontmatter key ${key} must be an array of strings.`);
+    }
+    return value;
+  }
+
+  throw new Error(`Unsupported frontmatter key: ${key}.`);
+}
+
 export function parseMarkdown(raw: string): { frontmatter: DocumentMetadata; body: string } {
   const parsed = matter(raw);
   return {
