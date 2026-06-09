@@ -100,6 +100,53 @@ OpenTelemetry work, then (3) commission a **third-party pen test** now that the
 threat model exists. RBAC / DLP / sandboxing are larger bets gated on validated
 team-adoption demand.
 
+### Sandbox isolation — intended layering
+
+Discussed and deferred (consultation only so far). For **this** product the goal
+is to limit blast radius **if the server process itself is compromised** — a
+defense-in-depth layer on top of the app-level path containment (INV-1), which
+already confines normal file access to `KNOWLEDGE_ROOT`. Two contexts are easy to
+conflate: (a) sandboxing the *AI coding agent* that runs shell commands — a dev-
+workflow concern; (b) sandboxing *this MCP daemon* — the gap here.
+
+Recommended layering, cheapest first:
+
+1. **systemd hardening (primary, for the long-running HTTP daemon)** — extend the
+   unit in [`operations.md`](./operations.md): `ProtectHome=true` (hide
+   `~/.ssh` / `~/.aws` / `.env`), `PrivateTmp=true`, `ProtectSystem=strict` with
+   a tight `ReadWritePaths`, `NoNewPrivileges=true`, empty
+   `CapabilityBoundingSet=`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`,
+   `SystemCallFilter=@system-service`, `MemoryDenyWriteExecute=true`.
+2. **Network minimization** — `PrivateNetwork=true` for the stdio case (no
+   outbound at all); loopback-only suffices for HTTP.
+3. **bwrap recipe (optional, for local/stdio)** — `--ro-bind` only
+   `KNOWLEDGE_ROOT` (read-only when deployed read-only), `--unshare-net`, hide
+   secret dirs. Caveat: needs unprivileged user namespaces, which **Ubuntu 24.04
+   restricts via AppArmor** — more portable for one-shot commands than for a
+   daemon, so prefer systemd for the daemon.
+
+Rationale: bwrap shines at wrapping single commands; a persistent daemon is
+better served by systemd's built-in sandboxing (more portable, fewer userns
+caveats).
+
+---
+
+## Ready to pick up next (continuity)
+
+Concrete, low-risk items teed up for a future session (in rough priority order):
+
+- [ ] **systemd full-hardening block** in `operations.md` (the layer-1 list
+      above) — ships the first, cheapest slice of "sandbox isolation" now.
+- [ ] **bwrap recipe** + userns/AppArmor caveat in `operations.md` (layer 3).
+- [ ] **Audit log** — append-only, content-free events (who searched / fetched /
+      wrote what, no note bodies) — the agreed #1 security follow-up; also seeds
+      OpenTelemetry later.
+- [ ] **One-command install / npx packaging** — remove the `pnpm build` step so
+      the 🟢 non-engineer path needs no toolchain (see Onboarding above).
+
+Each security-affecting change pins behavior with tests before merging, per the
+repo quality gate. Update this list as items land.
+
 ---
 
 ## Explicitly out of scope (for now)
