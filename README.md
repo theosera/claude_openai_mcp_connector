@@ -307,3 +307,9 @@ threat model and the curated mapping to the Reusable Security Baseline.
 ## Public Repo Safety
 
 This repo intentionally ignores `vault/`, `knowledge/`, and `data/` to reduce the chance of committing private Markdown data. Tests use synthetic fixtures only.
+
+## License
+
+Released under the [MIT License](./LICENSE). Your private vault is **not** part
+of this repository and is never published — only the connector code is licensed
+here.
