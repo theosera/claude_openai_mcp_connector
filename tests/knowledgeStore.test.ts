@@ -154,9 +154,7 @@ describe("KnowledgeStore", () => {
     const traced = await store.traceSources("chatgpt-research-001");
 
     expect(traced.source_refs).toEqual(["synthetic://chatgpt/project/research"]);
-    expect(traced.backlinks).toEqual([
-      expect.objectContaining({ id: "claude-plan-001" })
-    ]);
+    expect(traced.backlinks).toEqual([expect.objectContaining({ id: "claude-plan-001" })]);
   });
 
   it("rejects path traversal", async () => {

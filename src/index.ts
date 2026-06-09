@@ -16,7 +16,10 @@ if (transport === "http") {
   const httpConfig = loadHttpConfig();
   const httpServer = await startHttpServer(store, httpConfig);
   const address = httpServer.address();
-  const where = typeof address === "object" && address ? `${address.address}:${address.port}` : `${httpConfig.host}:${httpConfig.port}`;
+  const where =
+    typeof address === "object" && address
+      ? `${address.address}:${address.port}`
+      : `${httpConfig.host}:${httpConfig.port}`;
   // stderr only — stdout is reserved for protocol data on stdio, and we keep
   // logs free of the auth token or any vault content.
   process.stderr.write(

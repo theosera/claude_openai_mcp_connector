@@ -7,6 +7,7 @@ import { isAuthorizedHeader, parseBearer } from "./httpAuth.js";
 import type { KnowledgeStore } from "./knowledgeStore.js";
 import type { OAuthHttpResponse } from "./oauth/provider.js";
 import { OAuthProvider } from "./oauth/provider.js";
+import { RateLimiter } from "./oauth/rateLimiter.js";
 import { buildMcpServer } from "./server.js";
 
 const MCP_PATH = "/mcp";
@@ -14,6 +15,11 @@ const MAX_BODY_BYTES = 4 * 1024 * 1024; // 4 MiB — bound request memory.
 
 interface Session {
   transport: StreamableHTTPServerTransport;
+}
+
+interface OAuthLimiters {
+  authorize: RateLimiter;
+  register: RateLimiter;
 }
 
 /**
@@ -30,9 +36,17 @@ export async function startHttpServer(store: KnowledgeStore, config: HttpConfig)
   // OAuth 2.1 authorization server (only when configured). ChatGPT / Claude.ai
   // web require it; Desktop / Code / API keep using the static bearer.
   const oauth = config.oauth ? new OAuthProvider(config.oauth) : undefined;
+  // Coarse per-client rate limits on the public, unauthenticated OAuth endpoints
+  // (defense-in-depth against brute force / DCR flooding over a public tunnel).
+  const limiters: OAuthLimiters | undefined = oauth
+    ? {
+        authorize: new RateLimiter({ limit: 20, windowMs: 5 * 60_000 }),
+        register: new RateLimiter({ limit: 20, windowMs: 10 * 60_000 })
+      }
+    : undefined;
 
   const httpServer = http.createServer((req, res) => {
-    handleRequest(req, res, store, config, sessions, oauth).catch((error) => {
+    handleRequest(req, res, store, config, sessions, oauth, limiters).catch((error) => {
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json" });
       }
@@ -52,7 +66,8 @@ async function handleRequest(
   store: KnowledgeStore,
   config: HttpConfig,
   sessions: Map<string, Session>,
-  oauth: OAuthProvider | undefined
+  oauth: OAuthProvider | undefined,
+  limiters: OAuthLimiters | undefined
 ): Promise<void> {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
@@ -65,7 +80,7 @@ async function handleRequest(
 
   // OAuth 2.1 endpoints are unauthenticated by design (discovery / login /
   // token). Handled before the bearer gate.
-  if (oauth && (await handleOAuthRoute(req, res, url, oauth))) {
+  if (oauth && (await handleOAuthRoute(req, res, url, oauth, limiters))) {
     return;
   }
 
@@ -173,7 +188,8 @@ async function handleOAuthRoute(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   url: URL,
-  oauth: OAuthProvider
+  oauth: OAuthProvider,
+  limiters: OAuthLimiters | undefined
 ): Promise<boolean> {
   const { pathname } = url;
   const method = req.method ?? "GET";
@@ -185,6 +201,9 @@ async function handleOAuthRoute(
     return sendOAuth(res, oauth.protectedResourceMetadata());
   }
   if (method === "POST" && pathname === "/register") {
+    if (limiters && rateLimited(req, res, limiters.register)) {
+      return true;
+    }
     const body = await readJsonBody(req, res);
     if (body === BODY_ERROR) {
       return true;
@@ -196,6 +215,9 @@ async function handleOAuthRoute(
       return sendOAuth(res, oauth.authorizeGet(url.searchParams));
     }
     if (method === "POST") {
+      if (limiters && rateLimited(req, res, limiters.authorize)) {
+        return true;
+      }
       const form = await readFormBody(req, res);
       if (form === BODY_ERROR) {
         return true;
@@ -211,6 +233,28 @@ async function handleOAuthRoute(
     return sendOAuth(res, oauth.token(form));
   }
   return false;
+}
+
+/**
+ * Apply a rate limit keyed by client IP; writes a 429 + Retry-After and returns
+ * true when the request should be rejected. The key prefers the left-most
+ * X-Forwarded-For hop (set by the tunnel) and falls back to the socket address;
+ * XFF is client-spoofable, so this is a coarse defense-in-depth bound, not a
+ * security boundary (the scrypt password gate is the real control).
+ */
+function rateLimited(req: http.IncomingMessage, res: http.ServerResponse, limiter: RateLimiter): boolean {
+  const forwarded = headerValue(req.headers["x-forwarded-for"]);
+  const key = (forwarded?.split(",")[0].trim() || req.socket.remoteAddress || "unknown").toLowerCase();
+  const result = limiter.hit(key);
+  if (result.allowed) {
+    return false;
+  }
+  res.writeHead(429, {
+    "content-type": "application/json",
+    "retry-after": String(result.retryAfterSec)
+  });
+  res.end(JSON.stringify({ error: "rate_limited" }));
+  return true;
 }
 
 function sendOAuth(res: http.ServerResponse, response: OAuthHttpResponse): true {

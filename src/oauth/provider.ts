@@ -35,7 +35,10 @@ const MCP_RESOURCE_PATH = "/mcp";
 export class OAuthProvider {
   readonly store: OAuthStore;
 
-  constructor(private readonly config: OAuthConfig, store?: OAuthStore) {
+  constructor(
+    private readonly config: OAuthConfig,
+    store?: OAuthStore
+  ) {
     this.store =
       store ??
       new OAuthStore({
@@ -195,9 +198,7 @@ export class OAuthProvider {
 
   private validateAuthorizeParams(
     params: URLSearchParams
-  ):
-    | { ok: true; params: AuthorizeParams }
-    | { ok: false; status: number; message: string } {
+  ): { ok: true; params: AuthorizeParams } | { ok: false; status: number; message: string } {
     const clientId = params.get("client_id") ?? "";
     const redirectUri = params.get("redirect_uri") ?? "";
     const client = this.store.getClient(clientId);
@@ -307,7 +308,8 @@ function json(status: number, payload: unknown, extraHeaders: Record<string, str
 }
 
 function htmlPage(status: number, title: string, inner: string): OAuthHttpResponse {
-  const body = `<!doctype html><html><head><meta charset="utf-8" />` +
+  const body =
+    `<!doctype html><html><head><meta charset="utf-8" />` +
     `<meta name="viewport" content="width=device-width,initial-scale=1" />` +
     `<title>${escapeHtml(title)}</title>` +
     `<style>body{font-family:system-ui,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1rem}` +
