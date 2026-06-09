@@ -138,7 +138,7 @@ function loadOAuthConfig(
   if (!publicUrl) {
     throw new Error("MCP_OAUTH_ENABLED requires MCP_HTTP_PUBLIC_URL (the public https issuer URL).");
   }
-  if (!/^https:\/\//.test(publicUrl) && !/^http:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/.test(publicUrl)) {
+  if (!publicUrl.startsWith("https://") && !/^http:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/.test(publicUrl)) {
     throw new Error("MCP_HTTP_PUBLIC_URL must be https (or http loopback for local testing) when OAuth is enabled.");
   }
   const loginPassword = env.MCP_OAUTH_PASSWORD?.trim();

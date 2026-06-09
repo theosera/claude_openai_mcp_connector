@@ -8,6 +8,8 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **oxlint** as a fast (Rust) correctness pre-pass — `lint:ox` script, run first
+  in CI (fail-fast in ms) ahead of the heavier ESLint/type/build/test steps.
 - Operational hardening: coarse per-client **rate limiting** on the public OAuth
   endpoints (`/authorize`, `/register`), and **ESLint + Prettier** with `lint` /
   `format` / `format:check` scripts wired into CI.
