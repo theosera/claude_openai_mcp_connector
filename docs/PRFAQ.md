@@ -3,6 +3,8 @@
 > Amazon の "Working Backwards" 形式の社内 PR/FAQ。製品を顧客起点で語り、難所を
 > FAQ で詰めるための文書。公開広報ではなく企画・意思決定のための生きた文書として
 > 扱い、製品の変化に合わせて更新する。
+>
+> English version: [`PRFAQ.en.md`](./PRFAQ.en.md)
 
 ---
 

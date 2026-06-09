@@ -14,6 +14,33 @@ The code repository is intended to be public. The Obsidian Vault or other Markdo
 - Trace source refs, outgoing Markdown links, and backlink candidates.
 - Reject path traversal, symlink escape, overwrite collisions, and stale patch application.
 
+## Which path should I use?
+
+Pick by how technical you want to get. Most people should start with the green
+path.
+
+| Tier | You get | Effort | Best for |
+| --- | --- | --- | --- |
+| 🟢 **Local + Claude Desktop** | Vault in Claude Desktop, on your machine | copy-paste a small JSON config | non-engineers / first run |
+| 🟡 **Local CLI** (Claude Code / Codex) | Vault in your terminal AI | one command / a TOML block | comfortable with a terminal |
+| 🔴 **Web** (ChatGPT / Claude.ai) | Vault in the web apps | OAuth + HTTPS tunnel + a long-running host | technical; see [`docs/operations.md`](./docs/operations.md) |
+
+The web path needs a server that stays up and a stable HTTPS URL — read
+[`docs/operations.md`](./docs/operations.md) **before** relying on it.
+
+## Before you start (prerequisites)
+
+You need **Node.js 20+** (which includes `npm`). Check with `node -v`. If it's
+missing, install it from <https://nodejs.org/> (LTS). This project uses
+[`pnpm`](https://pnpm.io/) for builds — enable it once with:
+
+```bash
+corepack enable        # ships with Node; turns on pnpm
+```
+
+That's the whole toolchain. A one-command install that skips the build step is
+on the [roadmap](./docs/ROADMAP.md).
+
 ## Setup
 
 ```bash
