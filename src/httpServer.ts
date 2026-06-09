@@ -6,7 +6,7 @@ import type { HttpConfig } from "./config.js";
 import { isAuthorizedHeader, parseBearer } from "./httpAuth.js";
 import type { KnowledgeStore } from "./knowledgeStore.js";
 import type { OAuthHttpResponse } from "./oauth/provider.js";
-import { OAuthProvider } from "./oauth/provider.js";
+import { OAuthProvider, SCOPE_READ, SCOPE_WRITE } from "./oauth/provider.js";
 import { RateLimiter } from "./oauth/rateLimiter.js";
 import { buildMcpServer } from "./server.js";
 
@@ -91,8 +91,10 @@ async function handleRequest(
   }
 
   // Auth gate: accept either the static bearer (Desktop / Code / API) or a
-  // valid OAuth access token (ChatGPT / Claude.ai web).
-  if (!isMcpAuthorized(req.headers.authorization, config, oauth)) {
+  // valid OAuth access token (ChatGPT / Claude.ai web). The principal carries
+  // the effective scopes used to gate the write tool surface per session.
+  const principal = authenticate(req.headers.authorization, config, oauth);
+  if (!principal) {
     const headers: Record<string, string> = {
       "content-type": "application/json",
       "www-authenticate": oauth ? oauth.wwwAuthenticate() : 'Bearer realm="mcp"'
@@ -153,8 +155,12 @@ async function handleRequest(
     }
   };
 
+  // Scope enforcement: writes require both the server policy (allowWrite) AND a
+  // token carrying vault.write. A read-scoped OAuth token never sees write tools
+  // (they aren't registered for its session), so it cannot invoke them.
+  const allowWrite = config.allowWrite && principal.scopes.includes(SCOPE_WRITE);
   const server = buildMcpServer(store, {
-    allowWrite: config.allowWrite,
+    allowWrite,
     includeChatgptCompat: true,
     chatgptUrlBase: config.chatgptUrlBase
   });
@@ -162,21 +168,32 @@ async function handleRequest(
   await transport.handleRequest(req, res, body);
 }
 
-/** Accept the static bearer OR a valid OAuth access token for /mcp. */
-function isMcpAuthorized(
+interface Principal {
+  scopes: string[];
+}
+
+/**
+ * Authenticate an /mcp request. Returns the effective principal, or null.
+ *  - Static bearer (MCP_AUTH_TOKEN): the trusted local operator → full scopes.
+ *  - OAuth access token: must be valid AND audience-bound to this server's
+ *    canonical resource (RFC 8707); scopes come from the token grant.
+ */
+function authenticate(
   authHeader: string | string[] | undefined,
   config: HttpConfig,
   oauth: OAuthProvider | undefined
-): boolean {
+): Principal | null {
   const header = headerValue(authHeader);
   if (isAuthorizedHeader(header, config.authToken)) {
-    return true;
+    return { scopes: [SCOPE_READ, SCOPE_WRITE] };
   }
   if (oauth) {
-    const token = parseBearer(header);
-    return oauth.store.validateAccessToken(token) !== null;
+    const record = oauth.store.validateAccessToken(parseBearer(header));
+    if (record && record.resource === oauth.canonicalResource) {
+      return { scopes: record.scope.split(/\s+/).filter(Boolean) };
+    }
   }
-  return false;
+  return null;
 }
 
 /**

@@ -44,6 +44,58 @@ async function freePort(): Promise<number> {
   });
 }
 
+/** Run the full OAuth flow over HTTP and return an access token for `scope`. */
+async function oauthObtainToken(issuer: string, scope: string): Promise<string> {
+  const redirectUri = "http://127.0.0.1:9999/cb";
+  const reg = await (
+    await fetch(`${issuer}/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ redirect_uris: [redirectUri] })
+    })
+  ).json();
+  const { verifier, challenge } = pkcePair();
+  const authRes = await fetch(`${issuer}/authorize`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      response_type: "code",
+      client_id: reg.client_id,
+      redirect_uri: redirectUri,
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+      state: "s",
+      scope,
+      password: "hunter2"
+    }).toString(),
+    redirect: "manual"
+  });
+  const code = new URL(authRes.headers.get("location")!).searchParams.get("code")!;
+  const tokenRes = await fetch(`${issuer}/token`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      client_id: reg.client_id,
+      redirect_uri: redirectUri,
+      code_verifier: verifier
+    }).toString()
+  });
+  return (await tokenRes.json()).access_token;
+}
+
+async function listToolNamesOverHttp(issuer: string, token: string): Promise<string[]> {
+  const transport = new StreamableHTTPClientTransport(new URL(`${issuer}/mcp`), {
+    requestInit: { headers: { authorization: `Bearer ${token}` } }
+  });
+  const client = new Client({ name: "scope-test", version: "0.0.0" });
+  await client.connect(transport);
+  const { tools } = await client.listTools();
+  await client.close();
+  return tools.map((t) => t.name);
+}
+
 describe("RateLimiter", () => {
   it("allows up to the limit, then blocks until the window resets", () => {
     let t = 0;
@@ -99,7 +151,8 @@ describe("OAuthStore", () => {
       clientId: "c",
       redirectUri: "https://x/cb",
       codeChallenge: "ch",
-      scope: ""
+      scope: "",
+      resource: "r"
     });
     expect(store.consumeAuthorizationCode(code)?.clientId).toBe("c");
     expect(store.consumeAuthorizationCode(code)).toBeUndefined(); // already used
@@ -112,13 +165,14 @@ describe("OAuthStore", () => {
       clientId: "c",
       redirectUri: "https://x/cb",
       codeChallenge: "ch",
-      scope: ""
+      scope: "",
+      resource: "r"
     });
     t += 61_000;
     expect(store.consumeAuthorizationCode(code)).toBeUndefined();
 
     t = 1000;
-    const tokens = store.issueTokens("c", "vault.read");
+    const tokens = store.issueTokens("c", "vault.read", "r");
     expect(store.validateAccessToken(tokens.accessToken)?.clientId).toBe("c");
     t += 61_000;
     expect(store.validateAccessToken(tokens.accessToken)).toBeNull();
@@ -126,10 +180,10 @@ describe("OAuthStore", () => {
 
   it("enforces the token cap even when all tokens are still live", () => {
     const store = new OAuthStore({ ...opts, maxTokens: 3 });
-    const first = store.issueTokens("c", "vault.read");
+    const first = store.issueTokens("c", "vault.read", "r");
     let last = first;
     for (let i = 0; i < 10; i++) {
-      last = store.issueTokens("c", "vault.read");
+      last = store.issueTokens("c", "vault.read", "r");
     }
     // The oldest live token is evicted once the cap (3) is exceeded...
     expect(store.validateAccessToken(first.accessToken)).toBeNull();
@@ -139,7 +193,7 @@ describe("OAuthStore", () => {
 
   it("rotates refresh tokens and invalidates the old one", () => {
     const store = new OAuthStore(opts);
-    const tokens = store.issueTokens("c", "vault.read");
+    const tokens = store.issueTokens("c", "vault.read", "r");
     const rotated = store.rotateRefreshToken(tokens.refreshToken, "c");
     expect(rotated).not.toBeNull();
     expect(store.rotateRefreshToken(tokens.refreshToken, "c")).toBeNull(); // reused
@@ -153,7 +207,8 @@ describe("OAuthProvider flow", () => {
     loginPassword: "hunter2",
     accessTokenTtlSec: 3600,
     refreshTokenTtlSec: 86_400,
-    codeTtlSec: 60
+    codeTtlSec: 60,
+    allowWrite: false
   };
 
   function setup() {
@@ -255,6 +310,78 @@ describe("OAuthProvider flow", () => {
     expect(wrong.status).toBe(400);
     expect(JSON.parse(wrong.body).error).toBe("invalid_grant");
   });
+
+  function exchange(provider: OAuthProvider, clientId: string, requestedScope: string) {
+    const { verifier, challenge } = pkcePair();
+    const form = authorizeParams(clientId, challenge);
+    form.set("scope", requestedScope);
+    form.set("password", "hunter2");
+    const code = new URL(provider.authorizePost(form).headers.location).searchParams.get("code")!;
+    const token = provider.token(
+      new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        client_id: clientId,
+        redirect_uri: "https://chatgpt.com/cb",
+        code_verifier: verifier
+      })
+    );
+    return JSON.parse(token.body);
+  }
+
+  it("never grants vault.write when the server write policy is off", () => {
+    const { provider, clientId } = setup(); // allowWrite: false
+    const payload = exchange(provider, clientId, "vault.read vault.write");
+    expect(payload.scope).toBe("vault.read");
+    expect(JSON.parse(provider.protectedResourceMetadata().body).scopes_supported).toEqual(["vault.read"]);
+  });
+
+  it("grants no scope for a non-empty but disjoint scope request", () => {
+    const { provider, clientId } = setup(); // allowWrite: false
+    // vault.write-only under a read-only policy -> empty (no silent read grant).
+    expect(exchange(provider, clientId, "vault.write").scope).toBe("");
+    // unrelated scope -> empty.
+    expect(exchange(provider, clientId, "openid").scope).toBe("");
+    // omitted scope still defaults to read.
+    expect(exchange(provider, clientId, "").scope).toBe("vault.read");
+  });
+
+  it("grants vault.write only when the server write policy is on", () => {
+    const provider = new OAuthProvider({ ...config, allowWrite: true });
+    const clientId = JSON.parse(provider.register({ redirect_uris: ["https://chatgpt.com/cb"] }).body).client_id;
+    const payload = exchange(provider, clientId, "vault.read vault.write");
+    expect(payload.scope.split(" ")).toContain("vault.write");
+  });
+
+  it("binds issued tokens to the canonical resource (audience)", () => {
+    const { provider, clientId } = setup();
+    const payload = exchange(provider, clientId, "vault.read");
+    expect(provider.store.validateAccessToken(payload.access_token)?.resource).toBe(`${config.issuer}/mcp`);
+  });
+
+  it("rejects an authorize request whose resource does not match", () => {
+    const { provider, clientId } = setup();
+    const { challenge } = pkcePair();
+    const params = authorizeParams(clientId, challenge);
+    params.set("resource", "https://evil.example.com/mcp");
+    expect(provider.authorizeGet(params).status).toBe(400);
+  });
+
+  it("caps dynamic client registration inputs", () => {
+    const provider = new OAuthProvider(config);
+    expect(provider.register({ redirect_uris: Array(6).fill("https://x/cb") }).status).toBe(400);
+    expect(provider.register({ redirect_uris: ["https://x/" + "a".repeat(3000)] }).status).toBe(400);
+    expect(provider.register({ redirect_uris: ["https://x/cb"], client_name: "n".repeat(300) }).status).toBe(400);
+  });
+
+  it("sets clickjacking/leakage headers on the consent page", () => {
+    const { provider, clientId } = setup();
+    const { challenge } = pkcePair();
+    const res = provider.authorizeGet(authorizeParams(clientId, challenge));
+    expect(res.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
+    expect(res.headers["x-frame-options"]).toBe("DENY");
+    expect(res.headers["referrer-policy"]).toBe("no-referrer");
+  });
 });
 
 describe("OAuth end-to-end over HTTP", () => {
@@ -283,7 +410,8 @@ describe("OAuth end-to-end over HTTP", () => {
         loginPassword: "hunter2",
         accessTokenTtlSec: 3600,
         refreshTokenTtlSec: 86_400,
-        codeTtlSec: 60
+        codeTtlSec: 60,
+        allowWrite: false
       }
     };
     server = await startHttpServer(store, config);
@@ -360,5 +488,37 @@ describe("OAuth end-to-end over HTTP", () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name)).toContain("search");
     await client.close();
+  });
+
+  it("gates write tools by token scope on an allowWrite server", async () => {
+    const store = await makeStore();
+    const port = await freePort();
+    const issuer = `http://127.0.0.1:${port}`;
+    const config: HttpConfig = {
+      host: "127.0.0.1",
+      port,
+      authToken: "static-bearer-unused-here",
+      allowWrite: true,
+      allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
+      allowedOrigins: [],
+      oauth: {
+        issuer,
+        loginPassword: "hunter2",
+        accessTokenTtlSec: 3600,
+        refreshTokenTtlSec: 86_400,
+        codeTtlSec: 60,
+        allowWrite: true
+      }
+    };
+    server = await startHttpServer(store, config);
+
+    // A read-scoped token must not see write tools...
+    const readTools = await listToolNamesOverHttp(issuer, await oauthObtainToken(issuer, "vault.read"));
+    expect(readTools).toContain("search");
+    expect(readTools).not.toContain("create_document");
+
+    // ...but a vault.write-scoped token does.
+    const writeTools = await listToolNamesOverHttp(issuer, await oauthObtainToken(issuer, "vault.read vault.write"));
+    expect(writeTools).toContain("create_document");
   });
 });
