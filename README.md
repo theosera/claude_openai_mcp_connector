@@ -1,5 +1,9 @@
 # Claude/OpenAI Markdown MCP Connector
 
+[![Release](https://img.shields.io/github/v/release/theosera/claude_openai_mcp_connector?sort=semver)](https://github.com/theosera/claude_openai_mcp_connector/releases)
+[![CI](https://github.com/theosera/claude_openai_mcp_connector/actions/workflows/node.js.yml/badge.svg)](https://github.com/theosera/claude_openai_mcp_connector/actions/workflows/node.js.yml)
+[![CodeQL](https://github.com/theosera/claude_openai_mcp_connector/actions/workflows/codeql.yml/badge.svg)](https://github.com/theosera/claude_openai_mcp_connector/actions/workflows/codeql.yml)
+
 > **AIごとに同じ文脈を貼り直す作業をなくします。**
 >
 > このMCP connectorは、あなたのprivate Markdown / Obsidian vaultをGitHubに公開せず、Claude・ChatGPT互換クライアント・Codexから安全に検索できるようにします。
@@ -45,6 +49,26 @@ which is never committed to this public repo.
 - Edit existing Markdown through a two-step `plan_document_update` then `apply_planned_update` flow.
 - Trace source refs, outgoing Markdown links, and backlink candidates.
 - Reject path traversal, symlink escape, overwrite collisions, and stale patch application.
+
+## Use cases
+
+Concrete things you can do once your vault is connected. Your vault stays on your
+machine and is **never published to GitHub or bulk-uploaded** — but note that over
+the **web path** the specific notes you `fetch` are sent to that AI like any chat
+message (read-only by default; see the privacy note in [`docs/PRFAQ.md`](./docs/PRFAQ.md)).
+
+- **Stop re-pasting context.** Ask Claude or ChatGPT "what did I decide about
+  *X*?" and it searches your own notes instead of you copy-pasting them into
+  each chat.
+- **Cross-note recall.** "Pull my earlier notes related to this topic" surfaces
+  relevant Markdown across the whole vault (source refs + backlinks included).
+- **Project-scoped lookup.** Group and retrieve documents by `client` /
+  `project` frontmatter — e.g. "summarize everything under project *Acme*".
+- **Cite your own knowledge.** ChatGPT-compatible `search` / `fetch` let a web
+  connector use your vault as a first-class source with citations.
+- **Safe edits from chat.** Have the AI draft an update, then approve it through
+  the two-step `plan_document_update` → `apply_planned_update` flow (stale-safe,
+  never silently overwriting).
 
 ## Which path should I use?
 
