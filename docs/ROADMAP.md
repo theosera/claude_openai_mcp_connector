@@ -89,7 +89,7 @@ following — listed honestly so adopters can judge fit. Most are prerequisites 
 | **Hardened secret scanning / release-artifact verification** | Needed if OSS distribution (npx / prebuilt binaries) is pushed harder — provenance, signed artifacts, SBOM. | mid-term 💭 |
 | **OpenTelemetry / structured audit events** | Required for enterprise observability and SIEM ingestion. | mid-term 💭 |
 | **DLP / exfiltration detection** | No control over leakage *of vault content* once a client is authorized. | larger bet 💭 |
-| **Sandbox isolation** | If the MCP server process itself is compromised, isolation from the host is limited. | larger bet 💭 |
+| **Sandbox isolation** | If the MCP server process itself is compromised, isolation from the host is limited. | 🚧 layer 1 (systemd hardening) shipped → [`operations.md`](./operations.md#sandbox-hardening-systemd); bwrap (layer 3) still a larger bet 💭 |
 | **Formal threat model document** | `SECURITY.md` is good but was not a systematic STRIDE/LINDDUN-style model. | 🚧 → [`threat-model.md`](./threat-model.md) (STRIDE) added; revisit as features land |
 
 **Suggested sequencing:** start with the cheap, high-signal items —
@@ -135,8 +135,13 @@ caveats).
 
 Concrete, low-risk items teed up for a future session (in rough priority order):
 
-- [ ] **systemd full-hardening block** in `operations.md` (the layer-1 list
-      above) — ships the first, cheapest slice of "sandbox isolation" now.
+- [x] **systemd full-hardening block** in `operations.md` (the layer-1 list
+      above) — ✅ added as a drop-in (`ProtectHome` / `PrivateTmp` /
+      `ProtectSystem=strict` + tight `ReadWritePaths` / empty
+      `CapabilityBoundingSet` / `RestrictAddressFamilies` /
+      `SystemCallFilter=@system-service` / `MemoryDenyWriteExecute`), with the
+      Node/V8-JIT and home-dir-vault caveats and a `systemd-analyze security`
+      verify step. Ships the first, cheapest slice of "sandbox isolation".
 - [ ] **bwrap recipe** + userns/AppArmor caveat in `operations.md` (layer 3).
 - [ ] **Audit log** — append-only, content-free events (who searched / fetched /
       wrote what, no note bodies) — the agreed #1 security follow-up; also seeds
