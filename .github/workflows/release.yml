@@ -47,8 +47,16 @@ jobs:
             echo "Release $TAG already exists; refusing to overwrite." >&2
             exit 1
           fi
+          cat > "$RUNNER_TEMP/notes.md" <<'NOTES'
+          See CHANGELOG.md for the full notes.
+
+          > Operational note: remote write is still cautious-use. HTTP writes
+          > require BOTH `MCP_HTTP_ALLOW_WRITE=1` AND a `vault.write`-scoped token,
+          > and are off by default. Keep remote connectors read-only unless you
+          > have a specific, audited need to enable writes.
+          NOTES
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "$TAG" \
-            --notes "Automated release for $TAG. See CHANGELOG.md for the full notes."
+            --notes-file "$RUNNER_TEMP/notes.md"
