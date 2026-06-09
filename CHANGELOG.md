@@ -8,11 +8,7 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Operational hardening: coarse per-client **rate limiting** on the public OAuth
-  endpoints (`/authorize`, `/register`), and **ESLint + Prettier** with `lint` /
-  `format` / `format:check` scripts wired into CI.
-- Search **parse cache** (mtime/size-invalidated) in `KnowledgeStore` so queries
-  no longer re-parse unchanged Markdown files on every call.
+- Add oxlint as a fast correctness pre-pass before ESLint, typecheck, build, and tests.
 
 ## [0.1.0] — 2026-06-08
 
@@ -31,6 +27,11 @@ First tagged release. MCP server exposing a private Markdown vault
   + refresh-token grants, scrypt login gate, scope enforcement
   (`vault.read` / `vault.write`), RFC 8707 audience binding, and consent-page
   clickjacking headers.
+- Coarse per-client **rate limiting** on the public OAuth endpoints
+  (`/authorize`, `/register`), and **ESLint + Prettier** with `lint` / `format` /
+  `format:check` scripts wired into CI.
+- Search **parse cache** (mtime/size-invalidated) in `KnowledgeStore` so queries
+  no longer re-parse unchanged Markdown files on every call.
 - Tools: `search_documents`, `fetch_document`, `list_projects`, `trace_sources`,
   `create_document`, `plan_document_update` → `apply_planned_update` (two-step,
   stale-safe writes), and ChatGPT-compatible `search` / `fetch` aliases.

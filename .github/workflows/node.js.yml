@@ -46,6 +46,9 @@ jobs:
         continue-on-error: true
         run: pnpm audit --audit-level moderate
 
+      # oxlint first: a fast (Rust) correctness pass that fails the build in
+      # milliseconds before the heavier ESLint / type / build / test steps.
+      - run: pnpm run lint:ox
       - run: pnpm run format:check
       - run: pnpm run lint
       - run: pnpm run typecheck
