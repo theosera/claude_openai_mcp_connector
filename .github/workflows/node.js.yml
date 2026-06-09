@@ -46,6 +46,8 @@ jobs:
         continue-on-error: true
         run: pnpm audit --audit-level moderate
 
+      - run: pnpm run format:check
+      - run: pnpm run lint
       - run: pnpm run typecheck
       - run: pnpm run build
       - run: pnpm test

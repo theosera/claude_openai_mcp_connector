@@ -88,7 +88,11 @@ function makeSnippet(body: string, terms: string[]): string {
   }
 
   const lower = compact.toLowerCase();
-  const firstHit = terms.map((term) => lower.indexOf(term)).filter((index) => index >= 0).sort((a, b) => a - b)[0] ?? 0;
+  const firstHit =
+    terms
+      .map((term) => lower.indexOf(term))
+      .filter((index) => index >= 0)
+      .sort((a, b) => a - b)[0] ?? 0;
   const start = Math.max(firstHit - 80, 0);
   const end = Math.min(start + 220, compact.length);
   return `${start > 0 ? "..." : ""}${compact.slice(start, end)}${end < compact.length ? "..." : ""}`;

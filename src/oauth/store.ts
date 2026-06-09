@@ -180,9 +180,7 @@ export class OAuthStore {
   }
 
   /** Validate an access token. Returns the bound client/scope/resource or null. */
-  validateAccessToken(
-    token: string | null | undefined
-  ): { clientId: string; scope: string; resource: string } | null {
+  validateAccessToken(token: string | null | undefined): { clientId: string; scope: string; resource: string } | null {
     if (!token) {
       return null;
     }

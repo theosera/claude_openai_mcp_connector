@@ -38,6 +38,9 @@ Selected (implemented here) — relevant to this connector:
 - **§3.1 / §3.2 / §3.3 / §3.5 / §3.6 / §3.9 / §3.4 CI/CD** → SHA-pinned Actions,
   least-privilege permissions, concurrency, advisory `pnpm audit`, Dependabot,
   CODEOWNERS, CodeQL.
+- **§4 Rate limiting** → coarse per-client (IP) fixed-window limits on the public
+  OAuth endpoints (`/authorize`, `/register`) in `src/oauth/rateLimiter.ts` —
+  defense-in-depth over a public tunnel, on top of the scrypt login gate.
 - **§5.4 Untrusted-content boundary** → MCP server `instructions` (data, not commands).
 - **§4 Remote-transport authn / network exposure** → bearer-token auth
   (constant-time, fail-closed), loopback bind, DNS-rebinding protection, body-size
