@@ -1,8 +1,40 @@
 # Claude/OpenAI Markdown MCP Connector
 
+> **AIごとに同じ文脈を貼り直す作業をなくします。**
+>
+> このMCP connectorは、あなたのprivate Markdown / Obsidian vaultをGitHubに公開せず、Claude・ChatGPT互換クライアント・Codexから安全に検索できるようにします。
+
 Local MCP server for exposing a private Markdown knowledge vault to MCP-capable clients such as Codex, Claude Desktop, Claude Code, and future ChatGPT/Claude remote connector deployments.
 
 The code repository is intended to be public. The Obsidian Vault or other Markdown knowledge base stays private and is referenced only through `KNOWLEDGE_ROOT`.
+
+## Architecture at a glance
+
+```mermaid
+flowchart LR
+  CC["Claude Code"] -->|stdio| STDIO
+  CX["Codex"] -->|stdio| STDIO
+  CD["Claude Desktop"] -->|stdio| STDIO
+  GPT["ChatGPT (web)"] -->|"HTTPS + OAuth"| HTTP
+  CA["Claude.ai (web)"] -->|"HTTPS + OAuth"| HTTP
+
+  subgraph Server["MCP server — public repo"]
+    STDIO["stdio transport<br/>full read + write"]
+    HTTP["HTTP transport<br/>bearer / OAuth 2.1<br/>read-only by default"]
+    TOOLS["tool factory<br/>search · fetch · list · trace<br/>create · plan → apply (2-step)"]
+    GUARD["path containment guard"]
+  end
+
+  STDIO --> TOOLS
+  HTTP --> TOOLS
+  TOOLS --> GUARD
+  GUARD --> V[("Private vault<br/>KNOWLEDGE_ROOT<br/>never committed")]
+```
+
+Local clients connect over **stdio** (full tools); web clients connect over an
+authenticated **HTTP** endpoint (read-only by default). Either way, every file
+access is funnelled through the path-containment guard into the private vault —
+which is never committed to this public repo.
 
 ## Features
 
