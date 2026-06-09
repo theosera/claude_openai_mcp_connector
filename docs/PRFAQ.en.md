@@ -81,6 +81,24 @@ knowledge** (frontmatter, projects, source refs, backlinks) and has **strict
 security defaults** (read-only by default, two-step writes, path containment,
 OAuth audience/scope binding).
 
+**Q. Will my notes be used to train the AI vendors' models?**
+The connector never uploads or continuously syncs your vault. It passes **only
+what a search matches**, and it is read-only by default. Whether the receiving
+AI (ChatGPT / Claude) uses that for training depends on each vendor's policy, so
+pair sensitive notes with each AI's data settings (e.g. training opt-out). What
+this product guarantees is that the vault is **never placed in the cloud
+wholesale**.
+
+**Q. Does it cost anything?**
+The connector itself is open source (public repo) and free. The only costs are
+each AI's own usage fees and, for the web path, an optional custom
+domain/hosting. Local use adds essentially no cost.
+
+**Q. Is it open source? Can I audit it?**
+Yes. The code is a public repo anyone can read, while **your vault stays
+private** (excluded via `.gitignore`; tests use synthetic data only). "Code is
+public, notes are private" is the core design.
+
 ### Technical FAQ
 
 **Q. How do I connect?**
@@ -108,6 +126,20 @@ Notes exist **only under `KNOWLEDGE_ROOT` on your machine**, and the connector
 just references them. The vault's contents, paths, and bodies are never committed
 to the repo. OAuth tokens and registered clients are **ephemeral in-process
 state** and are not persisted (a restart requires re-authentication).
+
+**Q. What do I need to run it?**
+Just Node.js 20+ and `pnpm` (for the build). Local use takes a few minutes. The
+README offers a 3-tier path by skill level: 🟢 local + Claude Desktop → 🟡 CLI
+(Claude Code / Codex) → 🔴 web (OAuth). A build-free one-command install is on the
+[roadmap](./ROADMAP.md).
+
+**Q. What happens if the connection drops?**
+Local (stdio) has nothing to drop. On the web path the two drop causes are
+(1) the quick-tunnel URL changing on restart and (2) in-memory OAuth state
+expiring on restart. The fix is a **fixed-domain named tunnel + a supervised
+process (e.g. systemd)**; details and a recovery checklist are in
+[`operations.md`](./operations.md). With a stable URL, recovery is just
+re-entering the password — no re-registration.
 
 ### Internal / development FAQ
 
