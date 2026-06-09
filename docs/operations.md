@@ -331,6 +331,11 @@ exec bwrap \
   `# state dir: --bind "$VAULT" /vault --bind /abs/path/to/state /state` \
   --ro-bind "$APP" /app \
   --ro-bind "$VAULT" /vault \
+  `# Deterministic cwd: the client may spawn this from ~ or the checkout,` \
+  `# neither of which exists inside. Without --chdir, bwrap falls back to /` \
+  `# (read-only), where any relative default — e.g. MCP_PATCH_STATE_DIR's` \
+  `# .mcp-state/patches — would fail to write. /tmp is the writable tmpfs.` \
+  --chdir /tmp \
   `# Unshare every namespace, including network — stdio talks over pipes.` \
   --unshare-all \
   `# Kill the sandbox when the client (parent) exits; detach from the` \
