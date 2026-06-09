@@ -132,7 +132,7 @@ repo/CI → public (secret hygiene).
 | `plain` PKCE downgrade | S256 only; `plain` rejected (`INV-7`, `pkce.ts`). | — |
 | Reading arbitrary files via a crafted `patch_id` | `patch_id` validated as UUID; patch path constrained (`INV-3`). | — |
 | Prompt injection in vault content steering the agent into unsafe actions | Server `instructions` declare returned content is **data, not commands** (`INV-5`); the server returns content faithfully and does not execute it. | ⚠️ Defense depends on the **client/agent** honoring the boundary; the server cannot enforce downstream behavior. |
-| Compromise of the server process escaping to the host | Loopback bind, least-privilege env; **systemd sandbox hardening documented** (operations.md §"Sandbox hardening" — `ProtectHome`/`ProtectSystem=strict`/empty `CapabilityBoundingSet`/`SystemCallFilter=@system-service`/`MemoryDenyWriteExecute`) = layer 1. | ⚠️ Hardening is **operator-applied** (a drop-in, not enforced by the code); bwrap (layer 3) still a gap. Reduced from "limited isolation". |
+| Compromise of the server process escaping to the host | Loopback bind, least-privilege env; **systemd sandbox hardening documented** (operations.md §"Sandbox hardening" — `ProtectHome`/`ProtectSystem=strict`/empty `CapabilityBoundingSet`/`SystemCallFilter=@system-service`/`MemoryDenyWriteExecute`) = layer 1; **bwrap stdio sandbox documented** (operations.md §6 — bind-only filesystem, `--unshare-all`, `--clearenv`) = layer 3. | ⚠️ Both layers are **operator-applied** (docs, not enforced by the code). Reduced from "limited isolation". |
 
 ---
 
@@ -163,9 +163,9 @@ These are **not** mitigated in v0.1.0 and are tracked in
 - **Single-user; no RBAC** (Spoofing/EoP at the team level).
 - **No DLP / exfiltration detection** (Information disclosure by an authorized
   client).
-- **Sandbox isolation** of the server process (EoP after compromise): layer 1
-  (systemd hardening) is now **documented** in operations.md but is
-  operator-applied, not code-enforced; bwrap (layer 3) is still a gap.
+- **Sandbox isolation** of the server process (EoP after compromise): layers 1
+  (systemd hardening) and 3 (bwrap stdio sandbox) are now **documented** in
+  operations.md but remain operator-applied, not code-enforced.
 - **Secret hygiene relies on discipline** — hardened secret scanning / signed
   release artifacts not yet in place.
 

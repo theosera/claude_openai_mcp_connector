@@ -3,7 +3,9 @@
 This guide is for keeping the **HTTP (web) connector** up so that ChatGPT /
 Claude.ai stay connected. Local stdio clients (Claude Code / Codex / Claude
 Desktop) launch the process themselves and have nothing to keep alive — if you
-only use those, you can skip this document.
+only use those, you can skip this document, with one exception:
+[§6](#6-sandboxing-the-local-stdio-server-bwrap-optional) is an optional
+sandbox recipe for that locally-spawned stdio server.
 
 > TL;DR — two things cause "the connection dropped":
 > 1. **The tunnel URL changes.** A Cloudflare *quick* tunnel
@@ -232,7 +234,9 @@ for this daemon).
   and is spawned by the local client (Claude Code / Codex / Claude Desktop), so
   this unit is HTTP-specific. If you ever wrap a stdio invocation in its own unit,
   add **`PrivateNetwork=true`** (it needs zero network) and you can narrow
-  `RestrictAddressFamilies=` to just `AF_UNIX`.
+  `RestrictAddressFamilies=` to just `AF_UNIX`. For the more common case — the
+  client spawning the stdio server directly — use the **bwrap recipe in
+  [§6](#6-sandboxing-the-local-stdio-server-bwrap-optional)** instead.
 
 ### launchd (macOS)
 
@@ -283,3 +287,97 @@ the OAuth flow. The URL to register in the client is
 - [ ] `KNOWLEDGE_ROOT` points at the vault and nothing wider; the vault is not
       committed to the public repo.
 - [ ] You can recover via the checklist above (re-auth is enough; URL is stable).
+
+---
+
+## 6. Sandboxing the local stdio server (bwrap, optional)
+
+This is **layer 3** of the "sandbox isolation" plan in
+[`ROADMAP.md`](./ROADMAP.md#sandbox-isolation--intended-layering) — the stdio
+counterpart of the [systemd hardening](#sandbox-hardening-systemd) above. Same
+goal: limit blast radius **if the server process is compromised**, as
+defense-in-depth on top of the app-level path containment.
+
+The stdio transport is the shape `bwrap` (bubblewrap) is best at: the MCP
+client (Claude Code / Codex / Claude Desktop) spawns `node dist/index.js` per
+session, and bwrap wraps exactly that one process. The sandbox filesystem is
+built **only from explicit binds**, so everything you don't list — `~/.ssh`,
+`~/.aws`, the rest of `/home`, stray `.env` files — simply does not exist
+inside, and `--unshare-all` removes the network entirely (stdio needs none).
+
+Create a wrapper script, e.g. `/usr/local/bin/vault-mcp-sandboxed`:
+
+```bash
+#!/usr/bin/env bash
+# Sandbox the stdio MCP server with bubblewrap. Point your MCP client's
+# "command" at this script instead of node.
+set -euo pipefail
+
+APP=/abs/path/to/claude_openai_mcp_connector
+VAULT=/abs/path/to/vault
+
+exec bwrap \
+  `# Minimal OS image: read-only /usr + merged-usr symlinks, fresh /proc,` \
+  `# /dev, /tmp. NOTHING else from the host exists inside the sandbox.` \
+  --ro-bind /usr /usr \
+  --symlink usr/bin /bin \
+  --symlink usr/lib /lib \
+  --symlink usr/lib64 /lib64 \
+  --proc /proc \
+  --dev /dev \
+  --tmpfs /tmp \
+  `# The app (read-only) and the vault. Read-only deployment = read-only` \
+  `# vault bind; for writes switch the vault to --bind and add a writable` \
+  `# state dir: --bind "$VAULT" /vault --bind /abs/path/to/state /state` \
+  --ro-bind "$APP" /app \
+  --ro-bind "$VAULT" /vault \
+  `# Unshare every namespace, including network — stdio talks over pipes.` \
+  --unshare-all \
+  `# Kill the sandbox when the client (parent) exits; detach from the` \
+  `# terminal so a compromised child cannot inject keystrokes (TIOCSTI).` \
+  --die-with-parent \
+  --new-session \
+  `# Start from an EMPTY environment; pass only what the server reads —` \
+  `# no inherited API keys, tokens, or proxy settings leak in.` \
+  --clearenv \
+  --setenv KNOWLEDGE_ROOT /vault \
+  `# --setenv MCP_PATCH_STATE_DIR /state/patches  # only when writes are on` \
+  /usr/bin/node /app/dist/index.js
+```
+
+Then point the client at the wrapper — for example in an MCP server config:
+
+```jsonc
+{ "mcpServers": { "vault": { "command": "/usr/local/bin/vault-mcp-sandboxed" } } }
+```
+
+Quick verification that the walls are real: temporarily replace the last line
+of the script (`/usr/bin/node /app/dist/index.js`) with `/bin/sh` and look
+around from inside:
+
+```
+ls /        # → only app, vault, usr, bin, lib(64), proc, dev, tmp
+ls /home    # → No such file or directory — host home isn't hidden, it does not exist
+ls ~/.ssh   # → same: nothing to steal
+```
+
+**Caveats — read before relying on it:**
+
+- **Unprivileged user namespaces are restricted on Ubuntu 23.10+/24.04** via
+  AppArmor (`kernel.apparmor_restrict_unprivileged_userns=1`). Install bwrap
+  from the distro package (`apt install bubblewrap`) — it ships the AppArmor
+  profile that permits this. If a self-built or copied `bwrap` binary fails
+  with `Creating new namespace failed: Permission denied`, add an AppArmor
+  profile for it; do **not** flip the sysctl off system-wide, as that weakens
+  every other confinement on the host.
+- **Node may want a few more read-only files.** If startup complains, the
+  usual additions are `--ro-bind /etc/ld.so.cache /etc/ld.so.cache` (faster
+  library loading) and, only if you see TLS/locale errors, selective
+  `--ro-bind`s under `/etc`. Bind individual files, not all of `/etc` (it can
+  contain host keys and credentials).
+- **Daemons are better served by systemd.** For the long-running HTTP
+  connector you would have to keep the network (drop `--unshare-net`) and add
+  writable state — at which point the
+  [systemd drop-in](#sandbox-hardening-systemd) gives equivalent isolation
+  with better supervision and no userns caveats. Use bwrap for the
+  client-spawned stdio case; use systemd for the daemon.

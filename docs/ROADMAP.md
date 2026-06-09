@@ -89,7 +89,7 @@ following — listed honestly so adopters can judge fit. Most are prerequisites 
 | **Hardened secret scanning / release-artifact verification** | Needed if OSS distribution (npx / prebuilt binaries) is pushed harder — provenance, signed artifacts, SBOM. | mid-term 💭 |
 | **OpenTelemetry / structured audit events** | Required for enterprise observability and SIEM ingestion. | mid-term 💭 |
 | **DLP / exfiltration detection** | No control over leakage *of vault content* once a client is authorized. | larger bet 💭 |
-| **Sandbox isolation** | If the MCP server process itself is compromised, isolation from the host is limited. | 🚧 layer 1 (systemd hardening) shipped → [`operations.md`](./operations.md#sandbox-hardening-systemd); bwrap (layer 3) still a larger bet 💭 |
+| **Sandbox isolation** | If the MCP server process itself is compromised, isolation from the host is limited. | ✅ layers 1–3 documented → [`operations.md`](./operations.md#sandbox-hardening-systemd) (systemd) + [§6](./operations.md#6-sandboxing-the-local-stdio-server-bwrap-optional) (bwrap); residual: operator-applied, not code-enforced |
 | **Formal threat model document** | `SECURITY.md` is good but was not a systematic STRIDE/LINDDUN-style model. | 🚧 → [`threat-model.md`](./threat-model.md) (STRIDE) added; revisit as features land |
 
 **Suggested sequencing:** start with the cheap, high-signal items —
@@ -129,6 +129,12 @@ Rationale: bwrap shines at wrapping single commands; a persistent daemon is
 better served by systemd's built-in sandboxing (more portable, fewer userns
 caveats).
 
+**Status:** all three layers are now documented in `operations.md` — layer 1+2
+in the [systemd hardening drop-in](./operations.md#sandbox-hardening-systemd)
+(incl. the `PrivateNetwork` note for stdio units), layer 3 in the
+[bwrap recipe (§6)](./operations.md#6-sandboxing-the-local-stdio-server-bwrap-optional).
+Isolation remains **operator-applied** (docs, not code-enforced).
+
 ---
 
 ## Ready to pick up next (continuity)
@@ -142,7 +148,11 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       `SystemCallFilter=@system-service` / `MemoryDenyWriteExecute`), with the
       Node/V8-JIT and home-dir-vault caveats and a `systemd-analyze security`
       verify step. Ships the first, cheapest slice of "sandbox isolation".
-- [ ] **bwrap recipe** + userns/AppArmor caveat in `operations.md` (layer 3).
+- [x] **bwrap recipe** + userns/AppArmor caveat in `operations.md` (layer 3) —
+      ✅ added as §6: client-spawned wrapper script (`--ro-bind` only the app +
+      vault, `--unshare-all`, `--clearenv`, secrets invisible by construction),
+      the Ubuntu 23.10+/24.04 AppArmor/userns caveat, and "prefer systemd for
+      the daemon" guidance.
 - [ ] **Audit log** — append-only, content-free events (who searched / fetched /
       wrote what, no note bodies) — the agreed #1 security follow-up; also seeds
       OpenTelemetry later.
