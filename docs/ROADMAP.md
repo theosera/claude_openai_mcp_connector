@@ -90,14 +90,15 @@ following — listed honestly so adopters can judge fit. Most are prerequisites 
 | **OpenTelemetry / structured audit events** | Required for enterprise observability and SIEM ingestion. | mid-term 💭 |
 | **DLP / exfiltration detection** | No control over leakage *of vault content* once a client is authorized. | larger bet 💭 |
 | **Sandbox isolation** | If the MCP server process itself is compromised, isolation from the host is limited. | larger bet 💭 |
-| **Formal threat model document** | `SECURITY.md` is good but is not a systematic STRIDE/LINDDUN-style model. | near-term 🔭 |
+| **Formal threat model document** | `SECURITY.md` is good but was not a systematic STRIDE/LINDDUN-style model. | 🚧 → [`threat-model.md`](./threat-model.md) (STRIDE) added; revisit as features land |
 
 **Suggested sequencing:** start with the cheap, high-signal items —
 (1) a **formal threat model** (STRIDE) to make the gaps explicit and prioritize
-the rest, (2) an **audit log** (append-only, content-free events) which also
-seeds later OpenTelemetry work, then (3) commission a **third-party pen test**
-once the threat model is written. RBAC / DLP / sandboxing are larger bets gated
-on validated team-adoption demand.
+the rest — ✅ drafted in [`threat-model.md`](./threat-model.md); next
+(2) an **audit log** (append-only, content-free events) which also seeds later
+OpenTelemetry work, then (3) commission a **third-party pen test** now that the
+threat model exists. RBAC / DLP / sandboxing are larger bets gated on validated
+team-adoption demand.
 
 ---
 

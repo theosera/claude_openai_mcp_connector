@@ -15,6 +15,11 @@ and *safely* create / update Markdown files confined to one root, driven by an
 
 ## Threat model
 
+> A systematic **STRIDE** treatment of the threats below — with per-category
+> mitigations, the invariants/tests that pin them, and the known residual gaps —
+> lives in [`docs/threat-model.md`](./docs/threat-model.md). The table here is
+> the quick narrative reference.
+
 | # | Threat | Control | Where |
 |---|---|---|---|
 | T1 | Path traversal / symlink escape out of the vault | Multi-phase path guard: length cap → control/NUL reject → percent-decode validation → NFC normalize → absolute/`~`/`..` reject → realpath prefix check → symlink-escape check. Fail-closed (throws, no silent fallback). | `src/pathSafety.ts`, `src/knowledgeStore.ts` |
