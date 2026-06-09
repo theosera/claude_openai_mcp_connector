@@ -1,0 +1,62 @@
+name: Release
+
+# Manually-triggered release. Creates the git tag + GitHub Release at the chosen
+# commit using the built-in GITHUB_TOKEN, so no local tag push is required
+# (handy in locked-down environments where pushing refs/tags is blocked).
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create (e.g. v0.1.0)"
+        required: true
+        default: v0.1.0
+
+# Least privilege at the top level; the release job elevates only what it needs.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the tag + release
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          # Fail closed if the tag already exists on the remote: `gh release
+          # create --target` only creates a tag when none exists, so for a
+          # pre-existing tag it would silently cut the release from that tag's
+          # commit instead of $GITHUB_SHA. Require the operator to remove it first.
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
+            echo "Tag $TAG already exists on the remote; refusing (delete it or choose a new tag)." >&2
+            exit 1
+          fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; refusing to overwrite." >&2
+            exit 1
+          fi
+          cat > "$RUNNER_TEMP/notes.md" <<'NOTES'
+          See CHANGELOG.md for the full notes.
+
+          > Operational note: remote write is still cautious-use. HTTP writes
+          > require BOTH `MCP_HTTP_ALLOW_WRITE=1` AND a `vault.write`-scoped token,
+          > and are off by default. Keep remote connectors read-only unless you
+          > have a specific, audited need to enable writes.
+          NOTES
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$TAG" \
+            --notes-file "$RUNNER_TEMP/notes.md"
