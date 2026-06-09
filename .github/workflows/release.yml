@@ -35,6 +35,14 @@ jobs:
           TAG: ${{ github.event.inputs.tag }}
         run: |
           set -euo pipefail
+          # Fail closed if the tag already exists on the remote: `gh release
+          # create --target` only creates a tag when none exists, so for a
+          # pre-existing tag it would silently cut the release from that tag's
+          # commit instead of $GITHUB_SHA. Require the operator to remove it first.
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
+            echo "Tag $TAG already exists on the remote; refusing (delete it or choose a new tag)." >&2
+            exit 1
+          fi
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $TAG already exists; refusing to overwrite." >&2
             exit 1
