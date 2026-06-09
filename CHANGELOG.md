@@ -6,16 +6,14 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
-
-- Add oxlint as a fast correctness pre-pass before ESLint, typecheck, build, and tests.
-
-## [0.1.0] — 2026-06-08
+## [0.1.0] — 2026-06-09
 
 First tagged release. MCP server exposing a private Markdown vault
 (`KNOWLEDGE_ROOT`) over two transports:
 
 ### Added
+
+- Add oxlint as a fast correctness pre-pass before ESLint, typecheck, build, and tests.
 
 - **stdio transport** for local CLI/desktop clients (Claude Code, Codex, Claude
   Desktop) with the full tool surface.
