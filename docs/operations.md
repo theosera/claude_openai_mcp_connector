@@ -42,6 +42,24 @@ cloudflared tunnel route dns vault vault.example.com   # your domain
 cloudflared tunnel run vault                            # always https://vault.example.com
 ```
 
+> **Prerequisites for a named tunnel:** unlike the quick tunnel (which needs no
+> account), `cloudflared tunnel login` / `route dns` require a **Cloudflare
+> account** (the free plan is enough) **and a domain managed in Cloudflare**.
+>
+> **Cloudflare is not mandatory** — the only real requirement is a **stable
+> HTTPS URL that reaches `127.0.0.1:<port>`**. Equivalent options:
+> - **Tailscale Funnel** — account required, but no domain to buy (you get a
+>   stable `*.ts.net` URL).
+> - **ngrok** — a stable domain on a paid plan.
+> - **Your own server + reverse proxy** (nginx / Caddy + Let's Encrypt) with a
+>   domain you already own — no Cloudflare needed.
+> - Staying on the **quick tunnel** works without any account, but the URL
+>   changes on restart (you must update `MCP_HTTP_PUBLIC_URL` and re-auth each
+>   time), so it is not recommended for regular use.
+>
+> Whichever you pick, set `MCP_HTTP_PUBLIC_URL` to that stable URL and register
+> `<stable-url>/mcp` in the client.
+
 ### B. In-memory OAuth state — restart means re-auth
 
 By design (`src/oauth/store.ts`) the OAuth **codes, access tokens, refresh
