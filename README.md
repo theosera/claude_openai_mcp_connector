@@ -30,7 +30,7 @@ The web path needs a server that stays up and a stable HTTPS URL — read
 
 ## Before you start (prerequisites)
 
-You need **Node.js 20+** (which includes `npm`). Check with `node -v`. If it's
+You need **Node.js 22.12+** (which includes `npm`). Check with `node -v`. If it's
 missing, install it from <https://nodejs.org/> (LTS). This project uses
 [`pnpm`](https://pnpm.io/) for builds — enable it once with:
 

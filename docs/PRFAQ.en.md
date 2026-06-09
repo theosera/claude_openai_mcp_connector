@@ -128,7 +128,7 @@ to the repo. OAuth tokens and registered clients are **ephemeral in-process
 state** and are not persisted (a restart requires re-authentication).
 
 **Q. What do I need to run it?**
-Just Node.js 20+ and `pnpm` (for the build). Local use takes a few minutes. The
+Just Node.js 22.12+ and `pnpm` (for the build). Local use takes a few minutes. The
 README offers a 3-tier path by skill level: 🟢 local + Claude Desktop → 🟡 CLI
 (Claude Code / Codex) → 🔴 web (OAuth). A build-free one-command install is on the
 [roadmap](./ROADMAP.md).

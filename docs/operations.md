@@ -89,15 +89,24 @@ Environment=MCP_OAUTH_PASSWORD=replace-with-a-strong-passphrase
 Environment=MCP_AUTH_TOKEN=replace-with-openssl-rand-hex-32
 # --- vault ---
 Environment=KNOWLEDGE_ROOT=/abs/path/to/vault
+# Two-step write patch state. Only used when writes are enabled, but set it
+# explicitly to an ABSOLUTE path: the default (.mcp-state/patches) resolves
+# relative to the process cwd (src/config.ts), which under ProtectSystem=strict
+# may not be covered by ReadWritePaths — causing plan_document_update to fail.
+Environment=MCP_PATCH_STATE_DIR=/abs/path/to/state/patches
 # Writes stay OFF unless you explicitly need them:
 # Environment=MCP_HTTP_ALLOW_WRITE=1
+# Pin the cwd so any relative default also resolves predictably:
+WorkingDirectory=/abs/path/to/claude_openai_mcp_connector
 ExecStart=/usr/bin/node /abs/path/to/claude_openai_mcp_connector/dist/index.js
 Restart=always
 RestartSec=2
 # Hardening (optional but recommended):
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/abs/path/to/vault /abs/path/to/.mcp-state
+# Grant write access to the vault and the patch-state parent (must cover
+# MCP_PATCH_STATE_DIR above):
+ReadWritePaths=/abs/path/to/vault /abs/path/to/state
 
 [Install]
 WantedBy=multi-user.target

@@ -73,7 +73,7 @@ HTTP は認証必須（fail-closed）。Claude Desktop / Claude Code（remote）
 ノートは**あなたのマシンの `KNOWLEDGE_ROOT` 配下にのみ**存在し、コネクタはそこを参照するだけです。vault の実体・パス・本文はリポジトリにコミットされません。OAuth のトークンや登録クライアントは**プロセスメモリ上の一時状態**で、永続保存されません（再起動すると再認証が必要）。
 
 **Q. 動かすのに何が必要ですか？**
-Node.js 20+ と（ビルド用に）`pnpm` だけです。ローカル利用は数分。技術力に応じて 🟢 Claude Desktop ローカル接続 → 🟡 CLI（Claude Code / Codex）→ 🔴 web（OAuth）の3段階導線を README に用意しています。ビルド不要のワンコマンド配布は[ロードマップ](./ROADMAP.md)の項目です。
+Node.js 22.12+ と（ビルド用に）`pnpm` だけです。ローカル利用は数分。技術力に応じて 🟢 Claude Desktop ローカル接続 → 🟡 CLI（Claude Code / Codex）→ 🔴 web（OAuth）の3段階導線を README に用意しています。ビルド不要のワンコマンド配布は[ロードマップ](./ROADMAP.md)の項目です。
 
 **Q. 接続が切れたらどうなりますか？**
 ローカル（stdio）は切れる概念がありません。web 連携で切れる主因は2つ ―― ① quick tunnel の URL が再起動で変わる、② OAuth 状態がメモリ上で再起動時に失効。対策は**固定ドメインの named tunnel ＋ プロセス常駐（systemd など）**で、詳細と復旧手順は[`operations.md`](./operations.md)にまとめています。URL を固定しておけば、復旧はパスワード再入力だけで再登録は不要です。
