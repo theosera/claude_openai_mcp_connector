@@ -55,5 +55,22 @@
       "Bash(awk * .env*)",
       "Bash(sed * .env*)"
     ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash|mcp__github__.*",
+        "hooks": [
+          { "type": "command", "command": "bash .claude/skills/ops-logging/capture-command.sh" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bash .claude/skills/ops-logging/push-log.sh" }
+        ]
+      }
+    ]
   }
 }
