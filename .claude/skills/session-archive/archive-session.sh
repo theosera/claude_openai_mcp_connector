@@ -127,7 +127,10 @@ mask() {
     -e 's/([Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+)[^[:space:]]+/\1***MASKED***/g' \
     -e 's/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)[^[:space:]]+/\1***MASKED***/Ig' \
     -e 's/AKIA[0-9A-Z]{16}/***MASKED***/g' \
-    -e 's/sk-[A-Za-z0-9_-]{20,}/***MASKED***/g'
+    -e 's/sk-[A-Za-z0-9_-]{20,}/***MASKED***/g' \
+    -e 's/AIza[0-9A-Za-z_-]{35}/***MASKED***/g' \
+    -e 's/xox[baprs]-[A-Za-z0-9-]{10,}/***MASKED***/g' \
+    -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----/s/.*/***MASKED***/'
 }
 
 # --- render the transcript to Markdown --------------------------------------
