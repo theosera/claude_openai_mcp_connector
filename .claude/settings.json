@@ -79,6 +79,13 @@
           { "type": "command", "command": "bash .claude/skills/session-archive/archive-session.sh" }
         ]
       }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bash .claude/skills/session-archive/archive-session.sh precompact" }
+        ]
+      }
     ]
   }
 }

@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# session-archive Stop / SessionEnd hook.
+# session-archive Stop / SessionEnd / PreCompact hook.
 # Render the FULL session transcript (user + assistant text, thinking, tool
 # calls, tool results) into ONE Markdown note per session inside the private
 # Obsidian vault clone, then commit & push. The note is regenerated from the
 # transcript on every turn (idempotent overwrite of the same file), so an
 # ephemeral container (Claude Code on the web) always leaves the latest state
 # behind even if the session never ends cleanly.
+# On PreCompact (before Claude Code auto-compacts and prunes the transcript) a
+# point-in-time snapshot is written under <subdir>/_precompact/ so pre-compact
+# detail is never lost; Stop/SessionEnd keep maintaining the single latest note.
 #
 # Privacy / safety:
 #   - This script ships in a PUBLIC repo too, so the vault repo is NEVER named
@@ -54,9 +57,23 @@ cwd="$(jq -r '.cwd // empty' <<<"$payload")"
 [ -n "$session_id" ] || session_id="unknown-session"
 sid8="${session_id:0:8}"
 
+# Hook event decides what we do: Stop / SessionEnd render+overwrite the single
+# "latest" note; PreCompact writes a point-in-time snapshot BEFORE compaction
+# prunes the transcript. Mode from an explicit arg, else the payload event.
+event="$(jq -r '.hook_event_name // empty' <<<"$payload")"
+mode="${1:-}"
+if [ -z "$mode" ]; then
+  case "$event" in
+    PreCompact) mode="precompact" ;;
+    *) mode="latest" ;;
+  esac
+fi
+
 # Claude Code flushes the transcript JSONL after the Stop hook starts, so wait
 # before reading (empirical value from the local session-log-to-obsidian hook).
-sleep 3
+# PreCompact fires with the transcript already complete and must be quick so it
+# does not delay compaction — skip the wait there.
+[ "$mode" = "precompact" ] || sleep 3
 
 # Resume sessions can hand the hook a transcript_path that no longer exists —
 # fall back to locating the JSONL by session id under ~/.claude/projects.
@@ -142,24 +159,32 @@ fi
 safe_title="$(printf '%s' "$title" | tr '/\\:|<>' '      ' | tr -d '*?"#^[]' | tr -d '\000-\037' \
   | sed 's/[[:space:]]\{1,\}/ /g; s/^[ .-]*//; s/[ .-]*$//')"
 [ -n "$safe_title" ] || safe_title="session"
-filename="${date_start}_${safe_title}_${sid8}.md"
-
-dest_dir="$VAULT_REPO/$SUBDIR"
-dest="$dest_dir/$filename"
+# Destination path (relative to the vault) differs by mode:
+#   latest     -> <subdir>/<date>_<title>_<sid8>.md              (one note/session, overwritten each turn)
+#   precompact -> <subdir>/_precompact/..precompact-<stamp>.md   (additive point-in-time snapshots)
+old_rel=""
+if [ "$mode" = "precompact" ]; then
+  rel_path="$SUBDIR/_precompact/${date_start}_${safe_title}_${sid8}.precompact-$(date -u +%Y%m%d-%H%M%S).md"
+else
+  rel_path="$SUBDIR/${date_start}_${safe_title}_${sid8}.md"
+fi
+dest="$VAULT_REPO/$rel_path"
+dest_dir="$(dirname "$dest")"
 mkdir -p "$dest_dir"
 
-# One note per session: the session-id suffix is the stable key. If an earlier
-# turn archived this session under a different title-derived name (the summary
-# title can appear or change mid-session), move that note to the current name
-# instead of leaving a stale duplicate with the same frontmatter id.
-old_rel=""
-for existing in "$dest_dir"/*"_${sid8}.md"; do
-  [ -f "$existing" ] || continue
-  [ "$existing" = "$dest" ] && continue
-  mv -f "$existing" "$dest"
-  old_rel="$SUBDIR/$(basename "$existing")"
-  break
-done
+# One note per session (latest mode only): the session-id suffix is the stable
+# key. If an earlier turn archived this session under a different title-derived
+# name (the summary title can appear or change mid-session), move that note to
+# the current name instead of leaving a stale duplicate with the same id.
+if [ "$mode" != "precompact" ]; then
+  for existing in "$dest_dir"/*"_${sid8}.md"; do
+    [ -f "$existing" ] || continue
+    [ "$existing" = "$dest" ] && continue
+    mv -f "$existing" "$dest"
+    old_rel="$SUBDIR/$(basename "$existing")"
+    break
+  done
+fi
 
 # --- secret masking (same rules as ops-logging capture-command.sh) ---------
 mask() {
@@ -276,12 +301,16 @@ trap - EXIT
 # --- commit & push (only the generated note; never `git add -A`) -----------
 (
   cd "$VAULT_REPO" || exit 0
-  git add -- "$SUBDIR/$filename" || exit 0
+  git add -- "$rel_path" || exit 0
   if [ -n "$old_rel" ]; then
     git add -- "$old_rel" || true # records the deletion side of the rename
   fi
   if ! git diff --cached --quiet; then
-    git commit -q -m "claude session: $date_start $repo ($sid8)" || exit 0
+    if [ "$mode" = "precompact" ]; then
+      git commit -q -m "claude session: precompact snapshot $date_start $repo ($sid8)" || exit 0
+    else
+      git commit -q -m "claude session: $date_start $repo ($sid8)" || exit 0
+    fi
   fi
   # Push whenever unpushed session commits remain — including one committed on
   # a previous turn whose push failed (an ephemeral container must not end with
