@@ -89,6 +89,19 @@ dest_dir="$VAULT_REPO/$SUBDIR"
 dest="$dest_dir/$filename"
 mkdir -p "$dest_dir"
 
+# One note per session: the session-id suffix is the stable key. If an earlier
+# turn archived this session under a different title-derived name (the summary
+# title can appear or change mid-session), move that note to the current name
+# instead of leaving a stale duplicate with the same frontmatter id.
+old_rel=""
+for existing in "$dest_dir"/*"_${sid8}.md"; do
+  [ -f "$existing" ] || continue
+  [ "$existing" = "$dest" ] && continue
+  mv -f "$existing" "$dest"
+  old_rel="$SUBDIR/$(basename "$existing")"
+  break
+done
+
 # --- secret masking (same rules as ops-logging capture-command.sh) ---------
 mask() {
   sed -E \
@@ -98,7 +111,7 @@ mask() {
     -e 's/([Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+)[^[:space:]]+/\1***MASKED***/g' \
     -e 's/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)[^[:space:]]+/\1***MASKED***/Ig' \
     -e 's/AKIA[0-9A-Z]{16}/***MASKED***/g' \
-    -e 's/sk-[A-Za-z0-9]{20,}/***MASKED***/g'
+    -e 's/sk-[A-Za-z0-9_-]{20,}/***MASKED***/g'
 }
 
 # --- render the transcript to Markdown --------------------------------------
@@ -166,21 +179,34 @@ trap 'rm -f "$tmp"' EXIT
   printf '\n'
 } | mask > "$tmp"
 
-# Idempotence: skip the write (and the commit below) if nothing changed apart
-# from the updated_at stamp.
+# Idempotence: skip the rewrite if nothing changed apart from the updated_at
+# stamp. Do NOT exit here — a commit from a previous turn may still be
+# unpushed (transient push failure), and the git block below must retry it.
 if [ -f "$dest" ] && diff -q \
   <(grep -v '^updated_at: ' "$dest") <(grep -v '^updated_at: ' "$tmp") >/dev/null 2>&1; then
-  exit 0
+  rm -f "$tmp"
+else
+  mv "$tmp" "$dest"
 fi
-mv "$tmp" "$dest"
 trap - EXIT
 
 # --- commit & push (only the generated note; never `git add -A`) -----------
 (
   cd "$VAULT_REPO" || exit 0
   git add -- "$SUBDIR/$filename" || exit 0
-  git diff --cached --quiet && exit 0
-  git commit -q -m "claude session: $date_start $repo ($sid8)" || exit 0
+  if [ -n "$old_rel" ]; then
+    git add -- "$old_rel" || true # records the deletion side of the rename
+  fi
+  if ! git diff --cached --quiet; then
+    git commit -q -m "claude session: $date_start $repo ($sid8)" || exit 0
+  fi
+  # Push whenever unpushed session commits remain — including one committed on
+  # a previous turn whose push failed (an ephemeral container must not end with
+  # the archive stranded in a local commit). Turns that carry only someone
+  # else's local commits are never pushed.
+  if upstream="$(git rev-parse --abbrev-ref '@{u}' 2>/dev/null)"; then
+    git log "$upstream"..HEAD --format=%s 2>/dev/null | grep -q '^claude session:' || exit 0
+  fi
   for delay in 0 2 4 8 16; do
     [ "$delay" -gt 0 ] && sleep "$delay"
     if git push -u origin HEAD >/dev/null 2>&1; then

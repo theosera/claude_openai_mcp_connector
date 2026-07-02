@@ -219,6 +219,28 @@ describe("MultiRootStore", () => {
     expect(traced.document.relativePath).toBe("ops:logs/session.md");
   });
 
+  it("computes same-root backlinks through the composite", async () => {
+    // fixture: connector-plan.md links to shared-search.md inside the vault root.
+    const traced = await store.traceSources("chatgpt-research-001");
+    expect(traced.backlinks).toEqual([
+      expect.objectContaining({
+        id: "claude-plan-001",
+        relativePath: "vault:projects/claude/planning/connector-plan.md"
+      })
+    ]);
+  });
+
+  it("computes cross-root backlinks (vault note referencing an ops document)", async () => {
+    await fs.writeFile(
+      path.join(vaultRoot, "reference.md"),
+      "# Reference\n\nSee [the session](ops:logs/session.md) and [[Multi Root Session]].\n",
+      "utf8"
+    );
+
+    const traced = await store.traceSources("ops:logs/session.md");
+    expect(traced.backlinks).toEqual([expect.objectContaining({ relativePath: "vault:reference.md" })]);
+  });
+
   it("rejects overlapping (nested or duplicate) roots at init", async () => {
     const nested = new MultiRootStore(
       makeConfig([

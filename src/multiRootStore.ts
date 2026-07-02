@@ -1,5 +1,6 @@
 import path from "node:path";
 import { KnowledgeStore } from "./knowledgeStore.js";
+import { extractAllLocalLinks } from "./markdownLinks.js";
 import { searchDocuments, type SearchFilters } from "./search.js";
 import type { AppConfig } from "./config.js";
 import type {
@@ -128,19 +129,37 @@ export class MultiRootStore implements VaultStore {
   }
 
   async traceSources(idOrPath: string): Promise<TraceResult> {
-    const { entry, rest } = this.resolveRef(idOrPath);
-    if (entry) {
-      return this.wrapTrace(entry.name, await entry.store.traceSources(rest));
-    }
-    let firstError: unknown;
-    for (const candidate of this.entries) {
-      try {
-        return this.wrapTrace(candidate.name, await candidate.store.traceSources(idOrPath));
-      } catch (error) {
-        firstError ??= error;
+    // Backlinks must be computed across ALL roots (a note in one root may
+    // reference `<root>:<path>` documents in another), so this cannot delegate
+    // to a single child store — scan the composite document list instead.
+    const document = await this.fetch(idOrPath);
+    const documents = await this.listDocuments();
+
+    const prefixedPath = document.relativePath; // `<rootName>:<relativePath>`
+    const unprefixedPath = prefixedPath.slice(prefixedPath.indexOf(":") + 1);
+    // Cross-root references carry the root prefix; same-root references use the
+    // plain relative path as stored on disk. Titles match from any root.
+    const crossRootTargets = new Set([prefixedPath, prefixedPath.replace(/\.md$/i, ""), document.title]);
+    const sameRootTargets = new Set([unprefixedPath, unprefixedPath.replace(/\.md$/i, "")]);
+    const matchesTarget = (candidate: MarkdownDocument, link: string): boolean => {
+      const withExtension = link.endsWith(".md") ? link : `${link}.md`;
+      if (crossRootTargets.has(link) || crossRootTargets.has(withExtension)) {
+        return true;
       }
-    }
-    throw firstError ?? new Error(`Document not found: ${idOrPath}`);
+      return candidate.root === document.root && (sameRootTargets.has(link) || sameRootTargets.has(withExtension));
+    };
+
+    const backlinks = documents
+      .filter((candidate) => candidate.relativePath !== document.relativePath)
+      .filter((candidate) => extractAllLocalLinks(candidate.body).some((link) => matchesTarget(candidate, link)))
+      .map((candidate) => ({ id: candidate.id, relativePath: candidate.relativePath, title: candidate.title }));
+
+    return {
+      document: { id: document.id, relativePath: document.relativePath, title: document.title },
+      source_refs: document.frontmatter.source_refs ?? [],
+      outgoing_links: extractAllLocalLinks(document.body),
+      backlinks
+    };
   }
 
   /** Split a `<rootName>:` prefix off a reference when it names a known root. */
@@ -182,19 +201,6 @@ export class MultiRootStore implements VaultStore {
       root: rootName,
       relativePath: prefixedPath,
       id: document.id === document.relativePath ? prefixedPath : document.id
-    };
-  }
-
-  private wrapTrace(rootName: string, trace: TraceResult): TraceResult {
-    const wrapPick = (item: TraceResult["document"]): TraceResult["document"] => ({
-      ...item,
-      relativePath: `${rootName}:${item.relativePath}`,
-      id: item.id === item.relativePath ? `${rootName}:${item.relativePath}` : item.id
-    });
-    return {
-      ...trace,
-      document: wrapPick(trace.document),
-      backlinks: trace.backlinks.map(wrapPick)
     };
   }
 }
