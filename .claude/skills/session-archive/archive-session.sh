@@ -65,8 +65,51 @@ if [ -z "$transcript" ] || [ ! -f "$transcript" ]; then
 fi
 { [ -n "$transcript" ] && [ -f "$transcript" ]; } || exit 0
 
-repo="$(basename "${cwd:-unknown}")"
+# --- repos touched this session ---------------------------------------------
+# Multi-repo web sessions run with cwd at the PARENT of the checkouts, so the
+# payload cwd alone cannot say which repos were worked on. Detect them from
+# the transcript itself: (a) every distinct per-line cwd that lies inside a
+# git repo (covers CLI + cd), (b) sibling $HOME-level checkouts whose absolute
+# path appears in tool_use INPUTS (Edit/Write/Bash paths — tool results are
+# deliberately ignored to avoid false positives from mere mentions).
+vault_real="$(realpath "$VAULT_REPO" 2>/dev/null || printf '%s' "$VAULT_REPO")"
+repos=""
+add_repo() { case " $repos " in *" $1 "*) ;; *) repos="${repos:+$repos }$1" ;; esac; }
+while IFS= read -r wd; do
+  [ -n "$wd" ] && [ -d "$wd" ] || continue
+  top="$(git -C "$wd" rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$top" ] || continue
+  [ "$(realpath "$top" 2>/dev/null || printf '%s' "$top")" = "$vault_real" ] && continue
+  add_repo "$(basename "$top")"
+done < <(jq -rs '[ .[] | .cwd // empty | select(length > 0) ] | unique | .[]' "$transcript")
+tool_inputs="$(jq -rs '[ .[] | (.message.content? // empty)
+  | if type == "array" then .[] else empty end
+  | select(.type == "tool_use") | .input | tostring ] | join("\n")' "$transcript")"
+for candidate_dir in "$HOME"/*/; do
+  candidate="${candidate_dir%/}"
+  name="$(basename "$candidate")"
+  [ -d "$candidate/.git" ] || continue
+  [ "$(realpath "$candidate" 2>/dev/null || printf '%s' "$candidate")" = "$vault_real" ] && continue
+  case "$tool_inputs" in *"$HOME/$name"*) add_repo "$name" ;; esac
+done
+
+# Primary repo for `project`: the payload cwd when it is itself a checkout,
+# else the first detected repo, else the cwd basename (old behavior).
+primary_top="$(git -C "${cwd:-.}" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -n "$primary_top" ] \
+  && [ "$(realpath "$primary_top" 2>/dev/null || printf '%s' "$primary_top")" != "$vault_real" ]; then
+  repo="$(basename "$primary_top")"
+elif [ -n "$repos" ]; then
+  repo="${repos%% *}"
+else
+  repo="$(basename "${cwd:-unknown}")"
+fi
+[ -n "$repos" ] || repos="$repo"
+
 branch="$(git -C "${cwd:-.}" branch --show-current 2>/dev/null || echo '-')"
+if { [ -z "$branch" ] || [ "$branch" = "-" ]; } && [ -d "$HOME/$repo/.git" ]; then
+  branch="$(git -C "$HOME/$repo" branch --show-current 2>/dev/null || echo '-')"
+fi
 [ -n "$branch" ] || branch='-'
 
 # --- session date + title (jq slices are codepoint-safe for Japanese) ------
@@ -209,7 +252,8 @@ grep -q '[^[:space:]]' "$body_tmp" || exit 0
   printf 'date: %s\n' "$date_start"
   printf 'branch: %s\n' "$branch"
   printf 'session_id: %s\n' "$session_id"
-  printf 'tags: [claude-code-session, %s]\n' "$repo"
+  printf 'repos: [%s]\n' "$(printf '%s' "$repos" | sed 's/ /, /g')"
+  printf 'tags: [claude-code-session, %s]\n' "$(printf '%s' "$repos" | sed 's/ /, /g')"
   printf 'updated_at: %s\n' "$now_iso"
   printf -- '---\n\n'
   printf '# %s\n\n' "$title"
