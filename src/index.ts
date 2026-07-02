@@ -2,10 +2,12 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { loadConfig, loadHttpConfig, selectedTransport } from "./config.js";
 import { startHttpServer } from "./httpServer.js";
-import { KnowledgeStore } from "./knowledgeStore.js";
+import { createStore } from "./multiRootStore.js";
 import { buildMcpServer } from "./server.js";
 
-const store = new KnowledgeStore(loadConfig());
+// Single KNOWLEDGE_ROOT -> plain KnowledgeStore (unchanged behavior).
+// KNOWLEDGE_ROOTS -> multi-root composite: first root writable, rest read-only.
+const store = createStore(loadConfig());
 await store.init();
 
 const transport = selectedTransport();

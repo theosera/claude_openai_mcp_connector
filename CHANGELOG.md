@@ -6,6 +6,24 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Multiple knowledge roots** (`KNOWLEDGE_ROOTS="name=/path,…"`): search,
+  fetch, list, and trace across several repos at once. The first root is the
+  primary (writable); every additional root is strictly read-only and its
+  documents are addressed as `name:relative/path` (results carry a `root`
+  field). Single `KNOWLEDGE_ROOT` behavior is unchanged. Each root keeps the
+  full path-containment guard chain; overlapping roots are rejected at startup
+  (`src/multiRootStore.ts`, `tests/multiRootStore.test.ts`).
+- **session-archive hook** (`.claude/skills/session-archive/`): Stop/SessionEnd
+  hook that renders the full Claude Code session transcript (title +
+  conversation + tool calls/results, secrets masked with the ops-logging rules)
+  into one Markdown note per session inside the private vault clone and pushes
+  it, making session history searchable through this MCP server. The vault is
+  located indirectly (`SESSION_VAULT_REPO` env or a `.claude-session-vault`
+  marker); no private repo name or path is committed here. No-op without a
+  vault clone.
+
 ## [0.1.0] — 2026-06-09
 
 First tagged release. MCP server exposing a private Markdown vault

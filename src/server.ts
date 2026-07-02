@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { chatgptFetch, chatgptSearch } from "./chatgpt.js";
-import type { KnowledgeStore } from "./knowledgeStore.js";
+import type { VaultStore } from "./types.js";
 
 export interface BuildServerOptions {
   /**
@@ -32,7 +32,7 @@ const SERVER_INSTRUCTIONS =
  * Chat connectors), so the tool surface and the untrusted-content boundary
  * (`instructions`) stay identical across transports.
  */
-export function buildMcpServer(store: KnowledgeStore, options: BuildServerOptions): McpServer {
+export function buildMcpServer(store: VaultStore, options: BuildServerOptions): McpServer {
   const server = new McpServer(
     {
       name: "claude-openai-markdown-connector",

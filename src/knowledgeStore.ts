@@ -5,8 +5,16 @@ import { createTwoFilesPatch } from "diff";
 import { assertFrontmatterPatch, parseMarkdown, serializeMarkdown, titleFromMarkdown } from "./frontmatter.js";
 import { extractAllLocalLinks } from "./markdownLinks.js";
 import { searchDocuments, type SearchFilters } from "./search.js";
-import type { AppConfig } from "./config.js";
-import type { DocumentMetadata, MarkdownDocument, PlannedPatch, ProjectSummary, SearchResult } from "./types.js";
+import type { StoreConfig } from "./config.js";
+import type {
+  DocumentMetadata,
+  MarkdownDocument,
+  PlannedPatch,
+  ProjectSummary,
+  SearchResult,
+  TraceResult,
+  VaultStore
+} from "./types.js";
 import {
   assertRelativePath,
   relativeToRoot,
@@ -15,8 +23,8 @@ import {
   toPosixPath
 } from "./pathSafety.js";
 
-export class KnowledgeStore {
-  private readonly config: AppConfig;
+export class KnowledgeStore implements VaultStore {
+  private readonly config: StoreConfig;
   private rootRealPath?: string;
   // Parse cache keyed by real path. Parsing every Markdown file on every query
   // is the search bottleneck for large vaults; we re-parse a file only when its
@@ -26,13 +34,18 @@ export class KnowledgeStore {
     { mtimeMs: number; sizeBytes: number; document: MarkdownDocument }
   >();
 
-  constructor(config: AppConfig) {
+  constructor(config: StoreConfig) {
     this.config = config;
   }
 
   async init(): Promise<void> {
     this.rootRealPath = await resolveExistingRoot(this.config.knowledgeRoot);
     await fs.mkdir(this.config.patchStateDir, { recursive: true });
+  }
+
+  /** Resolved real path of this store's root (used for multi-root overlap checks). */
+  async rootPath(): Promise<string> {
+    return this.root();
   }
 
   async search(filters: SearchFilters): Promise<SearchResult[]> {
@@ -185,12 +198,7 @@ export class KnowledgeStore {
     };
   }
 
-  async traceSources(idOrPath: string): Promise<{
-    document: Pick<MarkdownDocument, "id" | "relativePath" | "title">;
-    source_refs: string[];
-    outgoing_links: string[];
-    backlinks: Array<Pick<MarkdownDocument, "id" | "relativePath" | "title">>;
-  }> {
+  async traceSources(idOrPath: string): Promise<TraceResult> {
     const document = await this.fetch(idOrPath);
     const documents = await this.listDocuments();
     const linkTargets = new Set([document.relativePath, document.relativePath.replace(/\.md$/i, ""), document.title]);

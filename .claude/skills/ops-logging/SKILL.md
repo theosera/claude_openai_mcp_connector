@@ -104,7 +104,8 @@ terminal-ops-logs/
 - URL 埋め込み credential: `://user:pass@`
 - `Bearer <token>` は**単位でマスク** (`Authorization: Bearer xxx` の token を残さない)
 - `token=` / `key=` / `secret=` / `password=` / `authorization …`
-- AWS `AKIA…` / OpenAI `sk-…`
+- AWS `AKIA…` / OpenAI 系 `sk-…` (ハイフン付き `sk-proj-…` / `sk-ant-…` も対象)
+- Google API key `AIza…` / Slack `xox[baprs]-…` / PEM 秘密鍵ブロック (`-----BEGIN … PRIVATE KEY-----` 〜 END を行ごとマスク)
 
 新しい token 形式が増えたらこの規則とスクリプトの `mask()` を更新する
 (マスク漏れはこの Skill の回帰なので、追加時は必ずここに 1 行追記)。
