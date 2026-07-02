@@ -18,6 +18,8 @@ export interface MarkdownDocument {
   frontmatter: DocumentMetadata;
   body: string;
   title: string;
+  /** Name of the knowledge root the document came from (multi-root mode only). */
+  root?: string;
   stats: {
     sizeBytes: number;
     modifiedAt: string;
@@ -33,6 +35,8 @@ export interface SearchResult {
   tags: string[];
   snippet: string;
   score: number;
+  /** Name of the knowledge root the hit came from (multi-root mode only). */
+  root?: string;
 }
 
 export interface ProjectSummary {
@@ -50,4 +54,52 @@ export interface PlannedPatch {
   created_at: string;
   new_content: string;
   diff: string;
+}
+
+export interface SearchFilters {
+  query: string;
+  client?: string;
+  project?: string;
+  tags?: string[];
+  limit?: number;
+}
+
+export interface CreateDocumentInput {
+  client: string;
+  project: string;
+  title: string;
+  body: string;
+  tags?: string[];
+  source_refs?: string[];
+}
+
+export interface PlanUpdateInput {
+  id_or_path: string;
+  new_body: string;
+  frontmatter_patch?: Record<string, unknown>;
+  reason: string;
+}
+
+export interface TraceResult {
+  document: Pick<MarkdownDocument, "id" | "relativePath" | "title">;
+  source_refs: string[];
+  outgoing_links: string[];
+  backlinks: Array<Pick<MarkdownDocument, "id" | "relativePath" | "title">>;
+}
+
+/**
+ * Common surface implemented by both the single-root KnowledgeStore and the
+ * MultiRootStore composite. server.ts / chatgpt.ts / httpServer.ts program
+ * against this interface so the tool surface is identical either way.
+ */
+export interface VaultStore {
+  init(): Promise<void>;
+  search(filters: SearchFilters): Promise<SearchResult[]>;
+  fetch(idOrPath: string): Promise<MarkdownDocument>;
+  listProjects(client?: string, tags?: string[]): Promise<ProjectSummary[]>;
+  listDocuments(): Promise<MarkdownDocument[]>;
+  createDocument(input: CreateDocumentInput): Promise<MarkdownDocument>;
+  planUpdate(input: PlanUpdateInput): Promise<PlannedPatch>;
+  applyPlannedUpdate(patchId: string): Promise<{ document: MarkdownDocument; diff: string }>;
+  traceSources(idOrPath: string): Promise<TraceResult>;
 }

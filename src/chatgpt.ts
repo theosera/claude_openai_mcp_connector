@@ -1,4 +1,4 @@
-import type { KnowledgeStore } from "./knowledgeStore.js";
+import type { VaultStore } from "./types.js";
 
 // ChatGPT's MCP "connector" contract expects two specifically named tools with
 // fixed output shapes:
@@ -38,7 +38,7 @@ export interface ChatgptFetchResult {
 }
 
 export async function chatgptSearch(
-  store: KnowledgeStore,
+  store: VaultStore,
   query: string,
   options: { limit?: number; baseUrl?: string } = {}
 ): Promise<ChatgptSearchResult> {
@@ -53,7 +53,7 @@ export async function chatgptSearch(
 }
 
 export async function chatgptFetch(
-  store: KnowledgeStore,
+  store: VaultStore,
   id: string,
   options: { baseUrl?: string } = {}
 ): Promise<ChatgptFetchResult> {

@@ -4,7 +4,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { HttpConfig } from "./config.js";
 import { isAuthorizedHeader, parseBearer } from "./httpAuth.js";
-import type { KnowledgeStore } from "./knowledgeStore.js";
+import type { VaultStore } from "./types.js";
 import type { OAuthHttpResponse } from "./oauth/provider.js";
 import { OAuthProvider, SCOPE_READ, SCOPE_WRITE } from "./oauth/provider.js";
 import { RateLimiter } from "./oauth/rateLimiter.js";
@@ -31,7 +31,7 @@ interface OAuthLimiters {
  *  - DNS-rebinding protection (allowedHosts / allowedOrigins).
  *  - Read-only tool surface unless MCP_HTTP_ALLOW_WRITE is set.
  */
-export async function startHttpServer(store: KnowledgeStore, config: HttpConfig): Promise<http.Server> {
+export async function startHttpServer(store: VaultStore, config: HttpConfig): Promise<http.Server> {
   const sessions = new Map<string, Session>();
   // OAuth 2.1 authorization server (only when configured). ChatGPT / Claude.ai
   // web require it; Desktop / Code / API keep using the static bearer.
@@ -63,7 +63,7 @@ export async function startHttpServer(store: KnowledgeStore, config: HttpConfig)
 async function handleRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  store: KnowledgeStore,
+  store: VaultStore,
   config: HttpConfig,
   sessions: Map<string, Session>,
   oauth: OAuthProvider | undefined,

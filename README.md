@@ -120,6 +120,38 @@ MCP_PATCH_STATE_DIR=.mcp-state/patches
 
 Do not commit `.env`, private vault URLs, private vault paths, or real note content.
 
+### Multiple knowledge roots (optional)
+
+To search **several repos at once** (e.g. your vault *plus* a command-log repo),
+set `KNOWLEDGE_ROOTS` instead of `KNOWLEDGE_ROOT`:
+
+```text
+KNOWLEDGE_ROOTS=vault=/path/to/private/obsidian-vault,ops=/path/to/ops-log-repo
+```
+
+- Comma-separated `name=path` pairs; names are lowercase alnum/dash/underscore.
+- The **first** root is the primary and the only writable one
+  (`create_document` / `plan_document_update` / `apply_planned_update`); every
+  other root is strictly **read-only** — writes addressed to it are rejected.
+- Documents from non-primary roots are addressed as `name:relative/path` in
+  search results, `fetch_document`, and `trace_sources`; results also carry a
+  `root` field. With a single root, ids and paths are unchanged (fully
+  backward compatible).
+- Each root is served by its own path-containment guard chain; roots must be
+  disjoint directories (nesting/duplicates are rejected at startup).
+
+### Session archive hook (Claude Code history → vault)
+
+This repo also ships a `session-archive` hook
+(`.claude/skills/session-archive/`, wired in `.claude/settings.json`): on every
+Stop/SessionEnd it renders the full Claude Code session transcript (title +
+conversation + tool calls/results, secrets masked) into one Markdown note per
+session inside your private vault clone and pushes it — so past sessions become
+searchable through this MCP server. The vault clone is located via
+`SESSION_VAULT_REPO` or a `.claude-session-vault` marker file at the vault
+root; without either, the hook is a no-op. See
+`.claude/skills/session-archive/SKILL.md`.
+
 ## Transports
 
 The same server speaks two transports, selected with `MCP_TRANSPORT`:

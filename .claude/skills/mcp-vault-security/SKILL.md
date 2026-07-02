@@ -1,6 +1,6 @@
 ---
 name: mcp-vault-security
-description: claude_openai_mcp_connector (private Markdown vault を MCP で公開する stdio サーバ) のセキュリティ不変条件と「コードのどこ」対応表。path containment (KNOWLEDGE_ROOT 越境防止 / symlink escape) / frontmatter field allowlist (YAML injection 防止) / two-step stale-safe write (plan→apply) / overwrite 衝突防止 / public-repo 安全 (vault を commit しない) / untrusted vault content。**`src/pathSafety.ts` / `src/knowledgeStore.ts` / `src/frontmatter.ts` / `src/config.ts` / 新しい MCP tool (`src/index.ts`) / `tests/pathSafety.test.ts` を書く・直す・レビューする前に必ずこの Skill をロードしてから**着手せよ。常時 CLAUDE.md に載せるとトークンを食うため発火条件付きで分離している。
+description: claude_openai_mcp_connector (private Markdown vault を MCP で公開する stdio サーバ) のセキュリティ不変条件と「コードのどこ」対応表。path containment (KNOWLEDGE_ROOT 越境防止 / symlink escape) / frontmatter field allowlist (YAML injection 防止) / two-step stale-safe write (plan→apply) / overwrite 衝突防止 / public-repo 安全 (vault を commit しない) / untrusted vault content。**`src/pathSafety.ts` / `src/knowledgeStore.ts` / `src/multiRootStore.ts` (複数ルート合成) / `src/frontmatter.ts` / `src/config.ts` / 新しい MCP tool (`src/index.ts`) / `tests/pathSafety.test.ts` を書く・直す・レビューする前に必ずこの Skill をロードしてから**着手せよ。常時 CLAUDE.md に載せるとトークンを食うため発火条件付きで分離している。
 # allowed-tools は Read のみ事前承認 (本 skill + 対象コードの読取用)。これは「事前承認の
 # 最小化」であって他ツールの禁止ではない — 未列挙の Edit/Bash 等はセッション通常の
 # permission に従い都度承認で使える。
@@ -37,6 +37,12 @@ injection」「③ 既存ノートの破壊的/stale 上書き」「④ public r
 - 違反は**例外で fail-closed** (sentinel fallback しない = MCP は黙って別物を返さない)。
 - **新しい read/write 経路を足したら必ずこのガードを通す**。root 外の生パスで `fs` を
   直接呼ばない。
+- **複数ルート (`KNOWLEDGE_ROOTS`) でも各ルートが同ガードを持つ**: `src/multiRootStore.ts`
+  は fs を直接触らず、ルートごとに無改変の `KnowledgeStore` を合成する。先頭ルートのみ
+  書込可 — 非 primary ルート宛の write は fail-closed で拒否。ルートの入れ子/重複は
+  `init()` で拒否 (同一ファイルが二重 identity を持ち read-only 境界を迂回するのを防ぐ)。
+  参照の `name:` プレフィックスは**既知ルート名に一致した時だけ**剥がす (剥がした残りは
+  子ストアの通常ガードを通る)。
 
 ### INV-2 Frontmatter field allowlist — YAML injection 防止
 `plan_document_update` の `frontmatter_patch` は**クライアント (LLM) 由来の untrusted
@@ -119,6 +125,7 @@ DCR + metadata discovery 必須**。`src/oauth/` の最小単一ユーザ AS。*
 |---|---|---|
 | `src/pathSafety.ts` | INV-1 | ガード段を消さない/順序を変えない。返すのは raw を NFC 正規化したパス (decode 結果では操作しない)。 |
 | `src/knowledgeStore.ts` | INV-1,2,3 | `walkMarkdownFiles`/`readDocument`/`resolveForWrite`/`resolveForExistingRead` は realpath 照合必須。`applyPlannedUpdate` の sha 照合を消さない。 |
+| `src/multiRootStore.ts` | INV-1,3 | fs 直接アクセス禁止 (子 `KnowledgeStore` 経由のみ)。write の primary 限定・overlap 拒否・プレフィックス処理を弱めない。 |
 | `src/frontmatter.ts` | INV-2 | `assertFrontmatterPatch` の allowlist を広げない (広げるなら脅威評価 + テスト追加)。 |
 | `src/server.ts` | INV-2,3,5,6 | tool 登録の単一 factory。新 tool は zod で入力 schema 化。write 系は `allowWrite` ガード内・two-step を崩さない。`SERVER_INSTRUCTIONS` の data 境界文を消さない。 |
 | `src/index.ts` | INV-6 | transport 選択のみ (`selectedTransport`)。stdio=full / http=`buildMcpServer` + `startHttpServer`。token/本文をログに出さない。 |
@@ -128,7 +135,7 @@ DCR + metadata discovery 必須**。`src/oauth/` の最小単一ユーザ AS。*
 | `src/oauth/store.ts` | INV-7 | code 単回・TTL・束縛、token opaque/rotation、容量キャップ + prune を消さない。 |
 | `src/oauth/provider.ts` | INV-7 | PKCE 照合・redirect exact-match/scheme 制限・login gate・401 の `WWW-Authenticate` を温存。HTML はエスケープ (`escapeHtml`)。 |
 | `src/config.ts` | INV-1,4,6,7 | secret は env のみ。`loadHttpConfig`/`loadOAuthConfig` は token/issuer/password 未設定で fail-closed。bind 既定 loopback。 |
-| `tests/pathSafety.test.ts` / `tests/knowledgeStore.test.ts` / `tests/httpServer.test.ts` / `tests/oauth.test.ts` | 全 INV を pin | 挙動を変えたらテストを足す/直す。回帰でガードを緩めない。HTTP は auth(401)・read-only tool 面・chatgpt 形状、OAuth は PKCE・単回 code・redirect policy・full flow を pin。 |
+| `tests/pathSafety.test.ts` / `tests/knowledgeStore.test.ts` / `tests/multiRootStore.test.ts` / `tests/httpServer.test.ts` / `tests/oauth.test.ts` | 全 INV を pin | 挙動を変えたらテストを足す/直す。回帰でガードを緩めない。HTTP は auth(401)・read-only tool 面・chatgpt 形状、OAuth は PKCE・単回 code・redirect policy・full flow を pin。 |
 
 ## テストで固定する (規約でなく実行可能な保証)
 セキュリティ挙動は `pnpm test` (vitest) で pin する。最低限カバー:
