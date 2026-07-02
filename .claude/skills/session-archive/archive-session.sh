@@ -51,9 +51,19 @@ payload="$(cat)"
 transcript="$(jq -r '.transcript_path // empty' <<<"$payload")"
 session_id="$(jq -r '.session_id // empty' <<<"$payload")"
 cwd="$(jq -r '.cwd // empty' <<<"$payload")"
-{ [ -n "$transcript" ] && [ -f "$transcript" ]; } || exit 0
 [ -n "$session_id" ] || session_id="unknown-session"
 sid8="${session_id:0:8}"
+
+# Claude Code flushes the transcript JSONL after the Stop hook starts, so wait
+# before reading (empirical value from the local session-log-to-obsidian hook).
+sleep 3
+
+# Resume sessions can hand the hook a transcript_path that no longer exists —
+# fall back to locating the JSONL by session id under ~/.claude/projects.
+if [ -z "$transcript" ] || [ ! -f "$transcript" ]; then
+  transcript="$(find "$HOME/.claude/projects" -type f -name "${session_id}.jsonl" 2>/dev/null | head -1 || true)"
+fi
+{ [ -n "$transcript" ] && [ -f "$transcript" ]; } || exit 0
 
 repo="$(basename "${cwd:-unknown}")"
 branch="$(git -C "${cwd:-.}" branch --show-current 2>/dev/null || echo '-')"
@@ -63,9 +73,13 @@ branch="$(git -C "${cwd:-.}" branch --show-current 2>/dev/null || echo '-')"
 date_start="$(jq -rs '[ .[] | .timestamp // empty | select(length > 0) ] | first // empty | .[0:10]' "$transcript")"
 [ -n "$date_start" ] || date_start="$(date +%Y-%m-%d)"
 
-# Title: latest summary entry (the session title Claude Code shows), falling
-# back to the first real user message, falling back to the session id.
-title="$(jq -rs '[ .[] | select(.type == "summary") | .summary // empty | select(length > 0) ] | last // empty | .[0:80]' "$transcript")"
+# Title priority: aiTitle (the session title Claude Code generates and keeps
+# updating — take the LAST value), then the latest summary entry, then the
+# first real user message, then the session id.
+title="$(jq -rs '[ .[] | .aiTitle // empty | select(type == "string" and length > 0) ] | last // empty | .[0:80]' "$transcript")"
+if [ -z "$title" ]; then
+  title="$(jq -rs '[ .[] | select(.type == "summary") | .summary // empty | select(length > 0) ] | last // empty | .[0:80]' "$transcript")"
+fi
 if [ -z "$title" ]; then
   title="$(jq -rs '[ .[]
       | select(.type == "user" and ((.isMeta // false) | not))
@@ -73,15 +87,17 @@ if [ -z "$title" ]; then
       | if type == "string" then .
         elif type == "array" then ([ .[] | select(.type == "text") | .text // "" ] | join(" "))
         else "" end
+      | gsub("<(?:local-command-caveat|local-command-stdout|local-command-stderr|command-name|command-message|command-args|system-reminder|user-prompt-submit-hook|bash-input|bash-stdout|bash-stderr)[^>]*>.*?</[^>]+>"; ""; "s")
       | gsub("[[:space:]]+"; " ") | select(length > 0)
     ] | first // empty | .[0:80]' "$transcript")"
 fi
 [ -n "$title" ] || title="Claude Code session $sid8"
 
-# Filename-safe title: strip OS- and Obsidian-hostile ASCII chars (byte-safe
-# for UTF-8 since all stripped chars are ASCII), collapse whitespace.
-safe_title="$(printf '%s' "$title" | tr -d '/\\:*?"<>|#^[]' | tr -d '\000-\037' \
-  | sed 's/[[:space:]]\{1,\}/ /g; s/^ *//; s/ *$//')"
+# Filename-safe title: separators become spaces (keeps word boundaries, same
+# convention as the local session-log hook), decoration/link chars are dropped.
+# All affected chars are ASCII, so this is byte-safe for UTF-8 titles.
+safe_title="$(printf '%s' "$title" | tr '/\\:|<>' '      ' | tr -d '*?"#^[]' | tr -d '\000-\037' \
+  | sed 's/[[:space:]]\{1,\}/ /g; s/^[ .-]*//; s/[ .-]*$//')"
 [ -n "$safe_title" ] || safe_title="session"
 filename="${date_start}_${safe_title}_${sid8}.md"
 
@@ -121,6 +137,11 @@ mask() {
 body_jq='
   def ts: (.timestamp // "") | sub("T"; " ") | .[0:19];
   def fence($lang; $text): "~~~~~~" + $lang + "\n" + ($text // "") + "\n~~~~~~";
+  # Strip harness-injected wrapper tags from USER text only (command echoes,
+  # system reminders, hook output). Actual user words stay verbatim.
+  def clean_user:
+    gsub("<(?:local-command-caveat|local-command-stdout|local-command-stderr|command-name|command-message|command-args|system-reminder|user-prompt-submit-hook|bash-input|bash-stdout|bash-stderr)[^>]*>.*?</[^>]+>"; ""; "s")
+    | gsub("^[[:space:]]+|[[:space:]]+$"; "");
   def tool_result_text:
     if type == "string" then .
     elif type == "array" then
@@ -133,11 +154,15 @@ body_jq='
     | (.message.content // []) as $content
     | if .type == "user" then
         (if ($content | type) == "string" then
-           (if (($content | gsub("[[:space:]]+"; "")) | length) > 0
-            then [ "## 👤 User — " + ($line | ts) + "\n\n" + $content ] else [] end)
+           (($content | clean_user) as $cleaned
+            | if ($cleaned | length) > 0
+              then [ "## 👤 User — " + ($line | ts) + "\n\n" + $cleaned ] else [] end)
          else
            [ $content[]
-             | if .type == "text" then "## 👤 User — " + ($line | ts) + "\n\n" + (.text // "")
+             | if .type == "text" then
+                 (((.text // "") | clean_user) as $cleaned
+                  | if ($cleaned | length) > 0
+                    then "## 👤 User — " + ($line | ts) + "\n\n" + $cleaned else empty end)
                elif .type == "tool_result" then "#### 📥 Tool result\n\n" + fence(""; (.content | tool_result_text))
                else empty end ]
          end)
@@ -158,9 +183,19 @@ body_jq='
 '
 
 yaml_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+# ANSI escape sequences (colors, line clears) leak into raw tool output and
+# make the note unreadable in Obsidian — strip them everywhere.
+ESC_CHAR="$(printf '\033')"
+strip_ansi() { sed -E "s/${ESC_CHAR}\[[0-9;]*[mK]//g"; }
 now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 tmp="$(mktemp)"
-trap 'rm -f "$tmp"' EXIT
+body_tmp="$(mktemp)"
+trap 'rm -f "$tmp" "$body_tmp"' EXIT
+
+jq -rs "$body_jq" "$transcript" > "$body_tmp"
+# No real conversation turns -> write nothing (no orphan stubs, and never
+# overwrite a good note with an empty regeneration).
+grep -q '[^[:space:]]' "$body_tmp" || exit 0
 
 {
   printf -- '---\n'
@@ -175,9 +210,9 @@ trap 'rm -f "$tmp"' EXIT
   printf 'updated_at: %s\n' "$now_iso"
   printf -- '---\n\n'
   printf '# %s\n\n' "$title"
-  jq -rs "$body_jq" "$transcript"
+  cat "$body_tmp"
   printf '\n'
-} | mask > "$tmp"
+} | mask | strip_ansi > "$tmp"
 
 # Idempotence: skip the rewrite if nothing changed apart from the updated_at
 # stamp. Do NOT exit here — a commit from a previous turn may still be
@@ -188,6 +223,7 @@ if [ -f "$dest" ] && diff -q \
 else
   mv "$tmp" "$dest"
 fi
+rm -f "$body_tmp"
 trap - EXIT
 
 # --- commit & push (only the generated note; never `git add -A`) -----------
