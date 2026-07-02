@@ -5,17 +5,33 @@ import type { OAuthConfig } from "./oauth/provider.js";
 
 dotenv.config();
 
+/** One named knowledge root. The FIRST configured root is the primary
+ *  (writable) root; every additional root is exposed strictly read-only. */
+export interface KnowledgeRoot {
+  name: string;
+  path: string;
+}
+
 export interface AppConfig {
+  /** Ordered roots; index 0 = primary (writable). Always at least one entry. */
+  knowledgeRoots: KnowledgeRoot[];
+  writeMode: "two_step";
+  patchStateDir: string;
+}
+
+/** Config for a single-root KnowledgeStore instance. */
+export interface StoreConfig {
   knowledgeRoot: string;
   writeMode: "two_step";
   patchStateDir: string;
 }
 
+// Root names become id/path prefixes (`name:relative/path`) in multi-root
+// results, so keep them short, lowercase, and unambiguous.
+const ROOT_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
-  const knowledgeRoot = env.KNOWLEDGE_ROOT?.trim();
-  if (!knowledgeRoot) {
-    throw new Error("KNOWLEDGE_ROOT is required. Point it at your private Markdown vault clone.");
-  }
+  const knowledgeRoots = parseKnowledgeRoots(env);
 
   const writeMode = env.MCP_WRITE_MODE?.trim() || "two_step";
   if (writeMode !== "two_step") {
@@ -23,10 +39,56 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   }
 
   return {
-    knowledgeRoot: path.resolve(knowledgeRoot),
+    knowledgeRoots,
     writeMode,
     patchStateDir: path.resolve(env.MCP_PATCH_STATE_DIR?.trim() || ".mcp-state/patches")
   };
+}
+
+/**
+ * Roots come from KNOWLEDGE_ROOTS ("name=/abs/path,other=/abs/path", first
+ * entry = primary/writable) or, for backward compatibility, from the single
+ * KNOWLEDGE_ROOT (equivalent to one primary root named "vault").
+ */
+function parseKnowledgeRoots(env: NodeJS.ProcessEnv): KnowledgeRoot[] {
+  const multi = env.KNOWLEDGE_ROOTS?.trim();
+  if (multi) {
+    const roots = multi
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0)
+      .map((entry) => {
+        const separator = entry.indexOf("=");
+        const name = separator > 0 ? entry.slice(0, separator).trim() : "";
+        const rootPath = separator > 0 ? entry.slice(separator + 1).trim() : "";
+        if (!name || !rootPath) {
+          throw new Error(`Invalid KNOWLEDGE_ROOTS entry "${entry}". Use "name=/path/to/root", comma-separated.`);
+        }
+        if (!ROOT_NAME_PATTERN.test(name)) {
+          throw new Error(
+            `Invalid knowledge root name "${name}". Use lowercase letters/digits/dash/underscore (max 32 chars).`
+          );
+        }
+        return { name, path: path.resolve(rootPath) };
+      });
+    if (roots.length === 0) {
+      throw new Error("KNOWLEDGE_ROOTS is set but contains no roots.");
+    }
+    const names = new Set<string>();
+    for (const root of roots) {
+      if (names.has(root.name)) {
+        throw new Error(`Duplicate knowledge root name "${root.name}" in KNOWLEDGE_ROOTS.`);
+      }
+      names.add(root.name);
+    }
+    return roots;
+  }
+
+  const single = env.KNOWLEDGE_ROOT?.trim();
+  if (!single) {
+    throw new Error("KNOWLEDGE_ROOT (or KNOWLEDGE_ROOTS) is required. Point it at your private Markdown vault clone.");
+  }
+  return [{ name: "vault", path: path.resolve(single) }];
 }
 
 export type TransportKind = "stdio" | "http";

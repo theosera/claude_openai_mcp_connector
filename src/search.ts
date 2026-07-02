@@ -1,12 +1,6 @@
-import type { MarkdownDocument, SearchResult } from "./types.js";
+import type { MarkdownDocument, SearchFilters, SearchResult } from "./types.js";
 
-export interface SearchFilters {
-  query: string;
-  client?: string;
-  project?: string;
-  tags?: string[];
-  limit?: number;
-}
+export type { SearchFilters } from "./types.js";
 
 export function searchDocuments(documents: MarkdownDocument[], filters: SearchFilters): SearchResult[] {
   const queryTerms = tokenize(filters.query);
@@ -59,7 +53,8 @@ function scoreDocument(document: MarkdownDocument, queryTerms: string[]): Search
     project: document.frontmatter.project,
     tags,
     snippet: makeSnippet(document.body, queryTerms),
-    score
+    score,
+    ...(document.root ? { root: document.root } : {})
   };
 }
 

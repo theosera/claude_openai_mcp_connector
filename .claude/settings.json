@@ -68,7 +68,15 @@
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "bash .claude/skills/ops-logging/push-log.sh" }
+          { "type": "command", "command": "bash .claude/skills/ops-logging/push-log.sh" },
+          { "type": "command", "command": "bash .claude/skills/session-archive/archive-session.sh" }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bash .claude/skills/session-archive/archive-session.sh" }
         ]
       }
     ]
