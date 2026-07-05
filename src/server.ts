@@ -1,7 +1,15 @@
+import { createRequire } from "node:module";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { chatgptFetch, chatgptSearch } from "./chatgpt.js";
 import type { VaultStore } from "./types.js";
+
+// Advertise the package version as the MCP server version so clients inspecting
+// server metadata see the released version. Sourced from package.json (single
+// source of truth) once at module load — `../package.json` resolves from both
+// dist/server.js and src/server.ts (dev via tsx), and npm always ships it.
+const require = createRequire(import.meta.url);
+const { version: SERVER_VERSION } = require("../package.json") as { version: string };
 
 export interface BuildServerOptions {
   /**
@@ -36,7 +44,7 @@ export function buildMcpServer(store: VaultStore, options: BuildServerOptions): 
   const server = new McpServer(
     {
       name: "claude-openai-markdown-connector",
-      version: "0.1.0"
+      version: SERVER_VERSION
     },
     { instructions: SERVER_INSTRUCTIONS }
   );
