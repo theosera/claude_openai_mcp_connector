@@ -6,6 +6,13 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-07-05
+
+Second release. The headline change is **multi-root knowledge access**; the rest
+is developer-facing hook tooling (session archiving, command-learning logs),
+documentation, and dependency/CI maintenance. No breaking changes — a single
+`KNOWLEDGE_ROOT` setup behaves exactly as in `0.1.0`.
+
 ### Added
 
 - **Multiple knowledge roots** (`KNOWLEDGE_ROOTS="name=/path,…"`): search,
@@ -22,7 +29,34 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   it, making session history searchable through this MCP server. The vault is
   located indirectly (`SESSION_VAULT_REPO` env or a `.claude-session-vault`
   marker); no private repo name or path is committed here. No-op without a
-  vault clone.
+  vault clone. Adds a **PreCompact snapshot mode**: before auto-compact prunes
+  a transcript, a full-detail snapshot is written under
+  `_logs/ClaudeCode-Web/_precompact/` so pre-compact content is never lost.
+- **ops-logging skill + hooks** (`.claude/skills/ops-logging/`): PostToolUse/Stop
+  hooks that append a "command + intent" learning log (all secrets masked;
+  `Bearer <token>` masked as a unit; GitHub MCP calls recorded via a
+  metadata-only allowlist) and push it once per session to a separate private
+  `terminal-ops-logs` repo. No-op unless `OPS_LOG_REPO` points at a clone.
+- **MIT `LICENSE`** file and a `license` field in `package.json`.
+- **Manual release workflow** (`.github/workflows/release.yml`):
+  `workflow_dispatch` → `gh release create`, refusing to overwrite a
+  pre-existing tag.
+- **Documentation**: operations guide (`docs/operations.md`, incl. Cloudflare
+  account/domain requirements, systemd full-hardening drop-in, and a bwrap
+  sandbox recipe for the stdio server), `docs/ROADMAP.md`, a STRIDE
+  `docs/threat-model.md`, bilingual PR/FAQ (`docs/PRFAQ.md`, `docs/PRFAQ.en.md`),
+  and README polish (architecture Mermaid diagram, status badges, use-cases).
+
+### Changed
+
+- `KnowledgeStore` is now composed behind a multi-root layer; `search`,
+  `chatgpt` aliases, `config`, and result `types` were adapted to carry an
+  optional `root` and to resolve `name:relative/path` addresses.
+- Dependency maintenance (dev toolchain): `@types/node` → `^26`, `eslint`
+  → `^10.6`, `oxlint` → `^1.71`, `prettier` → `^3.9`, `typescript-eslint`
+  → `^8.62`, `vite` → `^8.1`, `vitest` → `^4.1.9`, plus a `github-actions`
+  group bump. `CLAUDE.global.md` re-synced byte-identical with the canonical
+  global layer.
 
 ## [0.1.0] — 2026-06-09
 
@@ -55,5 +89,6 @@ First tagged release. MCP server exposing a private Markdown vault
   frontmatter allowlist, two-step stale-safe writes, HTTP auth + read-only
   surface, and the full OAuth flow.
 
-[Unreleased]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/theosera/claude_openai_mcp_connector/releases/tag/v0.1.0
