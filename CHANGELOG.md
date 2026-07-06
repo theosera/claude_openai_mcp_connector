@@ -49,6 +49,17 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   normal names, and `token=…` values (kept byte-identical with the canonical
   copy).
 
+### Security
+
+- **Cleared all `pnpm audit` advisories.** A pnpm `overrides` entry pins the
+  transitive `hono` (via `@modelcontextprotocol/sdk` → `@hono/node-server`) to
+  `>=4.12.25`, resolving 6 advisories (1 high — CORS middleware reflecting any
+  origin with credentials under a wildcard default — plus 5 moderate). The
+  refreshed lockfile also moves `gray-matter`'s transitive `js-yaml` to `3.15.0`
+  (within its existing range), clearing a moderate merge-key quadratic-DoS
+  advisory without the gray-matter-breaking jump to `js-yaml` 4.x. `pnpm audit`
+  is now clean and the 86 tests still pass.
+
 ## [0.2.0] — 2026-07-05
 
 Second release. The headline change is **multi-root knowledge access**; the rest
