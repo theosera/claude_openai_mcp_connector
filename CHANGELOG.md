@@ -15,6 +15,10 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`.github/ISSUE_TEMPLATE/bug_report.yml` / `feature_request.yml` /
   `config.yml`, with blank issues disabled and a security-report contact link),
   and a `.github/PULL_REQUEST_TEMPLATE.md` mirroring the CI quality gate.
+- **Actionable private security-reporting channel**: `SECURITY.md` and the issue
+  template's security link now point to GitHub private vulnerability reporting
+  (draft advisory) instead of only naming the maintainer, so reporters have a
+  usable private intake.
 
 ## [0.2.0] — 2026-07-05
 
