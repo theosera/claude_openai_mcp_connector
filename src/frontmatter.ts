@@ -51,6 +51,31 @@ export function parseMarkdown(raw: string): { frontmatter: DocumentMetadata; bod
   };
 }
 
+// Fault-tolerant wrapper used on the read path. A single vault document with
+// malformed frontmatter — broken YAML/JSON, or raw control characters that leak
+// in from a web clipping — makes gray-matter throw. Because the store parses
+// every file when listing/searching, one such file would otherwise abort the
+// whole operation (search / list / fetch / trace all fail). Instead we swallow
+// the parse error, fall back to empty frontmatter over the raw body so the note
+// stays searchable by body/path, and hand the error message back to the caller
+// (which logs only the file path, never the content). Containment checks run
+// before this and are unaffected.
+export function parseMarkdownSafe(raw: string): {
+  frontmatter: DocumentMetadata;
+  body: string;
+  parseError?: string;
+} {
+  try {
+    return parseMarkdown(raw);
+  } catch (error) {
+    return {
+      frontmatter: normalizeMetadata({} as DocumentMetadata),
+      body: raw,
+      parseError: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
 export function serializeMarkdown(frontmatter: DocumentMetadata, body: string): string {
   return matter.stringify(body.trimEnd() + "\n", normalizeMetadata(frontmatter));
 }

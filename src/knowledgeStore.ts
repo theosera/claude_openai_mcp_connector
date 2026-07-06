@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createTwoFilesPatch } from "diff";
-import { assertFrontmatterPatch, parseMarkdown, serializeMarkdown, titleFromMarkdown } from "./frontmatter.js";
+import { assertFrontmatterPatch, parseMarkdownSafe, serializeMarkdown, titleFromMarkdown } from "./frontmatter.js";
 import { extractAllLocalLinks } from "./markdownLinks.js";
 import { searchDocuments, type SearchFilters } from "./search.js";
 import type { StoreConfig } from "./config.js";
@@ -250,7 +250,12 @@ export class KnowledgeStore implements VaultStore {
     try {
       const raw = await handle.readFile("utf8");
       const stats = await handle.stat();
-      const parsed = parseMarkdown(raw);
+      const parsed = parseMarkdownSafe(raw);
+      if (parsed.parseError) {
+        // Do not print the parser message — it echoes file content. Just name the
+        // file so one malformed note is discoverable without aborting the search.
+        process.stderr.write(`[knowledge] unparseable frontmatter, indexing body only: ${relativePath}\n`);
+      }
       const id =
         typeof parsed.frontmatter.id === "string" && parsed.frontmatter.id.trim()
           ? parsed.frontmatter.id.trim()
