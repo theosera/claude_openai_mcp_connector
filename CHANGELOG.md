@@ -20,6 +20,19 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (draft advisory) instead of only naming the maintainer, so reporters have a
   usable private intake.
 
+### Fixed
+
+- **A single document with unparseable frontmatter no longer breaks every
+  query.** `search_documents` / `list_projects` / `fetch_document` /
+  `trace_sources` walk and parse every note, so one file with malformed YAML/JSON
+  frontmatter (a bare-dash value, or raw control characters that leak in from a
+  web clipping) made gray-matter throw and abort the whole operation
+  non-deterministically. The read path now parses frontmatter fault-tolerantly
+  (`parseMarkdownSafe`): a note that fails to parse is indexed by its body/path
+  with empty metadata and a one-line, content-free stderr note, instead of
+  poisoning the batch. Path-containment / symlink guards are unchanged
+  (`src/frontmatter.ts`, `src/knowledgeStore.ts`, `tests/knowledgeStore.test.ts`).
+
 ## [0.2.0] — 2026-07-05
 
 Second release. The headline change is **multi-root knowledge access**; the rest

@@ -175,4 +175,30 @@ describe("KnowledgeStore", () => {
     const documents = await store.listDocuments();
     expect(documents.map((document) => document.id).sort()).toEqual(["chatgpt-research-001", "claude-plan-001"]);
   });
+
+  it("indexes documents with unparseable frontmatter instead of aborting the whole search", async () => {
+    // Notes with malformed frontmatter — a bare-dash value, an unterminated flow
+    // sequence — make gray-matter throw. Before the fault-tolerant parse, one
+    // such file rejected the whole listDocuments() batch, breaking search / list
+    // / fetch / trace for every note in the vault.
+    await fs.writeFile(
+      path.join(root, "broken-branch.md"),
+      '---\ntitle: "Broken"\nbranch: -\n---\n\nZZUNIQUEONE clip body\n',
+      "utf8"
+    );
+    await fs.writeFile(path.join(root, "broken-seq.md"), "---\ntags: [a, b\n---\n\nZZUNIQUETWO clip body\n", "utf8");
+
+    // Well-formed documents are unaffected.
+    const good = await store.search({ query: "retrieval", client: "chatgpt" });
+    expect(good).toHaveLength(1);
+
+    // The malformed notes are not dropped — still searchable by body, with
+    // fallback (empty) metadata and a path-derived title.
+    expect((await store.search({ query: "ZZUNIQUEONE" })).map((result) => result.path)).toContain("broken-branch.md");
+    expect((await store.search({ query: "ZZUNIQUETWO" })).map((result) => result.path)).toContain("broken-seq.md");
+
+    // Other read paths survive a malformed note too.
+    await expect(store.listProjects()).resolves.toBeDefined();
+    await expect(store.listDocuments()).resolves.toHaveLength(4);
+  });
 });
