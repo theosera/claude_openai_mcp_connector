@@ -268,23 +268,32 @@ jq -rs "$body_jq" "$transcript" > "$body_tmp"
 # overwrite a good note with an empty regeneration).
 grep -q '[^[:space:]]' "$body_tmp" || exit 0
 
+# Mask the free-text frontmatter scalars (title / branch) individually, BEFORE
+# quoting. The remaining frontmatter is structured (ids, dates, repo names) and
+# carries no secrets, so we can mask the body separately below instead of piping
+# the whole assembled block through `mask`. Running `mask` over the quoted
+# frontmatter would let its value pattern consume the closing quote of any value
+# containing a `key=…`/`token=…` substring (a valid branch or a title), which
+# reintroduces malformed YAML. Pre-masking the scalars keeps secrets masked while
+# leaving the quotes intact.
+title_masked="$(printf '%s' "$title" | mask)"
+branch_masked="$(printf '%s' "$branch" | mask)"
 {
   printf -- '---\n'
   printf 'id: cc-session-%s\n' "$session_id"
-  printf 'title: "%s"\n' "$(yaml_escape "$title")"
+  printf 'title: "%s"\n' "$(yaml_escape "$title_masked")"
   printf 'client: claude-code\n'
   printf 'project: %s\n' "$repo"
   printf 'date: %s\n' "$date_start"
-  printf 'branch: "%s"\n' "$(yaml_escape "$branch")"
+  printf 'branch: "%s"\n' "$(yaml_escape "$branch_masked")"
   printf 'session_id: %s\n' "$session_id"
   printf 'repos: [%s]\n' "$(printf '%s' "$repos" | sed 's/ /, /g')"
   printf 'tags: [claude-code-session, %s]\n' "$(printf '%s' "$repos" | sed 's/ /, /g')"
   printf 'updated_at: %s\n' "$now_iso"
   printf -- '---\n\n'
-  printf '# %s\n\n' "$title"
-  cat "$body_tmp"
-  printf '\n'
-} | mask | strip_ansi > "$tmp"
+  printf '# %s\n\n' "$title_masked"
+  { cat "$body_tmp"; printf '\n'; } | mask
+} | strip_ansi > "$tmp"
 
 # Idempotence: skip the rewrite if nothing changed apart from the updated_at
 # stamp. Do NOT exit here — a commit from a previous turn may still be

@@ -38,6 +38,14 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   source of the notes that broke search above. The `branch` value is now quoted
   and escaped like `title` (`branch: "-"`), so freshly archived sessions parse
   cleanly (kept byte-identical with the canonical copy).
+- **session-archive masking no longer eats the closing quote of a frontmatter
+  value.** The block `mask` ran over the assembled note, so a quoted `title` or
+  `branch` whose value contained a `key=…` / `token=…` substring (both are valid)
+  had its closing `"` consumed by the mask value pattern, producing malformed
+  YAML. The hook now masks the free-text scalars (`title` / `branch`)
+  per-field before quoting and masks the body separately, so secrets stay masked
+  and the quotes stay intact. Verified for `-`, normal names, and `token=…`
+  values (kept byte-identical with the canonical copy).
 
 ## [0.2.0] — 2026-07-05
 
