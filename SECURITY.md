@@ -87,5 +87,23 @@ pnpm test   # path traversal, symlink escape + cycle, frontmatter allowlist + va
 
 ## Reporting a vulnerability
 
-Please report privately to the repository owner (`@theosera`) rather than
-opening a public issue.
+Please report vulnerabilities **privately** — do not open a public issue, pull
+request, or discussion, and do not disclose details publicly until a fix is
+released.
+
+**Preferred channel — GitHub private vulnerability reporting.** Open a draft
+security advisory at
+<https://github.com/theosera/claude_openai_mcp_connector/security/advisories/new>
+(the repository's **Security** tab → **Report a vulnerability**). The report and
+the ensuing discussion stay private between you and the maintainer (`@theosera`).
+
+When reporting, please include:
+
+- the affected component and transport (stdio or HTTP / OAuth);
+- the impact and a description of the issue;
+- a minimal reproduction against `fixtures/synthetic-vault/` where possible —
+  **never include real vault content, real paths, or secrets**.
+
+You can expect an initial acknowledgment within a few days. Coordinated
+disclosure is appreciated: please allow reasonable time for a fix to ship before
+any public disclosure.
