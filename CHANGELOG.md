@@ -32,6 +32,12 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   with empty metadata and a one-line, content-free stderr note, instead of
   poisoning the batch. Path-containment / symlink guards are unchanged
   (`src/frontmatter.ts`, `src/knowledgeStore.ts`, `tests/knowledgeStore.test.ts`).
+- **session-archive hook no longer writes invalid YAML frontmatter for a
+  detached HEAD.** `archive-session.sh` emitted `branch: -` (bare dash) when
+  `git branch --show-current` was empty, which is malformed YAML — this was the
+  source of the notes that broke search above. The `branch` value is now quoted
+  and escaped like `title` (`branch: "-"`), so freshly archived sessions parse
+  cleanly (kept byte-identical with the canonical copy).
 
 ## [0.2.0] — 2026-07-05
 

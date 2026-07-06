@@ -275,7 +275,7 @@ grep -q '[^[:space:]]' "$body_tmp" || exit 0
   printf 'client: claude-code\n'
   printf 'project: %s\n' "$repo"
   printf 'date: %s\n' "$date_start"
-  printf 'branch: %s\n' "$branch"
+  printf 'branch: "%s"\n' "$(yaml_escape "$branch")"
   printf 'session_id: %s\n' "$session_id"
   printf 'repos: [%s]\n' "$(printf '%s' "$repos" | sed 's/ /, /g')"
   printf 'tags: [claude-code-session, %s]\n' "$(printf '%s' "$repos" | sed 's/ /, /g')"
