@@ -268,27 +268,31 @@ jq -rs "$body_jq" "$transcript" > "$body_tmp"
 # overwrite a good note with an empty regeneration).
 grep -q '[^[:space:]]' "$body_tmp" || exit 0
 
-# Mask the free-text frontmatter scalars (title / branch) individually, BEFORE
-# quoting. The remaining frontmatter is structured (ids, dates, repo names) and
-# carries no secrets, so we can mask the body separately below instead of piping
-# the whole assembled block through `mask`. Running `mask` over the quoted
-# frontmatter would let its value pattern consume the closing quote of any value
-# containing a `key=…`/`token=…` substring (a valid branch or a title), which
-# reintroduces malformed YAML. Pre-masking the scalars keeps secrets masked while
-# leaving the quotes intact.
+# Mask every free-text / path-derived frontmatter value INDIVIDUALLY, before
+# assembling the note. Previously the whole block was piped through `mask`, but
+# that let the value pattern consume the closing quote of a quoted value
+# containing a `key=…`/`token=…` substring (a branch or title), reintroducing
+# malformed YAML. Masking each value up front — and the body separately below —
+# preserves the full masking coverage (title / branch / project / repos / tags /
+# body; project & repos are basenames derived from cwd / tool-input paths, so a
+# checkout literally named `token=…` must still be masked) while leaving the YAML
+# quotes intact. The remaining fields are a literal, a UUID, and timestamps,
+# which cannot carry secrets.
 title_masked="$(printf '%s' "$title" | mask)"
 branch_masked="$(printf '%s' "$branch" | mask)"
+project_masked="$(printf '%s' "$repo" | mask)"
+repos_masked="$(printf '%s' "$repos" | mask)"
 {
   printf -- '---\n'
   printf 'id: cc-session-%s\n' "$session_id"
   printf 'title: "%s"\n' "$(yaml_escape "$title_masked")"
   printf 'client: claude-code\n'
-  printf 'project: %s\n' "$repo"
+  printf 'project: %s\n' "$project_masked"
   printf 'date: %s\n' "$date_start"
   printf 'branch: "%s"\n' "$(yaml_escape "$branch_masked")"
   printf 'session_id: %s\n' "$session_id"
-  printf 'repos: [%s]\n' "$(printf '%s' "$repos" | sed 's/ /, /g')"
-  printf 'tags: [claude-code-session, %s]\n' "$(printf '%s' "$repos" | sed 's/ /, /g')"
+  printf 'repos: [%s]\n' "$(printf '%s' "$repos_masked" | sed 's/ /, /g')"
+  printf 'tags: [claude-code-session, %s]\n' "$(printf '%s' "$repos_masked" | sed 's/ /, /g')"
   printf 'updated_at: %s\n' "$now_iso"
   printf -- '---\n\n'
   printf '# %s\n\n' "$title_masked"

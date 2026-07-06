@@ -42,10 +42,12 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   value.** The block `mask` ran over the assembled note, so a quoted `title` or
   `branch` whose value contained a `key=…` / `token=…` substring (both are valid)
   had its closing `"` consumed by the mask value pattern, producing malformed
-  YAML. The hook now masks the free-text scalars (`title` / `branch`)
-  per-field before quoting and masks the body separately, so secrets stay masked
-  and the quotes stay intact. Verified for `-`, normal names, and `token=…`
-  values (kept byte-identical with the canonical copy).
+  YAML. The hook now masks every free-text / path-derived frontmatter value
+  (`title` / `branch` / `project` / `repos` / `tags`) per-field before quoting
+  and masks the body separately, so secrets stay masked (including a checkout
+  basename shaped like `token=…`) and the quotes stay intact. Verified for `-`,
+  normal names, and `token=…` values (kept byte-identical with the canonical
+  copy).
 
 ## [0.2.0] — 2026-07-05
 
