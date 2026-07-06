@@ -6,6 +6,16 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Community-health files** for public contribution: `CONTRIBUTING.md`
+  (dev setup, the `pnpm test` quality gate, commit/branch conventions, and the
+  "security reports go through SECURITY.md, not issues" rule), a Contributor
+  Covenant `CODE_OF_CONDUCT.md`, GitHub issue forms
+  (`.github/ISSUE_TEMPLATE/bug_report.yml` / `feature_request.yml` /
+  `config.yml`, with blank issues disabled and a security-report contact link),
+  and a `.github/PULL_REQUEST_TEMPLATE.md` mirroring the CI quality gate.
+
 ## [0.2.0] — 2026-07-05
 
 Second release. The headline change is **multi-root knowledge access**; the rest

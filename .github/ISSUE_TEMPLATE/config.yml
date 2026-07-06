@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 🔒 Report a security vulnerability
+    url: https://github.com/theosera/claude_openai_mcp_connector/blob/main/SECURITY.md
+    about: Do not open a public issue. Follow the private reporting process in SECURITY.md.
+  - name: 💬 Questions & ideas
+    url: https://github.com/theosera/claude_openai_mcp_connector/discussions
+    about: For open-ended questions or discussion, use GitHub Discussions if enabled.

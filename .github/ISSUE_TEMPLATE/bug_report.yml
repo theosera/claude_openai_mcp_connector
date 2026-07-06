@@ -1,0 +1,70 @@
+name: Bug report
+description: Report a problem with the MCP server (tools, transports, auth, or setup).
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug! Please search existing issues first.
+
+        ⚠️ **Do not report security vulnerabilities here.** Path-traversal, auth
+        bypass, OAuth, secret-leak, or injection issues must go through the
+        private process in [SECURITY.md](../blob/main/SECURITY.md).
+
+        🔒 **Never paste real vault content, real paths, or private repo URLs.**
+        Reproduce against `fixtures/synthetic-vault/` where possible.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight
+      options:
+        - label: This is not a security vulnerability (those go through SECURITY.md).
+          required: true
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: My report contains no real vault content, paths, or secrets.
+          required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what actually happened?
+      placeholder: |
+        1. Called `search_documents` with …
+        2. Expected …
+        3. Got … (include the error message / stack trace if any)
+    validations:
+      required: true
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Transport
+      options:
+        - stdio (local CLI/desktop)
+        - Streamable HTTP (remote connector)
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: node-version
+    attributes:
+      label: Node.js version
+      description: Output of `node -v` (project requires >= 22.12.0).
+      placeholder: v22.12.0
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS / environment
+      placeholder: macOS 15.5 / Ubuntu 24.04 / Windows 11 …
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste any relevant log output. This is rendered as code, so no formatting needed.
+      render: shell
+    validations:
+      required: false
