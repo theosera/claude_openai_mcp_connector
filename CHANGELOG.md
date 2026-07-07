@@ -20,6 +20,18 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (draft advisory) instead of only naming the maintainer, so reporters have a
   usable private intake.
 
+### Changed
+
+- **Read tools advertise `readOnlyHint: true` so Chat clients stop prompting for
+  approval on every call.** `search_documents` / `fetch_document` / `list_projects`
+  / `trace_sources` and the ChatGPT-compatible `search` / `fetch` aliases are pure
+  reads, but without the MCP read-only annotation a client (e.g. Claude.ai) treats
+  each call as potentially state-changing and shows an "allow once?" prompt every
+  time. They now carry the hint. Write tools (`create_document` /
+  `plan_document_update` / `apply_planned_update`) deliberately keep **no**
+  read-only hint, so clients still prompt before any mutation
+  (`src/server.ts`, `tests/httpServer.test.ts`).
+
 ### Fixed
 
 - **`fetch_document` / `fetch` / `trace_sources` now resolve non-ASCII (e.g.

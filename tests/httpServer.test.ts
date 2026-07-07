@@ -132,6 +132,29 @@ describe("buildMcpServer tool surface", () => {
     expect(names).toContain("apply_planned_update");
   });
 
+  it("advertises readOnlyHint so clients can skip per-call approval on reads", async () => {
+    const store = await makeStore();
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = buildMcpServer(store, { allowWrite: true, includeChatgptCompat: true });
+    await server.connect(serverTransport);
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await client.connect(clientTransport);
+    const { tools } = await client.listTools();
+    await client.close();
+
+    const hint = (name: string) => tools.find((t) => t.name === name)?.annotations?.readOnlyHint;
+    // Every read tool is marked read-only so clients (e.g. Claude.ai) can auto-run
+    // it instead of prompting "allow once?" on every call.
+    for (const name of ["search_documents", "fetch_document", "list_projects", "trace_sources", "search", "fetch"]) {
+      expect(hint(name)).toBe(true);
+    }
+    // Write tools deliberately carry no readOnlyHint, so clients keep prompting
+    // for approval before any mutation.
+    for (const name of ["create_document", "plan_document_update", "apply_planned_update"]) {
+      expect(hint(name)).not.toBe(true);
+    }
+  });
+
   it("puts ChatGPT payloads at structuredContent top level, wraps native arrays under data", async () => {
     const store = await makeStore();
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

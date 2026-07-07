@@ -60,7 +60,10 @@ export function buildMcpServer(store: VaultStore, options: BuildServerOptions): 
         project: z.string().optional(),
         tags: z.array(z.string()).optional(),
         limit: z.number().int().min(1).max(50).optional()
-      }
+      },
+      // Pure read: advertise it so clients (e.g. Claude.ai) can skip the
+      // per-call "allow this tool?" prompt they otherwise show for every call.
+      annotations: { readOnlyHint: true }
     },
     async (input) => jsonResult(await store.search(input))
   );
@@ -72,7 +75,8 @@ export function buildMcpServer(store: VaultStore, options: BuildServerOptions): 
       description: "Fetch a Markdown document by frontmatter id or vault-relative path.",
       inputSchema: {
         id_or_path: z.string()
-      }
+      },
+      annotations: { readOnlyHint: true }
     },
     async (input) => jsonResult(await store.fetch(input.id_or_path))
   );
@@ -85,7 +89,8 @@ export function buildMcpServer(store: VaultStore, options: BuildServerOptions): 
       inputSchema: {
         client: z.string().optional(),
         tags: z.array(z.string()).optional()
-      }
+      },
+      annotations: { readOnlyHint: true }
     },
     async (input) => jsonResult(await store.listProjects(input.client, input.tags))
   );
@@ -97,7 +102,8 @@ export function buildMcpServer(store: VaultStore, options: BuildServerOptions): 
       description: "Return source refs, outgoing local links, and backlink candidates for a document.",
       inputSchema: {
         id_or_path: z.string()
-      }
+      },
+      annotations: { readOnlyHint: true }
     },
     async (input) => jsonResult(await store.traceSources(input.id_or_path))
   );
@@ -111,7 +117,8 @@ export function buildMcpServer(store: VaultStore, options: BuildServerOptions): 
           "ChatGPT-connector-compatible search. Returns { results: [{ id, title, url }] } over the private Markdown vault.",
         inputSchema: {
           query: z.string().default("")
-        }
+        },
+        annotations: { readOnlyHint: true }
       },
       async (input) => chatgptResult(await chatgptSearch(store, input.query, { baseUrl: options.chatgptUrlBase }))
     );
@@ -124,7 +131,8 @@ export function buildMcpServer(store: VaultStore, options: BuildServerOptions): 
           "ChatGPT-connector-compatible fetch. Returns { id, title, text, url, metadata } for a document id returned by search.",
         inputSchema: {
           id: z.string()
-        }
+        },
+        annotations: { readOnlyHint: true }
       },
       async (input) => chatgptResult(await chatgptFetch(store, input.id, { baseUrl: options.chatgptUrlBase }))
     );
