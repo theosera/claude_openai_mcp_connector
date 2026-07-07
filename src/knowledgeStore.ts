@@ -354,12 +354,21 @@ async function walkMarkdownFiles(root: string, current: string = root, visited =
 }
 
 function slugSegment(value: string): string {
+  // Keep Unicode letters/digits (\p{L}\p{N}) so a non-ASCII title/client/project
+  // — e.g. an all-Japanese "設計メモ" — produces a distinct slug instead of
+  // collapsing to "untitled". Collapsing every non-ASCII segment to "untitled"
+  // made a fully-Japanese vault able to hold only ONE document per client/project
+  // (the 2nd create_document hit the wx-overwrite guard). Path containment still
+  // normalizes/validates the resulting non-ASCII path downstream.
   const slug = value
+    .normalize("NFC")
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
     .replace(/^-+|-+$/g, "");
-  return slug || "untitled";
+  // Titles with no letters/digits at all (pure punctuation/emoji) still need a
+  // unique, collision-free segment rather than a shared "untitled".
+  return slug || `untitled-${sha256(value).slice(0, 8)}`;
 }
 
 function ensureMarkdownExtension(value: string): string {

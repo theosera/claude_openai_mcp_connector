@@ -34,6 +34,30 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A single note with a non-string YAML scalar no longer crashes `search` /
+  `list_projects` for the whole vault.** YAML auto-types unquoted values, so
+  `tags: [2024]` becomes numbers and `client: 2024` a number. Such frontmatter
+  parses cleanly (so the fault-tolerant parser never sees an error), but the read
+  path then called `tag.toLowerCase()` / `client.localeCompare()` on the value and
+  threw — aborting search and list_projects for **every** note, not just the bad
+  one. `normalizeMetadata` now coerces `tags` / `source_refs` elements and the
+  `client` / `project` scalars to strings at the single read-path chokepoint; the
+  write-time field allowlist is untouched (`src/frontmatter.ts`,
+  `tests/knowledgeStore.test.ts`).
+- **Multi-root: a frontmatter `id` that collides with a root name now fetches the
+  note that carries it.** With `KNOWLEDGE_ROOTS`, a vault note whose id begins with
+  another root's name + `:` (e.g. `id: "ops:secret"`) was mis-routed by `fetch`
+  into that root, returning a **different** document than the one the search
+  citation pointed at (or nothing). `MultiRootStore.fetch` now matches a bare id
+  against all wrapped documents before treating a `<name>:` prefix as routing
+  (`src/multiRootStore.ts`, `tests/multiRootStore.test.ts`).
+- **`create_document` keeps non-ASCII (e.g. Japanese) titles instead of collapsing
+  them to `untitled`.** The slugifier stripped everything outside `[a-z0-9]`, so an
+  all-Japanese `client` / `project` / `title` became empty → `untitled`, letting a
+  fully-Japanese vault hold only ONE document per client/project (the 2nd create
+  hit the no-overwrite guard). It now keeps Unicode letters/digits (`\p{L}\p{N}`)
+  on the NFC-normalized value, with a unique hash suffix for pure-symbol titles
+  (`src/knowledgeStore.ts`, `tests/knowledgeStore.test.ts`).
 - **`fetch_document` / `fetch` / `trace_sources` now resolve non-ASCII (e.g.
   Japanese) filenames that `search` returns.** Document ids/relative paths derive
   from `fs.realpath`, which on macOS reports filenames **decomposed (NFD)**, while

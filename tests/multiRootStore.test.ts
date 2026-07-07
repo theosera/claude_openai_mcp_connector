@@ -99,6 +99,32 @@ describe("MultiRootStore", () => {
     await store.init();
   });
 
+  it("resolves a frontmatter id that collides with a root name to the note that carries it", async () => {
+    // Root names are short words ("vault", "ops"), and Obsidian notes carry
+    // custom frontmatter ids. A vault note with `id: "ops:secret"` must fetch to
+    // THAT note — not be mis-routed into the "ops" root and return a different
+    // document (a silently-wrong RAG citation / source-integrity bug).
+    await fs.writeFile(
+      path.join(vaultRoot, "collide.md"),
+      '---\nid: "ops:secret"\ntitle: Vault Collide\n---\n\nVAULTCOLLIDEBODY\n',
+      "utf8"
+    );
+    await fs.writeFile(path.join(opsRoot, "secret.md"), "---\ntitle: Ops Secret\n---\n\nOPSSECRETBODY\n", "utf8");
+
+    // search emits the colliding id for the vault note...
+    const hit = (await store.search({ query: "VAULTCOLLIDEBODY" })).find((r) => r.id === "ops:secret");
+    expect(hit?.title).toBe("Vault Collide");
+
+    // ...and fetch returns exactly that note, not the ops root's secret.md.
+    const fetched = await store.fetch("ops:secret");
+    expect(fetched.title).toBe("Vault Collide");
+    expect(fetched.body).toContain("VAULTCOLLIDEBODY");
+
+    // The genuine ops document is still reachable via its own prefixed path id.
+    const ops = await store.fetch("ops:secret.md");
+    expect(ops.title).toBe("Ops Secret");
+  });
+
   it("createStore picks the plain single-root store for one root", () => {
     const single = createStore(makeConfig([{ name: "vault", path: vaultRoot }]));
     expect(single).toBeInstanceOf(KnowledgeStore);

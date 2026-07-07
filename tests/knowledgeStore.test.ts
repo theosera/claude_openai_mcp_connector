@@ -98,6 +98,23 @@ describe("KnowledgeStore", () => {
     ).rejects.toThrow(/already exists/);
   });
 
+  it("creates distinct paths for distinct non-ASCII (Japanese) titles", async () => {
+    // Regression: slugSegment collapsed every all-non-ASCII segment to "untitled",
+    // so a fully-Japanese vault could hold only ONE doc per client/project — the
+    // 2nd create_document with a different Japanese title collided on
+    // projects/untitled/untitled/untitled.md and hit the overwrite guard.
+    const first = await store.createDocument({ client: "顧客", project: "案件", title: "設計メモ", body: "one" });
+    const second = await store.createDocument({ client: "顧客", project: "案件", title: "実装ノート", body: "two" });
+
+    expect(first.relativePath).toBe("projects/顧客/案件/設計メモ.md");
+    expect(second.relativePath).toBe("projects/顧客/案件/実装ノート.md");
+    expect(first.relativePath).not.toBe(second.relativePath);
+
+    // Both round-trip through fetch by their (NFC) path.
+    expect((await store.fetch("projects/顧客/案件/設計メモ.md")).body).toContain("one");
+    expect((await store.fetch("projects/顧客/案件/実装ノート.md")).body).toContain("two");
+  });
+
   it("plans then applies an update through a stale-safe two step flow", async () => {
     const plan = await store.planUpdate({
       id_or_path: "claude-plan-001",
@@ -255,5 +272,28 @@ describe("KnowledgeStore", () => {
     expect(() => JSON.parse(JSON.stringify(body))).not.toThrow();
     const fetched = await store.fetch("ctrl-front.md");
     expect(() => JSON.parse(JSON.stringify(fetched))).not.toThrow();
+  });
+
+  it("tolerates YAML auto-typed non-string tags / client / project (years, versions, booleans)", async () => {
+    // Obsidian and web-clipped notes routinely carry `tags: [2024]` or
+    // `client: 2024`. YAML types these as numbers/booleans; the frontmatter parses
+    // cleanly (parseMarkdownSafe sees no error), but an un-coerced number then
+    // throws in tag.toLowerCase() (search) / client.localeCompare() (list_projects)
+    // and aborts those tools for the WHOLE vault — not just the one bad note.
+    await fs.writeFile(
+      path.join(root, "numeric.md"),
+      "---\ntitle: Numbered\nclient: 2024\nproject: 2025\ntags: [2024, 3, true, notes]\n---\n\nZZNUMERIC body\n",
+      "utf8"
+    );
+
+    // Search across the whole vault does not throw and finds the note.
+    expect((await store.search({ query: "ZZNUMERIC" })).map((r) => r.path)).toContain("numeric.md");
+    // Well-formed docs remain searchable — the batch is not aborted.
+    expect(await store.search({ query: "retrieval", client: "chatgpt" })).toHaveLength(1);
+    // list_projects does not throw and the numeric client/project are coerced to strings.
+    const projects = await store.listProjects();
+    expect(projects.some((p) => p.client === "2024" && p.project === "2025")).toBe(true);
+    // Tag filtering still works against the coerced numeric tag.
+    expect((await store.search({ query: "ZZNUMERIC", tags: ["2024"] })).map((r) => r.path)).toContain("numeric.md");
   });
 });
