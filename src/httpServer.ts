@@ -253,15 +253,18 @@ async function handleOAuthRoute(
 }
 
 /**
- * Apply a rate limit keyed by client IP; writes a 429 + Retry-After and returns
- * true when the request should be rejected. The key prefers the left-most
- * X-Forwarded-For hop (set by the tunnel) and falls back to the socket address;
- * XFF is client-spoofable, so this is a coarse defense-in-depth bound, not a
- * security boundary (the scrypt password gate is the real control).
+ * Apply a rate limit keyed by the socket peer; writes a 429 + Retry-After and
+ * returns true when the request should be rejected. We deliberately do NOT trust
+ * `X-Forwarded-For`: every proxy only *appends* to it, so the left-most token is
+ * fully client-controlled. Keying on it let a public caller bypass the limit
+ * outright (a fresh spoofed IP per request) and even lock out the legitimate user
+ * by forging *their* IP. The socket address cannot be spoofed. Behind a tunnel
+ * every request shares the tunnel's local address, so this becomes a coarse
+ * *global* cap — correct for a single-user connector; a direct multi-client bind
+ * is naturally per-client. This is defense-in-depth over the scrypt password gate.
  */
 function rateLimited(req: http.IncomingMessage, res: http.ServerResponse, limiter: RateLimiter): boolean {
-  const forwarded = headerValue(req.headers["x-forwarded-for"]);
-  const key = (forwarded?.split(",")[0].trim() || req.socket.remoteAddress || "unknown").toLowerCase();
+  const key = (req.socket.remoteAddress || "unknown").toLowerCase();
   const result = limiter.hit(key);
   if (result.allowed) {
     return false;

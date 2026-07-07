@@ -532,6 +532,51 @@ describe("OAuth end-to-end over HTTP", () => {
     await client.close();
   });
 
+  it("rate-limits by socket peer, not a spoofable X-Forwarded-For", async () => {
+    const store = await makeStore();
+    const port = await freePort();
+    const issuer = `http://127.0.0.1:${port}`;
+    const config: HttpConfig = {
+      host: "127.0.0.1",
+      port,
+      authToken: "static-bearer-unused-here",
+      allowWrite: false,
+      allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
+      allowedOrigins: [],
+      oauth: {
+        issuer,
+        loginPassword: "hunter2",
+        accessTokenTtlSec: 3600,
+        refreshTokenTtlSec: 86_400,
+        codeTtlSec: 60,
+        allowWrite: false
+      }
+    };
+    server = await startHttpServer(store, config);
+
+    // /register is rate-limited per window. Fire past the limit, each with a
+    // DIFFERENT spoofed left-most X-Forwarded-For. If keying trusted XFF every
+    // request would be a fresh bucket and none would 429; keyed on the (shared)
+    // socket peer, the window fills and later requests are rejected — so a public
+    // caller can neither bypass the limit nor lock out a victim by forging an IP.
+    let sawRateLimit = false;
+    for (let i = 0; i < 25; i++) {
+      const res = await fetch(`${issuer}/register`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-forwarded-for": `203.0.113.${i}, 198.51.100.7`
+        },
+        body: JSON.stringify({ redirect_uris: ["https://chatgpt.com/cb"] })
+      });
+      if (res.status === 429) {
+        sawRateLimit = true;
+        break;
+      }
+    }
+    expect(sawRateLimit).toBe(true);
+  });
+
   it("gates write tools by token scope on an allowWrite server", async () => {
     const store = await makeStore();
     const port = await freePort();

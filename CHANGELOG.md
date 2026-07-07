@@ -34,6 +34,14 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **HTTP rate limiter now keys on the socket peer, not a spoofable
+  `X-Forwarded-For`.** The `/authorize` and `/register` limiter keyed on the
+  left-most XFF hop, which every proxy only *appends* to — so it is fully
+  client-controlled. Over a public tunnel that let a caller bypass the limit
+  entirely (a fresh spoofed IP per request) and even lock the legitimate user out
+  of their own connector by forging *their* IP. Keying on the (unspoofable) socket
+  address makes it a coarse global cap behind a tunnel and naturally per-client on
+  a direct bind (`src/httpServer.ts`, `tests/oauth.test.ts`).
 - **A single note with a non-string YAML scalar no longer crashes `search` /
   `list_projects` for the whole vault.** YAML auto-types unquoted values, so
   `tags: [2024]` becomes numbers and `client: 2024` a number. Such frontmatter
