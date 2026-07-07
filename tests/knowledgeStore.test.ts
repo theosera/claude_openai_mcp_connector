@@ -223,4 +223,37 @@ describe("KnowledgeStore", () => {
     await expect(store.listProjects()).resolves.toBeDefined();
     await expect(store.listDocuments()).resolves.toHaveLength(4);
   });
+
+  it("survives raw control characters in frontmatter and body (web-clipping corruption)", async () => {
+    // Real-world corruption from web clippings: a raw control char (U+000B
+    // vertical tab) inside a frontmatter string makes js-yaml throw "expected
+    // valid JSON character", and control chars / NUL can also sit in the body.
+    // Neither may abort the batch, and the returned results must stay valid JSON
+    // (the server serializes them straight to the client with JSON.stringify).
+    const VT = String.fromCharCode(0x0b);
+    const NUL = String.fromCharCode(0x00);
+    await fs.writeFile(
+      path.join(root, "ctrl-front.md"),
+      `---\ntitle: "WebRTC ${VT}8K"\n---\n\nZZCTRLFRONT body\n`,
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(root, "ctrl-body.md"),
+      `---\ntitle: Clip\n---\n\nZZCTRLBODY ${VT} and ${NUL} tail\n`,
+      "utf8"
+    );
+
+    // Well-formed documents remain searchable.
+    expect(await store.search({ query: "retrieval", client: "chatgpt" })).toHaveLength(1);
+
+    // The corrupted notes are indexed by body, not dropped or crashing.
+    expect((await store.search({ query: "ZZCTRLFRONT" })).map((r) => r.path)).toContain("ctrl-front.md");
+    const body = await store.search({ query: "ZZCTRLBODY" });
+    expect(body.map((r) => r.path)).toContain("ctrl-body.md");
+
+    // Results and fetched documents must be JSON-serializable (control chars escaped).
+    expect(() => JSON.parse(JSON.stringify(body))).not.toThrow();
+    const fetched = await store.fetch("ctrl-front.md");
+    expect(() => JSON.parse(JSON.stringify(fetched))).not.toThrow();
+  });
 });
