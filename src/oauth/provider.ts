@@ -335,6 +335,14 @@ export function isAllowedRedirectUri(uri: string): boolean {
   } catch {
     return false;
   }
+  // A registered redirect_uri must resolve to a concrete host. Reject wildcard
+  // hosts (e.g. https://*/cb or https://*.example.com/cb): they are never a
+  // legitimate exact redirect target, and their origin (`https://*`) would, when
+  // echoed into the consent page's `form-action` CSP, match every https origin —
+  // broadening the form-exfiltration guard far beyond the intended client origin.
+  if (parsed.hostname.includes("*")) {
+    return false;
+  }
   if (parsed.protocol === "https:") {
     return true;
   }

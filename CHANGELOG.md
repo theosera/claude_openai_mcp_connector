@@ -33,7 +33,10 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   origin alongside `'self'` in `form-action` (derived from the already
   exact-match + scheme-validated `redirect_uri`, so the policy stays tight); error
   pages keep the `'self'`-only policy, and the clickjacking/leakage headers
-  (`frame-ancestors 'none'`, `X-Frame-Options`, `Referrer-Policy`) are unchanged
+  (`frame-ancestors 'none'`, `X-Frame-Options`, `Referrer-Policy`) are unchanged.
+  As part of the same fix, `redirect_uri` registration now rejects wildcard hosts
+  (e.g. `https://*/cb`), whose origin (`https://*`) would otherwise widen the
+  consent page's `form-action` to every https origin
   (`src/oauth/provider.ts`, `tests/oauth.test.ts`).
 - **A single document with unparseable frontmatter no longer breaks every
   query.** `search_documents` / `list_projects` / `fetch_document` /

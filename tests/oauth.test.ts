@@ -140,6 +140,14 @@ describe("redirect_uri policy", () => {
     expect(isAllowedRedirectUri("ftp://x/cb")).toBe(false);
     expect(isAllowedRedirectUri("not a url")).toBe(false);
   });
+
+  it("rejects wildcard redirect hosts (would become a CSP-wide form-action)", () => {
+    // https://*/cb parses, and new URL(...).origin === "https://*", which as a
+    // CSP form-action source matches every https origin — so it must never be a
+    // registrable redirect_uri.
+    expect(isAllowedRedirectUri("https://*/cb")).toBe(false);
+    expect(isAllowedRedirectUri("https://*.example.com/cb")).toBe(false);
+  });
 });
 
 describe("OAuthStore", () => {
@@ -245,6 +253,12 @@ describe("OAuthProvider flow", () => {
     const provider = new OAuthProvider(config);
     expect(provider.register({ redirect_uris: ["http://evil/cb"] }).status).toBe(400);
     expect(provider.register({}).status).toBe(400);
+  });
+
+  it("rejects registration of a wildcard redirect host", () => {
+    const provider = new OAuthProvider(config);
+    expect(provider.register({ redirect_uris: ["https://*/cb"] }).status).toBe(400);
+    expect(provider.register({ redirect_uris: ["https://*.example.com/cb"] }).status).toBe(400);
   });
 
   it("rejects authorize with unknown client or bad PKCE method", () => {
@@ -395,6 +409,20 @@ describe("OAuthProvider flow", () => {
     ] as string;
     const redirectOrigin = new URL("https://chatgpt.com/cb").origin;
     expect(csp).toContain(`form-action 'self' ${redirectOrigin}`);
+  });
+
+  it("keeps form-action 'self'-only on error pages (no client origin echoed)", () => {
+    // The redirect-origin relaxation is scoped to the login form. An error page
+    // (e.g. unknown client_id) has no form, so its CSP must stay 'self'-only and
+    // must not carry any external origin.
+    const { provider } = setup();
+    const res = provider.authorizeGet(
+      new URLSearchParams({ client_id: "nope", redirect_uri: "https://chatgpt.com/cb" })
+    );
+    expect(res.status).toBe(400);
+    const csp = res.headers["content-security-policy"] as string;
+    expect(csp).toContain("form-action 'self';");
+    expect(csp).not.toContain("chatgpt.com");
   });
 });
 
