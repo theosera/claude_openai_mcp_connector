@@ -6,19 +6,16 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
+## [0.3.0] — 2026-07-07
 
-- **Community-health files** for public contribution: `CONTRIBUTING.md`
-  (dev setup, the `pnpm test` quality gate, commit/branch conventions, and the
-  "security reports go through SECURITY.md, not issues" rule), a Contributor
-  Covenant `CODE_OF_CONDUCT.md`, GitHub issue forms
-  (`.github/ISSUE_TEMPLATE/bug_report.yml` / `feature_request.yml` /
-  `config.yml`, with blank issues disabled and a security-report contact link),
-  and a `.github/PULL_REQUEST_TEMPLATE.md` mirroring the CI quality gate.
-- **Actionable private security-reporting channel**: `SECURITY.md` and the issue
-  template's security link now point to GitHub private vulnerability reporting
-  (draft advisory) instead of only naming the maintainer, so reporters have a
-  usable private intake.
+End-to-end hardening for Claude.ai / ChatGPT web connectors and for real-world
+vault data (notably non-ASCII / Japanese notes). No breaking changes to the MCP
+tool surface — a `0.2.x` setup upgrades in place. Highlights: read tools now
+advertise `readOnlyHint` (far fewer approval prompts on web clients), the OAuth
+consent redirect is no longer blocked by its own CSP, the public-endpoint rate
+limiter keys on the socket peer instead of a spoofable `X-Forwarded-For`, and
+several read-path bugs that broke non-ASCII vaults — or aborted a whole-vault
+query on a single bad note — are fixed.
 
 ### Changed
 
@@ -93,6 +90,30 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (e.g. `https://*/cb`), whose origin (`https://*`) would otherwise widen the
   consent page's `form-action` to every https origin
   (`src/oauth/provider.ts`, `tests/oauth.test.ts`).
+
+## [0.2.1] — 2026-07-07
+
+Public-launch hardening release: a security fix that clears all `pnpm audit`
+advisories, read-path and session-archive robustness fixes, and the
+community-health files needed to accept outside contributions. No API or
+behavior changes to the MCP tool surface — a `0.2.0` setup upgrades in place.
+
+### Added
+
+- **Community-health files** for public contribution: `CONTRIBUTING.md`
+  (dev setup, the `pnpm test` quality gate, commit/branch conventions, and the
+  "security reports go through SECURITY.md, not issues" rule), a Contributor
+  Covenant `CODE_OF_CONDUCT.md`, GitHub issue forms
+  (`.github/ISSUE_TEMPLATE/bug_report.yml` / `feature_request.yml` /
+  `config.yml`, with blank issues disabled and a security-report contact link),
+  and a `.github/PULL_REQUEST_TEMPLATE.md` mirroring the CI quality gate.
+- **Actionable private security-reporting channel**: `SECURITY.md` and the issue
+  template's security link now point to GitHub private vulnerability reporting
+  (draft advisory) instead of only naming the maintainer, so reporters have a
+  usable private intake.
+
+### Fixed
+
 - **A single document with unparseable frontmatter no longer breaks every
   query.** `search_documents` / `list_projects` / `fetch_document` /
   `trace_sources` walk and parse every note, so one file with malformed YAML/JSON
@@ -214,6 +235,8 @@ First tagged release. MCP server exposing a private Markdown vault
   frontmatter allowlist, two-step stale-safe writes, HTTP auth + read-only
   surface, and the full OAuth flow.
 
-[Unreleased]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/theosera/claude_openai_mcp_connector/releases/tag/v0.1.0
