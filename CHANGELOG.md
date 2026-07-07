@@ -22,6 +22,19 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **OAuth consent "Authorize" button no longer silently does nothing (Claude.ai /
+  ChatGPT web could never finish connecting).** The login page's
+  `Content-Security-Policy` used `form-action 'self'`, but a successful login
+  redirects (302) back to the client's registered `redirect_uri` on a different
+  origin (e.g. `https://claude.ai/api/mcp/auth_callback`). Browsers enforce
+  `form-action` against the redirect target of a form submission, so the whole
+  submission was refused with no visible error and the authorization code was
+  never delivered. The consent form now lists exactly this client's redirect
+  origin alongside `'self'` in `form-action` (derived from the already
+  exact-match + scheme-validated `redirect_uri`, so the policy stays tight); error
+  pages keep the `'self'`-only policy, and the clickjacking/leakage headers
+  (`frame-ancestors 'none'`, `X-Frame-Options`, `Referrer-Policy`) are unchanged
+  (`src/oauth/provider.ts`, `tests/oauth.test.ts`).
 - **A single document with unparseable frontmatter no longer breaks every
   query.** `search_documents` / `list_projects` / `fetch_document` /
   `trace_sources` walk and parse every note, so one file with malformed YAML/JSON

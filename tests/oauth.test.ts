@@ -382,6 +382,20 @@ describe("OAuthProvider flow", () => {
     expect(res.headers["x-frame-options"]).toBe("DENY");
     expect(res.headers["referrer-policy"]).toBe("no-referrer");
   });
+
+  it("allows the client's redirect origin in form-action so the OAuth redirect is not blocked", () => {
+    // Regression: a `form-action 'self'`-only CSP makes browsers silently block
+    // the consent form submission, because success redirects (302) to the
+    // client's redirect_uri on a different origin. The login page must list that
+    // origin (and only it) alongside 'self'.
+    const { provider, clientId } = setup();
+    const { challenge } = pkcePair();
+    const csp = provider.authorizeGet(authorizeParams(clientId, challenge)).headers[
+      "content-security-policy"
+    ] as string;
+    const redirectOrigin = new URL("https://chatgpt.com/cb").origin;
+    expect(csp).toContain(`form-action 'self' ${redirectOrigin}`);
+  });
 });
 
 describe("OAuth end-to-end over HTTP", () => {
