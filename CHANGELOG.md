@@ -6,6 +6,13 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-07-07
+
+Public-launch hardening release: a security fix that clears all `pnpm audit`
+advisories, read-path and session-archive robustness fixes, and the
+community-health files needed to accept outside contributions. No API or
+behavior changes to the MCP tool surface — a `0.2.0` setup upgrades in place.
+
 ### Added
 
 - **Community-health files** for public contribution: `CONTRIBUTING.md`
@@ -143,6 +150,7 @@ First tagged release. MCP server exposing a private Markdown vault
   frontmatter allowlist, two-step stale-safe writes, HTTP auth + read-only
   surface, and the full OAuth flow.
 
-[Unreleased]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/theosera/claude_openai_mcp_connector/releases/tag/v0.1.0
