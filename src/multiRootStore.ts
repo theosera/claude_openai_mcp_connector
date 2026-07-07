@@ -77,6 +77,18 @@ export class MultiRootStore implements VaultStore {
   }
 
   async fetch(idOrPath: string): Promise<MarkdownDocument> {
+    // An id that search emitted always equals a wrapped document's id exactly,
+    // so match that first — before treating a `<name>:` prefix as routing. A
+    // user-controlled frontmatter id like `id: "ops:secret"` (where "ops" also
+    // names a root) is left un-prefixed by wrap(), so without this check
+    // resolveRef would mis-route it into the "ops" root and return a DIFFERENT
+    // document (or nothing) than the one the citation points at.
+    const documents = await this.listDocuments();
+    const byId = documents.find((document) => document.id === idOrPath);
+    if (byId) {
+      return byId;
+    }
+
     const { entry, rest } = this.resolveRef(idOrPath);
     if (entry) {
       return this.wrap(entry.name, await entry.store.fetch(rest));

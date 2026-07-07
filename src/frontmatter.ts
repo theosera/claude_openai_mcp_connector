@@ -83,21 +83,40 @@ export function serializeMarkdown(frontmatter: DocumentMetadata, body: string): 
 export function normalizeMetadata(input: DocumentMetadata): DocumentMetadata {
   const metadata: DocumentMetadata = { ...input };
 
-  if (typeof metadata.tags === "string") {
-    metadata.tags = [metadata.tags];
-  }
-  if (!Array.isArray(metadata.tags)) {
-    metadata.tags = [];
-  }
-
-  if (typeof metadata.source_refs === "string") {
-    metadata.source_refs = [metadata.source_refs];
-  }
-  if (!Array.isArray(metadata.source_refs)) {
-    metadata.source_refs = [];
-  }
+  // YAML auto-types unquoted scalars: `tags: [2024]` yields numbers, `client:
+  // 2024` a number, `enabled: true` a boolean. Such frontmatter parses fine (so
+  // parseMarkdownSafe never sees an error), but the read path then does string
+  // work on these fields — `tag.toLowerCase()` in search, `client.localeCompare()`
+  // in list_projects — which throws on a non-string and aborts search /
+  // list_projects for the ENTIRE vault, not just the one bad note. Coerce the
+  // fields we treat as strings here, at the single read-path chokepoint. This
+  // normalizes already-parsed vault data only; the write-time field allowlist
+  // (assertFrontmatterPatch) is untouched, so INV-2 is unaffected.
+  metadata.tags = toStringArray(metadata.tags);
+  metadata.source_refs = toStringArray(metadata.source_refs);
+  metadata.client = toOptionalString(metadata.client);
+  metadata.project = toOptionalString(metadata.project);
 
   return metadata;
+}
+
+/** Coerce a frontmatter value into a `string[]`, stringifying non-string elements. */
+function toStringArray(value: unknown): string[] {
+  if (typeof value === "string") {
+    return [value];
+  }
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item) => item != null).map((item) => (typeof item === "string" ? item : String(item)));
+}
+
+/** Coerce a present-but-non-string scalar to a string; leave absent values absent. */
+function toOptionalString(value: unknown): string | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  return typeof value === "string" ? value : String(value);
 }
 
 export function titleFromMarkdown(relativePath: string, frontmatter: DocumentMetadata, body: string): string {

@@ -44,6 +44,28 @@ describe("KnowledgeStore", () => {
     expect(byPath.id).toBe("claude-plan-001");
   });
 
+  it("round-trips non-ASCII (NFD) filenames through search and fetch", async () => {
+    // macOS reports filenames decomposed (NFD) while clients/transports send
+    // paths composed (NFC). The identifier a search returns must be NFC so it
+    // round-trips back through fetch(). Regression: an un-normalized NFD id never
+    // === the NFC lookup key, so every Japanese-named note was "Document not
+    // found" even though search surfaced it.
+    const composed = "作業フォルダ.md".normalize("NFC");
+    const decomposed = composed.normalize("NFD");
+    expect(composed).not.toBe(decomposed); // this name is normalization-sensitive
+    await fs.writeFile(path.join(root, decomposed), "# 見出し\n\nNFDMARKERBODY\n", "utf8");
+
+    const results = await store.search({ query: "NFDMARKERBODY" });
+    expect(results).toHaveLength(1);
+    // The returned identifier is canonical NFC, not the raw NFD form on disk.
+    expect(results[0].id).toBe(composed);
+    expect(results[0].id).not.toBe(decomposed);
+
+    // It round-trips: both the NFC id and the NFD form resolve to the same doc.
+    expect((await store.fetch(composed)).relativePath).toBe(composed);
+    expect((await store.fetch(decomposed)).relativePath).toBe(composed);
+  });
+
   it("lists projects by frontmatter", async () => {
     const projects = await store.listProjects();
 
@@ -74,6 +96,23 @@ describe("KnowledgeStore", () => {
         body: "duplicate"
       })
     ).rejects.toThrow(/already exists/);
+  });
+
+  it("creates distinct paths for distinct non-ASCII (Japanese) titles", async () => {
+    // Regression: slugSegment collapsed every all-non-ASCII segment to "untitled",
+    // so a fully-Japanese vault could hold only ONE doc per client/project — the
+    // 2nd create_document with a different Japanese title collided on
+    // projects/untitled/untitled/untitled.md and hit the overwrite guard.
+    const first = await store.createDocument({ client: "顧客", project: "案件", title: "設計メモ", body: "one" });
+    const second = await store.createDocument({ client: "顧客", project: "案件", title: "実装ノート", body: "two" });
+
+    expect(first.relativePath).toBe("projects/顧客/案件/設計メモ.md");
+    expect(second.relativePath).toBe("projects/顧客/案件/実装ノート.md");
+    expect(first.relativePath).not.toBe(second.relativePath);
+
+    // Both round-trip through fetch by their (NFC) path.
+    expect((await store.fetch("projects/顧客/案件/設計メモ.md")).body).toContain("one");
+    expect((await store.fetch("projects/顧客/案件/実装ノート.md")).body).toContain("two");
   });
 
   it("plans then applies an update through a stale-safe two step flow", async () => {
@@ -200,5 +239,61 @@ describe("KnowledgeStore", () => {
     // Other read paths survive a malformed note too.
     await expect(store.listProjects()).resolves.toBeDefined();
     await expect(store.listDocuments()).resolves.toHaveLength(4);
+  });
+
+  it("survives raw control characters in frontmatter and body (web-clipping corruption)", async () => {
+    // Real-world corruption from web clippings: a raw control char (U+000B
+    // vertical tab) inside a frontmatter string makes js-yaml throw "expected
+    // valid JSON character", and control chars / NUL can also sit in the body.
+    // Neither may abort the batch, and the returned results must stay valid JSON
+    // (the server serializes them straight to the client with JSON.stringify).
+    const VT = String.fromCharCode(0x0b);
+    const NUL = String.fromCharCode(0x00);
+    await fs.writeFile(
+      path.join(root, "ctrl-front.md"),
+      `---\ntitle: "WebRTC ${VT}8K"\n---\n\nZZCTRLFRONT body\n`,
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(root, "ctrl-body.md"),
+      `---\ntitle: Clip\n---\n\nZZCTRLBODY ${VT} and ${NUL} tail\n`,
+      "utf8"
+    );
+
+    // Well-formed documents remain searchable.
+    expect(await store.search({ query: "retrieval", client: "chatgpt" })).toHaveLength(1);
+
+    // The corrupted notes are indexed by body, not dropped or crashing.
+    expect((await store.search({ query: "ZZCTRLFRONT" })).map((r) => r.path)).toContain("ctrl-front.md");
+    const body = await store.search({ query: "ZZCTRLBODY" });
+    expect(body.map((r) => r.path)).toContain("ctrl-body.md");
+
+    // Results and fetched documents must be JSON-serializable (control chars escaped).
+    expect(() => JSON.parse(JSON.stringify(body))).not.toThrow();
+    const fetched = await store.fetch("ctrl-front.md");
+    expect(() => JSON.parse(JSON.stringify(fetched))).not.toThrow();
+  });
+
+  it("tolerates YAML auto-typed non-string tags / client / project (years, versions, booleans)", async () => {
+    // Obsidian and web-clipped notes routinely carry `tags: [2024]` or
+    // `client: 2024`. YAML types these as numbers/booleans; the frontmatter parses
+    // cleanly (parseMarkdownSafe sees no error), but an un-coerced number then
+    // throws in tag.toLowerCase() (search) / client.localeCompare() (list_projects)
+    // and aborts those tools for the WHOLE vault — not just the one bad note.
+    await fs.writeFile(
+      path.join(root, "numeric.md"),
+      "---\ntitle: Numbered\nclient: 2024\nproject: 2025\ntags: [2024, 3, true, notes]\n---\n\nZZNUMERIC body\n",
+      "utf8"
+    );
+
+    // Search across the whole vault does not throw and finds the note.
+    expect((await store.search({ query: "ZZNUMERIC" })).map((r) => r.path)).toContain("numeric.md");
+    // Well-formed docs remain searchable — the batch is not aborted.
+    expect(await store.search({ query: "retrieval", client: "chatgpt" })).toHaveLength(1);
+    // list_projects does not throw and the numeric client/project are coerced to strings.
+    const projects = await store.listProjects();
+    expect(projects.some((p) => p.client === "2024" && p.project === "2025")).toBe(true);
+    // Tag filtering still works against the coerced numeric tag.
+    expect((await store.search({ query: "ZZNUMERIC", tags: ["2024"] })).map((r) => r.path)).toContain("numeric.md");
   });
 });

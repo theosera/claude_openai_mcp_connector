@@ -20,8 +20,79 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (draft advisory) instead of only naming the maintainer, so reporters have a
   usable private intake.
 
+### Changed
+
+- **Read tools advertise `readOnlyHint: true` so Chat clients stop prompting for
+  approval on every call.** `search_documents` / `fetch_document` / `list_projects`
+  / `trace_sources` and the ChatGPT-compatible `search` / `fetch` aliases are pure
+  reads, but without the MCP read-only annotation a client (e.g. Claude.ai) treats
+  each call as potentially state-changing and shows an "allow once?" prompt every
+  time. They now carry the hint. Write tools (`create_document` /
+  `plan_document_update` / `apply_planned_update`) deliberately keep **no**
+  read-only hint, so clients still prompt before any mutation
+  (`src/server.ts`, `tests/httpServer.test.ts`).
+
 ### Fixed
 
+- **HTTP rate limiter now keys on the socket peer, not a spoofable
+  `X-Forwarded-For`.** The `/authorize` and `/register` limiter keyed on the
+  left-most XFF hop, which every proxy only *appends* to — so it is fully
+  client-controlled. Over a public tunnel that let a caller bypass the limit
+  entirely (a fresh spoofed IP per request) and even lock the legitimate user out
+  of their own connector by forging *their* IP. Keying on the (unspoofable) socket
+  address makes it a coarse global cap behind a tunnel and naturally per-client on
+  a direct bind (`src/httpServer.ts`, `tests/oauth.test.ts`).
+- **A single note with a non-string YAML scalar no longer crashes `search` /
+  `list_projects` for the whole vault.** YAML auto-types unquoted values, so
+  `tags: [2024]` becomes numbers and `client: 2024` a number. Such frontmatter
+  parses cleanly (so the fault-tolerant parser never sees an error), but the read
+  path then called `tag.toLowerCase()` / `client.localeCompare()` on the value and
+  threw — aborting search and list_projects for **every** note, not just the bad
+  one. `normalizeMetadata` now coerces `tags` / `source_refs` elements and the
+  `client` / `project` scalars to strings at the single read-path chokepoint; the
+  write-time field allowlist is untouched (`src/frontmatter.ts`,
+  `tests/knowledgeStore.test.ts`).
+- **Multi-root: a frontmatter `id` that collides with a root name now fetches the
+  note that carries it.** With `KNOWLEDGE_ROOTS`, a vault note whose id begins with
+  another root's name + `:` (e.g. `id: "ops:secret"`) was mis-routed by `fetch`
+  into that root, returning a **different** document than the one the search
+  citation pointed at (or nothing). `MultiRootStore.fetch` now matches a bare id
+  against all wrapped documents before treating a `<name>:` prefix as routing
+  (`src/multiRootStore.ts`, `tests/multiRootStore.test.ts`).
+- **`create_document` keeps non-ASCII (e.g. Japanese) titles instead of collapsing
+  them to `untitled`.** The slugifier stripped everything outside `[a-z0-9]`, so an
+  all-Japanese `client` / `project` / `title` became empty → `untitled`, letting a
+  fully-Japanese vault hold only ONE document per client/project (the 2nd create
+  hit the no-overwrite guard). It now keeps Unicode letters/digits (`\p{L}\p{N}`)
+  on the NFC-normalized value, with a unique hash suffix for pure-symbol titles
+  (`src/knowledgeStore.ts`, `tests/knowledgeStore.test.ts`).
+- **`fetch_document` / `fetch` / `trace_sources` now resolve non-ASCII (e.g.
+  Japanese) filenames that `search` returns.** Document ids/relative paths derive
+  from `fs.realpath`, which on macOS reports filenames **decomposed (NFD)**, while
+  `assertRelativePath` normalizes client-supplied paths/ids to **NFC**. The two
+  never `===`-matched, so every note with a normalization-sensitive name (most of
+  a Japanese vault) came back `Document not found` even though search surfaced it
+  — breaking the search→fetch round-trip that Chat clients rely on. `relativeToRoot`
+  now returns the identifier in NFC so ids round-trip; both NFC and NFD lookup
+  inputs resolve. Path-containment guards are unchanged — containment is verified
+  on the raw realpath before normalization, and file I/O still uses the real path
+  (`src/pathSafety.ts`, `tests/knowledgeStore.test.ts`).
+- **OAuth consent "Authorize" button no longer silently does nothing (Claude.ai /
+  ChatGPT web could never finish connecting).** The login page's
+  `Content-Security-Policy` used `form-action 'self'`, but a successful login
+  redirects (302) back to the client's registered `redirect_uri` on a different
+  origin (e.g. `https://claude.ai/api/mcp/auth_callback`). Browsers enforce
+  `form-action` against the redirect target of a form submission, so the whole
+  submission was refused with no visible error and the authorization code was
+  never delivered. The consent form now lists exactly this client's redirect
+  origin alongside `'self'` in `form-action` (derived from the already
+  exact-match + scheme-validated `redirect_uri`, so the policy stays tight); error
+  pages keep the `'self'`-only policy, and the clickjacking/leakage headers
+  (`frame-ancestors 'none'`, `X-Frame-Options`, `Referrer-Policy`) are unchanged.
+  As part of the same fix, `redirect_uri` registration now rejects wildcard hosts
+  (e.g. `https://*/cb`), whose origin (`https://*`) would otherwise widen the
+  consent page's `form-action` to every https origin
+  (`src/oauth/provider.ts`, `tests/oauth.test.ts`).
 - **A single document with unparseable frontmatter no longer breaks every
   query.** `search_documents` / `list_projects` / `fetch_document` /
   `trace_sources` walk and parse every note, so one file with malformed YAML/JSON

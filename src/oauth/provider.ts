@@ -288,6 +288,13 @@ export class OAuthProvider {
   }
 
   private renderLoginForm(params: AuthorizeParams, error: string | undefined): OAuthHttpResponse {
+    // The consent form POSTs to /authorize (self), which on success answers with
+    // a 302 back to the client's registered redirect_uri (a different origin,
+    // e.g. https://claude.ai). Browsers enforce `form-action` against that
+    // redirect target too, so a `form-action 'self'`-only policy silently blocks
+    // the whole submission. Allow exactly this client's redirect origin — it is
+    // already exact-match + scheme validated (INV-7.3), so this stays tight.
+    const redirectOrigin = new URL(params.redirectUri).origin;
     const hidden = (name: string, value: string) =>
       `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}" />`;
     const errorHtml = error ? `<p style="color:#b00">${escapeHtml(error)}</p>` : "";
@@ -307,7 +314,7 @@ export class OAuthProvider {
         <label>Password <input type="password" name="password" autofocus required /></label>
         <button type="submit">Authorize</button>
       </form>`;
-    return htmlPage(200, "Authorize", body);
+    return htmlPage(200, "Authorize", body, redirectOrigin);
   }
 }
 
@@ -326,6 +333,14 @@ export function isAllowedRedirectUri(uri: string): boolean {
   try {
     parsed = new URL(uri);
   } catch {
+    return false;
+  }
+  // A registered redirect_uri must resolve to a concrete host. Reject wildcard
+  // hosts (e.g. https://*/cb or https://*.example.com/cb): they are never a
+  // legitimate exact redirect target, and their origin (`https://*`) would, when
+  // echoed into the consent page's `form-action` CSP, match every https origin —
+  // broadening the form-exfiltration guard far beyond the intended client origin.
+  if (parsed.hostname.includes("*")) {
     return false;
   }
   if (parsed.protocol === "https:") {
@@ -364,7 +379,11 @@ function json(status: number, payload: unknown, extraHeaders: Record<string, str
   };
 }
 
-function htmlPage(status: number, title: string, inner: string): OAuthHttpResponse {
+function htmlPage(status: number, title: string, inner: string, formActionOrigin?: string): OAuthHttpResponse {
+  // form-action must also list the post-submit redirect target (the client's
+  // redirect_uri origin); otherwise the browser blocks the OAuth redirect. Only
+  // the login form passes one — error pages have no form.
+  const formAction = formActionOrigin ? `form-action 'self' ${formActionOrigin}` : "form-action 'self'";
   const body =
     `<!doctype html><html><head><meta charset="utf-8" />` +
     `<meta name="viewport" content="width=device-width,initial-scale=1" />` +
@@ -379,8 +398,7 @@ function htmlPage(status: number, title: string, inner: string): OAuthHttpRespon
       "content-type": "text/html; charset=utf-8",
       // Consent-UI hardening (clickjacking / leakage). The page needs only its
       // own inline <style> and to POST back to /authorize.
-      "content-security-policy":
-        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; ${formAction}; base-uri 'none'; frame-ancestors 'none'`,
       "x-frame-options": "DENY",
       "referrer-policy": "no-referrer",
       "cache-control": "no-store"

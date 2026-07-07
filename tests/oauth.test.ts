@@ -140,6 +140,14 @@ describe("redirect_uri policy", () => {
     expect(isAllowedRedirectUri("ftp://x/cb")).toBe(false);
     expect(isAllowedRedirectUri("not a url")).toBe(false);
   });
+
+  it("rejects wildcard redirect hosts (would become a CSP-wide form-action)", () => {
+    // https://*/cb parses, and new URL(...).origin === "https://*", which as a
+    // CSP form-action source matches every https origin — so it must never be a
+    // registrable redirect_uri.
+    expect(isAllowedRedirectUri("https://*/cb")).toBe(false);
+    expect(isAllowedRedirectUri("https://*.example.com/cb")).toBe(false);
+  });
 });
 
 describe("OAuthStore", () => {
@@ -245,6 +253,12 @@ describe("OAuthProvider flow", () => {
     const provider = new OAuthProvider(config);
     expect(provider.register({ redirect_uris: ["http://evil/cb"] }).status).toBe(400);
     expect(provider.register({}).status).toBe(400);
+  });
+
+  it("rejects registration of a wildcard redirect host", () => {
+    const provider = new OAuthProvider(config);
+    expect(provider.register({ redirect_uris: ["https://*/cb"] }).status).toBe(400);
+    expect(provider.register({ redirect_uris: ["https://*.example.com/cb"] }).status).toBe(400);
   });
 
   it("rejects authorize with unknown client or bad PKCE method", () => {
@@ -382,6 +396,34 @@ describe("OAuthProvider flow", () => {
     expect(res.headers["x-frame-options"]).toBe("DENY");
     expect(res.headers["referrer-policy"]).toBe("no-referrer");
   });
+
+  it("allows the client's redirect origin in form-action so the OAuth redirect is not blocked", () => {
+    // Regression: a `form-action 'self'`-only CSP makes browsers silently block
+    // the consent form submission, because success redirects (302) to the
+    // client's redirect_uri on a different origin. The login page must list that
+    // origin (and only it) alongside 'self'.
+    const { provider, clientId } = setup();
+    const { challenge } = pkcePair();
+    const csp = provider.authorizeGet(authorizeParams(clientId, challenge)).headers[
+      "content-security-policy"
+    ] as string;
+    const redirectOrigin = new URL("https://chatgpt.com/cb").origin;
+    expect(csp).toContain(`form-action 'self' ${redirectOrigin}`);
+  });
+
+  it("keeps form-action 'self'-only on error pages (no client origin echoed)", () => {
+    // The redirect-origin relaxation is scoped to the login form. An error page
+    // (e.g. unknown client_id) has no form, so its CSP must stay 'self'-only and
+    // must not carry any external origin.
+    const { provider } = setup();
+    const res = provider.authorizeGet(
+      new URLSearchParams({ client_id: "nope", redirect_uri: "https://chatgpt.com/cb" })
+    );
+    expect(res.status).toBe(400);
+    const csp = res.headers["content-security-policy"] as string;
+    expect(csp).toContain("form-action 'self';");
+    expect(csp).not.toContain("chatgpt.com");
+  });
 });
 
 describe("OAuth end-to-end over HTTP", () => {
@@ -488,6 +530,51 @@ describe("OAuth end-to-end over HTTP", () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name)).toContain("search");
     await client.close();
+  });
+
+  it("rate-limits by socket peer, not a spoofable X-Forwarded-For", async () => {
+    const store = await makeStore();
+    const port = await freePort();
+    const issuer = `http://127.0.0.1:${port}`;
+    const config: HttpConfig = {
+      host: "127.0.0.1",
+      port,
+      authToken: "static-bearer-unused-here",
+      allowWrite: false,
+      allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
+      allowedOrigins: [],
+      oauth: {
+        issuer,
+        loginPassword: "hunter2",
+        accessTokenTtlSec: 3600,
+        refreshTokenTtlSec: 86_400,
+        codeTtlSec: 60,
+        allowWrite: false
+      }
+    };
+    server = await startHttpServer(store, config);
+
+    // /register is rate-limited per window. Fire past the limit, each with a
+    // DIFFERENT spoofed left-most X-Forwarded-For. If keying trusted XFF every
+    // request would be a fresh bucket and none would 429; keyed on the (shared)
+    // socket peer, the window fills and later requests are rejected — so a public
+    // caller can neither bypass the limit nor lock out a victim by forging an IP.
+    let sawRateLimit = false;
+    for (let i = 0; i < 25; i++) {
+      const res = await fetch(`${issuer}/register`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-forwarded-for": `203.0.113.${i}, 198.51.100.7`
+        },
+        body: JSON.stringify({ redirect_uris: ["https://chatgpt.com/cb"] })
+      });
+      if (res.status === 429) {
+        sawRateLimit = true;
+        break;
+      }
+    }
+    expect(sawRateLimit).toBe(true);
   });
 
   it("gates write tools by token scope on an allowWrite server", async () => {

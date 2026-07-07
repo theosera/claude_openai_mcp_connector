@@ -69,7 +69,15 @@ export function relativeToRoot(rootRealPath: string, absolutePath: string): stri
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new Error("Path escapes the knowledge root.");
   }
-  return toPosixPath(relative);
+  // Return the identifier in NFC so it round-trips with lookups. This value
+  // becomes a document's relativePath/id, but it derives from fs.realpath, which
+  // on macOS reports filenames decomposed (NFD). assertRelativePath normalizes
+  // client-supplied paths/ids to NFC, so an un-normalized NFD identifier would
+  // never === the NFC lookup key and fetch()/trace would report "not found" for
+  // any non-ASCII (e.g. Japanese) filename. Containment was already verified on
+  // the raw realpath above; NFC only canonicalizes the returned string. Actual
+  // file I/O uses realPath, never this value, so reads are unaffected.
+  return toPosixPath(relative).normalize("NFC");
 }
 
 // Reject NUL + C0/C1 control characters (code point <= 0x1f, or 0x7f). NUL can
