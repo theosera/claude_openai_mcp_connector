@@ -22,6 +22,17 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`fetch_document` / `fetch` / `trace_sources` now resolve non-ASCII (e.g.
+  Japanese) filenames that `search` returns.** Document ids/relative paths derive
+  from `fs.realpath`, which on macOS reports filenames **decomposed (NFD)**, while
+  `assertRelativePath` normalizes client-supplied paths/ids to **NFC**. The two
+  never `===`-matched, so every note with a normalization-sensitive name (most of
+  a Japanese vault) came back `Document not found` even though search surfaced it
+  — breaking the search→fetch round-trip that Chat clients rely on. `relativeToRoot`
+  now returns the identifier in NFC so ids round-trip; both NFC and NFD lookup
+  inputs resolve. Path-containment guards are unchanged — containment is verified
+  on the raw realpath before normalization, and file I/O still uses the real path
+  (`src/pathSafety.ts`, `tests/knowledgeStore.test.ts`).
 - **OAuth consent "Authorize" button no longer silently does nothing (Claude.ai /
   ChatGPT web could never finish connecting).** The login page's
   `Content-Security-Policy` used `form-action 'self'`, but a successful login

@@ -44,6 +44,28 @@ describe("KnowledgeStore", () => {
     expect(byPath.id).toBe("claude-plan-001");
   });
 
+  it("round-trips non-ASCII (NFD) filenames through search and fetch", async () => {
+    // macOS reports filenames decomposed (NFD) while clients/transports send
+    // paths composed (NFC). The identifier a search returns must be NFC so it
+    // round-trips back through fetch(). Regression: an un-normalized NFD id never
+    // === the NFC lookup key, so every Japanese-named note was "Document not
+    // found" even though search surfaced it.
+    const composed = "作業フォルダ.md".normalize("NFC");
+    const decomposed = composed.normalize("NFD");
+    expect(composed).not.toBe(decomposed); // this name is normalization-sensitive
+    await fs.writeFile(path.join(root, decomposed), "# 見出し\n\nNFDMARKERBODY\n", "utf8");
+
+    const results = await store.search({ query: "NFDMARKERBODY" });
+    expect(results).toHaveLength(1);
+    // The returned identifier is canonical NFC, not the raw NFD form on disk.
+    expect(results[0].id).toBe(composed);
+    expect(results[0].id).not.toBe(decomposed);
+
+    // It round-trips: both the NFC id and the NFD form resolve to the same doc.
+    expect((await store.fetch(composed)).relativePath).toBe(composed);
+    expect((await store.fetch(decomposed)).relativePath).toBe(composed);
+  });
+
   it("lists projects by frontmatter", async () => {
     const projects = await store.listProjects();
 
