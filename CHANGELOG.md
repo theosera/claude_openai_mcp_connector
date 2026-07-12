@@ -35,6 +35,15 @@ does not enable the new surface behaves exactly as in `0.3.0`.
   document writes stay off (`src/config.ts`, `src/httpServer.ts`,
   `tests/httpServer.test.ts`, `tests/oauth.test.ts`).
 
+### Documentation
+
+- **Operations guide for the Skill surface and macOS deployment.**
+  `docs/operations.md` gains a macOS **Tailscale Funnel + launchd** runbook
+  (stable `*.ts.net` URL, `KeepAlive` LaunchAgent, stable `node` path, sleep /
+  re-Authorize caveats) and an operator walkthrough of the `plan_skill_create` →
+  `apply_planned_skill_create` flow (enable flags, create-only / atomic
+  guarantees, verification).
+
 ## [0.3.0] — 2026-07-07
 
 End-to-end hardening for Claude.ai / ChatGPT web connectors and for real-world
