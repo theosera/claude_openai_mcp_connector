@@ -51,7 +51,9 @@ cloudflared tunnel run vault                            # always https://vault.e
 > **Cloudflare is not mandatory** — the only real requirement is a **stable
 > HTTPS URL that reaches `127.0.0.1:<port>`**. Equivalent options:
 > - **Tailscale Funnel** — account required, but no domain to buy (you get a
->   stable `*.ts.net` URL).
+>   stable `*.ts.net` URL). See
+>   [§2 · macOS: Tailscale Funnel + launchd](#macos-tailscale-funnel--launchd)
+>   for the concrete `tailscale funnel` + launchd runbook.
 > - **ngrok** — a stable domain on a paid plan.
 > - **Your own server + reverse proxy** (nginx / Caddy + Let's Encrypt) with a
 >   domain you already own — no Cloudflare needed.
@@ -241,11 +243,90 @@ for this daemon).
   client spawning the stdio server directly — use the **bwrap recipe in
   [§6](#6-sandboxing-the-local-stdio-server-bwrap-optional)** instead.
 
-### launchd (macOS)
+### macOS: Tailscale Funnel + launchd
 
-Use a `LaunchAgent` plist with `KeepAlive=true` and the same environment
-variables in `EnvironmentVariables`. Note macOS sleep will still pause it — a
-dedicated always-on host is better for a connector you depend on.
+A laptop is **not** the ideal host — macOS sleep pauses the process (see the
+caveats) — but this is a working, no-domain-required setup: **Tailscale Funnel**
+provides a stable `*.ts.net` HTTPS URL, and a **launchd** LaunchAgent keeps
+`node` alive with auto-restart.
+
+**1. Stable URL via Tailscale Funnel.** With Tailscale installed and signed in,
+expose the local port. The `*.ts.net` hostname is stable across restarts, so it
+works as the OAuth issuer/audience (unlike a Cloudflare quick tunnel):
+
+```bash
+tailscale funnel --bg 8787   # serves https://<machine>.<tailnet>.ts.net → 127.0.0.1:8787
+tailscale funnel status      # confirm the mapping is up
+```
+
+`--bg` runs it in the background and persists across reboots. Set
+`MCP_HTTP_PUBLIC_URL=https://<machine>.<tailnet>.ts.net` and register
+`https://<machine>.<tailnet>.ts.net/mcp` in the client.
+
+**2. Keep `node` alive via a LaunchAgent.** Create
+`~/Library/LaunchAgents/<label>.plist` (e.g. `local.mcp-connector`):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>local.mcp-connector</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/abs/path/to/node</string>
+    <string>/abs/path/to/claude_openai_mcp_connector/dist/index.js</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>MCP_TRANSPORT</key><string>http</string>
+    <key>MCP_HTTP_PORT</key><string>8787</string>
+    <key>MCP_HTTP_PUBLIC_URL</key><string>https://<machine>.<tailnet>.ts.net</string>
+    <key>MCP_OAUTH_ENABLED</key><string>1</string>
+    <key>KNOWLEDGE_ROOT</key><string>/abs/path/to/vault</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/abs/path/to/logs/mcp-connector.out.log</string>
+  <key>StandardErrorPath</key><string>/abs/path/to/logs/mcp-connector.err.log</string>
+</dict>
+</plist>
+```
+
+Load and start it:
+
+```bash
+launchctl load -w ~/Library/LaunchAgents/local.mcp-connector.plist
+```
+
+> **Secrets:** don't inline `MCP_OAUTH_PASSWORD` / `MCP_AUTH_TOKEN` in the plist
+> (it is readable and shows up in `launchctl print`). Keep them in a mode-`600`
+> file and source it from a tiny wrapper script that the plist runs instead of
+> `node` directly — the launchd analogue of the systemd `EnvironmentFile` advice
+> above.
+
+> **Use a STABLE `node` path.** Version-manager shims are often **per-shell** and
+> disappear after a reboot, which breaks `KeepAlive` (launchd can no longer find
+> `node`). Resolve the real binary once and hardcode *that* absolute path:
+>
+> ```bash
+> node -e 'console.log(require("fs").realpathSync(process.execPath))'
+> ```
+>
+> For `fnm` this is the versioned install path
+> (`…/node-versions/vX.Y.Z/installation/bin/node`), **not** a transient
+> per-shell multishell path.
+
+**Caveats.**
+
+- **macOS sleep pauses the process.** When the Mac sleeps, `node` is suspended
+  and in-memory OAuth tokens effectively drop, so the connector goes quiet until
+  wake + re-auth. A dedicated always-on host is better; `caffeinate` (e.g.
+  running the connector under `caffeinate -s`) mitigates it while on power.
+- **Restart = re-Authorize, not re-register.** Because the `*.ts.net` URL is
+  fixed, after a restart you only press **Authorize** in the client to mint fresh
+  tokens (§1.B) — no need to delete and re-add the connector. Persisting tokens
+  across restarts is a roadmap item ([`ROADMAP.md`](./ROADMAP.md)).
 
 ---
 
@@ -392,3 +473,73 @@ ls ~/.ssh   # → same: nothing to steal
   [systemd drop-in](#sandbox-hardening-systemd) gives equivalent isolation
   with better supervision and no userns caveats. Use bwrap for the
   client-spawned stdio case; use systemd for the daemon.
+
+---
+
+## 7. Enabling and using constrained Skill creation
+
+`plan_skill_create` → `apply_planned_skill_create` let a client author an
+**instruction-only Skill bundle** into the vault **without** being granted
+general document writes. The surface is deliberately narrow: create-only, a fixed
+file allowlist, and an atomic publish that reuses the same path-containment guard
+chain as every other file access.
+
+### Prerequisite: a pre-existing Skills directory
+
+Set `MCP_SKILLS_SUBDIR` to a **vault-relative path inside the primary knowledge
+root that already exists** — the server does **not** create it, and it rejects
+absolute paths, `..`, or anything resolving outside the root. If Skill writes are
+enabled but `MCP_SKILLS_SUBDIR` is unset, the server **refuses to start**.
+
+```bash
+# relative to KNOWLEDGE_ROOT (the primary root); create the directory first
+MCP_SKILLS_SUBDIR=path/to/skills
+```
+
+### Enabling the surface
+
+- **stdio (local Claude Code / Codex / Claude Desktop):** the two Skill tools are
+  available whenever `MCP_SKILLS_SUBDIR` is set — no HTTP flag involved.
+- **HTTP (ChatGPT / Claude.ai web):** additionally set
+  `MCP_HTTP_ALLOW_SKILL_WRITE=1`. This is **independent** of
+  `MCP_HTTP_ALLOW_WRITE` (general document writes): a connector can be allowed to
+  author Skills while document writes stay off. Over HTTP the tools are also
+  **OAuth scope-gated** — the session registers only the write surface(s) that
+  are actually enabled.
+
+Keep it unset unless you need it (see the §5 checklist).
+
+### The two-step flow
+
+1. **Plan.** `plan_skill_create` stages the bundle and returns a `patch_id` plus
+   the full file diff — **nothing is written yet**:
+
+   ```jsonc
+   {
+     "skill_name": "my-skill",
+     "skill_md": "---\nname: my-skill\n...\n---\n# instructions ...",
+     "references": [{ "filename": "notes.md", "content": "..." }], // optional, ≤20, flat
+     "openai_yaml": "...",                                         // optional
+     "reason": "why this skill is being created"
+   }
+   ```
+
+   Only three kinds of file are accepted — `SKILL.md`, flat `references/*.md`, and
+   a single `agents/openai.yaml`. Scripts, binary assets, nested/arbitrary paths,
+   and unknown `SKILL.md` frontmatter keys are rejected, and per-file / count /
+   size caps are enforced.
+
+2. **Review, then apply.** After you approve the diff,
+   `apply_planned_skill_create { "patch_id": "<from step 1>" }` builds the
+   complete bundle in a **same-filesystem temporary directory** and **atomically**
+   renames it into `<MCP_SKILLS_SUBDIR>/<skill_name>/`. It is **create-only**: if
+   that Skill directory already exists (or a symlink tries to escape), apply
+   **fails closed** and nothing is published — existing Skills are never
+   overwritten.
+
+### Verifying a publish
+
+The bundle lands at `<MCP_SKILLS_SUBDIR>/<skill_name>/SKILL.md` inside the vault.
+Over HTTP you can confirm it through the read tools without shell access — e.g.
+`search_documents` for the skill name, then `fetch_document` on the returned
+`SKILL.md`. Because apply is atomic, a partially-written bundle is never visible.
