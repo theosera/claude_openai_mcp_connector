@@ -13,6 +13,7 @@ import { isAuthorized, isAuthorizedHeader, parseBearer, verifyLoginPassword } fr
 import { startHttpServer } from "../src/httpServer.js";
 import { KnowledgeStore } from "../src/knowledgeStore.js";
 import { buildMcpServer } from "../src/server.js";
+import { SkillStore } from "../src/skillStore.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -132,6 +133,51 @@ describe("buildMcpServer tool surface", () => {
     expect(names).toContain("apply_planned_update");
   });
 
+  it("exposes only Skill writes when the dedicated flag and store are present", async () => {
+    const store = await makeStore();
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-http-skill-vault-"));
+    const patchStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-http-skill-patches-"));
+    await fs.mkdir(path.join(root, "skills"));
+    const skillStore = new SkillStore({ knowledgeRoot: root, skillsSubdir: "skills", patchStateDir });
+    await skillStore.init();
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = buildMcpServer(store, {
+      allowWrite: false,
+      allowSkillWrite: true,
+      skillStore,
+      includeChatgptCompat: true
+    });
+    await server.connect(serverTransport);
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await client.connect(clientTransport);
+    const { tools } = await client.listTools();
+    await client.close();
+    const names = tools.map((tool) => tool.name);
+
+    expect(names).toContain("plan_skill_create");
+    expect(names).toContain("apply_planned_skill_create");
+    expect(names).not.toContain("create_document");
+    expect(names).not.toContain("plan_document_update");
+    expect(names).not.toContain("apply_planned_update");
+  });
+
+  it("does not expose Skill tools without an initialized Skill store", async () => {
+    const store = await makeStore();
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = buildMcpServer(store, {
+      allowWrite: false,
+      allowSkillWrite: true,
+      includeChatgptCompat: true
+    });
+    await server.connect(serverTransport);
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await client.connect(clientTransport);
+    const { tools } = await client.listTools();
+    await client.close();
+
+    expect(tools.map((tool) => tool.name)).not.toContain("plan_skill_create");
+  });
+
   it("advertises readOnlyHint so clients can skip per-call approval on reads", async () => {
     const store = await makeStore();
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -191,6 +237,7 @@ describe("HTTP transport integration", () => {
       port: 0,
       authToken: token,
       allowWrite: false,
+      allowSkillWrite: false,
       allowedHosts: [],
       allowedOrigins: []
     };

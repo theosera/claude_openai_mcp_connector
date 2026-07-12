@@ -20,7 +20,8 @@ over two transports:
   Full read+write tool surface. Auth is the OS process boundary (the client
   spawns the server).
 - **Streamable HTTP** — remote Chat connectors (ChatGPT, Claude.ai web; Claude
-  Desktop/Code remote; Claude API). Authenticated, read-only by default,
+  Desktop/Code remote; Claude API). Authenticated, read-only by default;
+  document writes and constrained Skill creation are separately enabled,
   optionally with a built-in **OAuth 2.1** authorization server.
 
 The defining constraint: **the code repo is public; the vault is private** and
@@ -140,10 +141,11 @@ repo/CI → public (secret hygiene).
 
 Security behaviors are **pinned by tests** (`pnpm test`, vitest), not just by
 convention — see `tests/pathSafety.test.ts`, `tests/knowledgeStore.test.ts`,
-`tests/httpServer.test.ts`, `tests/oauth.test.ts`. Coverage includes path
+`tests/skillStore.test.ts`, `tests/httpServer.test.ts`, and `tests/oauth.test.ts`. Coverage includes path
 traversal (raw/encoded/malformed/absolute/`~`/NUL/over-length), symlink escape +
 cycle, frontmatter allowlist + value-type rejection, two-step stale reject,
-overwrite collision, HTTP 401/read-only tool surface, and the full OAuth flow
+overwrite collision, constrained Skill bundle creation, HTTP 401/per-surface
+tool registration, and the full OAuth flow
 (PKCE match/mismatch, single-use codes, redirect policy, refresh rotation,
 audience-bound `/mcp`).
 

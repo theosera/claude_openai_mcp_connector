@@ -2,6 +2,7 @@ import path from "node:path";
 import process from "node:process";
 import dotenv from "dotenv";
 import type { OAuthConfig } from "./oauth/provider.js";
+import { assertRelativePath, toPosixPath } from "./pathSafety.js";
 
 dotenv.config();
 
@@ -17,6 +18,8 @@ export interface AppConfig {
   knowledgeRoots: KnowledgeRoot[];
   writeMode: "two_step";
   patchStateDir: string;
+  /** Vault-relative directory that may receive instruction-only Skill bundles. */
+  skillsSubdir?: string;
 }
 
 /** Config for a single-root KnowledgeStore instance. */
@@ -38,10 +41,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     throw new Error("Only MCP_WRITE_MODE=two_step is supported for existing document edits.");
   }
 
+  const rawSkillsSubdir = env.MCP_SKILLS_SUBDIR?.trim();
+  const skillsSubdir = rawSkillsSubdir ? toPosixPath(assertRelativePath(rawSkillsSubdir)) : undefined;
+
   return {
     knowledgeRoots,
     writeMode,
-    patchStateDir: path.resolve(env.MCP_PATCH_STATE_DIR?.trim() || ".mcp-state/patches")
+    patchStateDir: path.resolve(env.MCP_PATCH_STATE_DIR?.trim() || ".mcp-state/patches"),
+    skillsSubdir
   };
 }
 
@@ -100,6 +107,8 @@ export interface HttpConfig {
   authToken: string;
   /** Whether write tools are exposed over HTTP. Defaults off (read-only). */
   allowWrite: boolean;
+  /** Whether only the constrained Skill-creation tools are exposed over HTTP. */
+  allowSkillWrite: boolean;
   /** Allowed Host headers (DNS-rebinding protection). */
   allowedHosts: string[];
   /** Allowed Origins (DNS-rebinding protection). Empty = allow any origin. */
@@ -162,8 +171,12 @@ export function loadHttpConfig(env: NodeJS.ProcessEnv = process.env): HttpConfig
   }
 
   const allowWrite = isTruthy(env.MCP_HTTP_ALLOW_WRITE);
+  const allowSkillWrite = isTruthy(env.MCP_HTTP_ALLOW_SKILL_WRITE);
+  if (allowSkillWrite && !env.MCP_SKILLS_SUBDIR?.trim()) {
+    throw new Error("MCP_HTTP_ALLOW_SKILL_WRITE requires MCP_SKILLS_SUBDIR.");
+  }
   const publicUrl = env.MCP_HTTP_PUBLIC_URL?.trim().replace(/\/+$/, "") || undefined;
-  const oauth = loadOAuthConfig(env, publicUrl, allowWrite);
+  const oauth = loadOAuthConfig(env, publicUrl, allowWrite || allowSkillWrite);
 
   // When OAuth is on, the public (tunnel) host receives the actual /mcp traffic,
   // so it must be in the DNS-rebinding allowlist.
@@ -180,6 +193,7 @@ export function loadHttpConfig(env: NodeJS.ProcessEnv = process.env): HttpConfig
     port,
     authToken,
     allowWrite,
+    allowSkillWrite,
     allowedHosts,
     allowedOrigins: splitList(env.MCP_HTTP_ALLOWED_ORIGINS),
     chatgptUrlBase: publicUrl,
@@ -190,7 +204,7 @@ export function loadHttpConfig(env: NodeJS.ProcessEnv = process.env): HttpConfig
 function loadOAuthConfig(
   env: NodeJS.ProcessEnv,
   publicUrl: string | undefined,
-  allowWrite: boolean
+  allowAnyWrite: boolean
 ): OAuthConfig | undefined {
   if (!isTruthy(env.MCP_OAUTH_ENABLED)) {
     return undefined;
@@ -217,6 +231,6 @@ function loadOAuthConfig(
     accessTokenTtlSec: ttl(env.MCP_OAUTH_ACCESS_TTL, 3600),
     refreshTokenTtlSec: ttl(env.MCP_OAUTH_REFRESH_TTL, 2592000),
     codeTtlSec: ttl(env.MCP_OAUTH_CODE_TTL, 60),
-    allowWrite
+    allowWrite: allowAnyWrite
   };
 }

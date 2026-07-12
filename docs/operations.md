@@ -116,6 +116,9 @@ Environment=KNOWLEDGE_ROOT=/abs/path/to/vault
 Environment=MCP_PATCH_STATE_DIR=/abs/path/to/state/patches
 # Writes stay OFF unless you explicitly need them:
 # Environment=MCP_HTTP_ALLOW_WRITE=1
+# To expose only constrained, create-only Skill writes instead:
+# Environment=MCP_SKILLS_SUBDIR=06_Self_Discipline/_Repo_GitHub/_Development/skills
+# Environment=MCP_HTTP_ALLOW_SKILL_WRITE=1
 # Pin the cwd so any relative default also resolves predictably:
 WorkingDirectory=/abs/path/to/claude_openai_mcp_connector
 ExecStart=/usr/bin/node /abs/path/to/claude_openai_mcp_connector/dist/index.js
@@ -173,7 +176,7 @@ PrivateTmp=true
 ProtectSystem=strict
 # Grant write access to ONLY what the connector must write:
 #   - the two-step patch-state dir (MCP_PATCH_STATE_DIR), needed when writes are on;
-#   - the vault itself ONLY if you enabled MCP_HTTP_ALLOW_WRITE.
+#   - the vault itself ONLY if you enabled document or Skill writes.
 # In the read-only default (no writes), you can drop this line entirely — the
 # vault is still readable under ProtectSystem=strict.
 ReadWritePaths=/abs/path/to/state/patches
@@ -279,6 +282,9 @@ the OAuth flow. The URL to register in the client is
 
 - [ ] `MCP_HTTP_ALLOW_WRITE` is **unset** (read-only) unless you have a specific,
       audited need. Writes also require a `vault.write`-scoped token.
+- [ ] `MCP_HTTP_ALLOW_SKILL_WRITE` is unset unless constrained Skill creation is
+      needed; when enabled, `MCP_SKILLS_SUBDIR` is the narrow intended directory
+      and general `MCP_HTTP_ALLOW_WRITE` remains unset unless separately needed.
 - [ ] `MCP_OAUTH_PASSWORD` is a strong, unique passphrase; secrets are in an
       `EnvironmentFile` (mode `600`), not committed anywhere.
 - [ ] `MCP_AUTH_TOKEN` is a 32-byte random value (`openssl rand -hex 32`).

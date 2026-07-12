@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, loadHttpConfig } from "../src/config.js";
 import { KnowledgeStore } from "../src/knowledgeStore.js";
 import { MultiRootStore, createStore } from "../src/multiRootStore.js";
 
@@ -52,6 +52,19 @@ describe("KNOWLEDGE_ROOTS config", () => {
     expect(config.knowledgeRoots).toEqual([{ name: "vault", path: path.resolve("/tmp/a") }]);
   });
 
+  it("parses a vault-relative Skills subdir and rejects escape paths", () => {
+    const config = loadConfig({
+      ...base,
+      KNOWLEDGE_ROOT: "/tmp/a",
+      MCP_SKILLS_SUBDIR: "06_Self_Discipline/_Development/skills"
+    });
+    expect(config.skillsSubdir).toBe("06_Self_Discipline/_Development/skills");
+    expect(() => loadConfig({ ...base, KNOWLEDGE_ROOT: "/tmp/a", MCP_SKILLS_SUBDIR: "../outside" })).toThrow(/escapes/);
+    expect(() => loadConfig({ ...base, KNOWLEDGE_ROOT: "/tmp/a", MCP_SKILLS_SUBDIR: "/tmp/outside" })).toThrow(
+      /Absolute/
+    );
+  });
+
   it("rejects entries without name=path shape", () => {
     expect(() => loadConfig({ ...base, KNOWLEDGE_ROOTS: "/tmp/a" })).toThrow(/Invalid KNOWLEDGE_ROOTS entry/);
     expect(() => loadConfig({ ...base, KNOWLEDGE_ROOTS: "vault=" })).toThrow(/Invalid KNOWLEDGE_ROOTS entry/);
@@ -66,6 +79,26 @@ describe("KNOWLEDGE_ROOTS config", () => {
 
   it("requires KNOWLEDGE_ROOT or KNOWLEDGE_ROOTS", () => {
     expect(() => loadConfig({ ...base })).toThrow(/KNOWLEDGE_ROOT/);
+  });
+});
+
+describe("Skill HTTP write config", () => {
+  it("enables Skill writes independently and fails closed without a subdir", () => {
+    const config = loadHttpConfig({
+      MCP_AUTH_TOKEN: "test-token",
+      MCP_HTTP_ALLOW_WRITE: "",
+      MCP_HTTP_ALLOW_SKILL_WRITE: "1",
+      MCP_SKILLS_SUBDIR: "knowledge/skills"
+    });
+    expect(config.allowWrite).toBe(false);
+    expect(config.allowSkillWrite).toBe(true);
+
+    expect(() =>
+      loadHttpConfig({
+        MCP_AUTH_TOKEN: "test-token",
+        MCP_HTTP_ALLOW_SKILL_WRITE: "1"
+      })
+    ).toThrow(/requires MCP_SKILLS_SUBDIR/);
   });
 });
 
