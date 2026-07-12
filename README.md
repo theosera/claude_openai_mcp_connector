@@ -25,7 +25,7 @@ flowchart LR
   subgraph Server["MCP server — public repo"]
     STDIO["stdio transport<br/>full read + write"]
     HTTP["HTTP transport<br/>bearer / OAuth 2.1<br/>read-only by default"]
-    TOOLS["tool factory<br/>search · fetch · list · trace<br/>create · plan → apply (2-step)"]
+    TOOLS["tool factory<br/>search · fetch · list · trace<br/>document and Skill plan → apply"]
     GUARD["path containment guard"]
   end
 
@@ -47,6 +47,8 @@ which is never committed to this public repo.
 - List projects grouped by `client` and `project`.
 - Create new Markdown documents.
 - Edit existing Markdown through a two-step `plan_document_update` then `apply_planned_update` flow.
+- Create instruction-only Skill bundles through a separate two-step
+  `plan_skill_create` then `apply_planned_skill_create` flow.
 - Trace source refs, outgoing Markdown links, and backlink candidates.
 - Reject path traversal, symlink escape, overwrite collisions, and stale patch application.
 
@@ -118,6 +120,18 @@ MCP_WRITE_MODE=two_step
 MCP_PATCH_STATE_DIR=.mcp-state/patches
 ```
 
+To allow a remote client to create instruction-only Skills without exposing
+general document writes, also set a vault-relative, pre-existing directory:
+
+```text
+MCP_SKILLS_SUBDIR=06_Self_Discipline/_Repo_GitHub/_Development/skills
+MCP_HTTP_ALLOW_SKILL_WRITE=1
+```
+
+This surface is create-only: it accepts `SKILL.md`, optional flat
+`references/*.md`, and optional `agents/openai.yaml`; it rejects scripts,
+assets, arbitrary paths, and attempts to overwrite an existing Skill.
+
 Do not commit `.env`, private vault URLs, private vault paths, or real note content.
 
 ### Multiple knowledge roots (optional)
@@ -159,7 +173,7 @@ The same server speaks two transports, selected with `MCP_TRANSPORT`:
 | `MCP_TRANSPORT` | Use for | Tools |
 | --- | --- | --- |
 | `stdio` (default) | Local CLI / desktop clients: **Claude Code**, **Codex CLI**, **Claude Desktop** | full (read + write) |
-| `http` | Remote **Chat connectors**: **ChatGPT**, **Claude.ai** | read-only by default; writes require `MCP_HTTP_ALLOW_WRITE=1` |
+| `http` | Remote **Chat connectors**: **ChatGPT**, **Claude.ai** | read-only by default; document writes require `MCP_HTTP_ALLOW_WRITE=1`, constrained Skill creation requires `MCP_HTTP_ALLOW_SKILL_WRITE=1` |
 
 Chat connectors cannot launch a local process, so they require the HTTP
 transport reachable over HTTPS. Authentication differs by client:
@@ -215,8 +229,9 @@ server refuses to start otherwise).
 DNS-rebinding allowlist. The MCP endpoint to register is
 `https://<random>.trycloudflare.com/mcp`. Tokens are **audience-bound** to that
 `/mcp` resource and **scope-gated**: a connector only receives `vault.write`
-when the server is started with `MCP_HTTP_ALLOW_WRITE=1` (otherwise it is
-read-only regardless of what the client requests).
+when at least one explicitly enabled write surface exists. The session then
+registers only that surface: `MCP_HTTP_ALLOW_WRITE=1` enables document writes,
+while `MCP_HTTP_ALLOW_SKILL_WRITE=1` enables constrained Skill creation.
 
 > Verify before registering: `GET /.well-known/oauth-protected-resource` returns
 > JSON, and an unauthenticated `POST /mcp` returns `401` with a
@@ -274,7 +289,8 @@ env = { KNOWLEDGE_ROOT = "/abs/path/to/private/vault" }
 1. Claude.ai → **Settings → Connectors → Add custom connector**.
 2. URL = `https://<random>.trycloudflare.com/mcp`.
 3. Connect → Claude runs the OAuth flow → enter your `MCP_OAUTH_PASSWORD`.
-4. Read-only unless the server was started with `MCP_HTTP_ALLOW_WRITE=1`.
+4. Read-only unless a write surface was explicitly enabled; document writes and
+   constrained Skill creation have separate flags.
 
 > **Note on static bearer:** ChatGPT/Claude.ai **web** do not let you paste a
 > bearer token or custom header — they require the OAuth flow above. The static
@@ -290,6 +306,8 @@ env = { KNOWLEDGE_ROOT = "/abs/path/to/private/vault" }
 - `create_document` *(write — stdio, or HTTP only with `MCP_HTTP_ALLOW_WRITE=1`)*
 - `plan_document_update` *(write)*
 - `apply_planned_update` *(write)*
+- `plan_skill_create` *(write — only when the constrained Skill store is configured)*
+- `apply_planned_skill_create` *(write; create-only, atomic, never overwrites)*
 - `search` / `fetch` — ChatGPT-connector-compatible read-only aliases
 
 ## Security
@@ -309,6 +327,9 @@ in code and pinned by tests:
   string[]) — blocks YAML field injection and type confusion.
 - **Stale-safe, non-destructive writes** — edits go through `plan` → `apply`
   with a SHA-256 staleness check; creates never overwrite (`flag: "wx"`).
+- **Constrained Skill creation** — a separate vault-relative root, exact
+  `SKILL.md` frontmatter, fixed file allowlist and size caps, plan/apply approval,
+  and same-filesystem atomic directory creation; existing Skills are immutable.
 - **Untrusted content boundary** — the server `instructions` declare returned
   content is data, never commands.
 - **Authenticated, locked-down HTTP transport** — the remote endpoint requires a
@@ -324,8 +345,9 @@ in code and pinned by tests:
   opaque 256-bit tokens with rotation, capped DCR inputs, and no secrets logged
   (`src/oauth/`). Tokens are **audience-bound** (RFC 8707) to the canonical
   `/mcp` resource and **scope-gated** (`vault.read` / `vault.write`): a
-  read-scoped token's session never registers the write tools, so writes need
-  both `MCP_HTTP_ALLOW_WRITE=1` *and* a `vault.write` token. The consent page
+  read-scoped token's session never registers write tools. A write needs the
+  matching server-side flag and a `vault.write` token; document and constrained
+  Skill surfaces are gated independently. The consent page
   sends `Content-Security-Policy: frame-ancestors 'none'`, `X-Frame-Options:
   DENY`, and `Referrer-Policy: no-referrer`.
 

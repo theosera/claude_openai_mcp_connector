@@ -5,6 +5,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { HttpConfig } from "./config.js";
 import { isAuthorizedHeader, parseBearer } from "./httpAuth.js";
 import type { VaultStore } from "./types.js";
+import type { SkillStore } from "./skillStore.js";
 import type { OAuthHttpResponse } from "./oauth/provider.js";
 import { OAuthProvider, SCOPE_READ, SCOPE_WRITE } from "./oauth/provider.js";
 import { RateLimiter } from "./oauth/rateLimiter.js";
@@ -31,7 +32,11 @@ interface OAuthLimiters {
  *  - DNS-rebinding protection (allowedHosts / allowedOrigins).
  *  - Read-only tool surface unless MCP_HTTP_ALLOW_WRITE is set.
  */
-export async function startHttpServer(store: VaultStore, config: HttpConfig): Promise<http.Server> {
+export async function startHttpServer(
+  store: VaultStore,
+  config: HttpConfig,
+  skillStore?: SkillStore
+): Promise<http.Server> {
   const sessions = new Map<string, Session>();
   // OAuth 2.1 authorization server (only when configured). ChatGPT / Claude.ai
   // web require it; Desktop / Code / API keep using the static bearer.
@@ -46,7 +51,7 @@ export async function startHttpServer(store: VaultStore, config: HttpConfig): Pr
     : undefined;
 
   const httpServer = http.createServer((req, res) => {
-    handleRequest(req, res, store, config, sessions, oauth, limiters).catch((error) => {
+    handleRequest(req, res, store, config, sessions, oauth, limiters, skillStore).catch((error) => {
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json" });
       }
@@ -67,7 +72,8 @@ async function handleRequest(
   config: HttpConfig,
   sessions: Map<string, Session>,
   oauth: OAuthProvider | undefined,
-  limiters: OAuthLimiters | undefined
+  limiters: OAuthLimiters | undefined,
+  skillStore: SkillStore | undefined
 ): Promise<void> {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
@@ -159,8 +165,11 @@ async function handleRequest(
   // token carrying vault.write. A read-scoped OAuth token never sees write tools
   // (they aren't registered for its session), so it cannot invoke them.
   const allowWrite = config.allowWrite && principal.scopes.includes(SCOPE_WRITE);
+  const allowSkillWrite = config.allowSkillWrite && principal.scopes.includes(SCOPE_WRITE);
   const server = buildMcpServer(store, {
     allowWrite,
+    allowSkillWrite,
+    skillStore,
     includeChatgptCompat: true,
     chatgptUrlBase: config.chatgptUrlBase
   });

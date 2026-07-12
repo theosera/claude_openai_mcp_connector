@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { HttpConfig } from "../src/config.js";
 import { startHttpServer } from "../src/httpServer.js";
 import { KnowledgeStore } from "../src/knowledgeStore.js";
+import { SkillStore } from "../src/skillStore.js";
 import { isAllowedRedirectUri, OAuthProvider } from "../src/oauth/provider.js";
 import { computeS256Challenge, verifyPkceS256 } from "../src/oauth/pkce.js";
 import { RateLimiter } from "../src/oauth/rateLimiter.js";
@@ -445,6 +446,7 @@ describe("OAuth end-to-end over HTTP", () => {
       port,
       authToken: "static-bearer-unused-here",
       allowWrite: false,
+      allowSkillWrite: false,
       allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
       allowedOrigins: [],
       oauth: {
@@ -541,6 +543,7 @@ describe("OAuth end-to-end over HTTP", () => {
       port,
       authToken: "static-bearer-unused-here",
       allowWrite: false,
+      allowSkillWrite: false,
       allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
       allowedOrigins: [],
       oauth: {
@@ -586,6 +589,7 @@ describe("OAuth end-to-end over HTTP", () => {
       port,
       authToken: "static-bearer-unused-here",
       allowWrite: true,
+      allowSkillWrite: false,
       allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
       allowedOrigins: [],
       oauth: {
@@ -607,5 +611,47 @@ describe("OAuth end-to-end over HTTP", () => {
     // ...but a vault.write-scoped token does.
     const writeTools = await listToolNamesOverHttp(issuer, await oauthObtainToken(issuer, "vault.read vault.write"));
     expect(writeTools).toContain("create_document");
+  });
+
+  it("gates Skill writes separately from general document writes", async () => {
+    const store = await makeStore();
+    const skillRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-oauth-skill-vault-"));
+    const skillPatchState = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-oauth-skill-patches-"));
+    await fs.mkdir(path.join(skillRoot, "skills"));
+    const skillStore = new SkillStore({
+      knowledgeRoot: skillRoot,
+      skillsSubdir: "skills",
+      patchStateDir: skillPatchState
+    });
+    await skillStore.init();
+
+    const port = await freePort();
+    const issuer = `http://127.0.0.1:${port}`;
+    const config: HttpConfig = {
+      host: "127.0.0.1",
+      port,
+      authToken: "static-bearer-unused-here",
+      allowWrite: false,
+      allowSkillWrite: true,
+      allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
+      allowedOrigins: [],
+      oauth: {
+        issuer,
+        loginPassword: "hunter2",
+        accessTokenTtlSec: 3600,
+        refreshTokenTtlSec: 86_400,
+        codeTtlSec: 60,
+        allowWrite: true
+      }
+    };
+    server = await startHttpServer(store, config, skillStore);
+
+    const readTools = await listToolNamesOverHttp(issuer, await oauthObtainToken(issuer, "vault.read"));
+    expect(readTools).not.toContain("plan_skill_create");
+
+    const writeTools = await listToolNamesOverHttp(issuer, await oauthObtainToken(issuer, "vault.read vault.write"));
+    expect(writeTools).toContain("plan_skill_create");
+    expect(writeTools).toContain("apply_planned_skill_create");
+    expect(writeTools).not.toContain("create_document");
   });
 });

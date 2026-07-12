@@ -10,7 +10,8 @@ tests use only the synthetic fixtures under `fixtures/synthetic-vault/`.
 
 The controls below are a **curated subset** of the shared *Reusable Security
 Baseline*, selected for what this connector actually does: read / search / trace
-and *safely* create / update Markdown files confined to one root, driven by an
+and *safely* create / update Markdown files confined to one root, plus create
+strictly constrained instruction-only Skill bundles, driven by an
 **untrusted MCP client** (an LLM).
 
 ## Threat model
@@ -29,8 +30,9 @@ and *safely* create / update Markdown files confined to one root, driven by an
 | T5 | Secret / private-vault leak into the public repo | `.gitignore` (vault / keys / tokens / env), `.claude/settings.json` read-deny (Read **and** Bash), explicit-file-add discipline (no `git add -A`, no `--no-verify`). | `.gitignore`, `.claude/settings.json`, `CLAUDE.md` |
 | T6 | Supply-chain: poisoned Action / stale pin / tag swap / vulnerable dependency | Third-party Actions full-SHA pinned (+ `# vX.Y.Z`); top-level `permissions: contents: read`; `concurrency`; advisory `pnpm audit`; Dependabot (npm + actions); CODEOWNERS on `.github/`; CodeQL SAST (push + PR + weekly). Dependencies kept advisory-clean (`pnpm audit --audit-level low`). | `.github/`, `package.json` |
 | T7 | Denial of service via symlink cycle / unbounded traversal | The vault directory walk tracks visited real paths and returns on revisit, so a `loop → root` symlink stops instead of recursing forever; the per-symlink realpath prefix check still rejects out-of-root targets (T1 is not weakened). | `src/knowledgeStore.ts` |
-| T8 | Unauthenticated / over-exposed remote HTTP endpoint (vault read or write by anyone who reaches the port; DNS-rebinding; write amplification over the network) | Bearer auth on every request (`MCP_AUTH_TOKEN`, constant-time compare, **fail-closed**: refuses to start without a token, 401 otherwise); binds to `127.0.0.1` by default; DNS-rebinding protection via `allowedHosts`/`allowedOrigins`; request-body size cap; **read-only tool surface unless `MCP_HTTP_ALLOW_WRITE=1`** (write tools are not even registered). | `src/httpServer.ts`, `src/httpAuth.ts`, `src/config.ts`, `src/server.ts` |
-| T9 | OAuth 2.1 flow abuse for the web-client path (auth-code interception/replay, PKCE downgrade, open redirect, weak/guessable tokens, unbounded client/token growth, **token reuse across resources, scope escalation to writes, consent-page clickjacking, DCR input flooding**) | PKCE **S256 mandatory** (`plain` rejected); authorization codes are CSPRNG, **single-use**, short-TTL, and bound to client_id/redirect_uri/code_challenge; redirect URIs **exact-match** a registered https/loopback value (no open redirect); login-password gate uses a **slow KDF (scrypt)** + constant-time compare and is **fail-closed** (refuses to enable OAuth without issuer URL + password); tokens are 256-bit opaque with refresh rotation; **audience-bound (RFC 8707)** to the canonical `/mcp` resource and rejected on `/mcp` if the audience mismatches; **scope-gated** (`vault.read`/`vault.write`) — a read-scoped session never registers write tools, and `vault.write` is granted only when `MCP_HTTP_ALLOW_WRITE=1`; consent page sets `CSP frame-ancestors 'none'` + `X-Frame-Options: DENY` + `Referrer-Policy: no-referrer`; DCR caps redirect-URI count/length + client_name length; all OAuth collections are capped + pruned; no codes/tokens/passwords logged. | `src/oauth/pkce.ts`, `src/oauth/store.ts`, `src/oauth/provider.ts`, `src/httpAuth.ts`, `src/config.ts`, `src/httpServer.ts` |
+| T8 | Unauthenticated / over-exposed remote HTTP endpoint (vault read or write by anyone who reaches the port; DNS-rebinding; write amplification over the network) | Bearer auth on every request (`MCP_AUTH_TOKEN`, constant-time compare, **fail-closed**: refuses to start without a token, 401 otherwise); binds to `127.0.0.1` by default; DNS-rebinding protection via `allowedHosts`/`allowedOrigins`; request-body size cap; **read-only tool surface unless a write surface is explicitly enabled**. General document writes and constrained Skill creation use separate flags and tool registration. | `src/httpServer.ts`, `src/httpAuth.ts`, `src/config.ts`, `src/server.ts` |
+| T9 | OAuth 2.1 flow abuse for the web-client path (auth-code interception/replay, PKCE downgrade, open redirect, weak/guessable tokens, unbounded client/token growth, **token reuse across resources, scope escalation to writes, consent-page clickjacking, DCR input flooding**) | PKCE **S256 mandatory** (`plain` rejected); authorization codes are CSPRNG, **single-use**, short-TTL, and bound to client_id/redirect_uri/code_challenge; redirect URIs **exact-match** a registered https/loopback value (no open redirect); login-password gate uses a **slow KDF (scrypt)** + constant-time compare and is **fail-closed** (refuses to enable OAuth without issuer URL + password); tokens are 256-bit opaque with refresh rotation; **audience-bound (RFC 8707)** to the canonical `/mcp` resource and rejected on `/mcp` if the audience mismatches; **scope-gated** (`vault.read`/`vault.write`) — a read-scoped session never registers write tools, and `vault.write` is granted only when at least one server-side write surface is enabled; per-session registration still enforces each surface's flag; consent page sets `CSP frame-ancestors 'none'` + `X-Frame-Options: DENY` + `Referrer-Policy: no-referrer`; DCR caps redirect-URI count/length + client_name length; all OAuth collections are capped + pruned; no codes/tokens/passwords logged. | `src/oauth/pkce.ts`, `src/oauth/store.ts`, `src/oauth/provider.ts`, `src/httpAuth.ts`, `src/config.ts`, `src/httpServer.ts` |
+| T10 | Skill creation used for path escape, executable payload placement, partial bundle publication, or overwrite of trusted instructions | Skill root is a validated vault-relative subdirectory; only `SKILL.md`, flat `references/*.md`, and `agents/openai.yaml` are accepted; exact frontmatter and size/count caps are enforced; scripts/assets/arbitrary paths are rejected; plan/apply is mandatory; existing Skills cannot be overwritten; the complete bundle is created in a same-filesystem temporary directory and atomically renamed. | `src/skillStore.ts`, `src/pathSafety.ts`, `src/server.ts` |
 
 ## Curated mapping to the Reusable Security Baseline
 
@@ -59,7 +61,7 @@ Selected (implemented here) — relevant to this connector:
   a bounded, cycle-safe vault walk in `src/knowledgeStore.ts` (visited-real-path set).
 - **§6.6 Frontmatter allowlist** → `src/frontmatter.ts::assertFrontmatterPatch`
   (key allowlist + per-key value-type validation).
-- **§10 Security test coverage** → `tests/pathSafety.test.ts` + `tests/knowledgeStore.test.ts`
+- **§10 Security test coverage** → `tests/pathSafety.test.ts` + `tests/knowledgeStore.test.ts` + `tests/skillStore.test.ts`
   (incl. symlink-cycle traversal and frontmatter value-type cases).
 
 Intentionally **not** ported (out of scope for this connector): Python-specific
@@ -82,7 +84,7 @@ controls (ruff/mypy/pip-audit/uv, `sanitize.py`, Docker capture sandbox,
 Security behavior is pinned by tests, not just convention:
 
 ```bash
-pnpm test   # path traversal, symlink escape + cycle, frontmatter allowlist + value types, stale-patch, overwrite collision, HTTP bearer auth + read-only tool surface, OAuth 2.1 (PKCE, single-use codes, redirect policy, full flow)
+pnpm test   # path traversal, symlink escape + cycle, frontmatter allowlists, stale-patch, overwrite collision, constrained Skill creation, HTTP bearer auth + tool-surface gates, OAuth 2.1
 ```
 
 ## Reporting a vulnerability
