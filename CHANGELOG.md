@@ -6,6 +6,35 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-07-12
+
+Adds a **constrained, create-only Skill authoring** surface so a (local or
+remote) client can publish instruction-only Skill bundles into the vault without
+being granted general document-write access. No breaking changes — a setup that
+does not enable the new surface behaves exactly as in `0.3.0`.
+
+### Added
+
+- **Instruction-only Skill creation via a separate two-step flow.** New
+  `plan_skill_create` → `apply_planned_skill_create` tools stage and then
+  **atomically** publish a Skill bundle — `SKILL.md`, optional flat
+  `references/*.md` (≤20), and an optional `agents/openai.yaml` — into a
+  pre-existing, vault-relative directory (`MCP_SKILLS_SUBDIR`). The surface is
+  deliberately narrow: it is **create-only (never overwrites an existing
+  Skill)** and **rejects scripts, binary assets, and arbitrary/nested paths**,
+  reusing the existing path-containment guard chain. Like document edits, apply
+  runs only against a previously planned bundle the user approved
+  (`src/skillStore.ts`, `src/server.ts`, `tests/skillStore.test.ts`).
+- **Independent HTTP permission boundary for Skill creation.**
+  `MCP_HTTP_ALLOW_SKILL_WRITE=1` exposes only the constrained Skill tools over
+  HTTP, **separately from document writes** (`MCP_HTTP_ALLOW_WRITE`), and
+  requires `MCP_SKILLS_SUBDIR` (the server refuses to start otherwise). Over
+  HTTP the tools are registered only when explicitly enabled and are OAuth
+  scope-gated — the session registers just the write surface(s) that are turned
+  on — so a remote connector can be allowed to author Skills while general
+  document writes stay off (`src/config.ts`, `src/httpServer.ts`,
+  `tests/httpServer.test.ts`, `tests/oauth.test.ts`).
+
 ## [0.3.0] — 2026-07-07
 
 End-to-end hardening for Claude.ai / ChatGPT web connectors and for real-world
@@ -235,7 +264,8 @@ First tagged release. MCP server exposing a private Markdown vault
   frontmatter allowlist, two-step stale-safe writes, HTTP auth + read-only
   surface, and the full OAuth flow.
 
-[Unreleased]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.1.0...v0.2.0
