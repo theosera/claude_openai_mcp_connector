@@ -151,6 +151,13 @@ export class OAuthStore {
 
   registerClient(redirectUris: string[], clientName?: string): RegisteredClient {
     this.prune();
+    // Reap aged tokenless registrations HERE — a new registration is the moment
+    // reconnect churn accumulates — and NOT inside the shared prune()/issueTokens
+    // path: a refresh rotation deletes the presented token, then calls
+    // issueTokens() -> prune() BEFORE the replacement is inserted, so an aged
+    // client is briefly tokenless and must not be swept mid-rotation. The client
+    // added below is within its grace window, so it is never the one pruned.
+    this.pruneOrphanClients();
     if (this.clients.size >= DEFAULT_MAX_CLIENTS) {
       // Evict the oldest registration rather than growing without bound.
       const oldest = [...this.clients.values()].sort((a, b) => a.createdAt - b.createdAt)[0];
@@ -281,17 +288,19 @@ export class OAuthStore {
       if (record.expiresAt <= t) this.codes.delete(code);
     }
     this.evictExpired();
-    this.pruneOrphanClients();
   }
 
   /**
    * Drop client registrations that hold no live token and are older than the
-   * orphan grace window. Tokens are the credential and self-expire (evictExpired
-   * above); a registration with no surviving token is dead weight that would
-   * otherwise linger until the hard client cap evicts it. The grace window
+   * orphan grace window. Tokens are the credential and self-expire; a
+   * registration with no surviving token is dead weight that would otherwise
+   * linger until the hard client cap evicts it. Invoked only from registerClient
+   * (where reconnect churn accumulates) and after a state-file load —
+   * deliberately NOT from the shared prune()/issueTokens path, where a refresh
+   * rotation leaves an aged client momentarily tokenless (old token deleted,
+   * replacement not yet inserted) and must not be swept. The grace window also
    * protects an in-flight registration that has not yet completed the token
-   * exchange. Runs after evictExpired so a client whose tokens JUST expired is
-   * seen as orphaned.
+   * exchange.
    */
   private pruneOrphanClients(): void {
     const t = this.now();

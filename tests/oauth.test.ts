@@ -233,13 +233,7 @@ describe("OAuthStore", () => {
     const t = 1_000_000;
     const store = new OAuthStore({ ...opts, clientOrphanGraceMs: 60_000, now: () => t });
     const pending = store.registerClient(["https://x/cb"]); // no token yet: authorize->token in flight
-    store.createAuthorizationCode({
-      clientId: pending.clientId,
-      redirectUri: "https://x/cb",
-      codeChallenge: "ch",
-      scope: "",
-      resource: "r"
-    }); // triggers prune()
+    store.registerClient(["https://other/cb"]); // triggers orphan pruning while `pending` is within grace
     expect(store.getClient(pending.clientId)).toBeDefined(); // within grace, survives
   });
 
@@ -249,8 +243,23 @@ describe("OAuthStore", () => {
     const active = store.registerClient(["https://x/cb"]);
     store.issueTokens(active.clientId, "vault.read", "r"); // refresh TTL 600s
     t += 601_000; // past the refresh TTL AND the grace: tokens expire, client becomes orphaned
-    store.registerClient(["https://y/cb"]); // prune() evicts expired tokens, then the orphan client
+    store.registerClient(["https://y/cb"]); // reaps expired tokens, then the orphan client
     expect(store.getClient(active.clientId)).toBeUndefined();
+  });
+
+  it("keeps an aged client's registration through a refresh rotation (no prune race)", () => {
+    // Regression (Codex review on #44): rotateRefreshToken deletes the presented
+    // token, then issueTokens runs prune() before inserting the replacement. For
+    // an aged client whose access token also expired, that was a momentary
+    // tokenless gap in which the registration got swept — after which /authorize
+    // failed with "Unknown client_id" for a session that was rotating normally.
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, clientOrphanGraceMs: 1000, now: () => t });
+    const client = store.registerClient(["https://x/cb"]);
+    const tokens = store.issueTokens(client.clientId, "vault.read", "r"); // access 60s, refresh 600s
+    t += 61_000; // access expired, refresh still valid, client now older than the 1s grace
+    expect(store.rotateRefreshToken(tokens.refreshToken, client.clientId)).not.toBeNull();
+    expect(store.getClient(client.clientId)).toBeDefined(); // registration survives the rotation
   });
 });
 
