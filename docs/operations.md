@@ -12,10 +12,11 @@ sandbox recipe for that locally-spawned stdio server.
 >    (`trycloudflare.com`) gets a new random hostname every restart, and that
 >    hostname is the OAuth issuer + token audience, so a change breaks the
 >    registered connector. → Use a **named tunnel with a fixed domain**.
-> 2. **OAuth state is in memory.** Tokens and dynamically-registered clients
->    live in process memory and are dropped on restart, forcing a re-auth. →
->    **Keep the process alive** under a supervisor (systemd/launchd) with
->    auto-restart.
+> 2. **OAuth state is in memory by default.** Tokens and dynamically-registered
+>    clients live in process memory and are dropped on restart, forcing a
+>    re-auth. → **Persist sessions** with `MCP_OAUTH_STATE_FILE` and/or **keep
+>    the process alive** under a supervisor (systemd/launchd) with auto-restart
+>    (§1.B).
 
 ---
 
@@ -64,12 +65,10 @@ cloudflared tunnel run vault                            # always https://vault.e
 > Whichever you pick, set `MCP_HTTP_PUBLIC_URL` to that stable URL and register
 > `<stable-url>/mcp` in the client.
 
-### B. In-memory OAuth state — restart means re-auth
+### B. OAuth state — in-memory by default, persistable via a state file
 
-By design (`src/oauth/store.ts`) the OAuth **codes, access tokens, refresh
-tokens, and dynamically-registered clients are ephemeral process state** and are
-**not persisted**. This is an intentional single-user simplification, but it
-means:
+By default (`src/oauth/store.ts`) the OAuth **access tokens, refresh tokens,
+and dynamically-registered clients are ephemeral process state**, which means:
 
 - Restarting the server **invalidates all tokens**; web clients must run the
   OAuth flow again (re-enter `MCP_OAUTH_PASSWORD`).
@@ -77,10 +76,25 @@ means:
   `MCP_OAUTH_REFRESH_TTL`), but the refresh token is also in memory, so a
   restart drops it too.
 
-**Fix: don't let the process die.** Run it supervised with auto-restart (below).
-A restart costs only a re-auth (the connector URL stays the same, so **no
-re-registration** is needed). Persisting tokens across restarts is a roadmap
-item — see [`ROADMAP.md`](./ROADMAP.md).
+**Fix 1: persist OAuth sessions.** Set
+`MCP_OAUTH_STATE_FILE=/abs/path/to/oauth-state.json` and registered clients and
+tokens survive restarts — ChatGPT and Claude.ai stay authorized (both share the
+same store, so one file covers every web client). Security properties:
+
+- Tokens are stored **as sha256 hashes** — the file never contains a
+  recoverable credential (hash-at-rest, not just encryption).
+- The file is written atomically with mode `0600` and carries an **HMAC keyed
+  from `MCP_OAUTH_PASSWORD`** (scrypt-derived). A tampered, corrupted, or
+  password-rotated state file fails **closed**: the server starts with empty
+  OAuth state and clients simply re-authorize. Rotating the password is
+  therefore also how you revoke all persisted sessions at once.
+- Authorization codes are never persisted (they are 60s single-use), and
+  refresh-token rotation invalidates the old token on disk immediately.
+
+**Fix 2: don't let the process die.** Run it supervised with auto-restart
+(below). Without the state file a restart costs a re-auth; with it, a restart
+costs nothing (the connector URL stays the same either way, so **no
+re-registration** is ever needed).
 
 ---
 
@@ -107,6 +121,8 @@ Environment=MCP_HTTP_PUBLIC_URL=https://vault.example.com
 # --- OAuth (for ChatGPT / Claude.ai web) ---
 Environment=MCP_OAUTH_ENABLED=1
 Environment=MCP_OAUTH_PASSWORD=replace-with-a-strong-passphrase
+# Persist OAuth sessions across restarts (hashed tokens only; see §1.B):
+# Environment=MCP_OAUTH_STATE_FILE=/abs/path/to/state/oauth-state.json
 # --- static bearer (for Claude Desktop / Code remote / API) ---
 Environment=MCP_AUTH_TOKEN=replace-with-openssl-rand-hex-32
 # --- vault ---
@@ -283,6 +299,7 @@ tailscale funnel status      # confirm the mapping is up
     <key>MCP_HTTP_PORT</key><string>8787</string>
     <key>MCP_HTTP_PUBLIC_URL</key><string>https://<machine>.<tailnet>.ts.net</string>
     <key>MCP_OAUTH_ENABLED</key><string>1</string>
+    <key>MCP_OAUTH_STATE_FILE</key><string>/abs/path/to/state/oauth-state.json</string>
     <key>KNOWLEDGE_ROOT</key><string>/abs/path/to/vault</string>
   </dict>
   <key>RunAtLoad</key><true/>
@@ -325,8 +342,9 @@ launchctl load -w ~/Library/LaunchAgents/local.mcp-connector.plist
   running the connector under `caffeinate -s`) mitigates it while on power.
 - **Restart = re-Authorize, not re-register.** Because the `*.ts.net` URL is
   fixed, after a restart you only press **Authorize** in the client to mint fresh
-  tokens (§1.B) — no need to delete and re-add the connector. Persisting tokens
-  across restarts is a roadmap item ([`ROADMAP.md`](./ROADMAP.md)).
+  tokens — no need to delete and re-add the connector. To skip even that
+  re-Authorize, set `MCP_OAUTH_STATE_FILE` so sessions persist across restarts
+  (§1.B).
 
 ---
 

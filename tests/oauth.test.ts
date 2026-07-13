@@ -210,6 +210,138 @@ describe("OAuthStore", () => {
   });
 });
 
+describe("OAuthStore persistence", () => {
+  const opts = { accessTokenTtlSec: 60, refreshTokenTtlSec: 600, codeTtlSec: 60 };
+  const secret = "hunter2";
+
+  async function stateFilePath(): Promise<string> {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-oauth-state-"));
+    return path.join(dir, "oauth-state.json");
+  }
+
+  it("requires persistSecret when persistPath is set", async () => {
+    const file = await stateFilePath();
+    expect(() => new OAuthStore({ ...opts, persistPath: file })).toThrow(/persistSecret/);
+  });
+
+  it("persists clients and tokens across a restart without raw secrets on disk", async () => {
+    const file = await stateFilePath();
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    const client = store.registerClient(["https://chatgpt.com/cb"], "test");
+    const tokens = store.issueTokens(client.clientId, "vault.read", "r");
+
+    // Hash-at-rest: the state file must not contain any recoverable credential.
+    const raw = await fs.readFile(file, "utf8");
+    expect(raw).not.toContain(tokens.accessToken);
+    expect(raw).not.toContain(tokens.refreshToken);
+
+    const reloaded = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    expect(reloaded.getClient(client.clientId)?.redirectUris).toEqual(["https://chatgpt.com/cb"]);
+    expect(reloaded.validateAccessToken(tokens.accessToken)?.scope).toBe("vault.read");
+    expect(reloaded.rotateRefreshToken(tokens.refreshToken, client.clientId)).not.toBeNull();
+  });
+
+  it("keeps refresh-token rotation single-use across restarts", async () => {
+    const file = await stateFilePath();
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    const rotated = store.rotateRefreshToken(tokens.refreshToken, "c");
+    expect(rotated).not.toBeNull();
+
+    const reloaded = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    expect(reloaded.rotateRefreshToken(tokens.refreshToken, "c")).toBeNull(); // old one stays dead
+    expect(reloaded.rotateRefreshToken(rotated!.refreshToken, "c")).not.toBeNull();
+  });
+
+  it("persists the invalidation even when a rotation fails (client mismatch)", async () => {
+    const file = await stateFilePath();
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    expect(store.rotateRefreshToken(tokens.refreshToken, "wrong")).toBeNull();
+
+    const reloaded = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    expect(reloaded.rotateRefreshToken(tokens.refreshToken, "c")).toBeNull();
+  });
+
+  it("never persists authorization codes", async () => {
+    const file = await stateFilePath();
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    const code = store.createAuthorizationCode({
+      clientId: "c",
+      redirectUri: "https://x/cb",
+      codeChallenge: "ch",
+      scope: "",
+      resource: "r"
+    });
+    // Trigger a save AFTER the code exists (createAuthorizationCode itself does
+    // not persist), so the file is written while the code is live — this is what
+    // makes the assertion non-vacuous: codes must still be absent on reload.
+    store.registerClient(["https://chatgpt.com/cb"]);
+    const reloaded = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    expect(reloaded.consumeAuthorizationCode(code)).toBeUndefined();
+  });
+
+  it("fails closed on a tampered state file", async () => {
+    const file = await stateFilePath();
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    const client = store.registerClient(["https://chatgpt.com/cb"]);
+    const tokens = store.issueTokens(client.clientId, "vault.read", "r");
+
+    // Privilege-escalation attempt: flip the persisted scope to vault.write.
+    const envelope = JSON.parse(await fs.readFile(file, "utf8"));
+    envelope.payload = (envelope.payload as string).replaceAll("vault.read", "vault.write");
+    await fs.writeFile(file, JSON.stringify(envelope));
+
+    const reloaded = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    expect(reloaded.validateAccessToken(tokens.accessToken)).toBeNull();
+    expect(reloaded.getClient(client.clientId)).toBeUndefined();
+  });
+
+  it("fails closed when the login password was rotated", async () => {
+    const file = await stateFilePath();
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+
+    const reloaded = new OAuthStore({ ...opts, persistPath: file, persistSecret: "rotated-password" });
+    expect(reloaded.validateAccessToken(tokens.accessToken)).toBeNull();
+    expect(reloaded.rotateRefreshToken(tokens.refreshToken, "c")).toBeNull();
+  });
+
+  it("fails closed on a corrupt state file instead of throwing", async () => {
+    const file = await stateFilePath();
+    await fs.writeFile(file, "not json {{{", "utf8");
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    expect(store.validateAccessToken("anything")).toBeNull();
+    // The store must still be fully usable (and able to overwrite the bad file).
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    const reloaded = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    expect(reloaded.validateAccessToken(tokens.accessToken)?.clientId).toBe("c");
+  });
+
+  it("drops expired tokens at load time but keeps live ones", async () => {
+    const file = await stateFilePath();
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+
+    t += 61_000; // past the 60s access TTL, within the 600s refresh TTL
+    const reloaded = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t });
+    expect(reloaded.validateAccessToken(tokens.accessToken)).toBeNull();
+    expect(reloaded.rotateRefreshToken(tokens.refreshToken, "c")).not.toBeNull();
+  });
+
+  it("writes the state file with owner-only permissions", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    const file = await stateFilePath();
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    store.issueTokens("c", "vault.read", "r");
+    const stat = await fs.stat(file);
+    expect(stat.mode & 0o777).toBe(0o600);
+  });
+});
+
 describe("OAuthProvider flow", () => {
   const config = {
     issuer: "https://vault.example.com",
@@ -653,5 +785,40 @@ describe("OAuth end-to-end over HTTP", () => {
     expect(writeTools).toContain("plan_skill_create");
     expect(writeTools).toContain("apply_planned_skill_create");
     expect(writeTools).not.toContain("create_document");
+  });
+
+  it("keeps OAuth sessions across a server restart when a state file is configured", async () => {
+    const store = await makeStore();
+    const port = await freePort();
+    const issuer = `http://127.0.0.1:${port}`;
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-oauth-restart-"));
+    const config: HttpConfig = {
+      host: "127.0.0.1",
+      port,
+      authToken: "static-bearer-unused-here",
+      allowWrite: false,
+      allowSkillWrite: false,
+      allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
+      allowedOrigins: [],
+      oauth: {
+        issuer,
+        loginPassword: "hunter2",
+        accessTokenTtlSec: 3600,
+        refreshTokenTtlSec: 86_400,
+        codeTtlSec: 60,
+        allowWrite: false,
+        stateFile: path.join(stateDir, "oauth-state.json")
+      }
+    };
+    server = await startHttpServer(store, config);
+    const accessToken = await oauthObtainToken(issuer, "vault.read");
+    expect(await listToolNamesOverHttp(issuer, accessToken)).toContain("search");
+
+    // "Restart": stop the server and start a fresh one on the same state file.
+    await new Promise<void>((resolve) => server!.close(() => resolve()));
+    server = await startHttpServer(store, config);
+
+    // The pre-restart access token still authenticates — no re-authorize needed.
+    expect(await listToolNamesOverHttp(issuer, accessToken)).toContain("search");
   });
 });

@@ -233,6 +233,14 @@ when at least one explicitly enabled write surface exists. The session then
 registers only that surface: `MCP_HTTP_ALLOW_WRITE=1` enables document writes,
 while `MCP_HTTP_ALLOW_SKILL_WRITE=1` enables constrained Skill creation.
 
+By default OAuth state (registered clients and tokens) lives in process memory,
+so every server restart forces web clients to re-authorize. Set
+`MCP_OAUTH_STATE_FILE=/abs/path/to/oauth-state.json` to persist sessions across
+restarts: tokens are stored **as sha256 hashes** (the file contains nothing
+recoverable), it is written `0600` with an integrity MAC keyed from
+`MCP_OAUTH_PASSWORD`, and any tampering — or a rotated password — fails closed
+by discarding the state (everyone simply re-authorizes).
+
 > Verify before registering: `GET /.well-known/oauth-protected-resource` returns
 > JSON, and an unauthenticated `POST /mcp` returns `401` with a
 > `WWW-Authenticate: Bearer resource_metadata="…"` header (this is what makes the
