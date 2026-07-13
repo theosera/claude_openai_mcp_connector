@@ -6,6 +6,23 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Optional OAuth session persistence across restarts**
+  (`MCP_OAUTH_STATE_FILE`). By default OAuth state stays in process memory and
+  a server restart forces every web client (ChatGPT / Claude.ai) to
+  re-authorize; pointing `MCP_OAUTH_STATE_FILE` at a state file makes
+  registered clients and tokens survive restarts. Access/refresh tokens are
+  stored **as sha256 hashes** in memory and at rest (the file never contains a
+  recoverable credential), the file is written atomically with mode `0600`, and
+  it carries an **HMAC-SHA256 integrity tag keyed from `MCP_OAUTH_PASSWORD`**
+  (scrypt-derived, per-file salt) — a tampered, corrupted, or password-rotated
+  state file fails closed to empty state, so rotating the password revokes all
+  persisted sessions. Authorization codes remain memory-only (60s, single-use)
+  and refresh-token rotation invalidates the old token on disk immediately,
+  keeping single-use semantics across restarts (`src/oauth/store.ts`,
+  `src/oauth/provider.ts`, `src/config.ts`, `tests/oauth.test.ts`).
+
 ## [0.4.0] — 2026-07-12
 
 Adds a **constrained, create-only Skill authoring** surface so a (local or

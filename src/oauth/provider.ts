@@ -24,6 +24,12 @@ export interface OAuthConfig {
   codeTtlSec: number;
   /** Whether the server may grant the vault.write scope (mirrors allowWrite). */
   allowWrite: boolean;
+  /**
+   * Optional absolute path of the OAuth state file. When set, registered
+   * clients and (hashed) tokens survive restarts, so a supervisor restart no
+   * longer forces every web client to re-authorize. Off by default.
+   */
+  stateFile?: string;
 }
 
 export interface OAuthHttpResponse {
@@ -54,7 +60,11 @@ export class OAuthProvider {
       new OAuthStore({
         accessTokenTtlSec: config.accessTokenTtlSec,
         refreshTokenTtlSec: config.refreshTokenTtlSec,
-        codeTtlSec: config.codeTtlSec
+        codeTtlSec: config.codeTtlSec,
+        // Persistence is opt-in; the state-file HMAC key is derived from the
+        // login password, so rotating the password revokes persisted sessions.
+        persistPath: config.stateFile,
+        persistSecret: config.stateFile ? config.loginPassword : undefined
       });
   }
 

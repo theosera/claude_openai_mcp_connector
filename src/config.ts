@@ -225,12 +225,16 @@ function loadOAuthConfig(
     const n = Number.parseInt(value?.trim() || String(fallback), 10);
     return Number.isInteger(n) && n > 0 ? n : fallback;
   };
+  // Optional token persistence (opt-in, like every new capability). Resolved
+  // to an absolute path so a supervisor's cwd cannot change where state lands.
+  const stateFile = env.MCP_OAUTH_STATE_FILE?.trim();
   return {
     issuer: publicUrl,
     loginPassword,
     accessTokenTtlSec: ttl(env.MCP_OAUTH_ACCESS_TTL, 3600),
     refreshTokenTtlSec: ttl(env.MCP_OAUTH_REFRESH_TTL, 2592000),
     codeTtlSec: ttl(env.MCP_OAUTH_CODE_TTL, 60),
-    allowWrite: allowAnyWrite
+    allowWrite: allowAnyWrite,
+    stateFile: stateFile ? path.resolve(stateFile) : undefined
   };
 }
