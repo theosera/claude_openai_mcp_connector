@@ -1,6 +1,7 @@
 .DS_Store
 .env
 .env.*
+*oauth-state*.json
 !.env.example
 
 node_modules/
@@ -35,3 +36,6 @@ secrets.yml
 
 # Local Claude Code overrides (personal vault path / endpoints) — never shared.
 .claude/settings.local.json
+
+# OAuth session state (MCP_OAUTH_STATE_FILE) — local-only auth state, never commit
+*oauth-state*.json
