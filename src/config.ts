@@ -20,6 +20,8 @@ export interface AppConfig {
   patchStateDir: string;
   /** Vault-relative directory that may receive instruction-only Skill bundles. */
   skillsSubdir?: string;
+  /** Max Markdown files opened concurrently during a scan (bounds FD pressure). */
+  scanConcurrency?: number;
 }
 
 /** Config for a single-root KnowledgeStore instance. */
@@ -27,6 +29,8 @@ export interface StoreConfig {
   knowledgeRoot: string;
   writeMode: "two_step";
   patchStateDir: string;
+  /** Max Markdown files opened concurrently during a scan (bounds FD pressure). */
+  scanConcurrency?: number;
 }
 
 // Root names become id/path prefixes (`name:relative/path`) in multi-root
@@ -44,11 +48,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const rawSkillsSubdir = env.MCP_SKILLS_SUBDIR?.trim();
   const skillsSubdir = rawSkillsSubdir ? toPosixPath(assertRelativePath(rawSkillsSubdir)) : undefined;
 
+  // Bounds how many files a vault scan opens at once. Left undefined (the store
+  // applies a safe default) unless a positive integer override is provided.
+  const parsedScanConcurrency = Number.parseInt(env.MCP_SCAN_CONCURRENCY?.trim() || "", 10);
+  const scanConcurrency =
+    Number.isInteger(parsedScanConcurrency) && parsedScanConcurrency > 0 ? parsedScanConcurrency : undefined;
+
   return {
     knowledgeRoots,
     writeMode,
     patchStateDir: path.resolve(env.MCP_PATCH_STATE_DIR?.trim() || ".mcp-state/patches"),
-    skillsSubdir
+    skillsSubdir,
+    scanConcurrency
   };
 }
 
