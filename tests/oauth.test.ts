@@ -266,7 +266,6 @@ describe("OAuthStore persistence", () => {
   it("never persists authorization codes", async () => {
     const file = await stateFilePath();
     const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
-    store.registerClient(["https://chatgpt.com/cb"]); // force a save after the code exists
     const code = store.createAuthorizationCode({
       clientId: "c",
       redirectUri: "https://x/cb",
@@ -274,6 +273,10 @@ describe("OAuthStore persistence", () => {
       scope: "",
       resource: "r"
     });
+    // Trigger a save AFTER the code exists (createAuthorizationCode itself does
+    // not persist), so the file is written while the code is live — this is what
+    // makes the assertion non-vacuous: codes must still be absent on reload.
+    store.registerClient(["https://chatgpt.com/cb"]);
     const reloaded = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
     expect(reloaded.consumeAuthorizationCode(code)).toBeUndefined();
   });

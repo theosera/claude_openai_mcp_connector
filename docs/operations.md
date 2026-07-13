@@ -12,10 +12,11 @@ sandbox recipe for that locally-spawned stdio server.
 >    (`trycloudflare.com`) gets a new random hostname every restart, and that
 >    hostname is the OAuth issuer + token audience, so a change breaks the
 >    registered connector. → Use a **named tunnel with a fixed domain**.
-> 2. **OAuth state is in memory.** Tokens and dynamically-registered clients
->    live in process memory and are dropped on restart, forcing a re-auth. →
->    **Keep the process alive** under a supervisor (systemd/launchd) with
->    auto-restart.
+> 2. **OAuth state is in memory by default.** Tokens and dynamically-registered
+>    clients live in process memory and are dropped on restart, forcing a
+>    re-auth. → **Persist sessions** with `MCP_OAUTH_STATE_FILE` and/or **keep
+>    the process alive** under a supervisor (systemd/launchd) with auto-restart
+>    (§1.B).
 
 ---
 
@@ -341,8 +342,9 @@ launchctl load -w ~/Library/LaunchAgents/local.mcp-connector.plist
   running the connector under `caffeinate -s`) mitigates it while on power.
 - **Restart = re-Authorize, not re-register.** Because the `*.ts.net` URL is
   fixed, after a restart you only press **Authorize** in the client to mint fresh
-  tokens (§1.B) — no need to delete and re-add the connector. Persisting tokens
-  across restarts is a roadmap item ([`ROADMAP.md`](./ROADMAP.md)).
+  tokens — no need to delete and re-add the connector. To skip even that
+  re-Authorize, set `MCP_OAUTH_STATE_FILE` so sessions persist across restarts
+  (§1.B).
 
 ---
 
