@@ -33,13 +33,22 @@ non-engineers. Goal: a copy-paste path that does **not** require a manual build.
 - *Why:* the target audience skews technical but the build step is the main
   drop-off point; the web/OAuth path stays "advanced".
 
-### OAuth token persistence — *survive restarts* 🔭
-Persist OAuth tokens / registered clients (currently in-memory,
-`src/oauth/store.ts`) to a local encrypted store so a restart does **not** force
-a re-auth. See [`operations.md`](./operations.md#1-why-connections-drop-and-the-fix) for the
-current behavior and workaround.
-- Must keep single-user simplicity and the existing security properties (opaque
-  256-bit tokens, single-use codes, capped/pruned collections).
+### OAuth token persistence — *survive restarts* 🚧
+Persist OAuth tokens / registered clients (previously in-memory only,
+`src/oauth/store.ts`) so a restart does **not** force a re-auth. **Implemented
+(PR pending)** as an opt-in `MCP_OAUTH_STATE_FILE`:
+- **Hash-at-rest** — tokens are keyed by `sha256(token)` in memory *and* on
+  disk, so the state file holds no recoverable credential (no encryption key to
+  manage; stronger than encryption here because raw tokens never need recovery).
+- **Integrity + fail-closed** — the file carries an HMAC-SHA256 tag keyed from
+  `MCP_OAUTH_PASSWORD` (scrypt-derived, per-file salt); tamper / corruption /
+  version-mismatch / password-rotation loads to empty state (so rotating the
+  password also revokes all persisted sessions). Atomic write, `0600`.
+- Kept the existing security properties (opaque 256-bit tokens, single-use
+  short-lived codes that are **never persisted**, refresh rotation invalidated
+  on disk immediately, capped/pruned collections) and single-user simplicity.
+- Pinned by `tests/oauth.test.ts`. See
+  [`operations.md §1.B`](./operations.md#b-oauth-state--in-memory-by-default-persistable-via-a-state-file).
 
 ### Search & retrieval UX 🔭
 Improve relevance and ergonomics of `search_documents` / `search`:
@@ -155,12 +164,68 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       the daemon" guidance.
 - [ ] **Audit log** — append-only, content-free events (who searched / fetched /
       wrote what, no note bodies) — the agreed #1 security follow-up; also seeds
-      OpenTelemetry later.
+      OpenTelemetry later. Key each event on the authenticated **client_id**, not
+      the spoofable `clientInfo.name` — see the
+      [appendix on authenticated-client_id use cases](#appendix--future-uses-of-the-authenticated-client_id).
 - [ ] **One-command install / npx packaging** — remove the `pnpm build` step so
       the 🟢 non-engineer path needs no toolchain (see Onboarding above).
 
 Each security-affecting change pins behavior with tests before merging, per the
 repo quality gate. Update this list as items land.
+
+---
+
+## Appendix — future uses of the authenticated `client_id`
+
+An aside, not a committed track: **when** client-specific behavior is worth
+adding, key it on the OAuth **`client_id`** (issued per dynamic registration and
+bound to the token), never on `clientInfo.name` from `initialize` (self-reported
+and forgeable). Today this is deliberately unused — tool surfaces and scopes are
+decided only by transport + env flags + token scope (INV-6/INV-7), which are
+verifiable facts; a forgeable client name must not leak into those decisions.
+
+**First, the ceiling on what `client_id` can mean here.** The login gate is a
+single shared password (`MCP_OAUTH_PASSWORD`), so every `client_id` maps to the
+*same* human. `client_id` therefore distinguishes **a connector registration**,
+not a person — and because Dynamic Client Registration mints a fresh id whenever
+a client re-adds the connector, it is not even a stable per-vendor identity
+(that would need `clientInfo.name`, which is forgeable). So the honest uses are
+operational (attribution / limits / revocation), not authorization-of-a-person.
+
+Use cases, roughly by how real/soon they are:
+
+1. **Audit-log attribution (near-term 🔭, strongest).** The agreed #1 security
+   follow-up only becomes useful if each event records *which connector* acted
+   ("ChatGPT read X", "Claude.ai attempted write Y"). Key it on `client_id`.
+2. **Selective revocation (grew in value with token persistence).** The only
+   revocation lever today is rotating the password (nukes *all* sessions).
+   Now that tokens persist across restarts, "revoke ChatGPT only, without making
+   Claude.ai re-authorize" wants per-`client_id` token eviction.
+3. **Per-connector rate limiting / budget isolation.** Limits are keyed on the
+   socket peer today (the anti-`X-Forwarded-For`-spoofing fix); two web clients
+   sharing one tunnel egress IP land in the same bucket. To stop one connector
+   starving the other, key limits on the authenticated `client_id` instead of IP.
+4. **Observability / usage attribution (additive, safe).** "How much is each
+   connector used" — pure metrics, touches no authorization.
+5. **(Caution) Per-connector scope ceiling.** e.g. "Claude.ai may hold
+   `vault.write`, but ChatGPT stays read-only even on a write-enabled server."
+   This is the **one** case that re-introduces identity-based authorization, so
+   gate it hard: apply it as a **restriction only** (never to widen scope),
+   resolved at authorize time from `client_id → policy`, and keep scope *grants*
+   on flags + requested-scope as today. Overusing it muddies INV-6/INV-7.
+6. **Multi-user / RBAC (larger bet 💭, the real structural driver).** Replacing
+   the shared password with per-user auth is what finally makes the identity
+   *behind* a `client_id` the primary authorization key — a significant change to
+   the OAuth + store layers. Pursue only if demand is validated.
+
+**Rule of thumb:** `client_id` is fine for **attribution, limiting, and
+revocation** (all satisfied by "this token provably came from this
+registration"); it must **not** drive trust decisions or scope widening. A
+runtime router that switches tool surfaces by *detecting* ChatGPT-vs-Claude is
+explicitly rejected: MCP already solves I/O differences client-side (each client
+selects the tools it understands — the `search`/`fetch` aliases in
+`src/chatgpt.ts`), and the only output difference is config-driven
+(`chatgptUrlBase`), so no server-side, identity-based branching is warranted.
 
 ---
 
