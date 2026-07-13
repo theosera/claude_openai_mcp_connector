@@ -25,6 +25,12 @@ import path from "node:path";
 const DEFAULT_MAX_CLIENTS = 100;
 const DEFAULT_MAX_CODES = 1000;
 const DEFAULT_MAX_TOKENS = 2000;
+// A registered client that holds no live token is pruned once it is older than
+// this grace window. Tokens are the real credential and self-expire; a lingering
+// registration is dead weight. The window must comfortably exceed a plausible
+// authorize->token round-trip so an in-flight registration (registered, not yet
+// exchanged for a token) is never swept mid-flow.
+const DEFAULT_CLIENT_ORPHAN_GRACE_MS = 60 * 60 * 1000;
 
 const STATE_VERSION = 1;
 const STATE_SALT_BYTES = 16;
@@ -68,6 +74,11 @@ export interface OAuthStoreOptions {
   codeTtlSec: number;
   /** Hard cap per token map (default DEFAULT_MAX_TOKENS). Bounds memory. */
   maxTokens?: number;
+  /**
+   * Grace window (ms) before a client holding no live access/refresh token is
+   * pruned. Must exceed a plausible authorize->token round-trip. Default 1h.
+   */
+  clientOrphanGraceMs?: number;
   /**
    * Absolute path of the optional state file. When set, registered clients and
    * (hashed) tokens are persisted across restarts. Requires `persistSecret`.
@@ -119,6 +130,7 @@ export class OAuthStore {
   private readonly refreshTokens = new Map<string, TokenRecord>();
   private readonly now: () => number;
   private readonly maxTokens: number;
+  private readonly clientOrphanGraceMs: number;
   private readonly persistPath?: string;
   /** scrypt(persistSecret, salt) — derived once per store, cached for saves. */
   private hmacKey?: Buffer;
@@ -127,6 +139,7 @@ export class OAuthStore {
   constructor(private readonly options: OAuthStoreOptions) {
     this.now = options.now ?? Date.now;
     this.maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS;
+    this.clientOrphanGraceMs = options.clientOrphanGraceMs ?? DEFAULT_CLIENT_ORPHAN_GRACE_MS;
     if (options.persistPath) {
       if (!options.persistSecret) {
         throw new Error("OAuthStore persistence requires persistSecret (state-file HMAC key source).");
@@ -268,6 +281,29 @@ export class OAuthStore {
       if (record.expiresAt <= t) this.codes.delete(code);
     }
     this.evictExpired();
+    this.pruneOrphanClients();
+  }
+
+  /**
+   * Drop client registrations that hold no live token and are older than the
+   * orphan grace window. Tokens are the credential and self-expire (evictExpired
+   * above); a registration with no surviving token is dead weight that would
+   * otherwise linger until the hard client cap evicts it. The grace window
+   * protects an in-flight registration that has not yet completed the token
+   * exchange. Runs after evictExpired so a client whose tokens JUST expired is
+   * seen as orphaned.
+   */
+  private pruneOrphanClients(): void {
+    const t = this.now();
+    const liveClientIds = new Set<string>();
+    for (const record of this.accessTokens.values()) liveClientIds.add(record.clientId);
+    for (const record of this.refreshTokens.values()) liveClientIds.add(record.clientId);
+    for (const [clientId, client] of this.clients) {
+      if (liveClientIds.has(clientId)) continue;
+      if (t - client.createdAt >= this.clientOrphanGraceMs) {
+        this.clients.delete(clientId);
+      }
+    }
   }
 
   private evictExpired(): void {
@@ -346,6 +382,9 @@ export class OAuthStore {
       };
       loadTokens(payload.accessTokens, this.accessTokens);
       loadTokens(payload.refreshTokens, this.refreshTokens);
+      // Loaded state may carry clients whose tokens all expired (and so were
+      // dropped above); sweep those now instead of waiting for the next write.
+      this.pruneOrphanClients();
       // Keep the verified salt/key for subsequent saves.
       this.hmacSalt = salt;
       this.hmacKey = key;
