@@ -6,6 +6,26 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Vault scans now open Markdown files with bounded concurrency.** A large
+  vault (thousands of notes) previously opened every file at once during a
+  search/`list_projects`, which could exhaust the process file-descriptor limit
+  and surface — especially on iCloud/network-backed folders — as a transient
+  `EAGAIN`/`EMFILE` (`Unknown system error -11`). The scan now fans out at most
+  `MCP_SCAN_CONCURRENCY` files at a time (default 24), **retries only the
+  transient resource-exhaustion codes** (`EAGAIN`/`EMFILE`/`ENFILE`) with
+  exponential backoff + jitter, and **skips + logs** any note that fails for a
+  non-transient reason (missing/permissions/containment) instead of aborting the
+  whole scan (`src/knowledgeStore.ts`, `src/config.ts`, `tests/knowledgeStore.test.ts`).
+- **OAuth registrations self-clean.** A client registration that holds no live
+  access/refresh token is now pruned once it is older than a grace window
+  (default 1h), so repeated connect/reconnect cycles no longer leave dead
+  Dynamic-Client-Registration records lingering until the hard client cap. Tokens
+  already self-expire; the grace window protects an in-flight registration that
+  has not yet completed the token exchange (`src/oauth/store.ts`,
+  `tests/oauth.test.ts`).
+
 ## [0.5.0] — 2026-07-13
 
 ### Added

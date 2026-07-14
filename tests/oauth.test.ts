@@ -208,6 +208,59 @@ describe("OAuthStore", () => {
     expect(store.rotateRefreshToken(tokens.refreshToken, "c")).toBeNull(); // reused
     expect(store.rotateRefreshToken(tokens.refreshToken, "wrong")).toBeNull();
   });
+
+  it("prunes an orphaned client (no live token) once it ages past the grace window", () => {
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, clientOrphanGraceMs: 1000, now: () => t });
+    const orphan = store.registerClient(["https://x/cb"]); // registered, never exchanged for a token
+    expect(store.getClient(orphan.clientId)).toBeDefined();
+    t += 2000; // past the 1s grace
+    store.registerClient(["https://y/cb"]); // any activity triggers prune()
+    expect(store.getClient(orphan.clientId)).toBeUndefined();
+  });
+
+  it("keeps a client that still holds a live token, regardless of age", () => {
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, clientOrphanGraceMs: 1000, now: () => t });
+    const active = store.registerClient(["https://x/cb"]);
+    store.issueTokens(active.clientId, "vault.read", "r"); // live access (60s) + refresh (600s)
+    t += 10_000; // well past the 1s grace, still within the token TTLs
+    store.registerClient(["https://y/cb"]); // triggers prune()
+    expect(store.getClient(active.clientId)).toBeDefined();
+  });
+
+  it("does not prune a just-registered client that is still mid-flow (within grace)", () => {
+    const t = 1_000_000;
+    const store = new OAuthStore({ ...opts, clientOrphanGraceMs: 60_000, now: () => t });
+    const pending = store.registerClient(["https://x/cb"]); // no token yet: authorize->token in flight
+    store.registerClient(["https://other/cb"]); // triggers orphan pruning while `pending` is within grace
+    expect(store.getClient(pending.clientId)).toBeDefined(); // within grace, survives
+  });
+
+  it("prunes a client once its last token expires", () => {
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, clientOrphanGraceMs: 1000, now: () => t });
+    const active = store.registerClient(["https://x/cb"]);
+    store.issueTokens(active.clientId, "vault.read", "r"); // refresh TTL 600s
+    t += 601_000; // past the refresh TTL AND the grace: tokens expire, client becomes orphaned
+    store.registerClient(["https://y/cb"]); // reaps expired tokens, then the orphan client
+    expect(store.getClient(active.clientId)).toBeUndefined();
+  });
+
+  it("keeps an aged client's registration through a refresh rotation (no prune race)", () => {
+    // Regression (Codex review on #44): rotateRefreshToken deletes the presented
+    // token, then issueTokens runs prune() before inserting the replacement. For
+    // an aged client whose access token also expired, that was a momentary
+    // tokenless gap in which the registration got swept — after which /authorize
+    // failed with "Unknown client_id" for a session that was rotating normally.
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, clientOrphanGraceMs: 1000, now: () => t });
+    const client = store.registerClient(["https://x/cb"]);
+    const tokens = store.issueTokens(client.clientId, "vault.read", "r"); // access 60s, refresh 600s
+    t += 61_000; // access expired, refresh still valid, client now older than the 1s grace
+    expect(store.rotateRefreshToken(tokens.refreshToken, client.clientId)).not.toBeNull();
+    expect(store.getClient(client.clientId)).toBeDefined(); // registration survives the rotation
+  });
 });
 
 describe("OAuthStore persistence", () => {

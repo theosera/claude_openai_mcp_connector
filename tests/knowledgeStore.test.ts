@@ -2,10 +2,40 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { beforeEach, describe, expect, it } from "vitest";
-import { KnowledgeStore } from "../src/knowledgeStore.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { isTransientFsError, KnowledgeStore, mapWithConcurrency } from "../src/knowledgeStore.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+describe("scan concurrency helpers", () => {
+  it("mapWithConcurrency preserves order and never exceeds the limit", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const items = Array.from({ length: 20 }, (_, i) => i);
+    const out = await mapWithConcurrency(items, 3, async (n) => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      inFlight--;
+      return n * 2;
+    });
+    expect(out).toEqual(items.map((n) => n * 2)); // order preserved despite concurrency
+    expect(peak).toBeLessThanOrEqual(3);
+    expect(peak).toBeGreaterThan(1); // it actually ran concurrently
+  });
+
+  it("isTransientFsError matches only transient resource-exhaustion codes", () => {
+    for (const code of ["EAGAIN", "EMFILE", "ENFILE"]) {
+      expect(isTransientFsError(Object.assign(new Error("x"), { code }))).toBe(true);
+    }
+    for (const code of ["ENOENT", "EACCES", "EISDIR"]) {
+      expect(isTransientFsError(Object.assign(new Error("x"), { code }))).toBe(false);
+    }
+    expect(isTransientFsError(new Error("no code"))).toBe(false);
+    expect(isTransientFsError(null)).toBe(false);
+    expect(isTransientFsError({ code: 11 })).toBe(false); // numeric errno, not a string code
+  });
+});
 
 describe("KnowledgeStore", () => {
   let root: string;
@@ -22,6 +52,39 @@ describe("KnowledgeStore", () => {
       patchStateDir
     });
     await store.init();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("retries a transient EAGAIN during a scan instead of failing the whole search", async () => {
+    // The first file handle opened in the scan hits a transient EAGAIN; the
+    // resilient reader must back off and retry (not abort the entire scan).
+    const realOpen = fs.open.bind(fs);
+    const spy = vi.spyOn(fs, "open");
+    spy.mockImplementationOnce(() => Promise.reject(Object.assign(new Error("try again"), { code: "EAGAIN" })));
+    spy.mockImplementation((...args: Parameters<typeof fs.open>) => realOpen(...args));
+
+    const results = await store.search({ query: "retrieval", client: "chatgpt" });
+    expect(results).toHaveLength(1); // the retried scan still surfaces the note
+  });
+
+  it("skips an unreadable note (ENOENT) instead of aborting the scan", async () => {
+    // A note that fails to open with a NON-transient error is logged and skipped,
+    // never retried (ENOENT is permanent). The rest of the scan still succeeds.
+    const realOpen = fs.open.bind(fs);
+    vi.spyOn(fs, "open").mockImplementation((...args: Parameters<typeof fs.open>) => {
+      const target = String(args[0]);
+      if (target.includes("broken-branch.md")) {
+        return Promise.reject(Object.assign(new Error("gone"), { code: "ENOENT" }));
+      }
+      return realOpen(...args);
+    });
+
+    // The unrelated target note is still found; the ENOENT note is silently dropped.
+    const results = await store.search({ query: "retrieval", client: "chatgpt" });
+    expect(results).toHaveLength(1);
   });
 
   it("searches synthetic Markdown documents with filters", async () => {

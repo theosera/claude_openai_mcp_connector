@@ -54,7 +54,10 @@ Persist OAuth tokens / registered clients (previously in-memory only,
 Improve relevance and ergonomics of `search_documents` / `search`:
 - ranking / snippet quality, optional tag & project filters in the query,
 - guardrails so large vaults stay responsive (the parse cache from 0.1.0 is the
-  foundation).
+  foundation). 🚧 First responsiveness slice landed: vault scans now open files
+  with **bounded concurrency** (`MCP_SCAN_CONCURRENCY`, default 24) + transient
+  `EAGAIN` retry + skip-and-log, so a thousands-of-notes vault no longer
+  exhausts file descriptors mid-search (`src/knowledgeStore.ts`).
 
 ---
 
@@ -198,7 +201,11 @@ Use cases, roughly by how real/soon they are:
    follow-up only becomes useful if each event records *which connector* acted
    ("ChatGPT read X", "Claude.ai attempted write Y"). Key it on `client_id`.
 2. **Selective revocation (grew in value with token persistence).** The only
-   revocation lever today is rotating the password (nukes *all* sessions).
+   *explicit* revocation lever today is rotating the password (nukes *all*
+   sessions). 🚧 A first automatic slice landed: client registrations holding no
+   live token are pruned after a grace window (`src/oauth/store.ts`), so
+   abandoned reconnect churn self-cleans; explicit per-`client_id` revocation
+   (an operator-triggered surface) remains future.
    Now that tokens persist across restarts, "revoke ChatGPT only, without making
    Claude.ai re-authorize" wants per-`client_id` token eviction.
 3. **Per-connector rate limiting / budget isolation.** Limits are keyed on the

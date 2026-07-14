@@ -34,7 +34,8 @@ export class MultiRootStore implements VaultStore {
       store: new KnowledgeStore({
         knowledgeRoot: root.path,
         writeMode: config.writeMode,
-        patchStateDir: config.patchStateDir
+        patchStateDir: config.patchStateDir,
+        scanConcurrency: config.scanConcurrency
       })
     }));
   }
@@ -224,7 +225,8 @@ export function createStore(config: AppConfig): VaultStore {
     return new KnowledgeStore({
       knowledgeRoot: config.knowledgeRoots[0].path,
       writeMode: config.writeMode,
-      patchStateDir: config.patchStateDir
+      patchStateDir: config.patchStateDir,
+      scanConcurrency: config.scanConcurrency
     });
   }
   return new MultiRootStore(config);

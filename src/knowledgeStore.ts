@@ -23,6 +23,47 @@ import {
   toPosixPath
 } from "./pathSafety.js";
 
+// A vault scan opens one file handle per note. A naive Promise.all over a
+// 2,000+ file vault opens them all at once, exhausting the process
+// file-descriptor limit; on network / iCloud-backed filesystems that surfaces
+// as transient EAGAIN / EMFILE. Bound the fan-out (default 24, override via
+// MCP_SCAN_CONCURRENCY) and retry ONLY the transient resource-exhaustion codes
+// — never ENOENT / EACCES, which are permanent and would otherwise spin.
+const DEFAULT_SCAN_CONCURRENCY = 24;
+const SCAN_MAX_RETRIES = 4;
+const SCAN_RETRY_BASE_MS = 100;
+const TRANSIENT_FS_CODES = new Set(["EAGAIN", "EMFILE", "ENFILE"]);
+
+export function isTransientFsError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" && TRANSIENT_FS_CODES.has(code);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Bounded async map: at most `limit` callbacks run at once; order is preserved. */
+export async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results = Array.from({ length: items.length }) as R[];
+  const workers = Math.max(1, Math.min(Math.floor(limit) || 1, items.length));
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: workers }, async () => {
+      for (;;) {
+        const index = cursor++;
+        if (index >= items.length) return;
+        results[index] = await fn(items[index], index);
+      }
+    })
+  );
+  return results;
+}
+
 export class KnowledgeStore implements VaultStore {
   private readonly config: StoreConfig;
   private rootRealPath?: string;
@@ -223,8 +264,36 @@ export class KnowledgeStore implements VaultStore {
   async listDocuments(): Promise<MarkdownDocument[]> {
     const root = await this.root();
     const files = await walkMarkdownFiles(root);
-    const documents = await Promise.all(files.map((file) => this.readDocument(file)));
+    const scanned = await mapWithConcurrency(files, this.config.scanConcurrency ?? DEFAULT_SCAN_CONCURRENCY, (file) =>
+      this.readDocumentResilient(file)
+    );
+    const documents = scanned.filter((document): document is MarkdownDocument => document !== null);
     return documents.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  }
+
+  /**
+   * Read a document, retrying ONLY transient FS exhaustion (EAGAIN/EMFILE/ENFILE)
+   * with exponential backoff + jitter as the concurrency pool drains. Any other
+   * failure (missing file, permissions; a malformed frontmatter is already
+   * tolerated inside readDocument) logs the note name and skips it (returns null)
+   * so one bad file never aborts a whole-vault scan.
+   */
+  private async readDocumentResilient(absolutePath: string): Promise<MarkdownDocument | null> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.readDocument(absolutePath);
+      } catch (error) {
+        if (isTransientFsError(error) && attempt < SCAN_MAX_RETRIES) {
+          const backoff = SCAN_RETRY_BASE_MS * 2 ** attempt + Math.floor(Math.random() * SCAN_RETRY_BASE_MS);
+          await delay(backoff);
+          continue;
+        }
+        // No error message (it could echo a path segment); the basename alone
+        // makes a bad note discoverable without leaking the vault's location.
+        process.stderr.write(`[knowledge] skipped unreadable note: ${path.basename(absolutePath)}\n`);
+        return null;
+      }
+    }
   }
 
   private async readDocument(absolutePath: string): Promise<MarkdownDocument> {
