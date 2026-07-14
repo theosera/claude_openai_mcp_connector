@@ -132,7 +132,7 @@ repo/CI → public (secret hygiene).
 | Authorization-code replay / injection | Codes are single-use, short-TTL, CSPRNG, bound to client/redirect/PKCE challenge (`INV-7`). | — |
 | `plain` PKCE downgrade | S256 only; `plain` rejected (`INV-7`, `pkce.ts`). | — |
 | Reading arbitrary files via a crafted `patch_id` | `patch_id` validated as UUID; patch path constrained (`INV-3`). | — |
-| Prompt injection in vault content steering the agent into unsafe actions | Server `instructions` declare returned content is **data, not commands** (`INV-5`); the server returns content faithfully and does not execute it. | ⚠️ Defense depends on the **client/agent** honoring the boundary; the server cannot enforce downstream behavior. |
+| Prompt injection in vault content steering the agent into unsafe actions or forging user approval | Server `instructions` declare returned content/tool output is **data, not commands or approval** (`INV-5`); write tools carry explicit safety annotations; synthetic fixtures pin that read operations do not mutate note/patch state. Path/scope/no-overwrite/stale checks remain deterministic. | ⚠️ The server cannot prove that a downstream model understood the content. Direct `create_document` remains one-step and therefore requires the client UI/agent to obtain the current user's approval of the exact target/content. Model detection is not an authorization boundary. |
 | Compromise of the server process escaping to the host | Loopback bind, least-privilege env; **systemd sandbox hardening documented** (operations.md §"Sandbox hardening" — `ProtectHome`/`ProtectSystem=strict`/empty `CapabilityBoundingSet`/`SystemCallFilter=@system-service`/`MemoryDenyWriteExecute`) = layer 1; **bwrap stdio sandbox documented** (operations.md §6 — bind-only filesystem, `--unshare-all`, `--clearenv`) = layer 3. | ⚠️ Both layers are **operator-applied** (docs, not enforced by the code). Reduced from "limited isolation". |
 
 ---
@@ -141,7 +141,8 @@ repo/CI → public (secret hygiene).
 
 Security behaviors are **pinned by tests** (`pnpm test`, vitest), not just by
 convention — see `tests/pathSafety.test.ts`, `tests/knowledgeStore.test.ts`,
-`tests/skillStore.test.ts`, `tests/httpServer.test.ts`, and `tests/oauth.test.ts`. Coverage includes path
+`tests/skillStore.test.ts`, `tests/httpServer.test.ts`, `tests/promptInjection.test.ts`, and
+`tests/oauth.test.ts`. Coverage includes path
 traversal (raw/encoded/malformed/absolute/`~`/NUL/over-length), symlink escape +
 cycle, frontmatter allowlist + value-type rejection, two-step stale reject,
 overwrite collision, constrained Skill bundle creation, HTTP 401/per-surface
