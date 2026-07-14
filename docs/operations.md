@@ -135,7 +135,7 @@ Environment=MCP_PATCH_STATE_DIR=/abs/path/to/state/patches
 # Writes stay OFF unless you explicitly need them:
 # Environment=MCP_HTTP_ALLOW_WRITE=1
 # To expose only constrained, create-only Skill writes instead:
-# Environment=MCP_SKILLS_SUBDIR=06_Self_Discipline/_Repo_GitHub/_Development/skills
+# Environment=MCP_SKILLS_SUBDIR=path/to/skills
 # Environment=MCP_HTTP_ALLOW_SKILL_WRITE=1
 # Pin the cwd so any relative default also resolves predictably:
 WorkingDirectory=/abs/path/to/claude_openai_mcp_connector
