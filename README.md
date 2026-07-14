@@ -124,7 +124,7 @@ To allow a remote client to create instruction-only Skills without exposing
 general document writes, also set a vault-relative, pre-existing directory:
 
 ```text
-MCP_SKILLS_SUBDIR=06_Self_Discipline/_Repo_GitHub/_Development/skills
+MCP_SKILLS_SUBDIR=path/to/skills
 MCP_HTTP_ALLOW_SKILL_WRITE=1
 ```
 
