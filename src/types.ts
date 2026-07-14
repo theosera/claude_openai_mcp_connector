@@ -56,6 +56,22 @@ export interface PlannedPatch {
   diff: string;
 }
 
+export interface PlannedDocumentCreate {
+  operation: "document_create";
+  patch_id: string;
+  target_path: string;
+  reason: string;
+  created_at: string;
+  new_content: string;
+  content_sha256: string;
+  diff: string;
+  confirmation: {
+    question: string;
+    options: [{ label: "はい"; value: "confirm" }];
+    allow_free_text: true;
+  };
+}
+
 export interface SearchFilters {
   query: string;
   client?: string;
@@ -80,6 +96,17 @@ export interface PlanUpdateInput {
   reason: string;
 }
 
+export interface PlanDocumentCreateInput {
+  relative_path: string;
+  title: string;
+  body: string;
+  client?: string;
+  project?: string;
+  tags?: string[];
+  source_refs?: string[];
+  reason: string;
+}
+
 export interface TraceResult {
   document: Pick<MarkdownDocument, "id" | "relativePath" | "title">;
   source_refs: string[];
@@ -99,6 +126,11 @@ export interface VaultStore {
   listProjects(client?: string, tags?: string[]): Promise<ProjectSummary[]>;
   listDocuments(): Promise<MarkdownDocument[]>;
   createDocument(input: CreateDocumentInput): Promise<MarkdownDocument>;
+  planDocumentCreate(input: PlanDocumentCreateInput): Promise<PlannedDocumentCreate>;
+  applyPlannedDocumentCreate(
+    patchId: string,
+    confirmedTargetPath: string
+  ): Promise<{ document: MarkdownDocument; diff: string }>;
   planUpdate(input: PlanUpdateInput): Promise<PlannedPatch>;
   applyPlannedUpdate(patchId: string): Promise<{ document: MarkdownDocument; diff: string }>;
   traceSources(idOrPath: string): Promise<TraceResult>;

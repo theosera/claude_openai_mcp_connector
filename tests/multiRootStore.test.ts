@@ -241,6 +241,33 @@ describe("MultiRootStore", () => {
     ).resolves.toBeTruthy();
   });
 
+  it("plans and applies exact-path creates only on the primary root", async () => {
+    const plan = await store.planDocumentCreate({
+      relative_path: "vault:reports/exact.md",
+      title: "Exact",
+      body: "# Exact\n\nMulti-root create.",
+      reason: "multi-root exact create"
+    });
+
+    expect(plan.target_path).toBe("vault:reports/exact.md");
+    expect(plan.diff).toContain("+++ vault:reports/exact.md");
+    expect(plan.confirmation.question).toContain("vault:reports/exact.md");
+    await expect(store.applyPlannedDocumentCreate(plan.patch_id, "reports/exact.md")).rejects.toThrow(/does not match/);
+    const applied = await store.applyPlannedDocumentCreate(plan.patch_id, "vault:reports/exact.md");
+    expect(applied.document.relativePath).toBe("vault:reports/exact.md");
+    expect(applied.diff).toContain("+++ vault:reports/exact.md");
+    await expect(fs.stat(path.join(vaultRoot, "reports/exact.md"))).resolves.toBeTruthy();
+
+    await expect(
+      store.planDocumentCreate({
+        relative_path: "ops:reports/blocked.md",
+        title: "Blocked",
+        body: "blocked",
+        reason: "read-only root"
+      })
+    ).rejects.toThrow(/read-only/);
+  });
+
   it("plans and applies updates on the primary root (prefixed or bare refs)", async () => {
     const plan = await store.planUpdate({
       id_or_path: "vault:projects/claude/planning/connector-plan.md",

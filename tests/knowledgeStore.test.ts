@@ -178,6 +178,160 @@ describe("KnowledgeStore", () => {
     expect((await store.fetch("projects/顧客/案件/実装ノート.md")).body).toContain("two");
   });
 
+  it("plans then creates a document at an exact vault-relative path after path confirmation", async () => {
+    const relativePath = "05_logs_skills_作業フォルダ/検証/e2e-result.md";
+    const plan = await store.planDocumentCreate({
+      relative_path: relativePath,
+      title: "E2E Result",
+      body: "# E2E Result\n\nSynthetic exact-path body.",
+      client: "chatgpt",
+      project: "verification",
+      tags: ["e2e"],
+      source_refs: ["synthetic://e2e"],
+      reason: "verify exact-path create"
+    });
+
+    expect(plan.target_path).toBe(relativePath);
+    expect(plan.diff).toContain("/dev/null");
+    expect(plan.diff).toContain("Synthetic exact-path body");
+    expect(plan.confirmation).toEqual({
+      question: `保存先は「${relativePath}」でよろしいですか？`,
+      options: [{ label: "はい", value: "confirm" }],
+      allow_free_text: true
+    });
+    await expect(fs.stat(path.join(root, "05_logs_skills_作業フォルダ"))).rejects.toMatchObject({ code: "ENOENT" });
+
+    const result = await store.applyPlannedDocumentCreate(plan.patch_id, relativePath);
+    expect(result.document.relativePath).toBe(relativePath);
+    expect(result.document.body).toContain("Synthetic exact-path body");
+    expect(result.document.frontmatter).toMatchObject({
+      client: "chatgpt",
+      project: "verification",
+      title: "E2E Result",
+      tags: ["e2e"]
+    });
+    expect((await store.fetch(relativePath)).body).toContain("Synthetic exact-path body");
+  });
+
+  it("requires the confirmed create path to exactly match the planned path", async () => {
+    const plan = await store.planDocumentCreate({
+      relative_path: "reports/planned.md",
+      title: "Planned",
+      body: "planned",
+      reason: "path confirmation test"
+    });
+
+    await expect(store.applyPlannedDocumentCreate(plan.patch_id, "reports/different.md")).rejects.toThrow(
+      /does not match/
+    );
+    await expect(fs.stat(path.join(root, "reports"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects exact-path create traversal, non-Markdown targets, and symlink parents without side effects", async () => {
+    await expect(
+      store.planDocumentCreate({
+        relative_path: "../outside.md",
+        title: "Outside",
+        body: "nope",
+        reason: "traversal"
+      })
+    ).rejects.toThrow(/escapes/);
+    await expect(
+      store.planDocumentCreate({
+        relative_path: "reports/not-markdown.txt",
+        title: "Wrong extension",
+        body: "nope",
+        reason: "extension"
+      })
+    ).rejects.toThrow(/end with \.md/);
+    await expect(
+      store.planDocumentCreate({
+        relative_path: "reports/not-indexed.MD",
+        title: "Wrong extension case",
+        body: "nope",
+        reason: "extension"
+      })
+    ).rejects.toThrow(/end with \.md/);
+
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-create-outside-"));
+    await fs.symlink(outside, path.join(root, "linked-outside"));
+    await expect(
+      store.planDocumentCreate({
+        relative_path: "linked-outside/nested/escape.md",
+        title: "Escape",
+        body: "nope",
+        reason: "symlink escape"
+      })
+    ).rejects.toThrow(/symbolic links/);
+    await expect(fs.stat(path.join(outside, "nested"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not let the legacy routed create follow a symlink parent", async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-legacy-create-outside-"));
+    await fs.symlink(outside, path.join(root, "projects", "evil-link"));
+
+    await expect(
+      store.createDocument({
+        client: "evil-link",
+        project: "frameworks",
+        title: "Escape",
+        body: "nope"
+      })
+    ).rejects.toThrow(/symbolic links/);
+    await expect(fs.stat(path.join(outside, "frameworks"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects a planned create whose staged content was tampered with", async () => {
+    const relativePath = "reports/integrity.md";
+    const plan = await store.planDocumentCreate({
+      relative_path: relativePath,
+      title: "Integrity",
+      body: "planned",
+      reason: "integrity test"
+    });
+    const patchPath = path.join(patchStateDir, `${plan.patch_id}.json`);
+    const patch = JSON.parse(await fs.readFile(patchPath, "utf8")) as { new_content: string };
+    patch.new_content = `${patch.new_content}\ninjected after planning`;
+    await fs.writeFile(patchPath, JSON.stringify(patch), "utf8");
+
+    await expect(store.applyPlannedDocumentCreate(plan.patch_id, relativePath)).rejects.toThrow(/integrity/);
+    await expect(fs.stat(path.join(root, "reports"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps planned creates create-only when the target appears before apply", async () => {
+    const relativePath = "reports/collision.md";
+    const plan = await store.planDocumentCreate({
+      relative_path: relativePath,
+      title: "Collision",
+      body: "planned",
+      reason: "collision test"
+    });
+    await fs.mkdir(path.join(root, "reports"));
+    await fs.writeFile(path.join(root, relativePath), "external", "utf8");
+
+    await expect(store.applyPlannedDocumentCreate(plan.patch_id, relativePath)).rejects.toThrow(/already exists/);
+    expect(await fs.readFile(path.join(root, relativePath), "utf8")).toBe("external");
+  });
+
+  it("does not allow planned create and update patch ids to cross apply surfaces", async () => {
+    const createPlan = await store.planDocumentCreate({
+      relative_path: "reports/create.md",
+      title: "Create",
+      body: "create",
+      reason: "cross-surface test"
+    });
+    await expect(store.applyPlannedUpdate(createPlan.patch_id)).rejects.toThrow(/not a planned document update/);
+
+    const updatePlan = await store.planUpdate({
+      id_or_path: "claude-plan-001",
+      new_body: "updated",
+      reason: "cross-surface test"
+    });
+    await expect(
+      store.applyPlannedDocumentCreate(updatePlan.patch_id, "projects/claude/planning/connector-plan.md")
+    ).rejects.toThrow(/not a planned document create/);
+  });
+
   it("plans then applies an update through a stale-safe two step flow", async () => {
     const plan = await store.planUpdate({
       id_or_path: "claude-plan-001",

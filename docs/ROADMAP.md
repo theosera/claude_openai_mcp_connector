@@ -11,7 +11,7 @@ Status legend: 🔭 planned · 🚧 in progress · ✅ done · 💭 idea / needs
 
 ## Guiding priorities
 
-1. **Lower the activation barrier** so the *Obsidian-power-user* segment can get
+1. **Lower the activation barrier** so the _Obsidian-power-user_ segment can get
    to a working local connection without engineering skills.
 2. **Make the web connector survive restarts** so "it dropped" stops happening.
 3. **Never widen the security surface** — every new feature keeps the strict
@@ -22,22 +22,26 @@ Status legend: 🔭 planned · 🚧 in progress · ✅ done · 💭 idea / needs
 
 ## Near-term (next minor releases)
 
-### Onboarding & packaging — *reduce friction for non-engineers* 🔭
+### Onboarding & packaging — _reduce friction for non-engineers_ 🔭
+
 The current README starts at `pnpm install` / `pnpm build`, which can deter
 non-engineers. Goal: a copy-paste path that does **not** require a manual build.
+
 - One-command run, e.g. `npx claude-openai-mcp-connector` or a prebuilt binary,
   removing the Node/pnpm build step.
 - A **"first-time / prerequisites"** quickstart with install links (Node) and a
   3-tier path: 🟢 local + Claude Desktop → 🟡 CLI clients → 🔴 web + OAuth.
 - Optional: a guided `init` that writes `.env` interactively.
-- *Why:* the target audience skews technical but the build step is the main
+- _Why:_ the target audience skews technical but the build step is the main
   drop-off point; the web/OAuth path stays "advanced".
 
-### OAuth token persistence — *survive restarts* 🚧
+### OAuth token persistence — _survive restarts_ 🚧
+
 Persist OAuth tokens / registered clients (previously in-memory only,
 `src/oauth/store.ts`) so a restart does **not** force a re-auth. **Implemented
 (PR pending)** as an opt-in `MCP_OAUTH_STATE_FILE`:
-- **Hash-at-rest** — tokens are keyed by `sha256(token)` in memory *and* on
+
+- **Hash-at-rest** — tokens are keyed by `sha256(token)` in memory _and_ on
   disk, so the state file holds no recoverable credential (no encryption key to
   manage; stronger than encryption here because raw tokens never need recovery).
 - **Integrity + fail-closed** — the file carries an HMAC-SHA256 tag keyed from
@@ -51,7 +55,9 @@ Persist OAuth tokens / registered clients (previously in-memory only,
   [`operations.md §1.B`](./operations.md#b-oauth-state--in-memory-by-default-persistable-via-a-state-file).
 
 ### Search & retrieval UX 🔭
+
 Improve relevance and ergonomics of `search_documents` / `search`:
+
 - ranking / snippet quality, optional tag & project filters in the query,
 - guardrails so large vaults stay responsive (the parse cache from 0.1.0 is the
   foundation). 🚧 First responsiveness slice landed: vault scans now open files
@@ -59,15 +65,36 @@ Improve relevance and ergonomics of `search_documents` / `search`:
   `EAGAIN` retry + skip-and-log, so a thousands-of-notes vault no longer
   exhausts file descriptors mid-search (`src/knowledgeStore.ts`).
 
+### Exact-path document creation — _safe write-back_ ✅
+
+The original `create_document` intentionally routes new notes to
+`projects/<client>/<project>/<slug>.md`, which is useful for capture but cannot
+write back into an existing vault taxonomy. The exact-path flow is now complete:
+
+- `plan_document_create` stages the complete Markdown file and diff without
+  creating the target or its parent directories.
+- The plan returns `保存先は「…」でよろしいですか？` with a `はい` option and
+  free-text correction. A correction means **plan again**; apply cannot silently
+  substitute another path.
+- `apply_planned_document_create` requires the caller to echo that exact
+  confirmed path, verifies staged-content integrity, re-runs path/symlink
+  containment, and publishes with `wx` so an existing note is never overwritten.
+- Multi-root deployments allow the primary root only. HTTP remains off by
+  default and uses the existing `MCP_HTTP_ALLOW_WRITE` + `vault.write` boundary.
+- Synthetic store tests and an in-memory MCP E2E pin the confirmation payload,
+  no-plan-side-effects rule, traversal/symlink/collision failures, and read-back.
+
 ---
 
 ## Mid-term
 
 ### Hosting recipes 💭
+
 Turn [`operations.md`](./operations.md) into runnable recipes: a named-tunnel +
 systemd bundle, a container image, and a one-page "deploy to a $5 VPS" guide.
 
 ### Observability 💭
+
 Minimal, privacy-preserving operational signals (health endpoint, structured
 logs that never include note content or secrets) to make "is it up?" obvious.
 
@@ -76,11 +103,13 @@ logs that never include note content or secrets) to make "is it up?" obvious.
 ## Larger bets (need validation)
 
 ### Multi-user / team sharing 💭
+
 Out of scope for 0.1.0 (single-user by design). Would require per-user auth,
 token persistence, and a per-user scoping model — a significant change to the
 OAuth and store layers. Pursue only if demand is validated.
 
 ### Additional knowledge sources 💭
+
 Beyond a single `KNOWLEDGE_ROOT` Markdown vault (e.g. multiple roots). Each new
 source must pass the same path-containment and untrusted-content guarantees.
 
@@ -91,18 +120,18 @@ source must pass the same path-containment and untrusted-content guarantees.
 v0.1.0 hardens the **single-user, local-first** case (path containment, two-step
 writes, OAuth PKCE/audience/scope, SHA-pinned CI). It does **not** yet cover the
 following — listed honestly so adopters can judge fit. Most are prerequisites for
-*team / enterprise* adoption rather than the core individual use case.
+_team / enterprise_ adoption rather than the core individual use case.
 
-| Gap | Why it matters | Tier |
-| --- | --- | --- |
-| **Third-party penetration test** | Self-review + AI review have limits; an independent test is needed before security claims are load-bearing. | near-term 🔭 |
-| **Audit log** | No after-the-fact record of who searched / fetched / wrote what. | near-term 🔭 |
-| **Multi-user RBAC** | Currently single-user by design; teams need per-user roles & scoping. | larger bet 💭 |
-| **Hardened secret scanning / release-artifact verification** | Needed if OSS distribution (npx / prebuilt binaries) is pushed harder — provenance, signed artifacts, SBOM. | mid-term 💭 |
-| **OpenTelemetry / structured audit events** | Required for enterprise observability and SIEM ingestion. | mid-term 💭 |
-| **DLP / exfiltration detection** | No control over leakage *of vault content* once a client is authorized. | larger bet 💭 |
-| **Sandbox isolation** | If the MCP server process itself is compromised, isolation from the host is limited. | ✅ layers 1–3 documented → [`operations.md`](./operations.md#sandbox-hardening-systemd) (systemd) + [§6](./operations.md#6-sandboxing-the-local-stdio-server-bwrap-optional) (bwrap); residual: operator-applied, not code-enforced |
-| **Formal threat model document** | `SECURITY.md` is good but was not a systematic STRIDE/LINDDUN-style model. | 🚧 → [`threat-model.md`](./threat-model.md) (STRIDE) added; revisit as features land |
+| Gap                                                          | Why it matters                                                                                              | Tier                                                                                                                                                                                                                                |
+| ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Third-party penetration test**                             | Self-review + AI review have limits; an independent test is needed before security claims are load-bearing. | near-term 🔭                                                                                                                                                                                                                        |
+| **Audit log**                                                | No after-the-fact record of who searched / fetched / wrote what.                                            | near-term 🔭                                                                                                                                                                                                                        |
+| **Multi-user RBAC**                                          | Currently single-user by design; teams need per-user roles & scoping.                                       | larger bet 💭                                                                                                                                                                                                                       |
+| **Hardened secret scanning / release-artifact verification** | Needed if OSS distribution (npx / prebuilt binaries) is pushed harder — provenance, signed artifacts, SBOM. | mid-term 💭                                                                                                                                                                                                                         |
+| **OpenTelemetry / structured audit events**                  | Required for enterprise observability and SIEM ingestion.                                                   | mid-term 💭                                                                                                                                                                                                                         |
+| **DLP / exfiltration detection**                             | No control over leakage _of vault content_ once a client is authorized.                                     | larger bet 💭                                                                                                                                                                                                                       |
+| **Sandbox isolation**                                        | If the MCP server process itself is compromised, isolation from the host is limited.                        | ✅ layers 1–3 documented → [`operations.md`](./operations.md#sandbox-hardening-systemd) (systemd) + [§6](./operations.md#6-sandboxing-the-local-stdio-server-bwrap-optional) (bwrap); residual: operator-applied, not code-enforced |
+| **Formal threat model document**                             | `SECURITY.md` is good but was not a systematic STRIDE/LINDDUN-style model.                                  | 🚧 → [`threat-model.md`](./threat-model.md) (STRIDE) added; revisit as features land                                                                                                                                                |
 
 **Suggested sequencing:** start with the cheap, high-signal items —
 (1) a **formal threat model** (STRIDE) to make the gaps explicit and prioritize
@@ -118,8 +147,8 @@ Discussed and deferred (consultation only so far). For **this** product the goal
 is to limit blast radius **if the server process itself is compromised** — a
 defense-in-depth layer on top of the app-level path containment (INV-1), which
 already confines normal file access to `KNOWLEDGE_ROOT`. Two contexts are easy to
-conflate: (a) sandboxing the *AI coding agent* that runs shell commands — a dev-
-workflow concern; (b) sandboxing *this MCP daemon* — the gap here.
+conflate: (a) sandboxing the _AI coding agent_ that runs shell commands — a dev-
+workflow concern; (b) sandboxing _this MCP daemon_ — the gap here.
 
 Recommended layering, cheapest first:
 
@@ -172,6 +201,9 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       [appendix on authenticated-client_id use cases](#appendix--future-uses-of-the-authenticated-client_id).
 - [ ] **One-command install / npx packaging** — remove the `pnpm build` step so
       the 🟢 non-engineer path needs no toolchain (see Onboarding above).
+- [x] **Exact-path document create** — ✅ two-step full-file plan, explicit
+      target-path confirmation (`はい` + free text), confirmed-path echo at
+      apply, content-integrity/no-overwrite checks, and MCP E2E coverage.
 
 Each security-affecting change pins behavior with tests before merging, per the
 repo quality gate. Update this list as items land.
@@ -189,7 +221,7 @@ verifiable facts; a forgeable client name must not leak into those decisions.
 
 **First, the ceiling on what `client_id` can mean here.** The login gate is a
 single shared password (`MCP_OAUTH_PASSWORD`), so every `client_id` maps to the
-*same* human. `client_id` therefore distinguishes **a connector registration**,
+_same_ human. `client_id` therefore distinguishes **a connector registration**,
 not a person — and because Dynamic Client Registration mints a fresh id whenever
 a client re-adds the connector, it is not even a stable per-vendor identity
 (that would need `clientInfo.name`, which is forgeable). So the honest uses are
@@ -198,10 +230,10 @@ operational (attribution / limits / revocation), not authorization-of-a-person.
 Use cases, roughly by how real/soon they are:
 
 1. **Audit-log attribution (near-term 🔭, strongest).** The agreed #1 security
-   follow-up only becomes useful if each event records *which connector* acted
+   follow-up only becomes useful if each event records _which connector_ acted
    ("ChatGPT read X", "Claude.ai attempted write Y"). Key it on `client_id`.
 2. **Selective revocation (grew in value with token persistence).** The only
-   *explicit* revocation lever today is rotating the password (nukes *all*
+   _explicit_ revocation lever today is rotating the password (nukes _all_
    sessions). 🚧 A first automatic slice landed: client registrations holding no
    live token are pruned after a grace window (`src/oauth/store.ts`), so
    abandoned reconnect churn self-cleans; explicit per-`client_id` revocation
@@ -218,17 +250,17 @@ Use cases, roughly by how real/soon they are:
    `vault.write`, but ChatGPT stays read-only even on a write-enabled server."
    This is the **one** case that re-introduces identity-based authorization, so
    gate it hard: apply it as a **restriction only** (never to widen scope),
-   resolved at authorize time from `client_id → policy`, and keep scope *grants*
+   resolved at authorize time from `client_id → policy`, and keep scope _grants_
    on flags + requested-scope as today. Overusing it muddies INV-6/INV-7.
 6. **Multi-user / RBAC (larger bet 💭, the real structural driver).** Replacing
    the shared password with per-user auth is what finally makes the identity
-   *behind* a `client_id` the primary authorization key — a significant change to
+   _behind_ a `client_id` the primary authorization key — a significant change to
    the OAuth + store layers. Pursue only if demand is validated.
 
 **Rule of thumb:** `client_id` is fine for **attribution, limiting, and
 revocation** (all satisfied by "this token provably came from this
 registration"); it must **not** drive trust decisions or scope widening. A
-runtime router that switches tool surfaces by *detecting* ChatGPT-vs-Claude is
+runtime router that switches tool surfaces by _detecting_ ChatGPT-vs-Claude is
 explicitly rejected: MCP already solves I/O differences client-side (each client
 selects the tools it understands — the `search`/`fetch` aliases in
 `src/chatgpt.ts`), and the only output difference is config-driven

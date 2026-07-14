@@ -35,6 +35,7 @@ export interface BuildServerOptions {
 
 export const SERVER_INSTRUCTIONS =
   "Use this server to search, fetch, trace, create, and safely update a private Markdown vault. " +
+  "New documents at an exact vault-relative path must use plan_document_create first. Before saving, always ask whether the returned target_path is correct; if the client supports AskUserQuestion, present the returned Japanese 'はい' option plus free-text input so the user can correct the path. Call apply_planned_document_create only after the current user confirms that exact path and complete-file diff in the conversation. " +
   "Existing document edits must use plan_document_update first, then apply_planned_update only after the current user approves that exact diff in the conversation. " +
   "Skill creation must use plan_skill_create first, then apply_planned_skill_create only after the current user approves that exact complete bundle diff in the conversation. " +
   "New documents may be created only after the current user has approved the exact target and complete content. " +
@@ -162,6 +163,39 @@ export function buildMcpServer(store: VaultStore, options: BuildServerOptions): 
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false }
       },
       async (input) => jsonResult(await store.createDocument(input))
+    );
+
+    server.registerTool(
+      "plan_document_create",
+      {
+        title: "Plan exact-path Markdown creation",
+        description:
+          "Validate and stage creation of a new Markdown document at an exact vault-relative path without modifying the vault. Return a path-confirmation question for the current user; a free-text correction requires a new plan.",
+        inputSchema: {
+          relative_path: z.string(),
+          title: z.string(),
+          body: z.string(),
+          client: z.string().optional(),
+          project: z.string().optional(),
+          tags: z.array(z.string()).optional(),
+          source_refs: z.array(z.string()).optional(),
+          reason: z.string()
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false }
+      },
+      async (input) => jsonResult(await store.planDocumentCreate(input))
+    );
+
+    server.registerTool(
+      "apply_planned_document_create",
+      {
+        title: "Apply exact-path Markdown creation",
+        description:
+          "Create a previously planned Markdown document only when confirmed_target_path exactly matches the planned target. Existing files are never overwritten.",
+        inputSchema: { patch_id: z.string(), confirmed_target_path: z.string() },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false }
+      },
+      async (input) => jsonResult(await store.applyPlannedDocumentCreate(input.patch_id, input.confirmed_target_path))
     );
 
     server.registerTool(

@@ -9,6 +9,8 @@ import type { StoreConfig } from "./config.js";
 import type {
   DocumentMetadata,
   MarkdownDocument,
+  PlanDocumentCreateInput,
+  PlannedDocumentCreate,
   PlannedPatch,
   ProjectSummary,
   SearchResult,
@@ -167,7 +169,6 @@ export class KnowledgeStore implements VaultStore {
     const absolutePath = await this.resolveForWrite(relativePath);
 
     try {
-      await fs.mkdir(path.dirname(absolutePath), { recursive: true });
       await fs.writeFile(absolutePath, serializeMarkdown(metadata, input.body), { encoding: "utf8", flag: "wx" });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") {
@@ -177,6 +178,81 @@ export class KnowledgeStore implements VaultStore {
     }
 
     return this.readDocument(absolutePath);
+  }
+
+  async planDocumentCreate(input: PlanDocumentCreateInput): Promise<PlannedDocumentCreate> {
+    const targetPath = await this.validateCreateTarget(input.relative_path);
+    const metadata: DocumentMetadata = {
+      id: crypto.randomUUID(),
+      title: input.title,
+      tags: input.tags ?? [],
+      source_refs: input.source_refs ?? [],
+      updated_at: new Date().toISOString()
+    };
+    if (input.client !== undefined) metadata.client = input.client;
+    if (input.project !== undefined) metadata.project = input.project;
+
+    const newContent = serializeMarkdown(metadata, input.body);
+    const patch: PlannedDocumentCreate = {
+      operation: "document_create",
+      patch_id: crypto.randomUUID(),
+      target_path: targetPath,
+      reason: input.reason,
+      created_at: new Date().toISOString(),
+      new_content: newContent,
+      content_sha256: sha256(newContent),
+      diff: createTwoFilesPatch("/dev/null", targetPath, "", newContent, "absent", "planned"),
+      confirmation: {
+        question: `保存先は「${targetPath}」でよろしいですか？`,
+        options: [{ label: "はい", value: "confirm" }],
+        allow_free_text: true
+      }
+    };
+
+    await fs.mkdir(this.config.patchStateDir, { recursive: true });
+    await fs.writeFile(this.patchPath(patch.patch_id), JSON.stringify(patch, null, 2), {
+      encoding: "utf8",
+      flag: "wx"
+    });
+    return patch;
+  }
+
+  async applyPlannedDocumentCreate(
+    patchId: string,
+    confirmedTargetPath: string
+  ): Promise<{ document: MarkdownDocument; diff: string }> {
+    const patchRaw = await fs.readFile(this.patchPath(patchId), "utf8");
+    const patch = JSON.parse(patchRaw) as Partial<PlannedDocumentCreate>;
+    if (
+      patch.operation !== "document_create" ||
+      typeof patch.target_path !== "string" ||
+      typeof patch.new_content !== "string" ||
+      typeof patch.content_sha256 !== "string" ||
+      typeof patch.diff !== "string"
+    ) {
+      throw new Error("Patch is not a planned document create.");
+    }
+    if (sha256(patch.new_content) !== patch.content_sha256) {
+      throw new Error("Planned document content failed integrity validation.");
+    }
+
+    const confirmedPath = toPosixPath(assertRelativePath(confirmedTargetPath));
+    if (confirmedPath !== patch.target_path) {
+      throw new Error("Confirmed target path does not match the planned document target.");
+    }
+
+    const absolutePath = await this.resolveForWrite(await this.validateCreateTarget(patch.target_path));
+    try {
+      await fs.writeFile(absolutePath, patch.new_content, { encoding: "utf8", flag: "wx" });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        throw new Error(`Document already exists: ${patch.target_path}`, { cause: error });
+      }
+      throw error;
+    }
+
+    await fs.unlink(this.patchPath(patchId));
+    return { document: await this.readDocument(absolutePath), diff: patch.diff };
   }
 
   async planUpdate(input: {
@@ -222,7 +298,10 @@ export class KnowledgeStore implements VaultStore {
 
   async applyPlannedUpdate(patchId: string): Promise<{ document: MarkdownDocument; diff: string }> {
     const patchRaw = await fs.readFile(this.patchPath(patchId), "utf8");
-    const patch = JSON.parse(patchRaw) as PlannedPatch;
+    const patch = JSON.parse(patchRaw) as PlannedPatch & { operation?: string };
+    if (patch.operation === "document_create") {
+      throw new Error("Patch is not a planned document update.");
+    }
     const absolutePath = await this.resolveForExistingRead(patch.target_path);
     const currentRaw = await fs.readFile(absolutePath, "utf8");
     const currentSha = sha256(currentRaw);
@@ -360,13 +439,78 @@ export class KnowledgeStore implements VaultStore {
   private async resolveForWrite(relativePath: string): Promise<string> {
     const root = await this.root();
     const safeRelative = assertRelativePath(relativePath);
-    const parentRelative = path.dirname(safeRelative);
-    const parentAbsolute = path.resolve(root, parentRelative);
+    const parentSegments = path
+      .dirname(safeRelative)
+      .split(path.sep)
+      .filter((segment) => segment !== ".");
+    let current = root;
 
-    await fs.mkdir(parentAbsolute, { recursive: true });
-    const realParent = await fs.realpath(parentAbsolute);
-    relativeToRoot(root, realParent);
-    return path.join(realParent, path.basename(safeRelative));
+    // Create one directory at a time and reject symlinks. Calling recursive
+    // mkdir before containment validation could follow an in-vault symlink and
+    // create directories outside the vault before the later realpath check.
+    for (const segment of parentSegments) {
+      const candidate = path.join(current, segment);
+      try {
+        const stat = await fs.lstat(candidate);
+        if (stat.isSymbolicLink()) {
+          throw new Error("Document create path must not contain symbolic links.");
+        }
+        if (!stat.isDirectory()) {
+          throw new Error(`Document parent is not a directory: ${segment}`);
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        try {
+          await fs.mkdir(candidate);
+        } catch (mkdirError) {
+          if ((mkdirError as NodeJS.ErrnoException).code !== "EEXIST") throw mkdirError;
+        }
+      }
+      current = await fs.realpath(candidate);
+      relativeToRoot(root, current);
+    }
+    return path.join(current, path.basename(safeRelative));
+  }
+
+  private async validateCreateTarget(relativePath: string): Promise<string> {
+    const root = await this.root();
+    const safeRelative = assertRelativePath(relativePath);
+    if (!safeRelative.endsWith(".md")) {
+      throw new Error("Document create target must end with .md.");
+    }
+
+    const parentSegments = path
+      .dirname(safeRelative)
+      .split(path.sep)
+      .filter((segment) => segment !== ".");
+    let current = root;
+    for (const segment of parentSegments) {
+      const candidate = path.join(current, segment);
+      try {
+        const stat = await fs.lstat(candidate);
+        if (stat.isSymbolicLink()) {
+          throw new Error("Document create path must not contain symbolic links.");
+        }
+        if (!stat.isDirectory()) {
+          throw new Error(`Document parent is not a directory: ${segment}`);
+        }
+        current = await fs.realpath(candidate);
+        relativeToRoot(root, current);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
+        throw error;
+      }
+    }
+
+    const target = path.resolve(root, safeRelative);
+    relativeToRoot(root, target);
+    try {
+      await fs.lstat(target);
+      throw new Error(`Document already exists: ${toPosixPath(safeRelative)}`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    return toPosixPath(safeRelative);
   }
 
   private async root(): Promise<string> {
