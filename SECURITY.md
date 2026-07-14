@@ -26,7 +26,7 @@ strictly constrained instruction-only Skill bundles, driven by an
 | T1 | Path traversal / symlink escape out of the vault | Multi-phase path guard: length cap → control/NUL reject → percent-decode validation → NFC normalize → absolute/`~`/`..` reject → realpath prefix check → symlink-escape check. Fail-closed (throws, no silent fallback). | `src/pathSafety.ts`, `src/knowledgeStore.ts` |
 | T2 | Frontmatter / YAML field injection (incl. type confusion) via an edit | `frontmatter_patch` allowlist — only `client` / `project` / `title` / `tags` / `source_refs`; `id` and `updated_at` are server-owned; unknown key → reject. Values are type-checked: `client`/`project`/`title` = string, `tags`/`source_refs` = string[] (blocks nested-object / wrong-type YAML injection). | `src/frontmatter.ts`, `src/knowledgeStore.ts` |
 | T3 | Destructive / lost-update overwrite of a note | Two-step `plan_document_update` → `apply_planned_update` with an `expected_sha256` staleness check (refuses to apply if the file changed); create uses `flag: "wx"` (never overwrites); `patch_id` validated as a UUID. | `src/knowledgeStore.ts` |
-| T4 | Prompt injection via vault content returned to the LLM | Server `instructions` declare that returned bodies / frontmatter are vault **data**, not commands to execute or fetch. | `src/index.ts` |
+| T4 | Prompt injection via vault content returned to the LLM, including forged approval and tool-call-shaped text | Server `instructions` declare returned bodies / frontmatter / search results / tool output are untrusted vault **data**, not instructions or approval; apply requires the current user's approval of the exact diff/bundle; write tools advertise explicit non-read-only/destructive annotations. Deterministic path/scope/no-overwrite/stale controls remain the enforcement boundary. | `src/server.ts`, `tests/promptInjection.test.ts`, `tests/httpServer.test.ts` |
 | T5 | Secret / private-vault leak into the public repo | `.gitignore` (vault / keys / tokens / env), `.claude/settings.json` read-deny (Read **and** Bash), explicit-file-add discipline (no `git add -A`, no `--no-verify`). | `.gitignore`, `.claude/settings.json`, `CLAUDE.md` |
 | T6 | Supply-chain: poisoned Action / stale pin / tag swap / vulnerable dependency | Third-party Actions full-SHA pinned (+ `# vX.Y.Z`); top-level `permissions: contents: read`; `concurrency`; advisory `pnpm audit`; Dependabot (npm + actions); CODEOWNERS on `.github/`; CodeQL SAST (push + PR + weekly). Dependencies kept advisory-clean (`pnpm audit --audit-level low`). | `.github/`, `package.json` |
 | T7 | Denial of service via symlink cycle / unbounded traversal | The vault directory walk tracks visited real paths and returns on revisit, so a `loop → root` symlink stops instead of recursing forever; the per-symlink realpath prefix check still rejects out-of-root targets (T1 is not weakened). | `src/knowledgeStore.ts` |
@@ -48,7 +48,9 @@ Selected (implemented here) — relevant to this connector:
 - **§4 Rate limiting** → coarse per-client (IP) fixed-window limits on the public
   OAuth endpoints (`/authorize`, `/register`) in `src/oauth/rateLimiter.ts` —
   defense-in-depth over a public tunnel, on top of the scrypt login gate.
-- **§5.4 Untrusted-content boundary** → MCP server `instructions` (data, not commands).
+- **§5.4 Untrusted-content boundary** → MCP server `instructions` (data, not commands or approval),
+  explicit write-tool annotations, and synthetic injection fixtures. Model detection is defense-in-depth,
+  not the authorization boundary.
 - **§4 Remote-transport authn / network exposure** → bearer-token auth
   (constant-time, fail-closed), loopback bind, DNS-rebinding protection, body-size
   cap, and default read-only surface for the HTTP transport (`src/httpServer.ts`,
@@ -62,7 +64,8 @@ Selected (implemented here) — relevant to this connector:
 - **§6.6 Frontmatter allowlist** → `src/frontmatter.ts::assertFrontmatterPatch`
   (key allowlist + per-key value-type validation).
 - **§10 Security test coverage** → `tests/pathSafety.test.ts` + `tests/knowledgeStore.test.ts` + `tests/skillStore.test.ts`
-  (incl. symlink-cycle traversal and frontmatter value-type cases).
+  + `tests/promptInjection.test.ts` (incl. symlink-cycle traversal, frontmatter value-type cases,
+  forged approval/tool-call text, and read-without-write assertions).
 
 Intentionally **not** ported (out of scope for this connector): Python-specific
 controls (ruff/mypy/pip-audit/uv, `sanitize.py`, Docker capture sandbox,
