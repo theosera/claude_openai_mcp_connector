@@ -1,4 +1,5 @@
 import path from "node:path";
+import { createTwoFilesPatch } from "diff";
 import { KnowledgeStore } from "./knowledgeStore.js";
 import { extractAllLocalLinks } from "./markdownLinks.js";
 import { searchDocuments, type SearchFilters } from "./search.js";
@@ -6,7 +7,9 @@ import type { AppConfig } from "./config.js";
 import type {
   CreateDocumentInput,
   MarkdownDocument,
+  PlanDocumentCreateInput,
   PlanUpdateInput,
+  PlannedDocumentCreate,
   PlannedPatch,
   ProjectSummary,
   SearchResult,
@@ -127,6 +130,36 @@ export class MultiRootStore implements VaultStore {
 
   async createDocument(input: CreateDocumentInput): Promise<MarkdownDocument> {
     return this.wrap(this.primary.name, await this.primary.store.createDocument(input));
+  }
+
+  async planDocumentCreate(input: PlanDocumentCreateInput): Promise<PlannedDocumentCreate> {
+    const relativePath = this.resolveWritableRef(input.relative_path);
+    const plan = await this.primary.store.planDocumentCreate({ ...input, relative_path: relativePath });
+    const targetPath = `${this.primary.name}:${plan.target_path}`;
+    return {
+      ...plan,
+      target_path: targetPath,
+      diff: createTwoFilesPatch("/dev/null", targetPath, "", plan.new_content, "absent", "planned"),
+      confirmation: {
+        ...plan.confirmation,
+        question: `保存先は「${targetPath}」でよろしいですか？`
+      }
+    };
+  }
+
+  async applyPlannedDocumentCreate(
+    patchId: string,
+    confirmedTargetPath: string
+  ): Promise<{ document: MarkdownDocument; diff: string }> {
+    if (!confirmedTargetPath.startsWith(`${this.primary.name}:`)) {
+      throw new Error("Confirmed target path does not match the planned multi-root document target.");
+    }
+    const relativePath = this.resolveWritableRef(confirmedTargetPath);
+    const result = await this.primary.store.applyPlannedDocumentCreate(patchId, relativePath);
+    return {
+      document: this.wrap(this.primary.name, result.document),
+      diff: result.diff.replace(`+++ ${relativePath}\t`, `+++ ${confirmedTargetPath}\t`)
+    };
   }
 
   async planUpdate(input: PlanUpdateInput): Promise<PlannedPatch> {

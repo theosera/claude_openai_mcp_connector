@@ -6,6 +6,21 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Exact-path Markdown creation through a two-step, path-confirmed flow.** New
+  `plan_document_create` → `apply_planned_document_create` tools let a client
+  create a note at an exact vault-relative `.md` path instead of routing it
+  through `projects/<client>/<project>/`. Planning returns the complete-file
+  diff and a structured Japanese confirmation question (`はい` plus free-text
+  correction); apply requires the caller to echo the exact confirmed path.
+  Planning never creates target directories, apply rechecks containment and
+  staged-content integrity, and the final `wx` write remains create-only. The
+  tools are primary-root-only under multi-root and share the existing document
+  HTTP/OAuth write gate (`src/knowledgeStore.ts`, `src/multiRootStore.ts`,
+  `src/server.ts`, `tests/knowledgeStore.test.ts`,
+  `tests/multiRootStore.test.ts`, `tests/httpServer.test.ts`).
+
 ### Changed
 
 - **Vault scans now open Markdown files with bounded concurrency.** A large
@@ -25,6 +40,11 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   already self-expire; the grace window protects an in-flight registration that
   has not yet completed the token exchange (`src/oauth/store.ts`,
   `tests/oauth.test.ts`).
+- **Create-parent handling rejects symlink components before making nested
+  directories.** Both routed and exact-path document creates now walk parent
+  components one at a time, rejecting symbolic links and non-directories before
+  any deeper path can be created (`src/knowledgeStore.ts`,
+  `tests/knowledgeStore.test.ts`).
 
 ## [0.5.0] — 2026-07-13
 
@@ -110,10 +130,10 @@ query on a single bad note — are fixed.
 
 - **HTTP rate limiter now keys on the socket peer, not a spoofable
   `X-Forwarded-For`.** The `/authorize` and `/register` limiter keyed on the
-  left-most XFF hop, which every proxy only *appends* to — so it is fully
+  left-most XFF hop, which every proxy only _appends_ to — so it is fully
   client-controlled. Over a public tunnel that let a caller bypass the limit
   entirely (a fresh spoofed IP per request) and even lock the legitimate user out
-  of their own connector by forging *their* IP. Keying on the (unspoofable) socket
+  of their own connector by forging _their_ IP. Keying on the (unspoofable) socket
   address makes it a coarse global cap behind a tunnel and naturally per-client on
   a direct bind (`src/httpServer.ts`, `tests/oauth.test.ts`).
 - **A single note with a non-string YAML scalar no longer crashes `search` /
@@ -297,9 +317,9 @@ First tagged release. MCP server exposing a private Markdown vault
   request-body cap, and a read-only tool surface unless `MCP_HTTP_ALLOW_WRITE=1`.
 - **OAuth 2.1 authorization server** (opt-in) for ChatGPT / Claude.ai web:
   metadata discovery, dynamic client registration, PKCE S256, authorization-code
-  + refresh-token grants, scrypt login gate, scope enforcement
-  (`vault.read` / `vault.write`), RFC 8707 audience binding, and consent-page
-  clickjacking headers.
+  - refresh-token grants, scrypt login gate, scope enforcement
+    (`vault.read` / `vault.write`), RFC 8707 audience binding, and consent-page
+    clickjacking headers.
 - Coarse per-client **rate limiting** on the public OAuth endpoints
   (`/authorize`, `/register`), and **ESLint + Prettier** with `lint` / `format` /
   `format:check` scripts wired into CI.

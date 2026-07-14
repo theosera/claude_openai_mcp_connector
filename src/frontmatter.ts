@@ -94,8 +94,12 @@ export function normalizeMetadata(input: DocumentMetadata): DocumentMetadata {
   // (assertFrontmatterPatch) is untouched, so INV-2 is unaffected.
   metadata.tags = toStringArray(metadata.tags);
   metadata.source_refs = toStringArray(metadata.source_refs);
-  metadata.client = toOptionalString(metadata.client);
-  metadata.project = toOptionalString(metadata.project);
+  const client = toOptionalString(metadata.client);
+  const project = toOptionalString(metadata.project);
+  if (client === undefined) delete metadata.client;
+  else metadata.client = client;
+  if (project === undefined) delete metadata.project;
+  else metadata.project = project;
 
   return metadata;
 }

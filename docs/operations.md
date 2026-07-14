@@ -8,7 +8,8 @@ only use those, you can skip this document, with one exception:
 sandbox recipe for that locally-spawned stdio server.
 
 > TL;DR — two things cause "the connection dropped":
-> 1. **The tunnel URL changes.** A Cloudflare *quick* tunnel
+>
+> 1. **The tunnel URL changes.** A Cloudflare _quick_ tunnel
 >    (`trycloudflare.com`) gets a new random hostname every restart, and that
 >    hostname is the OAuth issuer + token audience, so a change breaks the
 >    registered connector. → Use a **named tunnel with a fixed domain**.
@@ -51,6 +52,7 @@ cloudflared tunnel run vault                            # always https://vault.e
 >
 > **Cloudflare is not mandatory** — the only real requirement is a **stable
 > HTTPS URL that reaches `127.0.0.1:<port>`**. Equivalent options:
+>
 > - **Tailscale Funnel** — account required, but no domain to buy (you get a
 >   stable `*.ts.net` URL). See
 >   [§2 · macOS: Tailscale Funnel + launchd](#macos-tailscale-funnel--launchd)
@@ -165,7 +167,7 @@ sudo systemctl enable --now vault-mcp cloudflared
 This is **layer 1** of the "sandbox isolation" plan in
 [`ROADMAP.md`](./ROADMAP.md#sandbox-isolation--intended-layering): limit the
 blast radius **if the server process itself is compromised**. It is
-defense-in-depth *on top of* the app-level path containment (the server already
+defense-in-depth _on top of_ the app-level path containment (the server already
 confines file access to `KNOWLEDGE_ROOT`) — systemd's namespacing now also stops
 a compromised process from touching the rest of the host.
 
@@ -324,7 +326,7 @@ launchctl load -w ~/Library/LaunchAgents/local.mcp-connector.plist
 
 > **Use a STABLE `node` path.** Version-manager shims are often **per-shell** and
 > disappear after a reboot, which breaks `KeepAlive` (launchd can no longer find
-> `node`). Resolve the real binary once and hardcode *that* absolute path:
+> `node`). Resolve the real binary once and hardcode _that_ absolute path:
 >
 > ```bash
 > node -e 'console.log(require("fs").realpathSync(process.execPath))'
@@ -494,7 +496,71 @@ ls ~/.ssh   # → same: nothing to steal
 
 ---
 
-## 7. Enabling and using constrained Skill creation
+## 7. Creating a document at an exact vault path
+
+Use this flow when the note must land in an existing vault folder. The legacy
+`create_document` tool deliberately maps `client`, `project`, and `title` into
+`projects/<client>/<project>/<slug>.md`; it does not preserve an arbitrary path.
+
+The exact-path tools share the normal document-write boundary. For HTTP, enable
+`MCP_HTTP_ALLOW_WRITE=1`, restart the service, and authorize a `vault.write`
+scope. No additional flag is required.
+
+### Plan without touching the target
+
+Call `plan_document_create` with a vault-relative `.md` path:
+
+```json
+{
+  "relative_path": "notes/reports/e2e-result.md",
+  "title": "E2E result",
+  "body": "# E2E result\n\nSynthetic body.",
+  "tags": ["e2e"],
+  "reason": "record the verified result"
+}
+```
+
+The result contains a UUID `patch_id`, `target_path`, complete-file `diff`, and:
+
+```json
+{
+  "confirmation": {
+    "question": "保存先は「notes/reports/e2e-result.md」でよろしいですか？",
+    "options": [{ "label": "はい", "value": "confirm" }],
+    "allow_free_text": true
+  }
+}
+```
+
+Planning writes only the patch-state file. It does **not** create the target
+note or missing target directories.
+
+### Confirm the path, then apply
+
+Before apply, the client must show the returned question. If it supports an
+AskUserQuestion-style UI, show **はい** plus a free-text field. Interpret the
+responses as follows:
+
+- **はい** — call `apply_planned_document_create` with the returned
+  `target_path` copied exactly into `confirmed_target_path`.
+- **Free-text correction** — do not apply. Call `plan_document_create` again
+  with the corrected path, show the new diff and question, and obtain a fresh
+  confirmation.
+
+```json
+{
+  "patch_id": "00000000-0000-4000-8000-000000000000",
+  "confirmed_target_path": "notes/reports/e2e-result.md"
+}
+```
+
+Apply fails closed if the confirmed path differs, the patch content was
+changed, the path traverses or crosses a symlink, the target appeared after
+planning, or the request addresses a non-primary root. On success it creates
+parent directories safely, performs one exclusive `wx` write, removes the
+consumed patch, and returns the created document for read-back verification.
+
+## 8. Enabling and using constrained Skill creation
 
 `plan_skill_create` → `apply_planned_skill_create` let a client author an
 **instruction-only Skill bundle** into the vault **without** being granted
@@ -537,7 +603,7 @@ Keep it unset unless you need it (see the §5 checklist).
      "skill_name": "my-skill",
      "skill_md": "---\nname: my-skill\n...\n---\n# instructions ...",
      "references": [{ "filename": "notes.md", "content": "..." }], // optional, ≤20, flat
-     "openai_yaml": "...",                                         // optional
+     "openai_yaml": "...", // optional
      "reason": "why this skill is being created"
    }
    ```

@@ -45,7 +45,9 @@ which is never committed to this public repo.
 - Search Markdown documents under a private local vault.
 - Fetch document body, frontmatter, file stats, and source refs.
 - List projects grouped by `client` and `project`.
-- Create new Markdown documents.
+- Create new Markdown documents either through the routed `projects/...`
+  helper or at an exact vault-relative path through a path-confirmed two-step
+  flow.
 - Edit existing Markdown through a two-step `plan_document_update` then `apply_planned_update` flow.
 - Create instruction-only Skill bundles through a separate two-step
   `plan_skill_create` then `apply_planned_skill_create` flow.
@@ -60,28 +62,31 @@ the **web path** the specific notes you `fetch` are sent to that AI like any cha
 message (read-only by default; see the privacy note in [`docs/PRFAQ.md`](./docs/PRFAQ.md)).
 
 - **Stop re-pasting context.** Ask Claude or ChatGPT "what did I decide about
-  *X*?" and it searches your own notes instead of you copy-pasting them into
+  _X_?" and it searches your own notes instead of you copy-pasting them into
   each chat.
 - **Cross-note recall.** "Pull my earlier notes related to this topic" surfaces
   relevant Markdown across the whole vault (source refs + backlinks included).
 - **Project-scoped lookup.** Group and retrieve documents by `client` /
-  `project` frontmatter — e.g. "summarize everything under project *Acme*".
+  `project` frontmatter — e.g. "summarize everything under project _Acme_".
 - **Cite your own knowledge.** ChatGPT-compatible `search` / `fetch` let a web
   connector use your vault as a first-class source with citations.
 - **Safe edits from chat.** Have the AI draft an update, then approve it through
   the two-step `plan_document_update` → `apply_planned_update` flow (stale-safe,
   never silently overwriting).
+- **Exact-path write-back.** Plan a complete new note at the intended
+  vault-relative path, confirm that displayed path (or correct it in free text),
+  then apply without overwriting anything already there.
 
 ## Which path should I use?
 
 Pick by how technical you want to get. Most people should start with the green
 path.
 
-| Tier | You get | Effort | Best for |
-| --- | --- | --- | --- |
-| 🟢 **Local + Claude Desktop** | Vault in Claude Desktop, on your machine | copy-paste a small JSON config | non-engineers / first run |
-| 🟡 **Local CLI** (Claude Code / Codex) | Vault in your terminal AI | one command / a TOML block | comfortable with a terminal |
-| 🔴 **Web** (ChatGPT / Claude.ai) | Vault in the web apps | OAuth + HTTPS tunnel + a long-running host | technical; see [`docs/operations.md`](./docs/operations.md) |
+| Tier                                   | You get                                  | Effort                                     | Best for                                                    |
+| -------------------------------------- | ---------------------------------------- | ------------------------------------------ | ----------------------------------------------------------- |
+| 🟢 **Local + Claude Desktop**          | Vault in Claude Desktop, on your machine | copy-paste a small JSON config             | non-engineers / first run                                   |
+| 🟡 **Local CLI** (Claude Code / Codex) | Vault in your terminal AI                | one command / a TOML block                 | comfortable with a terminal                                 |
+| 🔴 **Web** (ChatGPT / Claude.ai)       | Vault in the web apps                    | OAuth + HTTPS tunnel + a long-running host | technical; see [`docs/operations.md`](./docs/operations.md) |
 
 The web path needs a server that stays up and a stable HTTPS URL — read
 [`docs/operations.md`](./docs/operations.md) **before** relying on it.
@@ -136,7 +141,7 @@ Do not commit `.env`, private vault URLs, private vault paths, or real note cont
 
 ### Multiple knowledge roots (optional)
 
-To search **several repos at once** (e.g. your vault *plus* a command-log repo),
+To search **several repos at once** (e.g. your vault _plus_ a command-log repo),
 set `KNOWLEDGE_ROOTS` instead of `KNOWLEDGE_ROOT`:
 
 ```text
@@ -145,8 +150,10 @@ KNOWLEDGE_ROOTS=vault=/path/to/private/obsidian-vault,ops=/path/to/ops-log-repo
 
 - Comma-separated `name=path` pairs; names are lowercase alnum/dash/underscore.
 - The **first** root is the primary and the only writable one
-  (`create_document` / `plan_document_update` / `apply_planned_update`); every
-  other root is strictly **read-only** — writes addressed to it are rejected.
+  (`create_document` / `plan_document_create` /
+  `apply_planned_document_create` / `plan_document_update` /
+  `apply_planned_update`); every other root is strictly **read-only** — writes
+  addressed to it are rejected.
 - Documents from non-primary roots are addressed as `name:relative/path` in
   search results, `fetch_document`, and `trace_sources`; results also carry a
   `root` field. With a single root, ids and paths are unchanged (fully
@@ -170,22 +177,22 @@ root; without either, the hook is a no-op. See
 
 The same server speaks two transports, selected with `MCP_TRANSPORT`:
 
-| `MCP_TRANSPORT` | Use for | Tools |
-| --- | --- | --- |
-| `stdio` (default) | Local CLI / desktop clients: **Claude Code**, **Codex CLI**, **Claude Desktop** | full (read + write) |
-| `http` | Remote **Chat connectors**: **ChatGPT**, **Claude.ai** | read-only by default; document writes require `MCP_HTTP_ALLOW_WRITE=1`, constrained Skill creation requires `MCP_HTTP_ALLOW_SKILL_WRITE=1` |
+| `MCP_TRANSPORT`   | Use for                                                                         | Tools                                                                                                                                      |
+| ----------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `stdio` (default) | Local CLI / desktop clients: **Claude Code**, **Codex CLI**, **Claude Desktop** | full (read + write)                                                                                                                        |
+| `http`            | Remote **Chat connectors**: **ChatGPT**, **Claude.ai**                          | read-only by default; document writes require `MCP_HTTP_ALLOW_WRITE=1`, constrained Skill creation requires `MCP_HTTP_ALLOW_SKILL_WRITE=1` |
 
 Chat connectors cannot launch a local process, so they require the HTTP
 transport reachable over HTTPS. Authentication differs by client:
 
-| Client | Transport | Auth it accepts |
-| --- | --- | --- |
-| Claude Code / Codex / Claude Desktop | stdio | none (local process) |
-| Claude Desktop / Claude Code (remote), Claude **API** connector | HTTP | **static bearer** (`MCP_AUTH_TOKEN`) |
-| **ChatGPT** (web, Developer mode), **Claude.ai** (web) | HTTP | **OAuth 2.1 only** — they cannot send a user-pasted bearer or custom header |
+| Client                                                          | Transport | Auth it accepts                                                             |
+| --------------------------------------------------------------- | --------- | --------------------------------------------------------------------------- |
+| Claude Code / Codex / Claude Desktop                            | stdio     | none (local process)                                                        |
+| Claude Desktop / Claude Code (remote), Claude **API** connector | HTTP      | **static bearer** (`MCP_AUTH_TOKEN`)                                        |
+| **ChatGPT** (web, Developer mode), **Claude.ai** (web)          | HTTP      | **OAuth 2.1 only** — they cannot send a user-pasted bearer or custom header |
 
 So the HTTP endpoint supports **both**: a static bearer (for Desktop/Code/API)
-*and* a built-in OAuth 2.1 authorization server (for ChatGPT/Claude.ai web). It
+_and_ a built-in OAuth 2.1 authorization server (for ChatGPT/Claude.ai web). It
 binds to `127.0.0.1`; expose it to the internet only through an explicit HTTPS
 tunnel.
 
@@ -311,11 +318,13 @@ env = { KNOWLEDGE_ROOT = "/abs/path/to/private/vault" }
 - `fetch_document`
 - `list_projects`
 - `trace_sources`
-- `create_document` *(write — stdio, or HTTP only with `MCP_HTTP_ALLOW_WRITE=1`)*
-- `plan_document_update` *(write)*
-- `apply_planned_update` *(write)*
-- `plan_skill_create` *(write — only when the constrained Skill store is configured)*
-- `apply_planned_skill_create` *(write; create-only, atomic, never overwrites)*
+- `create_document` _(write — stdio, or HTTP only with `MCP_HTTP_ALLOW_WRITE=1`)_
+- `plan_document_create` _(write; exact path, complete-file diff, no target mutation)_
+- `apply_planned_document_create` _(write; exact confirmed path required, create-only)_
+- `plan_document_update` _(write)_
+- `apply_planned_update` _(write)_
+- `plan_skill_create` _(write — only when the constrained Skill store is configured)_
+- `apply_planned_skill_create` _(write; create-only, atomic, never overwrites)_
 - `search` / `fetch` — ChatGPT-connector-compatible read-only aliases
 
 ## Security
@@ -334,7 +343,9 @@ in code and pinned by tests:
   `updated_at` are server-owned, and each value is type-checked (string vs
   string[]) — blocks YAML field injection and type confusion.
 - **Stale-safe, non-destructive writes** — edits go through `plan` → `apply`
-  with a SHA-256 staleness check; creates never overwrite (`flag: "wx"`).
+  with a SHA-256 staleness check. Exact-path creates also go through `plan` →
+  target-path confirmation → `apply`; staged content is hash-checked and every
+  create uses `flag: "wx"`, so it never overwrites.
 - **Constrained Skill creation** — a separate vault-relative root, exact
   `SKILL.md` frontmatter, fixed file allowlist and size caps, plan/apply approval,
   and same-filesystem atomic directory creation; existing Skills are immutable.
@@ -357,7 +368,7 @@ in code and pinned by tests:
   matching server-side flag and a `vault.write` token; document and constrained
   Skill surfaces are gated independently. The consent page
   sends `Content-Security-Policy: frame-ancestors 'none'`, `X-Frame-Options:
-  DENY`, and `Referrer-Policy: no-referrer`.
+DENY`, and `Referrer-Policy: no-referrer`.
 
 Supply-chain & governance: GitHub Actions are SHA-pinned, workflows run with
 `permissions: contents: read`, CODEOWNERS gates `.github/`, Dependabot + CodeQL

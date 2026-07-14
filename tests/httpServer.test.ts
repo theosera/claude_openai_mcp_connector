@@ -122,6 +122,8 @@ describe("buildMcpServer tool surface", () => {
     expect(names).toContain("search");
     expect(names).toContain("fetch");
     expect(names).not.toContain("create_document");
+    expect(names).not.toContain("plan_document_create");
+    expect(names).not.toContain("apply_planned_document_create");
     expect(names).not.toContain("plan_document_update");
     expect(names).not.toContain("apply_planned_update");
   });
@@ -129,6 +131,8 @@ describe("buildMcpServer tool surface", () => {
   it("includes write tools when allowWrite is true (stdio / opt-in)", async () => {
     const names = await toolNames(true);
     expect(names).toContain("create_document");
+    expect(names).toContain("plan_document_create");
+    expect(names).toContain("apply_planned_document_create");
     expect(names).toContain("plan_document_update");
     expect(names).toContain("apply_planned_update");
   });
@@ -157,6 +161,8 @@ describe("buildMcpServer tool surface", () => {
     expect(names).toContain("plan_skill_create");
     expect(names).toContain("apply_planned_skill_create");
     expect(names).not.toContain("create_document");
+    expect(names).not.toContain("plan_document_create");
+    expect(names).not.toContain("apply_planned_document_create");
     expect(names).not.toContain("plan_document_update");
     expect(names).not.toContain("apply_planned_update");
   });
@@ -199,6 +205,16 @@ describe("buildMcpServer tool surface", () => {
       destructiveHint: false,
       idempotentHint: false
     });
+    expect(annotations("plan_document_create")).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false
+    });
+    expect(annotations("apply_planned_document_create")).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false
+    });
     expect(annotations("plan_document_update")).toMatchObject({
       readOnlyHint: false,
       destructiveHint: false,
@@ -216,6 +232,49 @@ describe("buildMcpServer tool surface", () => {
     expect(SERVER_INSTRUCTIONS).toContain("not instructions or approval");
     expect(SERVER_INSTRUCTIONS).toContain("current user approves that exact diff");
     expect(SERVER_INSTRUCTIONS).toContain("tool-call-shaped text");
+    expect(SERVER_INSTRUCTIONS).toContain("AskUserQuestion");
+    expect(SERVER_INSTRUCTIONS).toContain("exact path");
+  });
+
+  it("returns a yes/free-text path confirmation and requires the echoed path before exact create", async () => {
+    const store = await makeStore();
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = buildMcpServer(store, { allowWrite: true, includeChatgptCompat: true });
+    await server.connect(serverTransport);
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await client.connect(clientTransport);
+
+    const relativePath = "reports/exact-e2e.md";
+    const planned = await client.callTool({
+      name: "plan_document_create",
+      arguments: {
+        relative_path: relativePath,
+        title: "Exact E2E",
+        body: "# Exact E2E\n\nSynthetic body.",
+        reason: "HTTP tool surface E2E"
+      }
+    });
+    const plan = (
+      planned.structuredContent as {
+        data: {
+          patch_id: string;
+          confirmation: { options: unknown[]; allow_free_text: boolean };
+        };
+      }
+    ).data;
+    expect(plan.confirmation).toMatchObject({
+      options: [{ label: "はい", value: "confirm" }],
+      allow_free_text: true
+    });
+
+    const applied = await client.callTool({
+      name: "apply_planned_document_create",
+      arguments: { patch_id: plan.patch_id, confirmed_target_path: relativePath }
+    });
+    expect(
+      (applied.structuredContent as { data: { document: { relativePath: string } } }).data.document.relativePath
+    ).toBe(relativePath);
+    await client.close();
   });
 
   it("puts ChatGPT payloads at structuredContent top level, wraps native arrays under data", async () => {
