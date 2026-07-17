@@ -26,7 +26,6 @@ describe("AuditStore", () => {
     expect(first).toEqual({ path: "90_Audit/vault-scan/reports/2026-07-17T00-00-00Z--run1.md", created: true });
     const onDisk = path.join(auditRoot, "reports", "2026-07-17T00-00-00Z--run1.md");
     expect(await fs.readFile(onDisk, "utf8")).toBe("# report\n");
-    expect((await fs.stat(onDisk)).mode & 0o777).toBe(0o600);
 
     // Identical content for the same run_id → idempotent no-op (still not overwritten).
     const again = await store.appendAuditReport({ run_id: "2026-07-17T00-00-00Z--run1", content: "# report\n" });
@@ -37,6 +36,11 @@ describe("AuditStore", () => {
       store.appendAuditReport({ run_id: "2026-07-17T00-00-00Z--run1", content: "# tampered\n" })
     ).rejects.toThrow(/never overwritten/);
     expect(await fs.readFile(onDisk, "utf8")).toBe("# report\n");
+
+    // Assert perms LAST, so no filesystem read follows this stat — avoids a
+    // check-then-use (TOCTOU) pattern static analysis flags; the temp vault is
+    // single-writer in these tests anyway.
+    expect((await fs.stat(onDisk)).mode & 0o777).toBe(0o600);
   });
 
   it("rejects unsafe run_ids and NUL content", async () => {
@@ -55,7 +59,6 @@ describe("AuditStore", () => {
     const first = await store.compareAndSwapAuditState({ expected_sha256: EMPTY_SHA, new_content: "v1\n" });
     expect(first).toEqual({ path: "90_Audit/vault-scan/state.md", sha256: sha("v1\n") });
     expect(await fs.readFile(stateFile, "utf8")).toBe("v1\n");
-    expect((await fs.stat(stateFile)).mode & 0o777).toBe(0o600);
 
     // A now-stale expected hash (still the empty-string hash) is rejected.
     await expect(store.compareAndSwapAuditState({ expected_sha256: EMPTY_SHA, new_content: "v2\n" })).rejects.toThrow(
@@ -67,6 +70,9 @@ describe("AuditStore", () => {
     const second = await store.compareAndSwapAuditState({ expected_sha256: sha("v1\n"), new_content: "v2\n" });
     expect(second.sha256).toBe(sha("v2\n"));
     expect(await fs.readFile(stateFile, "utf8")).toBe("v2\n");
+
+    // Assert perms last (see the note in the report test).
+    expect((await fs.stat(stateFile)).mode & 0o777).toBe(0o600);
   });
 
   it("rejects a malformed expected_sha256 and NUL state content", async () => {
