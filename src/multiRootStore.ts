@@ -32,12 +32,15 @@ export class MultiRootStore implements VaultStore {
   private readonly entries: Array<{ name: string; store: KnowledgeStore }>;
 
   constructor(config: AppConfig) {
-    this.entries = config.knowledgeRoots.map((root) => ({
+    this.entries = config.knowledgeRoots.map((root, index) => ({
       name: root.name,
       store: new KnowledgeStore({
         knowledgeRoot: root.path,
         writeMode: config.writeMode,
         patchStateDir: config.patchStateDir,
+        // The audit subtree is a primary-root-relative reservation, and writes
+        // only ever reach the primary root — so reserve it on entry 0 only.
+        auditSubdir: index === 0 ? config.auditSubdir : undefined,
         scanConcurrency: config.scanConcurrency
       })
     }));
@@ -259,6 +262,7 @@ export function createStore(config: AppConfig): VaultStore {
       knowledgeRoot: config.knowledgeRoots[0].path,
       writeMode: config.writeMode,
       patchStateDir: config.patchStateDir,
+      auditSubdir: config.auditSubdir,
       scanConcurrency: config.scanConcurrency
     });
   }

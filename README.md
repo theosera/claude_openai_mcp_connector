@@ -180,7 +180,7 @@ The same server speaks two transports, selected with `MCP_TRANSPORT`:
 | `MCP_TRANSPORT`   | Use for                                                                         | Tools                                                                                                                                      |
 | ----------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `stdio` (default) | Local CLI / desktop clients: **Claude Code**, **Codex CLI**, **Claude Desktop** | full (read + write)                                                                                                                        |
-| `http`            | Remote **Chat connectors**: **ChatGPT**, **Claude.ai**                          | read-only by default; document writes require `MCP_HTTP_ALLOW_WRITE=1`, constrained Skill creation requires `MCP_HTTP_ALLOW_SKILL_WRITE=1` |
+| `http`            | Remote **Chat connectors**: **ChatGPT**, **Claude.ai**                          | read-only by default; document writes require `MCP_HTTP_ALLOW_WRITE=1`, constrained Skill creation requires `MCP_HTTP_ALLOW_SKILL_WRITE=1`, constrained audit writes require `MCP_HTTP_ALLOW_AUDIT_WRITE=1` (+ `MCP_AUDIT_SUBDIR`) |
 
 Chat connectors cannot launch a local process, so they require the HTTP
 transport reachable over HTTPS. Authentication differs by client:
@@ -238,7 +238,10 @@ DNS-rebinding allowlist. The MCP endpoint to register is
 `/mcp` resource and **scope-gated**: a connector only receives `vault.write`
 when at least one explicitly enabled write surface exists. The session then
 registers only that surface: `MCP_HTTP_ALLOW_WRITE=1` enables document writes,
-while `MCP_HTTP_ALLOW_SKILL_WRITE=1` enables constrained Skill creation.
+`MCP_HTTP_ALLOW_SKILL_WRITE=1` enables constrained Skill creation, and
+`MCP_HTTP_ALLOW_AUDIT_WRITE=1` (with `MCP_AUDIT_SUBDIR`) enables only the
+constrained audit tools — set it **without** `MCP_HTTP_ALLOW_WRITE` to run a
+read-only-plus-audit "scan" endpoint whose write reach is one reserved subtree.
 
 By default OAuth state (registered clients and tokens) lives in process memory,
 so every server restart forces web clients to re-authorize. Set
@@ -325,6 +328,8 @@ env = { KNOWLEDGE_ROOT = "/abs/path/to/private/vault" }
 - `apply_planned_update` _(write)_
 - `plan_skill_create` _(write — only when the constrained Skill store is configured)_
 - `apply_planned_skill_create` _(write; create-only, atomic, never overwrites)_
+- `append_audit_report` _(audit write — only with `MCP_AUDIT_SUBDIR` + `MCP_HTTP_ALLOW_AUDIT_WRITE`; create-only reports in the reserved subtree, never overwrites)_
+- `compare_and_swap_audit_state` _(audit write; atomic sha256 compare-and-swap of the reserved `state.md`)_
 - `search` / `fetch` — ChatGPT-connector-compatible read-only aliases
 
 ## Security

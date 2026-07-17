@@ -65,6 +65,31 @@ Improve relevance and ergonomics of `search_documents` / `search`:
   `EAGAIN` retry + skip-and-log, so a thousands-of-notes vault no longer
   exhausts file descriptors mid-search (`src/knowledgeStore.ts`).
 
+### Constrained audit write surface — _persist unattended vault-scan output_ 🚧
+
+An unattended, recurring vault security scan needs to persist its reports + scan
+state **into the vault** without the scanner holding the general document-write
+tools — a write-enabled unattended connector reading possibly-malicious notes is
+a confused-deputy risk. Implemented as an opt-in, independently gated pair of
+tools scoped to one reserved subtree (`MCP_AUDIT_SUBDIR` +
+`MCP_HTTP_ALLOW_AUDIT_WRITE`):
+
+- `append_audit_report` (create-only, idempotent per `run_id`, never overwrites)
+  and `compare_and_swap_audit_state` (atomic sha256 compare-and-swap of
+  `state.md`); audit ops are serialized in-process (`src/auditStore.ts`).
+- General document writes are **forbidden from the audit subtree** (INV-9 —
+  audit-trail integrity). The operational model is a dedicated
+  read-only-plus-audit "scan endpoint" (general write off,
+  `MCP_HTTP_ALLOW_AUDIT_WRITE=1`) so an injected scanner has **no** general write
+  tools to be steered into — that endpoint separation, not INV-9, is what closes
+  the confused-deputy.
+- **Distinct from the "Audit log" gap below.** That is a _content-free,
+  server-side_ event log of who searched / fetched / wrote (keyed on
+  `client_id`); this is the _scanner's own_ audit output written into the vault.
+- Out of scope here (scanner-side, lives in a local Skill): the byte-level scan
+  engine, full enumeration, and the out-of-vault git-SHA / signed-manifest trust
+  anchor. Graduates to ✅ on merge.
+
 ### Exact-path document creation — _safe write-back_ ✅
 
 The original `create_document` intentionally routes new notes to
@@ -199,6 +224,8 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       OpenTelemetry later. Key each event on the authenticated **client_id**, not
       the spoofable `clientInfo.name` — see the
       [appendix on authenticated-client_id use cases](#appendix--future-uses-of-the-authenticated-client_id).
+      (Distinct from the shipped **constrained audit write surface** above — that
+      is the scanner's own vault-side output; this is a server-side event log.)
 - [ ] **One-command install / npx packaging** — remove the `pnpm build` step so
       the 🟢 non-engineer path needs no toolchain (see Onboarding above).
 - [x] **Exact-path document create** — ✅ two-step full-file plan, explicit

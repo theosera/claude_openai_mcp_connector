@@ -20,6 +20,9 @@ export interface AppConfig {
   patchStateDir: string;
   /** Vault-relative directory that may receive instruction-only Skill bundles. */
   skillsSubdir?: string;
+  /** Vault-relative subtree reserved for the audit write surface (append + CAS).
+   *  When set, general document writes may NOT target it (INV-9). */
+  auditSubdir?: string;
   /** Max Markdown files opened concurrently during a scan (bounds FD pressure). */
   scanConcurrency?: number;
 }
@@ -29,6 +32,9 @@ export interface StoreConfig {
   knowledgeRoot: string;
   writeMode: "two_step";
   patchStateDir: string;
+  /** Vault-relative subtree reserved for the audit write surface. General
+   *  document writes into it are rejected (INV-9). Set on the PRIMARY root only. */
+  auditSubdir?: string;
   /** Max Markdown files opened concurrently during a scan (bounds FD pressure). */
   scanConcurrency?: number;
 }
@@ -48,6 +54,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const rawSkillsSubdir = env.MCP_SKILLS_SUBDIR?.trim();
   const skillsSubdir = rawSkillsSubdir ? toPosixPath(assertRelativePath(rawSkillsSubdir)) : undefined;
 
+  const rawAuditSubdir = env.MCP_AUDIT_SUBDIR?.trim();
+  const auditSubdir = rawAuditSubdir ? toPosixPath(assertRelativePath(rawAuditSubdir)) : undefined;
+  // create_document always writes under "projects/"; keep the reserved audit
+  // subtree disjoint from it so a misconfiguration fails loudly at boot instead
+  // of silently rejecting every create later (INV-9 exclusion would otherwise
+  // fire on legitimate creates).
+  if (auditSubdir && (isPosixInside("projects", auditSubdir) || isPosixInside(auditSubdir, "projects"))) {
+    throw new Error('MCP_AUDIT_SUBDIR must be disjoint from the "projects/" document-create root.');
+  }
+
   // Bounds how many files a vault scan opens at once. Left undefined (the store
   // applies a safe default) unless a positive integer override is provided.
   const parsedScanConcurrency = Number.parseInt(env.MCP_SCAN_CONCURRENCY?.trim() || "", 10);
@@ -59,8 +75,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     writeMode,
     patchStateDir: path.resolve(env.MCP_PATCH_STATE_DIR?.trim() || ".mcp-state/patches"),
     skillsSubdir,
+    auditSubdir,
     scanConcurrency
   };
+}
+
+/** True when `child` is the same as, or nested inside, `parent` (posix, relative). */
+function isPosixInside(parent: string, child: string): boolean {
+  const relative = path.posix.relative(parent, child);
+  return relative === "" || (!relative.startsWith("../") && relative !== "..");
 }
 
 /**
@@ -120,6 +143,9 @@ export interface HttpConfig {
   allowWrite: boolean;
   /** Whether only the constrained Skill-creation tools are exposed over HTTP. */
   allowSkillWrite: boolean;
+  /** Whether the constrained audit write surface (append + CAS, scoped to
+   *  MCP_AUDIT_SUBDIR) is exposed over HTTP. Independent opt-in; defaults off. */
+  allowAuditWrite: boolean;
   /** Allowed Host headers (DNS-rebinding protection). */
   allowedHosts: string[];
   /** Allowed Origins (DNS-rebinding protection). Empty = allow any origin. */
@@ -186,8 +212,12 @@ export function loadHttpConfig(env: NodeJS.ProcessEnv = process.env): HttpConfig
   if (allowSkillWrite && !env.MCP_SKILLS_SUBDIR?.trim()) {
     throw new Error("MCP_HTTP_ALLOW_SKILL_WRITE requires MCP_SKILLS_SUBDIR.");
   }
+  const allowAuditWrite = isTruthy(env.MCP_HTTP_ALLOW_AUDIT_WRITE);
+  if (allowAuditWrite && !env.MCP_AUDIT_SUBDIR?.trim()) {
+    throw new Error("MCP_HTTP_ALLOW_AUDIT_WRITE requires MCP_AUDIT_SUBDIR.");
+  }
   const publicUrl = env.MCP_HTTP_PUBLIC_URL?.trim().replace(/\/+$/, "") || undefined;
-  const oauth = loadOAuthConfig(env, publicUrl, allowWrite || allowSkillWrite);
+  const oauth = loadOAuthConfig(env, publicUrl, allowWrite || allowSkillWrite || allowAuditWrite);
 
   // When OAuth is on, the public (tunnel) host receives the actual /mcp traffic,
   // so it must be in the DNS-rebinding allowlist.
@@ -205,6 +235,7 @@ export function loadHttpConfig(env: NodeJS.ProcessEnv = process.env): HttpConfig
     authToken,
     allowWrite,
     allowSkillWrite,
+    allowAuditWrite,
     allowedHosts,
     allowedOrigins: splitList(env.MCP_HTTP_ALLOWED_ORIGINS),
     chatgptUrlBase: publicUrl,
