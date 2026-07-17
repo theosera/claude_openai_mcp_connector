@@ -280,7 +280,7 @@ export function buildMcpServer(store: VaultStore, options: BuildServerOptions): 
       {
         title: "Append audit report",
         description:
-          "Create an audit report at reports/<run_id>.md inside the configured audit subtree. Reports are never overwritten: identical content for an existing run_id is an idempotent no-op; different content is rejected. Cannot write anywhere else in the vault.",
+          "Create an audit report at reports/<run_id>.md inside the configured audit subtree. run_id is a single filename token of letters/digits/._- starting with a letter or digit (NO colons or slashes) — use a basic-format timestamp plus a uuid, e.g. 20260718T010203Z--<uuid>, not a colon-bearing ISO time. Reports are never overwritten: identical content for an existing run_id is an idempotent no-op; different content is rejected. Cannot write anywhere else in the vault.",
         inputSchema: {
           run_id: z.string(),
           content: z.string()

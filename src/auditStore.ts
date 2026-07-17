@@ -122,6 +122,10 @@ export class AuditStore {
         return { path: relativePath, created: true };
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+          // The slot is taken. Refuse a symlinked report leaf before reading it —
+          // otherwise the idempotency compare would follow the link and read a
+          // file outside reports/, and the audit trail would be ambiguous.
+          await assertNotSymlink(target, "an audit report path");
           const existing = await fs.readFile(target, "utf8");
           if (existing === content) {
             // Idempotent re-submission of the same run: succeed without touching

@@ -155,4 +155,19 @@ describe("AuditStore", () => {
     );
     expect(await fs.readFile(outsideFile, "utf8")).toBe("external\n"); // never followed
   });
+
+  it("rejects a symlinked report leaf on append (no EEXIST follow-through)", async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-audit-leafout-"));
+    const outsideFile = path.join(outside, "secret.md");
+    await fs.writeFile(outsideFile, "external\n", "utf8");
+    // Plant a symlinked report leaf inside the real reports/ directory.
+    await fs.symlink(outsideFile, path.join(auditRoot, "reports", "run-leaf.md"));
+    // Even with content that would otherwise match (idempotent no-op), the append
+    // must reject the symlink before reading through it; the external file is
+    // never touched.
+    await expect(store.appendAuditReport({ run_id: "run-leaf", content: "external\n" })).rejects.toThrow(
+      /not a symlink/
+    );
+    expect(await fs.readFile(outsideFile, "utf8")).toBe("external\n");
+  });
 });

@@ -35,6 +35,21 @@ strictly constrained instruction-only Skill bundles, driven by an
 | T10 | Skill creation used for path escape, executable payload placement, partial bundle publication, or overwrite of trusted instructions                                                                                                                                            | Skill root is a validated vault-relative subdirectory; only `SKILL.md`, flat `references/*.md`, and `agents/openai.yaml` are accepted; exact frontmatter and size/count caps are enforced; scripts/assets/arbitrary paths are rejected; plan/apply is mandatory; existing Skills cannot be overwritten; the complete bundle is created in a same-filesystem temporary directory and atomically renamed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | `src/skillStore.ts`, `src/pathSafety.ts`, `src/server.ts`                                                                   |
 | T11 | An unattended, write-enabled connector (e.g. a recurring vault scan) steered into general document writes by a malicious note (confused deputy), or forging / clobbering the scan's own audit trail                                                                              | A constrained audit write surface writes **only** inside a reserved subtree (`MCP_AUDIT_SUBDIR`): `append_audit_report` is create-only (never overwrites; identical content is an idempotent no-op) and `compare_and_swap_audit_state` is a sha256 compare-and-swap of `state.md`; both are serialized in-process. General document writes are **forbidden from that subtree** (realpath-based, `INV-9`), so they cannot forge or clobber audit files. The scan runs on a dedicated endpoint with general write **off** and only `MCP_HTTP_ALLOW_AUDIT_WRITE` on, so the injected scanner has **no** general write tools registered — that endpoint separation confines any injection to the audit subtree.                                                                                                                                                                                                                                                                                                                                                                        | `src/auditStore.ts`, `src/knowledgeStore.ts`, `src/config.ts`, `src/server.ts`, `src/httpServer.ts`                         |
 
+> **Operating conditions for the audit surface (T11 / INV-9).** The audit-subtree
+> reservation only takes effect in a process that has `MCP_AUDIT_SUBDIR` set, so
+> **every** process with write access to the same vault — the interactive HTTP
+> endpoint **and** any local stdio server — must set the same `MCP_AUDIT_SUBDIR`,
+> or a note under it could be edited through a different path. The `state.md`
+> compare-and-swap serialization and the append idempotency guard are
+> **single-process** (in-process mutex); running multiple writer processes against
+> one vault would need an external lock. Symlinks are rejected uniformly across the
+> audit subtree, `reports/`, `state.md`, and each report leaf (`reports/<run_id>.md`),
+> and `run_id` must be a colon/slash-free filename token (e.g. `20260718T010203Z--<uuid>`).
+> The scan endpoint is a **constrained scan principal** (read + audit-write), not a
+> pure read-only principal — its safety rests on a distinct OAuth audience, general
+> write tools being unregistered on that endpoint, and its token being unusable on
+> the interactive endpoint.
+
 ## Curated mapping to the Reusable Security Baseline
 
 Selected (implemented here) — relevant to this connector:
