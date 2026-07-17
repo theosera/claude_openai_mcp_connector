@@ -2,7 +2,7 @@ import path from "node:path";
 import process from "node:process";
 import dotenv from "dotenv";
 import type { OAuthConfig } from "./oauth/provider.js";
-import { assertRelativePath, toPosixPath } from "./pathSafety.js";
+import { assertRelativePath, posixContains, toPosixPath } from "./pathSafety.js";
 
 dotenv.config();
 
@@ -56,12 +56,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   const rawAuditSubdir = env.MCP_AUDIT_SUBDIR?.trim();
   const auditSubdir = rawAuditSubdir ? toPosixPath(assertRelativePath(rawAuditSubdir)) : undefined;
-  // create_document always writes under "projects/"; keep the reserved audit
-  // subtree disjoint from it so a misconfiguration fails loudly at boot instead
-  // of silently rejecting every create later (INV-9 exclusion would otherwise
-  // fire on legitimate creates).
-  if (auditSubdir && (isPosixInside("projects", auditSubdir) || isPosixInside(auditSubdir, "projects"))) {
-    throw new Error('MCP_AUDIT_SUBDIR must be disjoint from the "projects/" document-create root.');
+  if (auditSubdir) {
+    // create_document always writes under "projects/"; keep the reserved audit
+    // subtree disjoint from it so a misconfiguration fails loudly at boot instead
+    // of silently rejecting every create later (INV-9 exclusion would otherwise
+    // fire on legitimate creates).
+    if (posixContains("projects", auditSubdir) || posixContains(auditSubdir, "projects")) {
+      throw new Error('MCP_AUDIT_SUBDIR must be disjoint from the "projects/" document-create root.');
+    }
+    // SkillStore writes into MCP_SKILLS_SUBDIR and does NOT apply the INV-9 audit
+    // reservation, so an overlap would let a Skill write land in the reserved
+    // audit area. Require the two subtrees to be disjoint.
+    if (skillsSubdir && (posixContains(skillsSubdir, auditSubdir) || posixContains(auditSubdir, skillsSubdir))) {
+      throw new Error("MCP_AUDIT_SUBDIR and MCP_SKILLS_SUBDIR must be disjoint reserved subtrees.");
+    }
   }
 
   // Bounds how many files a vault scan opens at once. Left undefined (the store
@@ -78,12 +86,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     auditSubdir,
     scanConcurrency
   };
-}
-
-/** True when `child` is the same as, or nested inside, `parent` (posix, relative). */
-function isPosixInside(parent: string, child: string): boolean {
-  const relative = path.posix.relative(parent, child);
-  return relative === "" || (!relative.startsWith("../") && relative !== "..");
 }
 
 /**

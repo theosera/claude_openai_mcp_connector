@@ -19,6 +19,7 @@ import type {
 } from "./types.js";
 import {
   assertRelativePath,
+  posixContains,
   relativeToRoot,
   resolveExistingRoot,
   resolveInsideRoot,
@@ -499,7 +500,7 @@ export class KnowledgeStore implements VaultStore {
     if (!reserved) {
       return;
     }
-    if (posixIsSameOrInside(reserved, targetRelativePosix)) {
+    if (posixContains(reserved, targetRelativePosix)) {
       throw auditReservedError();
     }
     if (!targetRealPath) {
@@ -642,12 +643,6 @@ function ensureMarkdownExtension(value: string): string {
 
 function sha256(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex");
-}
-
-/** True when posix-relative `child` is the same as, or nested inside, `parent`. */
-function posixIsSameOrInside(parent: string, child: string): boolean {
-  const relative = path.posix.relative(parent, child);
-  return relative === "" || (!relative.startsWith("../") && relative !== "..");
 }
 
 function auditReservedError(): Error {

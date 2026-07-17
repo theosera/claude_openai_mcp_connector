@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { AuditStore } from "../src/auditStore.js";
+import { loadConfig } from "../src/config.js";
 
 const sha = (value: string): string => crypto.createHash("sha256").update(value).digest("hex");
 const EMPTY_SHA = sha("");
@@ -169,5 +170,31 @@ describe("AuditStore", () => {
       /not a symlink/
     );
     expect(await fs.readFile(outsideFile, "utf8")).toBe("external\n");
+  });
+
+  it("sweeps stale .state-*.tmp files on init", async () => {
+    const stale = path.join(auditRoot, ".state-orphan.tmp");
+    await fs.writeFile(stale, "junk", "utf8");
+    const fresh = new AuditStore({ knowledgeRoot: root, auditSubdir: "90_Audit/vault-scan" });
+    await fresh.init();
+    await expect(fs.stat(stale)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+});
+
+describe("loadConfig audit subtree disjointness", () => {
+  it("rejects an audit subdir nested under projects/", () => {
+    expect(() => loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault", MCP_AUDIT_SUBDIR: "projects/audit" })).toThrow(/disjoint/);
+  });
+
+  it("rejects overlapping audit and skills subdirs (a Skill write must not land in the audit area)", () => {
+    expect(() =>
+      loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault", MCP_AUDIT_SUBDIR: "90_Audit", MCP_SKILLS_SUBDIR: "90_Audit/skills" })
+    ).toThrow(/disjoint/);
+  });
+
+  it("accepts disjoint audit and skills subdirs", () => {
+    expect(() =>
+      loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault", MCP_AUDIT_SUBDIR: "90_Audit", MCP_SKILLS_SUBDIR: "_skills" })
+    ).not.toThrow();
   });
 });

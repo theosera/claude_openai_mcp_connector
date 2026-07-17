@@ -98,6 +98,15 @@ export class AuditStore {
     await fs.mkdir(reportsPath, { recursive: true, mode: 0o700 });
     this.reportsRealPath = await fs.realpath(reportsPath);
     relativeToRoot(this.rootRealPath, this.reportsRealPath);
+
+    // Sweep stale state temp files a crash may have left between the writeFile and
+    // the rename (the caught-error path cleans up; a hard kill does not). Single
+    // writer by design, so nothing is legitimately in flight at startup.
+    for (const entry of await fs.readdir(this.auditRootRealPath)) {
+      if (entry.startsWith(".state-") && entry.endsWith(".tmp")) {
+        await fs.rm(path.join(this.auditRootRealPath, entry), { force: true }).catch(() => undefined);
+      }
+    }
   }
 
   /**
