@@ -47,8 +47,12 @@ terminal-ops-logs/
 ├── obsidian-ai-pipeline/<date>.md
 ├── claude_openai_mcp_connector/<date>.md
 ├── pipeline-youtube-SDK/<date>.md
-└── misc/<date>.md                    # 上記以外の cwd
+└── <origin-repo>/<date>.md           # cwd の git リポ名でフォルダを自動作成
 ```
+
+> フォルダは**元リポ名ごとに自動作成**される (cwd の git repository root 名。
+> git 管理外なら cwd の basename)。既知リポの列挙は不要 — 未知リポは初回コマンドで
+> 自分のフォルダを得る。「その他」用の `misc` バケットは廃止済み。
 
 各 `<date>.md` 先頭の frontmatter: `date` / `target_repo` / `branch` / `tags`。
 本文は `| time | branch | command | intent |` の Markdown テーブル。
