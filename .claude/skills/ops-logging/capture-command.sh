@@ -55,12 +55,18 @@ mask() {
 cmd_masked="$(printf '%s' "$cmd"    | mask | tr '\n' ' ')"
 intent_masked="$(printf '%s' "$intent" | mask | tr '\n' ' ')"
 
-# --- route to <target_repo>/<date>.md ------------------------------------
-repo="$(basename "${cwd:-misc}")"
-case "$repo" in
-  obsidian-ai-pipeline|claude_openai_mcp_connector|pipeline-youtube-SDK) ;;
-  *) repo="misc" ;;
-esac
+# --- route to <origin_repo>/<date>.md ------------------------------------
+# Every repo logs into its OWN folder, named after the origin repo — created
+# on first command. Prefer the git repository root's name (correct even when
+# cwd is a subdirectory); fall back to the cwd basename. No catch-all bucket.
+repo_root="$(git -C "${cwd:-.}" rev-parse --show-toplevel 2>/dev/null || true)"
+repo="$(basename "${repo_root:-${cwd:-}}" 2>/dev/null || true)"
+# Sanitize to a single safe path segment: keep [A-Za-z0-9._-], everything else
+# becomes '-'. Strip leading '-'/'.' so the name can't look like a git flag or
+# resolve to '.'/'..'; empty result falls back to a fixed bucket.
+repo="$(printf '%s' "$repo" | tr -c 'A-Za-z0-9._-' '-')"
+while [ "${repo#[-.]}" != "$repo" ]; do repo="${repo#[-.]}"; done
+[ -n "$repo" ] || repo='unknown'
 branch="$(git -C "${cwd:-.}" branch --show-current 2>/dev/null || echo '-')"
 [ -n "$branch" ] || branch='-'
 date="$(date +%Y-%m-%d)"
