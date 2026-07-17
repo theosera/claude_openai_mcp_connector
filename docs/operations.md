@@ -273,15 +273,21 @@ expose the local port. The `*.ts.net` hostname is stable across restarts, so it
 works as the OAuth issuer/audience (unlike a Cloudflare quick tunnel):
 
 ```bash
-tailscale funnel --bg 8787   # serves https://<machine>.<tailnet>.ts.net → 127.0.0.1:8787
-tailscale funnel status      # confirm the mapping is up
+pnpm run funnel:start    # serves the MCP_HTTP_PORT from .env
+pnpm run funnel:status   # confirm the mapping is up
 ```
 
 `--bg` runs it in the background and persists across reboots. Set
 `MCP_HTTP_PUBLIC_URL=https://<machine>.<tailnet>.ts.net` and register
 `https://<machine>.<tailnet>.ts.net/mcp` in the client.
 
-**2. Keep `node` alive via a LaunchAgent.** Create
+**2. Keep local settings in the repository `.env`.** Copy `.env.example` to
+`.env`, then set the vault path, fixed Funnel URL, bearer token, OAuth password,
+and optional persistent state path there. The file is gitignored. Do not export
+the token into each shell; `pnpm run start:http` and `pnpm run check:http` load
+the repository's `.env` directly.
+
+**3. Keep `node` alive via a LaunchAgent.** Create
 `~/Library/LaunchAgents/<label>.plist` (e.g. `local.mcp-connector`):
 
 ```xml
@@ -293,17 +299,8 @@ tailscale funnel status      # confirm the mapping is up
   <key>ProgramArguments</key>
   <array>
     <string>/abs/path/to/node</string>
-    <string>/abs/path/to/claude_openai_mcp_connector/dist/index.js</string>
+    <string>/abs/path/to/claude_openai_mcp_connector/scripts/start-http.mjs</string>
   </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>MCP_TRANSPORT</key><string>http</string>
-    <key>MCP_HTTP_PORT</key><string>8787</string>
-    <key>MCP_HTTP_PUBLIC_URL</key><string>https://<machine>.<tailnet>.ts.net</string>
-    <key>MCP_OAUTH_ENABLED</key><string>1</string>
-    <key>MCP_OAUTH_STATE_FILE</key><string>/abs/path/to/state/oauth-state.json</string>
-    <key>KNOWLEDGE_ROOT</key><string>/abs/path/to/vault</string>
-  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>/abs/path/to/logs/mcp-connector.out.log</string>
@@ -318,11 +315,10 @@ Load and start it:
 launchctl load -w ~/Library/LaunchAgents/local.mcp-connector.plist
 ```
 
-> **Secrets:** don't inline `MCP_OAUTH_PASSWORD` / `MCP_AUTH_TOKEN` in the plist
-> (it is readable and shows up in `launchctl print`). Keep them in a mode-`600`
-> file and source it from a tiny wrapper script that the plist runs instead of
-> `node` directly — the launchd analogue of the systemd `EnvironmentFile` advice
-> above.
+> **Secrets:** the LaunchAgent invokes `scripts/start-http.mjs`, which loads the
+> repository's gitignored `.env` directly. Do not inline `MCP_OAUTH_PASSWORD` or
+> `MCP_AUTH_TOKEN` in the plist; plist environment values are readable through
+> `launchctl print`.
 
 > **Use a STABLE `node` path.** Version-manager shims are often **per-shell** and
 > disappear after a reboot, which breaks `KeepAlive` (launchd can no longer find

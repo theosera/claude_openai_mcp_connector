@@ -117,6 +117,11 @@ Create a local `.env` file:
 cp .env.example .env
 ```
 
+The repository-local `.env` is the single source of truth for local HTTP
+operation. The helper commands below load this exact file even when they are
+started by `launchd` or from another working directory. Shell-level `export`
+commands are not required.
+
 Then set:
 
 ```text
@@ -252,6 +257,45 @@ by discarding the state (everyone simply re-authorizes).
 > JSON, and an unauthenticated `POST /mcp` returns `401` with a
 > `WWW-Authenticate: Bearer resource_metadata="…"` header (this is what makes the
 > web clients start the OAuth flow).
+
+#### Repo-local Tailscale Funnel workflow (macOS)
+
+For a stable Tailscale Funnel URL, keep the complete local configuration in
+`.env`:
+
+```text
+KNOWLEDGE_ROOT=/abs/path/to/vault
+MCP_TRANSPORT=http
+MCP_HTTP_PORT=8787
+MCP_HTTP_PUBLIC_URL=https://<machine>.<tailnet>.ts.net
+MCP_AUTH_TOKEN=<64-hex-character-random-token>
+MCP_OAUTH_ENABLED=1
+MCP_OAUTH_PASSWORD=<strong-login-passphrase>
+MCP_OAUTH_STATE_FILE=/abs/path/to/repo/.mcp-state/oauth/oauth-state.json
+MCP_WRITE_MODE=two_step
+MCP_PATCH_STATE_DIR=/abs/path/to/repo/.mcp-state/patches
+```
+
+Then use only repository commands:
+
+```bash
+pnpm run build
+pnpm run funnel:start   # uses MCP_HTTP_PORT from .env
+pnpm run start:http     # loads this repository's .env
+```
+
+From another terminal, verify the live local MCP handshake without printing the
+bearer token:
+
+```bash
+pnpm run funnel:status
+pnpm run check:http
+```
+
+`start:http` deliberately forces the HTTP transport; all other server settings
+come from `.env`. Keep `MCP_HTTP_ALLOW_WRITE` and
+`MCP_HTTP_ALLOW_SKILL_WRITE` unset unless those remote write surfaces are
+intentionally required.
 
 ## Client registration
 

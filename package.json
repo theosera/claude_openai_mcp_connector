@@ -10,17 +10,22 @@
   },
   "files": [
     "dist",
+    "scripts",
     "README.md",
     ".env.example"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "start:http": "node scripts/start-http.mjs",
+    "check:http": "node scripts/check-http.mjs",
+    "funnel:start": "node scripts/tailscale-funnel.mjs start",
+    "funnel:status": "node scripts/tailscale-funnel.mjs status",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint:ox": "oxlint src tests",
-    "lint": "eslint src tests",
-    "format": "prettier --write src tests",
-    "format:check": "prettier --check src tests",
+    "lint:ox": "oxlint src tests scripts",
+    "lint": "eslint src tests scripts",
+    "format": "prettier --write src tests scripts",
+    "format:check": "prettier --check src tests scripts",
     "dev": "tsx src/index.ts"
   },
   "engines": {

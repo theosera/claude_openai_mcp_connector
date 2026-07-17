@@ -21,5 +21,15 @@ export default tseslint.config(
       "@typescript-eslint/no-explicit-any": "off"
     }
   },
+  {
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        console: "readonly",
+        fetch: "readonly",
+        process: "readonly"
+      }
+    }
+  },
   prettier
 );
