@@ -56,6 +56,7 @@ export class AuditStore {
   private readonly config: AuditStoreConfig;
   private rootRealPath?: string;
   private auditRootRealPath?: string;
+  private reportsRealPath?: string;
   // Promise-chain serializer: each op awaits the previous one settling. Errors
   // are swallowed on the chain so one failure never wedges later operations.
   private queue: Promise<unknown> = Promise.resolve();
@@ -73,9 +74,30 @@ export class AuditStore {
     }
     this.auditRootRealPath = await fs.realpath(candidate);
     relativeToRoot(this.rootRealPath, this.auditRootRealPath);
-    // The reports/ directory lives INSIDE the already-contained realpath'd audit
-    // root, so creating it cannot escape containment.
-    await fs.mkdir(path.join(this.auditRootRealPath, REPORTS_SUBDIR), { recursive: true, mode: 0o700 });
+
+    // Disjointness must hold on the RESOLVED path, not just the configured string
+    // (config.ts checks the latter). A symlinked MCP_AUDIT_SUBDIR could otherwise
+    // resolve into projects/ (the document-create root), which would BOTH let the
+    // audit tools write there AND make INV-9 reject every legitimate project
+    // create/update. Fail closed at boot.
+    const projectsReal = await realpathOrUndefined(path.join(this.rootRealPath, "projects"));
+    if (
+      projectsReal &&
+      (isSameOrInside(projectsReal, this.auditRootRealPath) || isSameOrInside(this.auditRootRealPath, projectsReal))
+    ) {
+      throw new Error(
+        "MCP_AUDIT_SUBDIR resolves inside (or contains) the projects/ document-create root; they must be disjoint."
+      );
+    }
+
+    // reports/ MUST be a real directory: a symlinked reports/ would let a later
+    // resolve follow it and land a report (e.g. run_id "state") outside the
+    // reports directory, breaking the report/state separation.
+    const reportsPath = path.join(this.auditRootRealPath, REPORTS_SUBDIR);
+    await assertNotSymlink(reportsPath, "reports/ inside MCP_AUDIT_SUBDIR");
+    await fs.mkdir(reportsPath, { recursive: true, mode: 0o700 });
+    this.reportsRealPath = await fs.realpath(reportsPath);
+    relativeToRoot(this.rootRealPath, this.reportsRealPath);
   }
 
   /**
@@ -89,9 +111,11 @@ export class AuditStore {
         throw new Error("Invalid run_id. Use a single token of letters/digits/._- starting with a letter or digit.");
       }
       const content = assertWritableText(input.content, MAX_REPORT_BYTES, "audit report");
-      const auditRoot = await this.auditRoot();
-      const target = await resolveInsideRoot(auditRoot, `${REPORTS_SUBDIR}/${input.run_id}.md`);
-      relativeToRoot(auditRoot, target);
+      const reportsRoot = await this.reportsRoot();
+      // run_id is a strict single-segment token (no separators, validated above)
+      // and reportsRoot is a re-validated REAL directory, so the target stays
+      // inside reports/ without following any symlink.
+      const target = path.join(reportsRoot, `${input.run_id}.md`);
       const relativePath = toPosixPath(relativeToRoot(this.rootRealPath!, target));
       try {
         await fs.writeFile(target, content, { encoding: "utf8", flag: "wx", mode: 0o600 });
@@ -130,6 +154,9 @@ export class AuditStore {
       const content = assertWritableText(input.new_content, MAX_STATE_BYTES, "audit state");
       const auditRoot = await this.auditRoot();
       const target = path.join(auditRoot, STATE_FILENAME);
+      // A symlinked state.md would let the read below follow it outside the
+      // subtree; keep the state file a real file confined to the audit root.
+      await assertNotSymlink(target, "state.md inside MCP_AUDIT_SUBDIR");
 
       let current = "";
       try {
@@ -170,6 +197,19 @@ export class AuditStore {
     return this.auditRootRealPath!;
   }
 
+  /** Re-resolve + re-validate the reports/ directory on every append (swap guard). */
+  private async reportsRoot(): Promise<string> {
+    const auditRoot = await this.auditRoot();
+    const candidate = path.join(auditRoot, REPORTS_SUBDIR);
+    await assertNotSymlink(candidate, "reports/ inside MCP_AUDIT_SUBDIR");
+    const currentRealPath = await fs.realpath(candidate);
+    relativeToRoot(this.rootRealPath!, currentRealPath);
+    if (currentRealPath !== this.reportsRealPath) {
+      throw new Error("reports/ changed after initialization.");
+    }
+    return currentRealPath;
+  }
+
   private serialize<T>(op: () => Promise<T>): Promise<T> {
     const run = this.queue.then(op, op);
     this.queue = run.then(
@@ -178,6 +218,33 @@ export class AuditStore {
     );
     return run;
   }
+}
+
+/** Reject a path that exists as a symlink; a missing path (ENOENT) is fine. */
+async function assertNotSymlink(target: string, label: string): Promise<void> {
+  const info = await fs.lstat(target).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (info?.isSymbolicLink()) {
+    throw new Error(`${label} must be a real directory or file, not a symlink.`);
+  }
+}
+
+/** Realpath of `target`, or undefined when it does not exist. */
+async function realpathOrUndefined(target: string): Promise<string | undefined> {
+  try {
+    return await fs.realpath(target);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+/** True when absolute `child` is the same as, or nested inside, `parent`. */
+function isSameOrInside(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 function assertWritableText(value: string, maxBytes: number, label: string): string {

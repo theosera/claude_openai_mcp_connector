@@ -114,4 +114,45 @@ describe("AuditStore", () => {
     );
     expect(await fs.readdir(outside)).toEqual([]);
   });
+
+  it("rejects a symlinked reports/ directory at init", async () => {
+    const r = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-audit-rpt-"));
+    const aRoot = path.join(r, "90_Audit", "vault-scan");
+    await fs.mkdir(aRoot, { recursive: true });
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-audit-rptout-"));
+    await fs.symlink(outside, path.join(aRoot, "reports"));
+    const s = new AuditStore({ knowledgeRoot: r, auditSubdir: "90_Audit/vault-scan" });
+    await expect(s.init()).rejects.toThrow(/not a symlink/);
+  });
+
+  it("rejects an audit subtree that resolves (via symlink) into projects/", async () => {
+    // A symlinked MCP_AUDIT_SUBDIR that lands in projects/ dodges the lexical
+    // disjointness check in loadConfig; the realpath check must still fail closed.
+    const r = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-audit-proj-"));
+    await fs.mkdir(path.join(r, "projects"), { recursive: true });
+    await fs.symlink(path.join(r, "projects"), path.join(r, "audit-link"));
+    const s = new AuditStore({ knowledgeRoot: r, auditSubdir: "audit-link" });
+    await expect(s.init()).rejects.toThrow(/disjoint/);
+  });
+
+  it("fails closed if reports/ is swapped for a symlink after init", async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-audit-rptswap-"));
+    await fs.rmdir(path.join(auditRoot, "reports"));
+    await fs.symlink(outside, path.join(auditRoot, "reports"));
+    await expect(store.appendAuditReport({ run_id: "run-x", content: "y" })).rejects.toThrow(
+      /not a symlink|changed after initialization/
+    );
+    expect(await fs.readdir(outside)).toEqual([]);
+  });
+
+  it("rejects a symlinked state.md on compare-and-swap (no follow outside the subtree)", async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-audit-stateout-"));
+    const outsideFile = path.join(outside, "target.md");
+    await fs.writeFile(outsideFile, "external\n", "utf8");
+    await fs.symlink(outsideFile, path.join(auditRoot, "state.md"));
+    await expect(store.compareAndSwapAuditState({ expected_sha256: EMPTY_SHA, new_content: "x\n" })).rejects.toThrow(
+      /not a symlink/
+    );
+    expect(await fs.readFile(outsideFile, "utf8")).toBe("external\n"); // never followed
+  });
 });
