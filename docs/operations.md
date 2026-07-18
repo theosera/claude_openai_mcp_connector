@@ -627,3 +627,164 @@ The bundle lands at `<MCP_SKILLS_SUBDIR>/<skill_name>/SKILL.md` inside the vault
 Over HTTP you can confirm it through the read tools without shell access — e.g.
 `search_documents` for the skill name, then `fetch_document` on the returned
 `SKILL.md`. Because apply is atomic, a partially-written bundle is never visible.
+
+## 9. Two-endpoint deployment: interactive + unattended audit scan
+
+The constrained **audit write surface** (`append_audit_report` /
+`compare_and_swap_audit_state`, scoped to `MCP_AUDIT_SUBDIR`) lets an *unattended*
+vault scan persist its reports and state **without** holding the general
+document-write tools. The security win is not the tool itself — it is running the
+scan on a **separate endpoint that never registers the general write tools**, so a
+scan steered by a malicious note has nothing to write with (a confused deputy with
+no hands). Run **two** connector processes:
+
+|                          | Interactive endpoint                          | Scan endpoint                                                       |
+| ------------------------ | --------------------------------------------- | ------------------------------------------------------------------ |
+| Who connects             | you (ChatGPT / Claude.ai / Claude Code)       | the unattended scanner (e.g. a Cowork task)                        |
+| General document write   | `MCP_HTTP_ALLOW_WRITE=1` (optional)           | **off** (unset)                                                    |
+| Skill write              | `MCP_HTTP_ALLOW_SKILL_WRITE=1` (optional)     | **off** (unset)                                                    |
+| Audit write              | off                                           | `MCP_HTTP_ALLOW_AUDIT_WRITE=1`                                      |
+| Registered write tools   | create / plan / apply document (+ Skill)      | **only** `append_audit_report` / `compare_and_swap_audit_state`    |
+
+> **INV-9 operating condition.** The audit-subtree reservation (general writes
+> can't touch `MCP_AUDIT_SUBDIR`) only takes effect in a process that *sets*
+> `MCP_AUDIT_SUBDIR`. Set the **same** `MCP_AUDIT_SUBDIR` on **both** endpoints —
+> and on any local **stdio** server that can write the vault. On the interactive
+> endpoint it just reserves the subtree (its general writes are excluded); on the
+> scan endpoint it also enables the audit tools. A write-capable process that omits
+> it can still edit audit files through a general write.
+
+### Step 1 — create the audit subtree
+
+`MCP_AUDIT_SUBDIR` is vault-relative, must already exist, must be **disjoint from
+`projects/` and from `MCP_SKILLS_SUBDIR`** (both enforced at startup), and its
+`reports/` must be a real directory (symlinks are rejected):
+
+```bash
+mkdir -p "$KNOWLEDGE_ROOT/90_Audit/vault-scan/reports"
+```
+
+### Step 2 — two env files (one per working directory)
+
+The connector loads `.env` from its **working directory** (`dotenv`,
+`src/config.ts`), so give each process **its own directory** with its own `.env`.
+Keep the shared settings identical; differ only on the marked lines. **The OAuth
+state file must NOT be shared between the two processes** — give each its own.
+
+> ⚠️ **Do not run the scan process with the connector repo as its working
+> directory.** `dotenv` does not override variables already in the environment,
+> but it *does* fill in any that are unset — so from the connector repo it would
+> load the interactive `.env` (with `MCP_HTTP_ALLOW_WRITE=1`) for every variable
+> the scan config leaves unset, silently re-enabling general writes on the scan
+> endpoint and defeating the whole separation. Run the scan process from a
+> **different** directory whose `.env` *is* the scan config.
+
+Interactive `.env` — in the connector repo (e.g. `…/claude_openai_mcp_connector/.env`):
+
+```text
+KNOWLEDGE_ROOT="/abs/path/to/vault"
+MCP_TRANSPORT=http
+MCP_WRITE_MODE=two_step
+MCP_AUDIT_SUBDIR=90_Audit/vault-scan            # reserve the subtree (INV-9)
+MCP_OAUTH_ENABLED=1
+MCP_OAUTH_PASSWORD=<vault login password>
+# --- differs per endpoint ---
+MCP_HTTP_PORT=8787
+MCP_HTTP_PUBLIC_URL=https://<machine>.<tailnet>.ts.net
+MCP_AUTH_TOKEN=<interactive bearer>
+MCP_OAUTH_STATE_FILE=/abs/path/.mcp-state/oauth/oauth-state.json
+MCP_PATCH_STATE_DIR=/abs/path/.mcp-state/patches
+MCP_HTTP_ALLOW_WRITE=1                            # general writes ON (your call)
+MCP_HTTP_ALLOW_SKILL_WRITE=1                      # optional
+# MCP_HTTP_ALLOW_AUDIT_WRITE stays UNSET here
+```
+
+Scan `.env` — in its own directory, e.g. next to your scan scripts
+(`…/_cowork/.env`):
+
+```text
+KNOWLEDGE_ROOT="/abs/path/to/vault"
+MCP_TRANSPORT=http
+MCP_WRITE_MODE=two_step
+MCP_AUDIT_SUBDIR=90_Audit/vault-scan            # same subtree — enables audit tools here
+MCP_OAUTH_ENABLED=1
+MCP_OAUTH_PASSWORD=<same vault login password>   # same human, so may match
+# --- differs per endpoint ---
+MCP_HTTP_PORT=8788
+MCP_HTTP_PUBLIC_URL=https://<machine>.<tailnet>.ts.net:8443
+MCP_AUTH_TOKEN=<a DIFFERENT scan-only bearer>
+MCP_OAUTH_STATE_FILE=/abs/path/.mcp-state/oauth/oauth-state-scan.json   # NOT shared
+MCP_PATCH_STATE_DIR=/abs/path/.mcp-state/patches # absolute, so no stray .mcp-state in the scan cwd
+MCP_HTTP_ALLOW_AUDIT_WRITE=1                      # audit tools ONLY
+# MCP_HTTP_ALLOW_WRITE and MCP_HTTP_ALLOW_SKILL_WRITE stay UNSET
+```
+
+Different `MCP_HTTP_PUBLIC_URL` values give the two endpoints **different OAuth
+audiences** (a token minted for one is rejected on the other, RFC 8707), and the
+different bearer means a scan token can't be replayed against the interactive
+endpoint.
+
+### Step 3 — two Tailscale Funnels
+
+Funnel exposes the machine's `*.ts.net` hostname on one of three ports — `443`,
+`8443`, `10000` — each mapped to a local port. Use two of them:
+
+```bash
+tailscale funnel --bg --https=443  8787   # interactive → https://<machine>.<tailnet>.ts.net
+tailscale funnel --bg --https=8443 8788   # scan        → https://<machine>.<tailnet>.ts.net:8443
+tailscale funnel status
+```
+
+### Step 4 — two launchd agents
+
+Run two LaunchAgents (two labels, e.g. `com.you.mcp-connector` and
+`com.you.mcp-connector-scan`). The key is **`WorkingDirectory`**: it selects which
+`.env` each process loads, keeping secrets in the mode-`600` `.env` files instead
+of the plist (where `launchctl print` would expose them). The scan agent runs the
+**same** `dist/index.js` but from the scan directory:
+
+```xml
+<!-- scan agent: ~/Library/LaunchAgents/com.you.mcp-connector-scan.plist -->
+<key>ProgramArguments</key>
+<array>
+  <string>/abs/path/to/node</string>
+  <string>/abs/path/to/claude_openai_mcp_connector/dist/index.js</string>
+</array>
+<key>WorkingDirectory</key><string>/abs/path/to/scan-dir</string>   <!-- loads scan-dir/.env -->
+<key>RunAtLoad</key><true/>
+<key>KeepAlive</key><true/>
+<key>StandardOutPath</key><string>/abs/path/to/logs/mcp-scan.out.log</string>
+<key>StandardErrorPath</key><string>/abs/path/to/logs/mcp-scan.err.log</string>
+```
+
+The interactive agent is identical except `WorkingDirectory` points at the
+connector repo (loading its `.env`). Use a **stable** `node` path (version-manager
+shims disappear per-shell and break `KeepAlive`). Load with `launchctl load -w …`;
+restart after a rebuild with `launchctl kickstart -k gui/$(id -u)/<label>`. The
+`audit=…` flag on the connector's stderr startup line tells you which surface came
+up on each endpoint.
+
+> Once repo-local HTTP helpers land (see PR #52), a `pnpm run start:http` profile
+> can supersede the `WorkingDirectory` trick; the two-endpoint model above is
+> unchanged.
+
+### Step 5 — verify each endpoint's surface
+
+The whole point is that the **scan** endpoint exposes the audit tools and **no**
+general write tools. Confirm it:
+
+```bash
+# scan endpoint (8788): expect append_audit_report + compare_and_swap_audit_state,
+# and NO create_document / plan_document_update / apply_planned_update in tools/list.
+curl -s -X POST http://127.0.0.1:8788/mcp \
+  -H "Authorization: Bearer $SCAN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
+# then reuse the returned mcp-session-id header for a {"method":"tools/list"} call.
+```
+
+The scanner must use a `run_id` with **no colons or slashes** (e.g.
+`20260718T010203Z--<uuid>`); a raw ISO timestamp with `:` is rejected. See
+[`SECURITY.md`](../SECURITY.md) (T11 + operating-conditions note) for the threat
+model behind this split, and `CHANGELOG.md` `[0.6.0]` for what shipped.
