@@ -764,14 +764,32 @@ restart after a rebuild with `launchctl kickstart -k gui/$(id -u)/<label>`. The
 `audit=…` flag on the connector's stderr startup line tells you which surface came
 up on each endpoint.
 
-> Once repo-local HTTP helpers land (see PR #52), a `pnpm run start:http` profile
-> can supersede the `WorkingDirectory` trick; the two-endpoint model above is
-> unchanged.
+> After (re)starting either agent, verify its surface with `pnpm run check:http`
+> (Step 5) — it confirms the scan endpoint never exposes the general write tools.
 
 ### Step 5 — verify each endpoint's surface
 
 The whole point is that the **scan** endpoint exposes the audit tools and **no**
-general write tools. Confirm it:
+general/skill write tools, so an injected scanner has nothing to write with. The
+repo ships an authenticated check that runs the full MCP handshake against each
+endpoint's local `/mcp` and compares the live tool surface with that endpoint's
+`MCP_HTTP_ALLOW_*` flags — the bearer is read from the `.env` file and never
+printed:
+
+```bash
+pnpm run check:http -- --env ./.env --env /abs/path/to/scan-dir/.env
+```
+
+For each endpoint it prints the server info, protocol, and tool counts
+(read-only vs write-capable), then asserts the surface. It **fails** (non-zero
+exit) if any endpoint's live surface is **wider** than its declared flags — e.g.
+the scan endpoint exposing `create_document` — which is exactly the
+confused-deputy regression this split prevents. A surface **narrower** than
+declared (a flag on but the tool missing) is a warning, not a failure. With no
+`--env`, it checks `./.env` (the interactive endpoint) alone.
+
+<details>
+<summary>Manual equivalent (curl)</summary>
 
 ```bash
 # scan endpoint (8788): expect append_audit_report + compare_and_swap_audit_state,
@@ -783,6 +801,8 @@ curl -s -X POST http://127.0.0.1:8788/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
 # then reuse the returned mcp-session-id header for a {"method":"tools/list"} call.
 ```
+
+</details>
 
 The scanner must use a `run_id` with **no colons or slashes** (e.g.
 `20260718T010203Z--<uuid>`); a raw ISO timestamp with `:` is rejected. See

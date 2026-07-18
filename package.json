@@ -10,17 +10,19 @@
   },
   "files": [
     "dist",
+    "scripts",
     "README.md",
     ".env.example"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "check:http": "node scripts/check-http.mjs",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint:ox": "oxlint src tests",
-    "lint": "eslint src tests",
-    "format": "prettier --write src tests",
-    "format:check": "prettier --check src tests",
+    "lint:ox": "oxlint src tests scripts",
+    "lint": "eslint src tests scripts",
+    "format": "prettier --write src tests scripts",
+    "format:check": "prettier --check src tests scripts",
     "dev": "tsx src/index.ts"
   },
   "engines": {

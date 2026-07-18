@@ -21,5 +21,16 @@ export default tseslint.config(
       "@typescript-eslint/no-explicit-any": "off"
     }
   },
+  // Operator helper scripts are plain ESM run by Node directly (no build step).
+  {
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        console: "readonly",
+        fetch: "readonly",
+        process: "readonly"
+      }
+    }
+  },
   prettier
 );
