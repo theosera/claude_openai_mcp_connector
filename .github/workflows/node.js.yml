@@ -20,13 +20,15 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    # Test both the engines floor (22.x) and the pinned dev/runtime version
-    # (24.x, see .node-version). fail-fast off so one version's failure does not
-    # mask the other's result.
+    # Test the engines floor (22.x = latest 22 line) and the EXACT pinned dev/
+    # runtime version (24.13.0, see .node-version). The pinned leg is exact, not
+    # a 24.x range: setup-node resolves ranges to whatever 24.y.z the runner has
+    # cached, which would not actually exercise the version we pinned. fail-fast
+    # off so one leg's failure does not mask the other's result.
     strategy:
       fail-fast: false
       matrix:
-        node-version: [22.x, 24.x]
+        node-version: [22.x, 24.13.0]
 
     steps:
       # Actions are pinned to a full 40-char commit SHA (+ trailing version
