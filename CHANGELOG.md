@@ -6,6 +6,8 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-07-18
+
 ### Added
 
 - **Constrained audit write surface for an unattended vault scanner**
@@ -353,7 +355,8 @@ First tagged release. MCP server exposing a private Markdown vault
   frontmatter allowlist, two-step stale-safe writes, HTTP auth + read-only
   surface, and the full OAuth flow.
 
-[Unreleased]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.2.1...v0.3.0
