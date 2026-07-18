@@ -19,6 +19,7 @@ import type {
 } from "./types.js";
 import {
   assertRelativePath,
+  posixContains,
   relativeToRoot,
   resolveExistingRoot,
   resolveInsideRoot,
@@ -262,6 +263,9 @@ export class KnowledgeStore implements VaultStore {
     reason: string;
   }): Promise<PlannedPatch> {
     const document = await this.fetch(input.id_or_path);
+    // INV-9: refuse to stage an update against the reserved audit subtree (early
+    // reject; applyPlannedUpdate re-checks authoritatively at write time).
+    await this.assertNotAuditReserved(document.relativePath, document.absolutePath);
     // Reject any non-allowlisted frontmatter key before it can reach the file
     // (frontmatter field-injection defense). `id` / `updated_at` stay server-owned.
     const frontmatterPatch = assertFrontmatterPatch(input.frontmatter_patch ?? {});
@@ -303,6 +307,9 @@ export class KnowledgeStore implements VaultStore {
       throw new Error("Patch is not a planned document update.");
     }
     const absolutePath = await this.resolveForExistingRead(patch.target_path);
+    // INV-9: a general update must never touch the reserved audit subtree
+    // (authoritative gate — this is where the actual overwrite happens).
+    await this.assertNotAuditReserved(relativeToRoot(await this.root(), absolutePath), absolutePath);
     const currentRaw = await fs.readFile(absolutePath, "utf8");
     const currentSha = sha256(currentRaw);
 
@@ -439,6 +446,9 @@ export class KnowledgeStore implements VaultStore {
   private async resolveForWrite(relativePath: string): Promise<string> {
     const root = await this.root();
     const safeRelative = assertRelativePath(relativePath);
+    // INV-9: reject a write aimed at the reserved audit subtree BEFORE creating
+    // any parent directories, so a rejected write never litters empty dirs.
+    await this.assertNotAuditReserved(toPosixPath(safeRelative));
     const parentSegments = path
       .dirname(safeRelative)
       .split(path.sep)
@@ -469,7 +479,47 @@ export class KnowledgeStore implements VaultStore {
       current = await fs.realpath(candidate);
       relativeToRoot(root, current);
     }
-    return path.join(current, path.basename(safeRelative));
+    const target = path.join(current, path.basename(safeRelative));
+    // INV-9 authoritative check on the resolved realpath: `current` is the
+    // realpath of the target's parent, so this defeats a symlink / NFD / case
+    // variant that a lexical check on the client string could miss.
+    await this.assertNotAuditReserved(relativeToRoot(root, target), target);
+    return target;
+  }
+
+  /**
+   * INV-9 (audit-trail integrity): reject any GENERAL document write whose target
+   * is at or inside the reserved audit subtree (MCP_AUDIT_SUBDIR). Only the
+   * constrained AuditStore surface may write there, so a compromised general-write
+   * session cannot forge or clobber audit files. The lexical check works even
+   * before the audit directory exists; the realpath check (when it exists)
+   * neutralizes symlink, NFD, and case-fold evasions.
+   */
+  private async assertNotAuditReserved(targetRelativePosix: string, targetRealPath?: string): Promise<void> {
+    const reserved = this.config.auditSubdir;
+    if (!reserved) {
+      return;
+    }
+    if (posixContains(reserved, targetRelativePosix)) {
+      throw auditReservedError();
+    }
+    if (!targetRealPath) {
+      return;
+    }
+    const root = await this.root();
+    let auditReal: string;
+    try {
+      auditReal = await fs.realpath(path.join(root, ...reserved.split("/")));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return; // audit subtree not created yet — the lexical check above suffices
+      }
+      throw error;
+    }
+    const relative = path.relative(auditReal, targetRealPath);
+    if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+      throw auditReservedError();
+    }
   }
 
   private async validateCreateTarget(relativePath: string): Promise<string> {
@@ -478,6 +528,9 @@ export class KnowledgeStore implements VaultStore {
     if (!safeRelative.endsWith(".md")) {
       throw new Error("Document create target must end with .md.");
     }
+    // INV-9: an exact-path create must not target the reserved audit subtree
+    // (early reject; resolveForWrite re-checks authoritatively at write time).
+    await this.assertNotAuditReserved(toPosixPath(safeRelative));
 
     const parentSegments = path
       .dirname(safeRelative)
@@ -590,4 +643,10 @@ function ensureMarkdownExtension(value: string): string {
 
 function sha256(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function auditReservedError(): Error {
+  return new Error(
+    "This path is reserved for the audit write surface (MCP_AUDIT_SUBDIR) and cannot be modified by general document writes."
+  );
 }

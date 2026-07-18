@@ -64,6 +64,12 @@ export async function resolveInsideRoot(rootRealPath: string, relativePath: stri
   return path.join(realDir, path.basename(candidate));
 }
 
+/** True when posix-relative `child` is the same as, or nested inside, `parent`. */
+export function posixContains(parent: string, child: string): boolean {
+  const relative = path.posix.relative(parent, child);
+  return relative === "" || (!relative.startsWith("../") && relative !== "..");
+}
+
 export function relativeToRoot(rootRealPath: string, absolutePath: string): string {
   const relative = path.relative(rootRealPath, absolutePath);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {

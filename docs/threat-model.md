@@ -6,7 +6,7 @@ Security Baseline mapping) by organizing threats along the STRIDE categories and
 mapping each to the in-code invariant (`INV-n`) and test that pins it. Known gaps
 are tracked in [`ROADMAP.md`](./ROADMAP.md#security--enterprise-maturity-gaps-not-yet-addressed).
 
-Invariant labels (`INV-1`…`INV-8`) match the `mcp-vault-security` skill and
+Invariant labels (`INV-1`…`INV-9`) match the `mcp-vault-security` skill and
 `CLAUDE.md`.
 
 ---
@@ -21,8 +21,9 @@ over two transports:
   spawns the server).
 - **Streamable HTTP** — remote Chat connectors (ChatGPT, Claude.ai web; Claude
   Desktop/Code remote; Claude API). Authenticated, read-only by default;
-  document writes and constrained Skill creation are separately enabled,
-  optionally with a built-in **OAuth 2.1** authorization server.
+  document writes, constrained Skill creation, and a constrained audit write
+  surface are separately enabled, optionally with a built-in **OAuth 2.1**
+  authorization server.
 
 The defining constraint: **the code repo is public; the vault is private** and
 referenced only via `KNOWLEDGE_ROOT`.
@@ -98,13 +99,14 @@ repo/CI → public (secret hygiene).
 | Creating a note at an unintended exact path                                                  | `plan_document_create` returns the complete diff and structured target-path question; apply requires an exact `confirmed_target_path` echo, verifies staged-content integrity, and re-runs containment (`INV-1`, `INV-3`). | The server cannot prove which client UI rendered the question; current-user confirmation remains a client/agent responsibility reinforced by server instructions. |
 | Overwriting a file via "create"                                                              | Every create uses `flag: "wx"`; exact-path planning has no target-side effect and apply rejects collisions (`INV-3`).                                                                                                      | The legacy routed `create_document` remains a one-step helper; clients must show its exact target and content before calling it.                                  |
 | Forging server-owned frontmatter (`id`, `updated_at`) or injecting arbitrary YAML keys/types | Field **allowlist** + value-type checks (`INV-2`, `frontmatter.ts`).                                                                                                                                                       | Allowlist widening requires threat review + tests.                                                                                                                |
+| Forging or clobbering audit-scan files via the general document-write tools                  | General writes are **forbidden from the audit subtree** (`INV-9`, `assertNotAuditReserved`, realpath-based); only `append_audit_report` (create-only, never overwrites) and `compare_and_swap_audit_state` (sha256 CAS) write there, serialized in-process (`auditStore.ts`). | Cross-process CAS is best-effort under the single-writer assumption; a torn crash-time write leaves a short file, not a merged one.                                |
 | Request body abuse                                                                           | Body-size cap → 413 (`INV-6`).                                                                                                                                                                                             | —                                                                                                                                                                 |
 
 ### R — Repudiation (auditability)
 
 | Threat                                                         | Mitigation                                                                                 | Residual                                                                                                                             |
 | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| "Who searched / fetched / wrote what?" cannot be reconstructed | Startup line logs only host:port + write flag; **secrets/content never logged** (`INV-6`). | ⚠️ **No audit log today.** This is a known gap — see ROADMAP (audit log, OpenTelemetry). For multi-user/enterprise this is required. |
+| "Who searched / fetched / wrote what?" cannot be reconstructed | Startup line logs only host:port + write flag; **secrets/content never logged** (`INV-6`). | ⚠️ **No server-side audit log today** (known gap — ROADMAP: audit log, OpenTelemetry). Distinct from the `INV-9` audit **write surface**, which persists a *scanner's own* output into the vault, not a server-side event log. |
 
 ### I — Information disclosure (confidentiality)
 
@@ -131,6 +133,7 @@ repo/CI → public (secret hygiene).
 | Threat                                                                                            | Mitigation                                                                                                                                                                                                                                                                                                                                                                           | Residual                                                                                                                                                                                                                                                                             |
 | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Read-scoped web token performing writes                                                           | Session registers write tools only when `allowWrite && token has vault.write`; otherwise undiscoverable (`INV-7`, `INV-6`).                                                                                                                                                                                                                                                          | —                                                                                                                                                                                                                                                                                    |
+| Unattended write-enabled connector steered into general writes by a malicious note (confused deputy) | Run the unattended scan on a dedicated endpoint with general write **off** and only `MCP_HTTP_ALLOW_AUDIT_WRITE` on — the general document-write tools are then **not registered** for that session (`INV-6`, endpoint separation); any injected write is confined to the audit subtree (`INV-9`). | The scanner can still append junk into the audit subtree; the blast radius is that subtree only, and reports are create-only (never overwrite existing files). |
 | Authorization-code replay / injection                                                             | Codes are single-use, short-TTL, CSPRNG, bound to client/redirect/PKCE challenge (`INV-7`).                                                                                                                                                                                                                                                                                          | —                                                                                                                                                                                                                                                                                    |
 | `plain` PKCE downgrade                                                                            | S256 only; `plain` rejected (`INV-7`, `pkce.ts`).                                                                                                                                                                                                                                                                                                                                    | —                                                                                                                                                                                                                                                                                    |
 | Reading arbitrary files via a crafted `patch_id`                                                  | `patch_id` validated as UUID; patch path constrained (`INV-3`).                                                                                                                                                                                                                                                                                                                      | —                                                                                                                                                                                                                                                                                    |
@@ -143,12 +146,15 @@ repo/CI → public (secret hygiene).
 
 Security behaviors are **pinned by tests** (`pnpm test`, vitest), not just by
 convention — see `tests/pathSafety.test.ts`, `tests/knowledgeStore.test.ts`,
-`tests/skillStore.test.ts`, `tests/httpServer.test.ts`, `tests/promptInjection.test.ts`, and
+`tests/skillStore.test.ts`, `tests/auditStore.test.ts`, `tests/httpServer.test.ts`,
+`tests/promptInjection.test.ts`, and
 `tests/oauth.test.ts`. Coverage includes path
 traversal (raw/encoded/malformed/absolute/`~`/NUL/over-length), symlink escape +
 cycle, frontmatter allowlist + value-type rejection, two-step stale reject,
-overwrite collision, constrained Skill bundle creation, HTTP 401/per-surface
-tool registration, and the full OAuth flow
+overwrite collision, constrained Skill bundle creation, the constrained audit
+write surface (`INV-9`: run_id validation, create-only reports, sha256 CAS,
+serialized ops, and rejection of general writes into the audit subtree),
+HTTP 401/per-surface tool registration, and the full OAuth flow
 (PKCE match/mismatch, single-use codes, redirect policy, refresh rotation,
 audience-bound `/mcp`).
 

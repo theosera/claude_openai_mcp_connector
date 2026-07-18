@@ -8,6 +8,27 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Constrained audit write surface for an unattended vault scanner**
+  (`MCP_AUDIT_SUBDIR` + `MCP_HTTP_ALLOW_AUDIT_WRITE`). A new, independently gated
+  pair of tools — `append_audit_report` (create-only report at
+  `reports/<run_id>.md`; identical content is an idempotent no-op, different
+  content is rejected, existing reports are never overwritten) and
+  `compare_and_swap_audit_state` (atomic, sha256 compare-and-swap of `state.md`)
+  — lets a scan principal persist audit output into **one reserved vault
+  subtree** without holding the general document-write tools. A dedicated
+  read-only-plus-audit endpoint (general write off, `MCP_HTTP_ALLOW_AUDIT_WRITE=1`)
+  therefore lets an unattended scanner write only audit files, removing the
+  confused-deputy exposure of pointing a write-enabled connector at an
+  unattended scan. General document writes (`create_document` /
+  `plan_document_create` → `apply_planned_document_create` / `plan_document_update`
+  → `apply_planned_update`) are separately **forbidden from the audit subtree**
+  (INV-9 — audit-trail integrity), so an interactive session cannot forge or
+  clobber audit files; audit operations are serialized in-process to keep the
+  compare-and-swap race-free. Opt-in and off by default; unset it behaves
+  exactly as before (`src/auditStore.ts`, `src/knowledgeStore.ts`,
+  `src/config.ts`, `src/server.ts`, `src/httpServer.ts`, `src/index.ts`,
+  `src/multiRootStore.ts`, `tests/auditStore.test.ts`,
+  `tests/knowledgeStore.test.ts`, `tests/httpServer.test.ts`).
 - **Exact-path Markdown creation through a two-step, path-confirmed flow.** New
   `plan_document_create` → `apply_planned_document_create` tools let a client
   create a note at an exact vault-relative `.md` path instead of routing it

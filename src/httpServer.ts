@@ -5,6 +5,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { HttpConfig } from "./config.js";
 import { isAuthorizedHeader, parseBearer } from "./httpAuth.js";
 import type { VaultStore } from "./types.js";
+import type { AuditStore } from "./auditStore.js";
 import type { SkillStore } from "./skillStore.js";
 import type { OAuthHttpResponse } from "./oauth/provider.js";
 import { OAuthProvider, SCOPE_READ, SCOPE_WRITE } from "./oauth/provider.js";
@@ -35,7 +36,8 @@ interface OAuthLimiters {
 export async function startHttpServer(
   store: VaultStore,
   config: HttpConfig,
-  skillStore?: SkillStore
+  skillStore?: SkillStore,
+  auditStore?: AuditStore
 ): Promise<http.Server> {
   const sessions = new Map<string, Session>();
   // OAuth 2.1 authorization server (only when configured). ChatGPT / Claude.ai
@@ -51,7 +53,7 @@ export async function startHttpServer(
     : undefined;
 
   const httpServer = http.createServer((req, res) => {
-    handleRequest(req, res, store, config, sessions, oauth, limiters, skillStore).catch((error) => {
+    handleRequest(req, res, store, config, sessions, oauth, limiters, skillStore, auditStore).catch((error) => {
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json" });
       }
@@ -73,7 +75,8 @@ async function handleRequest(
   sessions: Map<string, Session>,
   oauth: OAuthProvider | undefined,
   limiters: OAuthLimiters | undefined,
-  skillStore: SkillStore | undefined
+  skillStore: SkillStore | undefined,
+  auditStore: AuditStore | undefined
 ): Promise<void> {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
@@ -166,10 +169,13 @@ async function handleRequest(
   // (they aren't registered for its session), so it cannot invoke them.
   const allowWrite = config.allowWrite && principal.scopes.includes(SCOPE_WRITE);
   const allowSkillWrite = config.allowSkillWrite && principal.scopes.includes(SCOPE_WRITE);
+  const allowAuditWrite = config.allowAuditWrite && principal.scopes.includes(SCOPE_WRITE);
   const server = buildMcpServer(store, {
     allowWrite,
     allowSkillWrite,
     skillStore,
+    allowAuditWrite,
+    auditStore,
     includeChatgptCompat: true,
     chatgptUrlBase: config.chatgptUrlBase
   });

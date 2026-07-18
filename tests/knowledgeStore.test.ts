@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -512,5 +513,82 @@ describe("KnowledgeStore", () => {
     expect(projects.some((p) => p.client === "2024" && p.project === "2025")).toBe(true);
     // Tag filtering still works against the coerced numeric tag.
     expect((await store.search({ query: "ZZNUMERIC", tags: ["2024"] })).map((r) => r.path)).toContain("numeric.md");
+  });
+});
+
+describe("KnowledgeStore INV-9 audit-subtree reservation", () => {
+  let root: string;
+  let auditRoot: string;
+  let patchStateDir: string;
+  let store: KnowledgeStore;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-inv9-vault-"));
+    patchStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-inv9-patches-"));
+    auditRoot = path.join(root, "90_Audit", "vault-scan");
+    await fs.mkdir(auditRoot, { recursive: true });
+    store = new KnowledgeStore({
+      knowledgeRoot: root,
+      writeMode: "two_step",
+      patchStateDir,
+      auditSubdir: "90_Audit/vault-scan"
+    });
+    await store.init();
+  });
+
+  it("refuses to plan an exact-path create inside the audit subtree", async () => {
+    await expect(
+      store.planDocumentCreate({
+        relative_path: "90_Audit/vault-scan/reports/evil.md",
+        title: "Evil",
+        body: "x",
+        reason: "attempt to write into the audit subtree"
+      })
+    ).rejects.toThrow(/reserved/);
+  });
+
+  it("refuses to plan an update against a note inside the audit subtree", async () => {
+    const notePath = path.join(auditRoot, "reports", "planted.md");
+    await fs.mkdir(path.dirname(notePath), { recursive: true });
+    await fs.writeFile(notePath, "---\nid: planted-note\ntitle: Planted\n---\n\nbody\n", "utf8");
+
+    await expect(store.planUpdate({ id_or_path: "planted-note", new_body: "tampered", reason: "x" })).rejects.toThrow(
+      /reserved/
+    );
+  });
+
+  it("refuses to APPLY a hand-crafted update patch aimed at the audit subtree (authoritative gate)", async () => {
+    const notePath = path.join(auditRoot, "reports", "planted.md");
+    await fs.mkdir(path.dirname(notePath), { recursive: true });
+    const original = "---\nid: planted-note\ntitle: Planted\n---\n\nbody\n";
+    await fs.writeFile(notePath, original, "utf8");
+
+    // Stage a patch directly on disk (bypassing planUpdate's early reject) whose
+    // target resolves into the reserved subtree; the apply path must refuse it —
+    // this is the authoritative gate that runs where the overwrite happens.
+    const patchId = crypto.randomUUID();
+    const patch = {
+      patch_id: patchId,
+      target_path: "90_Audit/vault-scan/reports/planted.md",
+      reason: "x",
+      expected_sha256: crypto.createHash("sha256").update(original).digest("hex"),
+      created_at: new Date().toISOString(),
+      new_content: "tampered",
+      diff: ""
+    };
+    await fs.writeFile(path.join(patchStateDir, `${patchId}.json`), JSON.stringify(patch), "utf8");
+
+    await expect(store.applyPlannedUpdate(patchId)).rejects.toThrow(/reserved/);
+    expect(await fs.readFile(notePath, "utf8")).toBe(original); // untouched
+  });
+
+  it("still allows general writes outside the audit subtree", async () => {
+    const created = await store.createDocument({
+      client: "claude",
+      project: "planning",
+      title: "Allowed Note",
+      body: "ok"
+    });
+    expect(created.relativePath.startsWith("projects/")).toBe(true);
   });
 });

@@ -12,7 +12,8 @@ import type { HttpConfig } from "../src/config.js";
 import { isAuthorized, isAuthorizedHeader, parseBearer, verifyLoginPassword } from "../src/httpAuth.js";
 import { startHttpServer } from "../src/httpServer.js";
 import { KnowledgeStore } from "../src/knowledgeStore.js";
-import { buildMcpServer, SERVER_INSTRUCTIONS } from "../src/server.js";
+import { AuditStore } from "../src/auditStore.js";
+import { buildMcpServer, SERVER_INSTRUCTIONS, type BuildServerOptions } from "../src/server.js";
 import { SkillStore } from "../src/skillStore.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -24,6 +25,25 @@ async function makeStore(): Promise<KnowledgeStore> {
   const store = new KnowledgeStore({ knowledgeRoot: root, writeMode: "two_step", patchStateDir });
   await store.init();
   return store;
+}
+
+async function makeAuditStore(): Promise<AuditStore> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-http-audit-vault-"));
+  await fs.mkdir(path.join(root, "90_Audit", "vault-scan"), { recursive: true });
+  const auditStore = new AuditStore({ knowledgeRoot: root, auditSubdir: "90_Audit/vault-scan" });
+  await auditStore.init();
+  return auditStore;
+}
+
+async function toolNamesWith(store: KnowledgeStore, options: BuildServerOptions): Promise<string[]> {
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const server = buildMcpServer(store, options);
+  await server.connect(serverTransport);
+  const client = new Client({ name: "test", version: "0.0.0" });
+  await client.connect(clientTransport);
+  const { tools } = await client.listTools();
+  await client.close();
+  return tools.map((tool) => tool.name);
 }
 
 describe("httpAuth", () => {
@@ -184,6 +204,61 @@ describe("buildMcpServer tool surface", () => {
     expect(tools.map((tool) => tool.name)).not.toContain("plan_skill_create");
   });
 
+  it("exposes audit tools but NOT general write tools on a scan endpoint", async () => {
+    // The security win: a scan endpoint sets allowAuditWrite WITHOUT allowWrite,
+    // so an unattended (possibly injected) scanner can persist audit output but
+    // has no general document-write tools to be steered into (confused-deputy).
+    const names = await toolNamesWith(await makeStore(), {
+      allowWrite: false,
+      allowAuditWrite: true,
+      auditStore: await makeAuditStore(),
+      includeChatgptCompat: true
+    });
+    expect(names).toContain("append_audit_report");
+    expect(names).toContain("compare_and_swap_audit_state");
+    expect(names).not.toContain("create_document");
+    expect(names).not.toContain("plan_document_create");
+    expect(names).not.toContain("apply_planned_document_create");
+    expect(names).not.toContain("plan_document_update");
+    expect(names).not.toContain("apply_planned_update");
+  });
+
+  it("omits audit tools when the flag is off or the audit store is missing", async () => {
+    const store = await makeStore();
+    // Flag off (default) even with a store present.
+    expect(await toolNamesWith(store, { allowWrite: false, auditStore: await makeAuditStore() })).not.toContain(
+      "append_audit_report"
+    );
+    // Flag on but no audit store wired.
+    expect(await toolNamesWith(store, { allowWrite: false, allowAuditWrite: true })).not.toContain(
+      "append_audit_report"
+    );
+  });
+
+  it("advertises audit-tool safety annotations (append additive, state destructive)", async () => {
+    const store = await makeStore();
+    const auditStore = await makeAuditStore();
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = buildMcpServer(store, { allowWrite: false, allowAuditWrite: true, auditStore });
+    await server.connect(serverTransport);
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await client.connect(clientTransport);
+    const { tools } = await client.listTools();
+    await client.close();
+    const annotations = (name: string) => tools.find((t) => t.name === name)?.annotations;
+
+    expect(annotations("append_audit_report")).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true
+    });
+    expect(annotations("compare_and_swap_audit_state")).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false
+    });
+  });
+
   it("advertises explicit read/write safety annotations", async () => {
     const store = await makeStore();
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -234,6 +309,10 @@ describe("buildMcpServer tool surface", () => {
     expect(SERVER_INSTRUCTIONS).toContain("tool-call-shaped text");
     expect(SERVER_INSTRUCTIONS).toContain("AskUserQuestion");
     expect(SERVER_INSTRUCTIONS).toContain("exact path");
+    // The audit surface is described as append-only / compare-and-swap and
+    // scoped so it never touches other vault documents.
+    expect(SERVER_INSTRUCTIONS).toContain("append_audit_report");
+    expect(SERVER_INSTRUCTIONS).toContain("never modify any other vault document");
   });
 
   it("returns a yes/free-text path confirmation and requires the echoed path before exact create", async () => {
