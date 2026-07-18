@@ -6,6 +6,17 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Pin the development Node version to **24.13.0** via a new `.node-version` file
+  (fnm reads it and auto-switches on `cd`; nvm does not read `.node-version`
+  natively — nvm users can run `nvm use "$(cat .node-version)"`), and extend the
+  Node.js CI matrix to run the
+  full gate on both **22.x** (the `engines` floor) and **24.x** (the pinned dev/
+  runtime version). `engines` stays `>=22.12.0` — the server still supports Node
+  22+, so this drops no runtime support; it only makes the recommended version
+  explicit and keeps it under test alongside the floor.
+
 ## [0.6.0] — 2026-07-18
 
 ### Added
