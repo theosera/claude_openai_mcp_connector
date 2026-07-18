@@ -1,6 +1,6 @@
 {
   "name": "claude-openai-mcp-connector",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Local MCP server for safely sharing a private Markdown knowledge vault with Claude, ChatGPT-compatible clients, and Codex.",
   "license": "MIT",
   "type": "module",
