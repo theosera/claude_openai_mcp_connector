@@ -6,6 +6,20 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`pnpm run check:http` — authenticated two-endpoint surface check**
+  (`scripts/check-http.mjs`). Runs the MCP handshake (`initialize` →
+  `tools/list`) against each endpoint's local `/mcp` using the bearer read from
+  that endpoint's `.env` (never printed), then verifies the live tool surface
+  against the same file's `MCP_HTTP_ALLOW_*` flags. It **fails** (non-zero exit)
+  when a surface is **wider** than declared — e.g. the unattended scan endpoint
+  exposing a general document-write tool — so the interactive/scan separation
+  (see `operations.md` §9) is checkable in one command; a surface narrower than
+  declared is a warning, not a failure. Accepts repeated `--env <path>` and
+  defaults to `./.env` (the interactive endpoint). Packaged under `files` so the
+  helper ships with the module.
+
 ### Changed
 
 - Pin the development Node version to **24.13.0** via a new `.node-version` file
