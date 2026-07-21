@@ -6,7 +6,7 @@ settings:
 
 overrides:
   hono: ^4.12.25
-  body-parser: '>=2.3.0'
+  body-parser: '>=2.3.0 <3'
 
 importers:
 
