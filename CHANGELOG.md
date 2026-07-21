@@ -6,6 +6,18 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- Force the transitive **`body-parser`** dependency to **`>= 2.3.0 < 3`** via a
+  `pnpm.overrides` entry (patched floor, bounded to the express-compatible
+  major), clearing GHSA/CVE-2026-12590 (a low-severity DoS where
+  an invalid `limit` option silently disabled request-size enforcement). It
+  reaches the tree only through `express` (pulled by `express-rate-limit`), and
+  the server runs on a raw Node `http` listener — it never mounts express's
+  `body-parser` middleware nor passes a caller-controlled `limit` — so the
+  vulnerable path was not reachable; this is defense-in-depth that also makes
+  `pnpm audit` clean. No source or runtime-behavior change.
+
 ### Added
 
 - **`pnpm run check:http` — authenticated two-endpoint surface check**
