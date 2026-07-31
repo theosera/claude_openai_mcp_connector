@@ -65,6 +65,54 @@ Improve relevance and ergonomics of `search_documents` / `search`:
   `EAGAIN` retry + skip-and-log, so a thousands-of-notes vault no longer
   exhausts file descriptors mid-search (`src/knowledgeStore.ts`).
 
+Concretized by the [context-engineering proposal](./context-engineering.md)
+(survey-based, 2026-07) into two slices — flip to 🚧 when the first PR opens:
+
+- **P0 correctness slice** 🔭 — NFKC normalization in the search path (queries
+  and bodies; today only `pathSafety` normalizes), timestamps + `size_bytes` on
+  `SearchResult`, a `{results, total_count, offset, limit}` envelope so agents
+  can see truncation instead of re-querying blindly, backlink resolution of
+  relative Markdown links (fixture-reproducible gap), and dropping
+  `absolutePath` from `fetch_document` responses.
+- **P1 quality slice** 🔭 — CJK segmentation via `Intl.Segmenter` (zero-dep),
+  opt-out recency decay (`MCP_SEARCH_RECENCY_*`, `=0` restores today's
+  ranking), `path_prefix` / `root` / date-range filters, `order` +
+  pagination, two-window snippets, per-result `explain` score breakdown, and a
+  derived-text cache on the existing mtime+size invalidation (kills the
+  per-query full-corpus `toLowerCase()` re-normalization).
+
+### Context engineering layer — get_context / link graph / project state 🔭
+
+Evolve the read plane from "search API" to "context gateway": one call should
+return a token-budgeted, provenance-carrying context package instead of forcing
+the client into search→fetch loops. Full design (A–G survey, tool schemas,
+anti-forgery analysis, reject list) in the
+[context-engineering proposal](./context-engineering.md). Net tool count
+15 → 17; **no new write surface in any phase** (guiding priority #3), and
+per-agent "context profiles" are request parameters only — never server-side
+client detection, per the [appendix's anti-router ruling](#appendix--future-uses-of-the-authenticated-client_id).
+
+- **P2 — link graph & provenance** 🔭: `src/linkGraph.ts` built from
+  `listDocuments()` (fs access stays behind the existing guard chain), correct
+  relative-link + Obsidian-style basename/alias wikilink resolution, and
+  `trace_sources` gains `depth` / `direction` + resolved-link output. Bounds:
+  depth ≤ 2, node/fanout caps, hub damping for MOC notes.
+- **P3 — `get_context`** 🔭: deterministic 5-stage pipeline (seed search →
+  link expansion → fuse/dedup → heading-level chunking → greedy
+  score-per-token packing) returning a `ContextPackage` with per-chunk
+  provenance and an `omitted[]` list; zero-dep CJK-aware token estimation;
+  opt-in owner-controlled type weighting (`MCP_CONTEXT_TYPE_RULES`, refuses to
+  load from inside a knowledge root; frontmatter self-claimed types never
+  drive trust).
+- **P4 — project memory** 🔭: `get_project_state` (deterministic dossier —
+  designated `project-state`-tagged docs, recent docs, session-archive
+  metadata + outline only, ops-log pointers via their `target_repo`
+  frontmatter) and `fetch_document` gains `outline` / `sections` / `max_chars`
+  so MB-scale session notes never have to be fetched whole.
+- 💭 tail (evaluation-gated): knowledge-lifecycle tooling; an inverted index
+  (trigger: >10k notes or search p95 > 200 ms); embeddings/vector search
+  (trigger: documented recall failures after P1–P3 land).
+
 ### Constrained audit write surface — _persist unattended vault-scan output_ 🚧
 
 An unattended, recurring vault security scan needs to persist its reports + scan
@@ -228,6 +276,11 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       is the scanner's own vault-side output; this is a server-side event log.)
 - [ ] **One-command install / npx packaging** — remove the `pnpm build` step so
       the 🟢 non-engineer path needs no toolchain (see Onboarding above).
+- [ ] **Search P0 correctness slice** — NFKC search normalization, result
+      timestamps/`size_bytes`, `total_count` envelope, backlink relative-link
+      resolution (reproducible against the synthetic fixture), `absolutePath`
+      removal from `fetch_document` — the first slice of the
+      [context-engineering proposal](./context-engineering.md).
 - [x] **Exact-path document create** — ✅ two-step full-file plan, explicit
       target-path confirmation (`はい` + free text), confirmed-path echo at
       apply, content-integrity/no-overwrite checks, and MCP E2E coverage.
