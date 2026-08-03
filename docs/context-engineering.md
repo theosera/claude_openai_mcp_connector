@@ -249,6 +249,9 @@ Orchestrator / Client (将来)          ← 本リポでは実装しない (消�
 > 出し分ける形を取らない (ROADMAP 番外編で実行時ルーターは明示的に却下済み)。profile は
 > **リクエストパラメータ** (`token_budget` / `recency_weight` / `types` / `graph_depth`)
 > として client 側が選ぶ。tool 面の決定軸は従来どおり transport + env flag + token scope のみ。
+> なおこの 3 軸は 2026-07-28 系 (stateless core) への移行後も変わらないが、scope の**解決点**が
+> per-session から **per-request** へ移る ([`ROADMAP.md`](./ROADMAP.md) の 2b)。軸が増えるのでは
+> なく、同じ軸を毎リクエスト評価するようになる — 本提案の新 tool も同じゲートに載る。
 
 ### D-2. 検索改善の仕様 (P0–P1)
 
@@ -500,14 +503,18 @@ User ⇄ Agent client                [ACP plane — リポ外。実装しない]
 **両案に共通する不変式**: (1) 信頼境界は一切動かない — 新規 read 経路はすべて
 `VaultStore` 実装経由で fs に到達し、INV-1 の多段ガードを**継承**する (再実装しない)。
 (2) **write surface は 1 つも増えない** (guiding priority #3)。(3) tool 出し分けの決定軸は
-transport + env flag + token scope のまま (番外編)。(4) 派生データはメモリ内のみ。
+transport + env flag + token scope のまま (番外編) — 2026-07-28 系への移行ではこの軸は不変で、
+scope の解決点だけが per-session → per-request に移る (ROADMAP 2b)。(4) 派生データはメモリ内のみ。
 
 ---
 
 ## F. 実装ロードマップ
 
-各 Phase は 1 minor release (0.7.0〜) とし、リポの quality gate (typecheck → build →
-vitest) と同一 PR での ROADMAP / CHANGELOG / テスト更新を伴う。
+各 Phase はリポの quality gate (typecheck → build → vitest) と、同一 PR での
+ROADMAP / CHANGELOG / テスト更新を伴う。**ただしリリース単位は Phase と 1:1 ではない** —
+実績として P0 と P1 は 1 本の **v0.7.0** にまとめて出荷した (冒頭の実装状況表を参照)。
+どの Phase をどの minor に載せるかはその時点の運用判断であり、正典は本文書ではなく
+ROADMAP と CHANGELOG が持つ。
 
 | Phase | 内容 | 変更ファイル | 新規モジュール | Test | Migration | Risk | 規模 |
 | --- | --- | --- | --- | --- | --- | --- | --- |

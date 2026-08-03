@@ -206,6 +206,42 @@ The reasons to adopt it anyway, in cost/benefit order:
    and each entry pins a transport **plus** a per-session `McpServer` instance —
    whether a client that vanishes without a DELETE is reliably reaped is
    unverified and worth checking on long uptimes; statelessness removes the class.
+
+   **This is three changes, not one — land them separately.** They guarantee
+   different properties, touch nearly disjoint files, and only the middle one is
+   a security-boundary change; bundling them would put a boundary re-pin in the
+   same review as a dependency bump and a docs rewrite.
+
+   - **2a. Dual-era transport 🔭 — dependency + handler substrate.** Move the
+     HTTP path onto `@modelcontextprotocol/server` / `core` v2 and serve the 2025
+     era and 2026-07-28 side by side (`createMcpHandler`'s `legacy: 'stateless'`
+     default). Property guaranteed: _both protocol eras negotiate successfully
+     against one endpoint_. Touches `package.json` / the lockfile / the transport
+     construction in `src/httpServer.ts`, plus new negotiation tests. The
+     DNS-rebinding regression test is a **precondition** and is already in place
+     (see the section below) — it exists precisely so this bump cannot silently
+     drop the protection. Resolution stays per-session under 2a, so the
+     scope→tool-surface boundary is untouched and INV-6/INV-7 do not move.
+   - **2b. Per-request scope→tool-surface resolution 🔭 — the security-boundary
+     node, and the one to schedule most carefully.** Today `src/httpServer.ts`
+     authenticates, resolves scope, then builds an `McpServer` registering _only_
+     the tools that scope permits, and binds it to the session — INV-6/INV-7 ("a
+     read-scoped token never sees write tools because they were never
+     registered") currently **rests on the session model**. Without sessions that
+     resolution has to move to per-request, which v2's per-request server factory
+     models cleanly. Property guaranteed: _with no session at all, the visible
+     tool set is exactly what the presented token's scopes permit, on every
+     single request_. The cost is concentrated in re-pinning, not rewriting:
+     every boundary test in `tests/httpServer.test.ts` and `tests/oauth.test.ts`
+     has to be re-established against per-request resolution. Requires 2a.
+   - **2c. stdio + operations migration 🔭.** `src/index.ts` moves to
+     `serveStdio()`, and [`operations.md §1`](./operations.md) gains the third
+     "why connections drop" cause plus any restart-procedure change. The stdio
+     side can lag the HTTP side indefinitely — it has no sessions to lose — so
+     this is deliberately last, and it requires 2b only so the documented
+     boundary is the final one rather than an intermediate state.
+
+   The order is forced: 2a → 2b → 2c. Item 3 below depends on **2b**, not on 2c.
 3. **Cache hints (`ttlMs` / `cacheScope`) 🔭 — must be scope-private.** The tool
    surface is static only _per scope_, not globally: `src/httpServer.ts` derives
    `allowWrite` / `allowSkillWrite` / `allowAuditWrite` from the principal's
@@ -214,7 +250,10 @@ The reasons to adopt it anyway, in cost/benefit order:
    handing write-tool metadata to a read-scoped client — the exact leak
    "not registered, so not discoverable" exists to prevent. Use a private cache
    scope, or a key that includes the effective scope and the enabled surfaces.
-   Treat this as a security-boundary change and pin it with a test.
+   Treat this as a security-boundary change and pin it with a test. **Requires
+   2b**, whose per-request resolution is what a correct cache key has to name;
+   caching a listing while the surface is still resolved per session would key it
+   on the wrong thing.
 4. **Stateless scale-out / header routing — deliberately not pursued.** Gated on
    multi-user graduating from 💭. Adopting it now buys nothing and widens surface.
 
@@ -223,21 +262,11 @@ The reasons to adopt it anyway, in cost/benefit order:
 (`legacy: 'stateless'`), and deprecations carry a floor of twelve months before
 the earliest possible removal. There is no cliff.
 
-**Migration cost is concentrated in re-pinning the security boundary, not in
-rewriting it.** Today `src/httpServer.ts` authenticates, resolves scope, then
-builds a server registering *only* the tools that scope permits, and binds it to
-the session — INV-6/INV-7 ("a read-scoped token never sees write tools because
-they were never registered") currently rests on the session model. Without
-sessions that resolution moves to per-request, which `createMcpHandler`'s
-per-request factory models cleanly, but every boundary test in
-`tests/httpServer.test.ts` / `tests/oauth.test.ts` has to be re-pinned.
-
 **DNS-rebinding protection is a prerequisite, not a sub-task of this migration**
 — it has its own section below, and that work stands on its own whether or not
 the v2 move ever happens. Do not assume the boundary survives because the option
 names still exist in v2; the check has to be re-established against whatever
-enforces it there. `src/index.ts` (stdio) changes to `serveStdio()` and can lag
-the HTTP side.
+enforces it there.
 
 ### DNS-rebinding protection is on a deprecated API — _pin it, then move it_ 🔭
 
@@ -471,11 +500,14 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       the 🟢 non-engineer path needs no toolchain (see Onboarding above).
 - [ ] **Migrate to `@modelcontextprotocol/server`/`core` v2 with dual-era
       serving** — adopt for restart transparency (guiding priority #2), not for
-      speed; see the 2026-07-28 section above. Chiefly a re-pin of the
-      scope→tool-surface boundary tests once that resolution moves from
-      per-session to per-request. Also add a third "why connections drop" cause
-      (process-memory MCP sessions → `404 unknown_session`) to
-      [`operations.md §1`](./operations.md) when this lands.
+      speed; see the 2026-07-28 section above, which splits this into **2a**
+      (dual-era transport / dependency bump), **2b** (per-request
+      scope→tool-surface resolution — the boundary re-pin, and the only
+      security-relevant piece) and **2c** (stdio `serveStdio()` + adding the
+      third "why connections drop" cause, process-memory MCP sessions →
+      `404 unknown_session`, to [`operations.md §1`](./operations.md)). Land them
+      as three PRs in that order; do not bundle the boundary re-pin with the
+      dependency bump.
 - [x] **Search P0 + P1 slices** — ✅ P0: NFKC search folding (query + text,
       snippets still sliced from the original), result timestamps/`size_bytes`,
       `total_count`/`offset` envelope, backlink relative-link resolution,
