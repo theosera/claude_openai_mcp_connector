@@ -20,6 +20,16 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Context-engineering proposal (docs only, no runtime change)** —
+  [`docs/context-engineering.md`](./docs/context-engineering.md), a
+  survey-based design for evolving the read plane from "search API" to
+  "context gateway": search correctness/quality slices (NFKC + CJK
+  segmentation, recency, filters, pagination), a link-graph module with
+  correct relative-link/wikilink resolution, a token-budgeted `get_context`,
+  `get_project_state`, section-level `fetch_document`, and an explicit
+  reject list (no vector DB / no in-server LLM / no new write surface).
+  `docs/ROADMAP.md` gains the matching "Context engineering layer" section
+  plus concretized "Search & retrieval UX" slices.
 - **`pnpm run check:http` — authenticated two-endpoint surface check**
   (`scripts/check-http.mjs`). Runs the MCP handshake (`initialize` →
   `tools/list`) against each endpoint's local `/mcp` using the bearer read from
