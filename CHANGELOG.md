@@ -6,49 +6,6 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
-
-- **Search P1 quality slice** (second implementation slice of the
-  [context-engineering proposal](./docs/context-engineering.md)). All of it is
-  additive: with no new env set and no new parameter passed, ranking and output
-  are byte-identical to 0.7.0.
-  - **CJK query segmentation** (`src/searchSegmenter.ts`). A query in a script
-    that does not space its words is split into words via `Intl.Segmenter`
-    (Node ships full ICU at this package's floor, so no dependency), with a
-    character-bigram fallback for small-icu runtimes. `検索エンジン設計` now finds a
-    note that says `検索エンジンの設計`, which one substring never could. Sub-terms
-    are **added** to the whole token rather than replacing it, so an ASCII query
-    tokenizes exactly as before, and a note carrying the phrase verbatim keeps a
-    phrase bonus over one holding the pieces scattered. Lone hiragana (particles
-    like `の`) are dropped — they occur in nearly every Japanese note and would
-    add noise to all of them.
-  - **Opt-in recency ranking** — `MCP_SEARCH_RECENCY_WEIGHT` (default **0**,
-    i.e. off; 0.25 recommended) and `MCP_SEARCH_RECENCY_HALFLIFE_DAYS` (default
-    30), overridable per request with `recency_weight`. The boost is
-    **multiplicative**, so it re-orders notes that already matched and can never
-    surface one that did not. Age comes from frontmatter `updated_at` / `date`
-    before filesystem mtime, because `git clone` rewrites mtime and both the
-    vault and the log repo are git-synced.
-  - **New filters** on `search_documents`: `path_prefix` (matched against the
-    on-disk path, without the `<root>:` prefix), `root`, and
-    `updated_after` / `updated_before` ISO 8601 bounds. An unparseable date
-    bound is rejected rather than silently ignored.
-  - **`order`** — `relevance` / `recent` / `path`. Defaults preserve today's
-    behavior: `relevance` with a query, `path` without one.
-  - **Two-window snippets.** Up to two passages, chosen to cover distinct query
-    terms and joined with ` … `; a single window often lands on a passing
-    mention while the passage that answers the query sits further down.
-  - **`explain`** returns a per-signal `score_breakdown`
-    (`title` / `path` / `tags` / `body` / `phrase` / `recency`) that sums to
-    `score` — the instrument for tuning weights and measuring the round-trip
-    KPI later.
-  - **Derived-text cache.** The folded and whitespace-collapsed body is computed
-    once when a file is parsed and carried on the cached document, invalidated
-    by the same mtime+size signature as the parse. This removes the per-query
-    fold of the whole corpus, which was the search path's dominant cost once
-    megabyte-scale session archives are in the vault. It is internal: the public
-    document projection is an allowlist, so it never reaches a client.
-
 ## [0.7.0] — 2026-08-03
 
 ### Security
@@ -88,6 +45,46 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - **`modified_at`, `updated_at`, and `size_bytes` on each search result** —
     `size_bytes` in particular lets a caller notice that a hit is a
     megabyte-scale note before fetching it whole.
+- **Search P1 quality slice** (second implementation slice of the
+  [context-engineering proposal](./docs/context-engineering.md)). All of it is
+  additive: with no new env set and no new parameter passed, ranking and output
+  are byte-identical to the P0 slice above.
+  - **CJK query segmentation** (`src/searchSegmenter.ts`). A query in a script
+    that does not space its words is split into words via `Intl.Segmenter`
+    (Node ships full ICU at this package's floor, so no dependency), with a
+    character-bigram fallback for small-icu runtimes. `検索エンジン設計` now finds a
+    note that says `検索エンジンの設計`, which one substring never could. Sub-terms
+    are **added** to the whole token rather than replacing it, so an ASCII query
+    tokenizes exactly as before, and a note carrying the phrase verbatim keeps a
+    phrase bonus over one holding the pieces scattered. Lone hiragana (particles
+    like `の`) are dropped — they occur in nearly every Japanese note and would
+    add noise to all of them.
+  - **Opt-in recency ranking** — `MCP_SEARCH_RECENCY_WEIGHT` (default **0**,
+    i.e. off; 0.25 recommended) and `MCP_SEARCH_RECENCY_HALFLIFE_DAYS` (default
+    30), overridable per request with `recency_weight`. The boost is
+    **multiplicative**, so it re-orders notes that already matched and can never
+    surface one that did not. Age comes from frontmatter `updated_at` / `date`
+    before filesystem mtime, because `git clone` rewrites mtime and both the
+    vault and the log repo are git-synced.
+  - **New filters** on `search_documents`: `path_prefix` (matched against the
+    on-disk path, without the `<root>:` prefix), `root`, and
+    `updated_after` / `updated_before` ISO 8601 bounds. An unparseable date
+    bound is rejected rather than silently ignored.
+  - **`order`** — `relevance` / `recent` / `path`. Defaults preserve today's
+    behavior: `relevance` with a query, `path` without one.
+  - **Two-window snippets.** Up to two passages, chosen to cover distinct query
+    terms and joined with ` … `; a single window often lands on a passing
+    mention while the passage that answers the query sits further down.
+  - **`explain`** returns a per-signal `score_breakdown`
+    (`title` / `path` / `tags` / `body` / `phrase` / `recency`) that sums to
+    `score` — the instrument for tuning weights and measuring the round-trip
+    KPI later.
+  - **Derived-text cache.** The folded and whitespace-collapsed body is computed
+    once when a file is parsed and carried on the cached document, invalidated
+    by the same mtime+size signature as the parse. This removes the per-query
+    fold of the whole corpus, which was the search path's dominant cost once
+    megabyte-scale session archives are in the vault. It is internal: the public
+    document projection is an allowlist, so it never reaches a client.
 - **Context-engineering proposal (docs only, no runtime change)** —
   [`docs/context-engineering.md`](./docs/context-engineering.md), a
   survey-based design for evolving the read plane from "search API" to
