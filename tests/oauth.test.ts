@@ -88,7 +88,14 @@ async function oauthObtainToken(issuer: string, scope: string): Promise<string> 
 
 async function listToolNamesOverHttp(issuer: string, token: string): Promise<string[]> {
   const transport = new StreamableHTTPClientTransport(new URL(`${issuer}/mcp`), {
-    requestInit: { headers: { authorization: `Bearer ${token}` } }
+    // `connection: close` keeps these requests out of the client's keep-alive
+    // pool. The restart test below stops a server and starts a new one on the
+    // SAME port (the port is baked into the issuer the token is audience-bound
+    // to), so a pooled socket would point at an address the new server now
+    // owns: the next request can be dispatched onto the dead connection before
+    // the client notices it closed, failing with "other side closed"
+    // (UND_ERR_SOCKET). Not pooling removes the race rather than narrowing it.
+    requestInit: { headers: { authorization: `Bearer ${token}`, connection: "close" } }
   });
   const client = new Client({ name: "scope-test", version: "0.0.0" });
   await client.connect(transport);
@@ -876,6 +883,11 @@ describe("OAuth end-to-end over HTTP", () => {
     expect(await listToolNamesOverHttp(issuer, accessToken)).toContain("search");
 
     // "Restart": stop the server and start a fresh one on the same state file.
+    // Destroying the sockets rather than letting them idle out makes the
+    // teardown deterministic, and it keeps this test honest: if the no-pooling
+    // header above is ever dropped, the reused connection is provably dead and
+    // this fails on every run instead of flaking occasionally on CI.
+    server.closeAllConnections();
     await new Promise<void>((resolve) => server!.close(() => resolve()));
     server = await startHttpServer(store, config);
 
