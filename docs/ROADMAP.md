@@ -175,19 +175,73 @@ sessions that resolution moves to per-request, which `createMcpHandler`'s
 per-request factory models cleanly, but every boundary test in
 `tests/httpServer.test.ts` / `tests/oauth.test.ts` has to be re-pinned.
 
-**DNS-rebinding protection needs its own migration step — and a look now.** The
-three options `src/httpServer.ts` passes to the transport today
-(`enableDnsRebindingProtection` / `allowedHosts` / `allowedOrigins`) are all
-marked `@deprecated` in the SDK, pointing at external middleware instead
-(`server/middleware/hostHeaderValidation.js`); the same options are deprecated
-on the SSE transport. That they still _exist_ under the same names in v2 proves
-nothing about whether the check still runs on every request, so this must be
-re-established rather than assumed: identify the v2 adapter or middleware that
-actually enforces host/origin validation per request, wire it explicitly, and
-pin it with a regression test that drives hostile `Host` and `Origin` headers
-through the real handler. Worth a check **before** any migration, since the
-deprecated path is what protects the loopback bind today. `src/index.ts` (stdio)
-changes to `serveStdio()` and can lag the HTTP side.
+**DNS-rebinding protection is a prerequisite, not a sub-task of this migration**
+— it has its own section below, and that work stands on its own whether or not
+the v2 move ever happens. Do not assume the boundary survives because the option
+names still exist in v2; the check has to be re-established against whatever
+enforces it there. `src/index.ts` (stdio) changes to `serveStdio()` and can lag
+the HTTP side.
+
+### DNS-rebinding protection is on a deprecated API — _pin it, then move it_ 🔭
+
+INV-6 item 3 is currently enforced by three `StreamableHTTPServerTransport`
+options that `src/httpServer.ts` passes today —
+`enableDnsRebindingProtection` / `allowedHosts` / `allowedOrigins`. **All three
+are marked `@deprecated` in the SDK**, which points at the
+`server/middleware/hostHeaderValidation.js` middleware instead. The same options
+carry the same deprecation on the SSE transport.
+
+**This is not a live hole — say that plainly.** At the pinned
+`@modelcontextprotocol/sdk` 1.29.0 the options still fully enforce:
+`validateRequestHeaders` reads all three and returns a 403 on a bad `Host`.
+`loadHttpConfig` never leaves `allowedHosts` empty (it defaults to
+`<host>:<port>` + `localhost:<port>` and appends the public URL's host when
+`MCP_HTTP_PUBLIC_URL` is set), so the Host check really does run in every
+deployment. Deprecated is not removed. What follows is about keeping it that way.
+
+Two real problems, in the order they should be fixed:
+
+1. **Nothing pins the behaviour, so its removal would be silent 🔭 — do this
+   first, it is the cheap half.** There is no test anywhere that drives a hostile
+   `Host` or `Origin` header; worse, the HTTP integration suite constructs its
+   config with `allowedHosts: []` / `allowedOrigins: []`
+   (`tests/httpServer.test.ts`), so those tests run with host validation inert.
+   Meanwhile `package.json` floats on `^1.17.4` and Dependabot bumps weekly. A
+   routine dependency bump that drops the deprecated path would therefore take
+   INV-6 item 3 with it and **every test would still pass**. Add a regression
+   test that starts the real server with a populated `allowedHosts`, sends a
+   forged `Host` (and a listed vs. unlisted `Origin`), and asserts the 403 —
+   independent of any migration. That single test converts an invisible
+   dependency risk into a visible one.
+2. **Then migrate off the deprecated options — but it is not a drop-in swap 🔭.**
+   Two mismatches make a naive port wrong rather than merely tedious:
+   - **Port semantics differ.** The transport option compares the `Host` header
+     _exactly, including the port_ (`allowedHosts.includes(hostHeader)`, entries
+     like `127.0.0.1:8787`), while `hostHeaderValidation(allowedHostnames)`
+     validates the **hostname only, port-agnostic** and documents its input as
+     hostnames _without_ ports. `MCP_HTTP_ALLOWED_HOSTS` currently carries
+     `host:port` values, so handing the existing list straight to the middleware
+     matches nothing. The env contract has to be migrated deliberately, or the
+     values stripped at the boundary — and the operator-facing docs in
+     [`operations.md`](./operations.md) updated to match.
+   - **The middleware is Express-shaped.** It returns an Express
+     `RequestHandler`, and this server is plain `node:http` with no Express in
+     the dependency tree. So it cannot simply be `app.use()`-d; it needs a small
+     adapter, or an equivalent check written against `http.IncomingMessage` and
+     pinned by the test from (1).
+
+   Note the current Origin posture while you are in there, and decide it
+   deliberately rather than inheriting it: `allowedOrigins` defaults to empty
+   (so the Origin check is skipped unless `MCP_HTTP_ALLOWED_ORIGINS` is set), and
+   even when populated the transport only rejects a **present but unlisted**
+   Origin — a request with no `Origin` header passes. That is defensible for a
+   bearer-authed, non-browser client, but it should be a recorded decision.
+
+**Doc coupling:** INV-6 item 3 in
+[`mcp-vault-security`](../.claude/skills/mcp-vault-security/SKILL.md) and the
+skill-firing row in [`CLAUDE.md`](../CLAUDE.md) both name the transport options
+by name. Whichever PR moves the mechanism must update both in the same change,
+or the canon will describe an API the code no longer uses.
 
 ### Exact-path document creation — _safe write-back_ ✅
 
@@ -320,6 +374,18 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       vault, `--unshare-all`, `--clearenv`, secrets invisible by construction),
       the Ubuntu 23.10+/24.04 AppArmor/userns caveat, and "prefer systemd for
       the daemon" guidance.
+- [ ] **Regression test for DNS-rebinding (INV-6 item 3)** — start the real
+      server with a populated `allowedHosts`, forge the `Host` header, assert the
+      403; cover listed vs. unlisted `Origin` too. Today nothing pins this and
+      the HTTP suite runs with `allowedHosts: []`, so a Dependabot bump that
+      drops the deprecated transport options would remove the protection with a
+      fully green test run. Cheapest item on this list and it guards an
+      **existing** invariant — do it before adding new ones.
+- [ ] **Migrate off the deprecated DNS-rebinding transport options** — see the
+      section above; not a drop-in (middleware is port-agnostic and Express-shaped,
+      our config carries `host:port` and we run plain `node:http`). Update INV-6
+      item 3 in the `mcp-vault-security` skill, the `CLAUDE.md` firing row, and
+      the `MCP_HTTP_ALLOWED_HOSTS` docs in `operations.md` in the same PR.
 - [ ] **RFC 9207 `iss` in the authorization response** (`src/oauth/`) — cheapest
       slice of the 2026-07-28 authorization hardening; closes AS mix-up and needs
       no transport migration. Do this **before** the audit log: the same revision
