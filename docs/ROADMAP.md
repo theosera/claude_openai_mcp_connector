@@ -166,7 +166,7 @@ below before caching any listing. **Do not adopt this for speed.**
 
 The reasons to adopt it anyway, in cost/benefit order:
 
-1. **Authorization hardening (cheapest, transport-independent) 🔭** — SEP-2468
+1. **Authorization hardening (cheapest, transport-independent) ✅** — SEP-2468
    applies RFC 9207 to close authorization-server mix-up. Note which half is
    ours: we are the **AS**, so our work is that an AS _SHOULD_ include `iss` in
    authorization responses (including error responses) and, if it does, _MUST_
@@ -425,24 +425,32 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       vault, `--unshare-all`, `--clearenv`, secrets invisible by construction),
       the Ubuntu 23.10+/24.04 AppArmor/userns caveat, and "prefer systemd for
       the daemon" guidance.
-- [ ] **Regression test for DNS-rebinding (INV-6 item 3)** — start the real
-      server with a populated `allowedHosts`, forge the `Host` header, assert the
-      403; cover listed vs. unlisted `Origin` too. Today nothing pins this and
-      the HTTP suite runs with `allowedHosts: []`, so a Dependabot bump that
-      drops the deprecated transport options would remove the protection with a
-      fully green test run. Cheapest item on this list and it guards an
-      **existing** invariant — do it before adding new ones.
+- [x] **Regression test for DNS-rebinding (INV-6 item 3)** — ✅ pinned in
+      `tests/httpServer.test.ts`: forged `Host` (sent via `node:http` — `fetch`
+      silently drops it) → 403 with a genuine-Host control, allow-listed vs.
+      unlisted `Origin` on a server with `allowedOrigins` populated, and the
+      absent-Origin pass-through pinned **as a named compatibility baseline**
+      (a revisitable decision, not an invariant — flipping it to reject is a
+      deliberate design change that updates the test alongside). Red-green
+      verified: disabling `enableDnsRebindingProtection` fails exactly the two
+      boundary tests. A dependency bump that drops the deprecated transport
+      options now fails loudly instead of silently removing the protection.
 - [ ] **Migrate off the deprecated DNS-rebinding transport options** — see the
       section above; not a drop-in (middleware is port-agnostic and Express-shaped,
       our config carries `host:port` and we run plain `node:http`). Update INV-6
       item 3 in the `mcp-vault-security` skill, the `CLAUDE.md` firing row, and
       the `MCP_HTTP_ALLOWED_HOSTS` docs in `operations.md` in the same PR.
-- [ ] **RFC 9207 `iss` in the authorization response** (`src/oauth/`) — cheapest
-      slice of the 2026-07-28 authorization hardening; closes AS mix-up and needs
-      no transport migration. Do this **before** the audit log: the same revision
-      deprecates DCR for CIMD, which makes `client_id` a *stable* identity and so
-      invalidates a stated premise of the `client_id` appendix that the audit
-      log's attribution design leans on.
+- [x] **RFC 9207 `iss` in the authorization response** (`src/oauth/`) — ✅ the
+      `authorizePost` success redirect (the only redirect the AS emits — error
+      paths render a 400 page precisely so codes cannot leak via redirects, so
+      "iss on error responses" is N/A by construction) now carries
+      `iss=<issuer>`, and `authorizationServerMetadata()` advertises
+      `authorization_response_iss_parameter_supported: true` — the pair changes
+      together per SEP-2468. Pinned in `tests/oauth.test.ts` (code-issuance
+      redirect, metadata flag, and the HTTP E2E). The sequencing note stands:
+      the same revision deprecates DCR for CIMD, which makes `client_id` a
+      *stable* identity — revisit the `client_id` appendix **before** building
+      the audit log's attribution on it.
 - [ ] **Audit log** — append-only, content-free events (who searched / fetched /
       wrote what, no note bodies) — the largest security follow-up, and still the
       one that most improves the posture; it now sits **second** because the

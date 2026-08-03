@@ -111,6 +111,8 @@ export class OAuthProvider {
       grant_types_supported: ["authorization_code", "refresh_token"],
       code_challenge_methods_supported: ["S256"],
       token_endpoint_auth_methods_supported: ["none"],
+      // RFC 9207: emitted iss MUST be advertised (paired with authorizePost).
+      authorization_response_iss_parameter_supported: true,
       scopes_supported: this.grantableScopes
     });
   }
@@ -208,6 +210,12 @@ export class OAuthProvider {
     if (check.params.state) {
       location.searchParams.set("state", check.params.state);
     }
+    // RFC 9207 (MCP SEP-2468): bind the response to this AS so a client talking
+    // to several servers cannot be mix-up-attacked into redeeming the code at
+    // the wrong one. Advertising support in the metadata is mandatory once iss
+    // is emitted — the two must change together. Error paths never redirect
+    // (they render a 400 page), so this is the only response carrying iss.
+    location.searchParams.set("iss", this.config.issuer);
     return { status: 302, headers: { location: location.toString() }, body: "" };
   }
 
