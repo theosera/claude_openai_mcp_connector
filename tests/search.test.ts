@@ -255,3 +255,270 @@ describe("resolveRelativeLink", () => {
     expect(resolveRelativeLink(`../${decomposed}`, "notes/a.md")).toBe(composed);
   });
 });
+
+describe("CJK query segmentation", () => {
+  it("finds a note that spells the phrase with a particle in the middle", () => {
+    // Typed as one whitespace token, `検索エンジン設計` is a single substring and
+    // never matches `検索エンジンの設計`. Segmenting the query gives each word its
+    // own chance to hit.
+    const documents = [
+      makeDocument({ relativePath: "a.md", body: "この文書は検索エンジンの設計について述べる" }),
+      makeDocument({ relativePath: "b.md", body: "無関係な話題" })
+    ];
+
+    const response = searchDocuments(documents, { query: "検索エンジン設計" });
+    expect(response.total_count).toBe(1);
+    expect(response.results[0].path).toBe("a.md");
+  });
+
+  it("ranks the verbatim phrase above scattered pieces", () => {
+    const documents = [
+      makeDocument({ relativePath: "scattered.md", body: "検索の話。別の段落でエンジンと設計に触れる" }),
+      makeDocument({ relativePath: "exact.md", body: "検索エンジン設計の総論" })
+    ];
+
+    const [first, second] = searchDocuments(documents, { query: "検索エンジン設計", explain: true }).results;
+    expect(first.path).toBe("exact.md");
+    expect(first.score_breakdown?.phrase).toBeGreaterThan(0);
+    expect(second.score_breakdown?.phrase).toBe(0);
+  });
+
+  it("does not add a bare particle as its own term", () => {
+    // `の` occurs in almost every Japanese note, so scoring it would add noise to
+    // every document without distinguishing any of them.
+    const documents = [
+      makeDocument({ relativePath: "unrelated.md", body: "これはの助詞だけを含む無関係な本文" }),
+      makeDocument({ relativePath: "hit.md", body: "日本語のテストを書く" })
+    ];
+
+    const response = searchDocuments(documents, { query: "日本語のテスト" });
+    expect(response.results.map((r) => r.path)).toEqual(["hit.md"]);
+  });
+
+  it("leaves an ASCII query tokenizing exactly as before", () => {
+    const documents = [
+      makeDocument({
+        relativePath: "notes/retrieval.md",
+        title: "Retrieval",
+        frontmatter: { tags: ["retrieval"] },
+        body: "retrieval retrieval"
+      })
+    ];
+
+    // 10 (title) + 5 (tag) + 4 (path) + 2 (body) — no phrase bonus for a single term.
+    expect(searchDocuments(documents, { query: "retrieval" }).results[0].score).toBe(21);
+  });
+});
+
+describe("recency ranking", () => {
+  const now = Date.parse("2026-08-03T00:00:00.000Z");
+  // Path order and recency order deliberately disagree, so a passing assertion
+  // cannot be an accident of the alphabetical tie-break.
+  const documents = [
+    makeDocument({
+      relativePath: "a-old.md",
+      body: "retrieval",
+      frontmatter: { updated_at: "2024-01-01T00:00:00.000Z" }
+    }),
+    makeDocument({
+      relativePath: "z-new.md",
+      body: "retrieval",
+      frontmatter: { updated_at: "2026-08-01T00:00:00.000Z" }
+    })
+  ];
+
+  it("is off by default, so an upgrade re-orders nothing", () => {
+    const response = searchDocuments(documents, { query: "retrieval" }, { now });
+    expect(response.results.map((r) => r.path)).toEqual(["a-old.md", "z-new.md"]);
+    expect(response.results[0].score).toBe(response.results[1].score);
+  });
+
+  it("favours the recent note once the operator opts in", () => {
+    const response = searchDocuments(documents, { query: "retrieval" }, { now, recencyWeight: 0.25 });
+    expect(response.results.map((r) => r.path)).toEqual(["z-new.md", "a-old.md"]);
+  });
+
+  it("lets a request switch it back off", () => {
+    const response = searchDocuments(
+      documents,
+      { query: "retrieval", recency_weight: 0 },
+      { now, recencyWeight: 0.25 }
+    );
+    expect(response.results.map((r) => r.path)).toEqual(["a-old.md", "z-new.md"]);
+  });
+
+  it("never resurrects a document that matched nothing", () => {
+    const withMiss = [
+      ...documents,
+      makeDocument({
+        relativePath: "zz-newest.md",
+        body: "totally unrelated",
+        frontmatter: { updated_at: "2026-08-02T00:00:00.000Z" }
+      })
+    ];
+
+    const response = searchDocuments(withMiss, { query: "retrieval" }, { now, recencyWeight: 1 });
+    expect(response.total_count).toBe(2);
+    expect(response.results.map((r) => r.path)).not.toContain("zz-newest.md");
+  });
+
+  it("prefers frontmatter timestamps over filesystem mtime, which git rewrites", () => {
+    const documents = [
+      makeDocument({
+        relativePath: "stamped.md",
+        body: "retrieval",
+        frontmatter: { updated_at: "2024-01-01T00:00:00.000Z" },
+        // A fresh clone makes mtime "now" for a note written years ago.
+        stats: { sizeBytes: 10, modifiedAt: "2026-08-03T00:00:00.000Z" }
+      }),
+      makeDocument({
+        relativePath: "untouched.md",
+        body: "retrieval",
+        stats: { sizeBytes: 10, modifiedAt: "2026-07-01T00:00:00.000Z" }
+      })
+    ];
+
+    const response = searchDocuments(documents, { query: "retrieval", order: "recent" }, { now });
+    expect(response.results.map((r) => r.path)).toEqual(["untouched.md", "stamped.md"]);
+  });
+
+  it("falls back to mtime when the frontmatter timestamp is unparseable", () => {
+    const documents = [
+      makeDocument({
+        relativePath: "broken.md",
+        body: "retrieval",
+        frontmatter: { updated_at: "not-a-date" },
+        stats: { sizeBytes: 10, modifiedAt: "2026-08-02T00:00:00.000Z" }
+      })
+    ];
+
+    const response = searchDocuments(documents, { query: "retrieval", order: "recent" }, { now, recencyWeight: 0.5 });
+    expect(response.results).toHaveLength(1);
+    expect(Number.isFinite(response.results[0].score)).toBe(true);
+  });
+});
+
+describe("search filters and ordering", () => {
+  const documents = [
+    makeDocument({ relativePath: "projects/a.md", body: "term", frontmatter: { updated_at: "2026-01-01" } }),
+    makeDocument({ relativePath: "inbox/b.md", body: "term", frontmatter: { updated_at: "2026-06-01" } }),
+    makeDocument({
+      relativePath: "ops:logs/c.md",
+      body: "term",
+      root: "ops",
+      frontmatter: { updated_at: "2026-03-01" }
+    })
+  ];
+
+  it("scopes by path prefix, matching the on-disk path in multi-root mode", () => {
+    expect(searchDocuments(documents, { query: "term", path_prefix: "projects/" }).results.map((r) => r.path)).toEqual([
+      "projects/a.md"
+    ]);
+    // The `ops:` routing prefix is not part of the path a user would type.
+    expect(searchDocuments(documents, { query: "term", path_prefix: "logs/" }).results.map((r) => r.path)).toEqual([
+      "ops:logs/c.md"
+    ]);
+  });
+
+  it("scopes by knowledge root", () => {
+    expect(searchDocuments(documents, { query: "term", root: "ops" }).results.map((r) => r.path)).toEqual([
+      "ops:logs/c.md"
+    ]);
+  });
+
+  it("bounds by date range on the effective timestamp", () => {
+    expect(
+      searchDocuments(documents, { query: "term", updated_after: "2026-02-01" }).results.map((r) => r.path)
+    ).toEqual(["inbox/b.md", "ops:logs/c.md"]);
+    expect(
+      searchDocuments(documents, { query: "term", updated_after: "2026-02-01", updated_before: "2026-04-01" }).results
+    ).toHaveLength(1);
+  });
+
+  it("rejects an unparseable date bound instead of silently ignoring it", () => {
+    expect(() => searchDocuments(documents, { query: "term", updated_before: "last tuesday" })).toThrow(/ISO 8601/);
+  });
+
+  it("orders by path, recency, or relevance on request", () => {
+    expect(searchDocuments(documents, { query: "term", order: "path" }).results.map((r) => r.path)).toEqual([
+      "inbox/b.md",
+      "ops:logs/c.md",
+      "projects/a.md"
+    ]);
+    expect(searchDocuments(documents, { query: "term", order: "recent" }).results.map((r) => r.path)).toEqual([
+      "inbox/b.md",
+      "ops:logs/c.md",
+      "projects/a.md"
+    ]);
+  });
+
+  it("keeps the empty query on path order unless recency is enabled", () => {
+    expect(searchDocuments(documents, { query: "" }).results.map((r) => r.path)).toEqual([
+      "inbox/b.md",
+      "ops:logs/c.md",
+      "projects/a.md"
+    ]);
+    expect(searchDocuments(documents, { query: "" }, { recencyWeight: 0.25 }).results.map((r) => r.path)).toEqual([
+      "inbox/b.md",
+      "ops:logs/c.md",
+      "projects/a.md"
+    ]);
+  });
+});
+
+describe("snippets and explain", () => {
+  it("emits two windows when matches sit far apart", () => {
+    const body = `alpha ${"filler ".repeat(120)}omega tail`;
+    const documents = [makeDocument({ relativePath: "far.md", body })];
+
+    const snippet = searchDocuments(documents, { query: "alpha omega" }).results[0].snippet;
+    expect(snippet).toContain(" … ");
+    expect(snippet).toContain("alpha");
+    expect(snippet).toContain("omega");
+  });
+
+  it("does not repeat a window when the matches are adjacent", () => {
+    const documents = [makeDocument({ relativePath: "near.md", body: "alpha omega, then a long tail of prose." })];
+
+    const snippet = searchDocuments(documents, { query: "alpha omega" }).results[0].snippet;
+    expect(snippet).not.toContain(" … ");
+  });
+
+  it("returns a score_breakdown only when asked, and it sums to the score", () => {
+    const documents = [
+      makeDocument({
+        relativePath: "notes/retrieval.md",
+        title: "Retrieval",
+        frontmatter: { tags: ["retrieval"], updated_at: "2026-08-01T00:00:00.000Z" },
+        body: "retrieval retrieval"
+      })
+    ];
+    const defaults = { now: Date.parse("2026-08-03T00:00:00.000Z"), recencyWeight: 0.25 };
+
+    expect(searchDocuments(documents, { query: "retrieval" }, defaults).results[0].score_breakdown).toBeUndefined();
+
+    const [result] = searchDocuments(documents, { query: "retrieval", explain: true }, defaults).results;
+    const breakdown = result.score_breakdown!;
+    const summed =
+      breakdown.title + breakdown.path + breakdown.tags + breakdown.body + breakdown.phrase + breakdown.recency;
+    expect(summed).toBeCloseTo(result.score, 10);
+    expect(breakdown.recency).toBeGreaterThan(0);
+  });
+});
+
+describe("derived search text", () => {
+  it("uses the cached folded body when present and agrees with computing it live", () => {
+    const body = "ＭＣＰ コネクタ";
+    const live = makeDocument({ relativePath: "live.md", body });
+    const cached = makeDocument({
+      relativePath: "cached.md",
+      body,
+      searchDerived: { foldedBody: normalizeForMatch(body), compactBody: body }
+    });
+
+    const liveHit = searchDocuments([live], { query: "mcp" });
+    const cachedHit = searchDocuments([cached], { query: "mcp" });
+    expect(cachedHit.total_count).toBe(liveHit.total_count);
+    expect(cachedHit.results[0].score).toBe(liveHit.results[0].score);
+  });
+});

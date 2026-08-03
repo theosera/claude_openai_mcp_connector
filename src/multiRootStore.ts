@@ -12,6 +12,7 @@ import type {
   PlannedDocumentCreate,
   PlannedPatch,
   ProjectSummary,
+  SearchDefaults,
   SearchResponse,
   TraceResult,
   VaultStore
@@ -31,7 +32,13 @@ import type {
 export class MultiRootStore implements VaultStore {
   private readonly entries: Array<{ name: string; store: KnowledgeStore }>;
 
+  private readonly searchDefaults: SearchDefaults;
+
   constructor(config: AppConfig) {
+    this.searchDefaults = {
+      recencyWeight: config.searchRecencyWeight,
+      recencyHalfLifeDays: config.searchRecencyHalfLifeDays
+    };
     this.entries = config.knowledgeRoots.map((root, index) => ({
       name: root.name,
       store: new KnowledgeStore({
@@ -71,7 +78,7 @@ export class MultiRootStore implements VaultStore {
 
   async search(filters: SearchFilters): Promise<SearchResponse> {
     // Rank across ALL roots in one pass so the limit applies globally.
-    return searchDocuments(await this.listDocuments(), filters);
+    return searchDocuments(await this.listDocuments(), filters, this.searchDefaults);
   }
 
   async listDocuments(): Promise<MarkdownDocument[]> {

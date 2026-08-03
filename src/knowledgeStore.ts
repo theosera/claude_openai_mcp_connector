@@ -4,7 +4,8 @@ import path from "node:path";
 import { createTwoFilesPatch } from "diff";
 import { assertFrontmatterPatch, parseMarkdownSafe, serializeMarkdown, titleFromMarkdown } from "./frontmatter.js";
 import { extractAllLocalLinks, extractMarkdownLinks, resolveRelativeLink } from "./markdownLinks.js";
-import { searchDocuments, type SearchFilters } from "./search.js";
+import { compactWhitespace, searchDocuments, type SearchFilters } from "./search.js";
+import { normalizeForMatch } from "./searchText.js";
 import type { StoreConfig } from "./config.js";
 import type {
   DocumentMetadata,
@@ -13,6 +14,7 @@ import type {
   PlannedDocumentCreate,
   PlannedPatch,
   ProjectSummary,
+  SearchDefaults,
   SearchResponse,
   TraceResult,
   VaultStore
@@ -93,7 +95,14 @@ export class KnowledgeStore implements VaultStore {
   }
 
   async search(filters: SearchFilters): Promise<SearchResponse> {
-    return searchDocuments(await this.listDocuments(), filters);
+    return searchDocuments(await this.listDocuments(), filters, this.searchDefaults());
+  }
+
+  private searchDefaults(): SearchDefaults {
+    return {
+      recencyWeight: this.config.searchRecencyWeight,
+      recencyHalfLifeDays: this.config.searchRecencyHalfLifeDays
+    };
   }
 
   async fetch(idOrPath: string): Promise<MarkdownDocument> {
@@ -434,6 +443,14 @@ export class KnowledgeStore implements VaultStore {
         frontmatter: parsed.frontmatter,
         body: parsed.body,
         title: titleFromMarkdown(relativePath, parsed.frontmatter, parsed.body),
+        // Derived once here, on the same cache-miss path as the parse, and
+        // invalidated by the same mtime+size signature. Folding every body on
+        // every query is the search path's dominant cost once megabyte-scale
+        // notes (session archives) are in the vault.
+        searchDerived: {
+          foldedBody: normalizeForMatch(parsed.body),
+          compactBody: compactWhitespace(parsed.body)
+        },
         stats: {
           sizeBytes: stats.size,
           modifiedAt: stats.mtime.toISOString()

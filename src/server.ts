@@ -91,14 +91,33 @@ export function buildMcpServer(store: VaultStore, options: BuildServerOptions): 
     "search_documents",
     {
       title: "Search Markdown documents",
-      description: "Search Markdown documents in the private knowledge vault.",
+      description:
+        "Search Markdown documents in the private knowledge vault. Returns { results, total_count, offset, limit }; total_count is the match count before limit, so a truncated page is visible without re-querying.",
       inputSchema: {
         query: z.string().default(""),
         client: z.string().optional(),
         project: z.string().optional(),
         tags: z.array(z.string()).optional(),
         limit: z.number().int().min(1).max(50).optional(),
-        offset: z.number().int().min(0).optional()
+        offset: z.number().int().min(0).optional(),
+        path_prefix: z
+          .string()
+          .optional()
+          .describe("Only documents whose vault-relative path starts with this prefix, e.g. 'projects/'."),
+        root: z.string().optional().describe("Only documents from this named knowledge root (multi-root setups)."),
+        updated_after: z.string().optional().describe("ISO 8601 lower bound on the document's effective timestamp."),
+        updated_before: z.string().optional().describe("ISO 8601 upper bound on the document's effective timestamp."),
+        order: z
+          .enum(["relevance", "recent", "path"])
+          .optional()
+          .describe("Ranking order; defaults to relevance for a query and path for an empty one."),
+        recency_weight: z
+          .number()
+          .min(0)
+          .max(1)
+          .optional()
+          .describe("How strongly to favour recent notes (0 disables it). Overrides the server default."),
+        explain: z.boolean().optional().describe("Include a per-signal score_breakdown on every result.")
       },
       // Pure read: advertise it so clients (e.g. Claude.ai) can skip the
       // per-call "allow this tool?" prompt they otherwise show for every call.

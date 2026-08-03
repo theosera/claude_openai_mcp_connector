@@ -25,6 +25,14 @@ export interface AppConfig {
   auditSubdir?: string;
   /** Max Markdown files opened concurrently during a scan (bounds FD pressure). */
   scanConcurrency?: number;
+  /**
+   * How strongly recency boosts a search hit (0 = off, the default, so an
+   * upgrade changes no ranking until an operator opts in). Applied
+   * multiplicatively, so it re-orders matches without surfacing non-matches.
+   */
+  searchRecencyWeight?: number;
+  /** Half-life in days for that boost. */
+  searchRecencyHalfLifeDays?: number;
 }
 
 /** Config for a single-root KnowledgeStore instance. */
@@ -37,6 +45,9 @@ export interface StoreConfig {
   auditSubdir?: string;
   /** Max Markdown files opened concurrently during a scan (bounds FD pressure). */
   scanConcurrency?: number;
+  /** Operator-level recency ranking defaults; see AppConfig. */
+  searchRecencyWeight?: number;
+  searchRecencyHalfLifeDays?: number;
 }
 
 // Root names become id/path prefixes (`name:relative/path`) in multi-root
@@ -78,14 +89,27 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const scanConcurrency =
     Number.isInteger(parsedScanConcurrency) && parsedScanConcurrency > 0 ? parsedScanConcurrency : undefined;
 
+  // Recency ranking is opt-in. Left undefined (the search layer applies its own
+  // default of 0 = off) unless a usable number is supplied, so a malformed value
+  // degrades to "unchanged ranking" rather than to a surprising one.
+  const searchRecencyWeight = parsePositiveNumber(env.MCP_SEARCH_RECENCY_WEIGHT);
+  const searchRecencyHalfLifeDays = parsePositiveNumber(env.MCP_SEARCH_RECENCY_HALFLIFE_DAYS);
+
   return {
     knowledgeRoots,
     writeMode,
     patchStateDir: path.resolve(env.MCP_PATCH_STATE_DIR?.trim() || ".mcp-state/patches"),
     skillsSubdir,
     auditSubdir,
-    scanConcurrency
+    scanConcurrency,
+    searchRecencyWeight,
+    searchRecencyHalfLifeDays
   };
+}
+
+function parsePositiveNumber(raw: string | undefined): number | undefined {
+  const parsed = Number.parseFloat(raw?.trim() || "");
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 /**

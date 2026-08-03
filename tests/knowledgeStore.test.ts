@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { isTransientFsError, KnowledgeStore, mapWithConcurrency } from "../src/knowledgeStore.js";
+import { toPublicDocument } from "../src/server.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -405,6 +406,47 @@ describe("KnowledgeStore", () => {
         reason: "nested metadata attempt"
       })
     ).rejects.toThrow(/array of strings/);
+  });
+
+  it("caches derived search text at parse time and keeps it out of client payloads", async () => {
+    const [document] = await store.listDocuments();
+
+    // Folding every body on every query is the search path's dominant cost, so
+    // it is derived once here and invalidated by the same mtime+size signature
+    // as the parse itself.
+    expect(document.searchDerived?.foldedBody).toBe(document.body.normalize("NFKC").toLowerCase());
+    expect(document.searchDerived?.compactBody).toBe(document.body.replace(/\s+/g, " ").trim());
+
+    // Internal only: the public projection is an allowlist, so it never ships.
+    expect(toPublicDocument(document)).not.toHaveProperty("searchDerived");
+    expect(toPublicDocument(document)).not.toHaveProperty("absolutePath");
+  });
+
+  it("applies operator recency defaults from config", async () => {
+    await fs.writeFile(
+      path.join(root, "zz-recent.md"),
+      '---\ntitle: Recent\nupdated_at: "2026-08-01T00:00:00.000Z"\n---\n\nRECENCYPROBE body\n',
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(root, "aa-stale.md"),
+      '---\ntitle: Stale\nupdated_at: "2020-01-01T00:00:00.000Z"\n---\n\nRECENCYPROBE body\n',
+      "utf8"
+    );
+
+    // Default (no env): ranking is untouched, so the alphabetical tie-break wins.
+    const off = await store.search({ query: "RECENCYPROBE" });
+    expect(off.results.map((result) => result.path)).toEqual(["aa-stale.md", "zz-recent.md"]);
+
+    const boosted = new KnowledgeStore({
+      knowledgeRoot: root,
+      writeMode: "two_step",
+      patchStateDir,
+      searchRecencyWeight: 0.5
+    });
+    await boosted.init();
+    const on = await boosted.search({ query: "RECENCYPROBE" });
+    expect(on.results.map((result) => result.path)).toEqual(["zz-recent.md", "aa-stale.md"]);
   });
 
   it("traces source refs and backlinks", async () => {
