@@ -31,11 +31,23 @@ export interface NormalizedWithMap {
 }
 
 /**
- * Chunked normalization: one base code point plus any following combining marks
- * (`\p{M}`) is folded as a unit, so decomposed sequences still compose (NFD
- * `か` + U+3099 → `が`, the macOS filesystem case) while every produced
- * character keeps a source offset. Hangul jamo runs are kept together because
- * L+V+T compose across code points that carry no combining marks.
+ * Chunked normalization: one base code point plus everything that folds onto it
+ * is normalized as a unit, so decomposed sequences still compose (NFD `か` +
+ * U+3099 → `が`, the macOS filesystem case) while every produced character keeps
+ * a source offset.
+ *
+ * A chunk must cover every sequence NFKC would join, or this function disagrees
+ * with `normalizeForMatch` and a snippet cannot find a match that scoring
+ * already counted. Three cases:
+ *
+ * - trailing combining marks (`\p{M}`), grabbed by the pattern;
+ * - Hangul jamo runs, which compose L+V+T across code points that carry no
+ *   combining marks — kept together by the first alternative;
+ * - characters that are not marks themselves but whose compatibility form
+ *   *begins* with one — half-width voiced sound marks (U+FF9E/U+FF9F → U+3099/
+ *   U+309A) are the practical case, so `ｶﾞ` folds to composed `ガ` rather than a
+ *   decomposed pair. These are detected after folding rather than enumerated,
+ *   so the rule holds for any such character.
  *
  * Building the offset map costs an array the length of the folded text, so this
  * runs only for the documents actually returned on a page — scoring uses the
@@ -44,14 +56,23 @@ export interface NormalizedWithMap {
 export function normalizeWithMap(value: string): NormalizedWithMap {
   // Hangul jamo blocks (L/V/T), then "one code point + its combining marks".
   const chunkPattern = /[ᄀ-ᇿꥠ-꥿ힰ-퟿]+|.\p{M}*/gsu;
-  let text = "";
-  const map: number[] = [];
+  const chunks: Array<{ source: string; index: number }> = [];
 
   for (const match of value.matchAll(chunkPattern)) {
-    const folded = normalizeForMatch(match[0]);
-    const sourceIndex = match.index;
+    const previous = chunks[chunks.length - 1];
+    if (previous && /^\p{M}/u.test(normalizeForMatch(match[0]))) {
+      previous.source += match[0];
+      continue;
+    }
+    chunks.push({ source: match[0], index: match.index });
+  }
+
+  let text = "";
+  const map: number[] = [];
+  for (const chunk of chunks) {
+    const folded = normalizeForMatch(chunk.source);
     for (let i = 0; i < folded.length; i += 1) {
-      map.push(sourceIndex);
+      map.push(chunk.index);
     }
     text += folded;
   }

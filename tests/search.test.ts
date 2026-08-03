@@ -96,6 +96,30 @@ describe("normalizeWithMap", () => {
     expect(normalized.map).toEqual([0]);
     expect(normalizeForMatch(source)).toBe("が");
   });
+  it("agrees with normalizeForMatch on half-width voiced kana", () => {
+    // U+FF9E is a modifier letter, not a combining mark, so \p{M} does not catch
+    // it — but its compatibility form IS one, and NFKC composes the pair. If the
+    // two normalizers disagree here, scoring finds a document whose snippet then
+    // cannot locate the match and falls back to the top of the note.
+    const source = "\uFF76\uFF9E"; // half-width KA + half-width voiced mark
+
+    expect(normalizeWithMap(source).text).toBe(normalizeForMatch(source));
+    expect(normalizeWithMap(source).text).toBe("\u30AC"); // composed KA-voiced
+    expect(normalizeWithMap(source).map).toEqual([0]);
+  });
+
+  it("keeps the folded text and the offset map in step for every input", () => {
+    const sources = ["\uFF76\uFF9E", "\u304B\u3099", "a\uFF22c", "\uFF8A\uFF9F", "plain ascii"];
+    for (const source of sources) {
+      const normalized = normalizeWithMap(source);
+      expect(normalized.text).toBe(normalizeForMatch(source));
+      expect(normalized.map).toHaveLength(normalized.text.length);
+      for (let i = 1; i < normalized.map.length; i += 1) {
+        expect(normalized.map[i]).toBeGreaterThanOrEqual(normalized.map[i - 1]);
+        expect(normalized.map[i]).toBeLessThan(source.length);
+      }
+    }
+  });
 });
 
 describe("search result envelope", () => {
@@ -217,5 +241,17 @@ describe("resolveRelativeLink", () => {
   it("does not escape when climbing back down into the vault", () => {
     // ../ then back in stays contained and must still resolve.
     expect(resolveRelativeLink("../research/other.md", from)).toBe("projects/chatgpt/research/other.md");
+  });
+
+  it("canonicalizes the resolved path to NFC so it can match enumerated paths", () => {
+    // Enumerated relativePath values are NFC (relativeToRoot); an editor on a
+    // decomposing filesystem may write the link decomposed. Without this the
+    // strings differ despite naming the same file.
+    const composed = "ガイド.md".normalize("NFC");
+    const decomposed = composed.normalize("NFD");
+    expect(decomposed).not.toBe(composed);
+
+    expect(resolveRelativeLink(decomposed, "top.md")).toBe(composed);
+    expect(resolveRelativeLink(`../${decomposed}`, "notes/a.md")).toBe(composed);
   });
 });

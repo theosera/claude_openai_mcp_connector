@@ -69,5 +69,11 @@ export function resolveRelativeLink(link: string, fromRelativePath: string): str
     stack.push(segment);
   }
 
-  return stack.length > 0 ? stack.join("/") : null;
+  // Enumerated document paths are canonicalized to NFC (`relativeToRoot`), and a
+  // link may spell a non-ASCII filename decomposed — an editor on a decomposing
+  // filesystem writes it that way. Canonicalize to the same form or the strict
+  // equality the callers use misses a canonically identical name. NFC, not the
+  // search path's NFKC: half-width and full-width names are genuinely different
+  // files, and this value is compared against real paths.
+  return stack.length > 0 ? stack.join("/").normalize("NFC") : null;
 }
