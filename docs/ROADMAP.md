@@ -66,7 +66,7 @@ Improve relevance and ergonomics of `search_documents` / `search`:
   exhausts file descriptors mid-search (`src/knowledgeStore.ts`).
 
 Concretized by the [context-engineering proposal](./context-engineering.md)
-(survey-based, 2026-07) into two slices — flip to 🚧 when the first PR opens:
+(survey-based, 2026-07) into two slices; the first has landed:
 
 - **P0 correctness slice** ✅ — NFKC folding on the search path (`src/searchText.ts`;
   `pathSafety`'s NFC is untouched and stays identity-preserving), `modified_at` /
