@@ -8,6 +8,14 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- The OAuth authorization response now carries the RFC 9207 **`iss`**
+  parameter, and the authorization-server metadata advertises
+  `authorization_response_iss_parameter_supported: true` (MCP SEP-2468,
+  authorization-server mix-up defense). Clients that validate `iss` — as the
+  MCP spec requires — will now reject a code minted by a different issuer
+  before redeeming it. Error paths are unchanged: they deliberately never
+  redirect, so the success redirect remains the only response carrying `iss`.
+
 - Force the transitive **`body-parser`** dependency to **`>= 2.3.0 < 3`** via a
   `pnpm.overrides` entry (patched floor, bounded to the express-compatible
   major), clearing GHSA/CVE-2026-12590 (a low-severity DoS where

@@ -163,7 +163,7 @@ below before caching any listing. **Do not adopt this for speed.**
 
 The reasons to adopt it anyway, in cost/benefit order:
 
-1. **Authorization hardening (cheapest, transport-independent) 🔭** — SEP-2468
+1. **Authorization hardening (cheapest, transport-independent) ✅** — SEP-2468
    applies RFC 9207 to close authorization-server mix-up. Note which half is
    ours: we are the **AS**, so our work is that an AS _SHOULD_ include `iss` in
    authorization responses (including error responses) and, if it does, _MUST_
@@ -437,12 +437,17 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       our config carries `host:port` and we run plain `node:http`). Update INV-6
       item 3 in the `mcp-vault-security` skill, the `CLAUDE.md` firing row, and
       the `MCP_HTTP_ALLOWED_HOSTS` docs in `operations.md` in the same PR.
-- [ ] **RFC 9207 `iss` in the authorization response** (`src/oauth/`) — cheapest
-      slice of the 2026-07-28 authorization hardening; closes AS mix-up and needs
-      no transport migration. Do this **before** the audit log: the same revision
-      deprecates DCR for CIMD, which makes `client_id` a *stable* identity and so
-      invalidates a stated premise of the `client_id` appendix that the audit
-      log's attribution design leans on.
+- [x] **RFC 9207 `iss` in the authorization response** (`src/oauth/`) — ✅ the
+      `authorizePost` success redirect (the only redirect the AS emits — error
+      paths render a 400 page precisely so codes cannot leak via redirects, so
+      "iss on error responses" is N/A by construction) now carries
+      `iss=<issuer>`, and `authorizationServerMetadata()` advertises
+      `authorization_response_iss_parameter_supported: true` — the pair changes
+      together per SEP-2468. Pinned in `tests/oauth.test.ts` (code-issuance
+      redirect, metadata flag, and the HTTP E2E). The sequencing note stands:
+      the same revision deprecates DCR for CIMD, which makes `client_id` a
+      *stable* identity — revisit the `client_id` appendix **before** building
+      the audit log's attribution on it.
 - [ ] **Audit log** — append-only, content-free events (who searched / fetched /
       wrote what, no note bodies) — the largest security follow-up, and still the
       one that most improves the posture; it now sits **second** because the
