@@ -317,10 +317,15 @@ env = { KNOWLEDGE_ROOT = "/abs/path/to/private/vault" }
 
 ## Tools
 
-- `search_documents`
+- `search_documents` — `{ query, client?, project?, tags?, limit?, offset? }` →
+  `{ results, total_count, offset, limit }`. `total_count` is the match count
+  **before** `limit`, so a client can tell "10 hits" from "10 of 400" without
+  re-querying. Queries and note text are folded with NFKC, so half-width /
+  full-width and decomposed / composed forms match each other.
 - `fetch_document`
 - `list_projects`
-- `trace_sources`
+- `trace_sources` — backlinks include relative Markdown links, resolved against
+  the linking note's own directory.
 - `create_document` _(write — stdio, or HTTP only with `MCP_HTTP_ALLOW_WRITE=1`)_
 - `plan_document_create` _(write; exact path, complete-file diff, no target mutation)_
 - `apply_planned_document_create` _(write; exact confirmed path required, create-only)_

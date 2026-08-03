@@ -37,6 +37,28 @@ export interface SearchResult {
   score: number;
   /** Name of the knowledge root the hit came from (multi-root mode only). */
   root?: string;
+  /** Filesystem mtime (ISO 8601). Present on every hit. */
+  modified_at: string;
+  /** Frontmatter `updated_at`, when the note carries one. */
+  updated_at?: string;
+  /**
+   * File size. Lets a caller see that a hit is a megabyte-scale note (a session
+   * archive, say) and reach for a narrower read instead of fetching it whole.
+   */
+  size_bytes: number;
+}
+
+/**
+ * Search results plus the counters a caller needs to know whether it saw
+ * everything. Without `total_count` a client cannot distinguish "10 hits" from
+ * "10 of 400", which is what drives blind re-querying.
+ */
+export interface SearchResponse {
+  results: SearchResult[];
+  /** Matches after filtering, before `offset`/`limit` are applied. */
+  total_count: number;
+  offset: number;
+  limit: number;
 }
 
 export interface ProjectSummary {
@@ -78,6 +100,8 @@ export interface SearchFilters {
   project?: string;
   tags?: string[];
   limit?: number;
+  /** Skip this many ranked matches before taking `limit` (paging). */
+  offset?: number;
 }
 
 export interface CreateDocumentInput {
@@ -119,9 +143,17 @@ export interface TraceResult {
  * MultiRootStore composite. server.ts / chatgpt.ts / httpServer.ts program
  * against this interface so the tool surface is identical either way.
  */
+/**
+ * A document as handed to a client. `absolutePath` is intentionally absent: the
+ * host filesystem layout is server-side detail, and a remote client never needs
+ * it (the ChatGPT adapter has always omitted it). Built by an explicit allowlist
+ * in `server.ts` so a future field on `MarkdownDocument` cannot leak by default.
+ */
+export type PublicDocument = Omit<MarkdownDocument, "absolutePath">;
+
 export interface VaultStore {
   init(): Promise<void>;
-  search(filters: SearchFilters): Promise<SearchResult[]>;
+  search(filters: SearchFilters): Promise<SearchResponse>;
   fetch(idOrPath: string): Promise<MarkdownDocument>;
   listProjects(client?: string, tags?: string[]): Promise<ProjectSummary[]>;
   listDocuments(): Promise<MarkdownDocument[]>;

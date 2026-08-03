@@ -15,4 +15,4 @@ updated_at: "2026-01-02T00:00:00.000Z"
 
 The search layer should rank project titles, frontmatter tags, paths, retrieval terms, and Markdown body text.
 
-[Claude plan](../claude/planning/connector-plan.md)
+[Claude plan](../../claude/planning/connector-plan.md)

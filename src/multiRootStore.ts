@@ -1,7 +1,7 @@
 import path from "node:path";
 import { createTwoFilesPatch } from "diff";
 import { KnowledgeStore } from "./knowledgeStore.js";
-import { extractAllLocalLinks } from "./markdownLinks.js";
+import { extractAllLocalLinks, extractMarkdownLinks, resolveRelativeLink } from "./markdownLinks.js";
 import { searchDocuments, type SearchFilters } from "./search.js";
 import type { AppConfig } from "./config.js";
 import type {
@@ -12,7 +12,7 @@ import type {
   PlannedDocumentCreate,
   PlannedPatch,
   ProjectSummary,
-  SearchResult,
+  SearchResponse,
   TraceResult,
   VaultStore
 } from "./types.js";
@@ -69,7 +69,7 @@ export class MultiRootStore implements VaultStore {
     }
   }
 
-  async search(filters: SearchFilters): Promise<SearchResult[]> {
+  async search(filters: SearchFilters): Promise<SearchResponse> {
     // Rank across ALL roots in one pass so the limit applies globally.
     return searchDocuments(await this.listDocuments(), filters);
   }
@@ -198,9 +198,28 @@ export class MultiRootStore implements VaultStore {
       return candidate.root === document.root && (sameRootTargets.has(link) || sameRootTargets.has(withExtension));
     };
 
+    // A Markdown link is relative to the linking note's directory, and a
+    // directory walk cannot cross into another root — so this only ever matches
+    // within the candidate's own root, on the un-prefixed on-disk paths.
+    const matchesRelativeLink = (candidate: MarkdownDocument, link: string): boolean => {
+      if (candidate.root !== document.root) {
+        return false;
+      }
+      const candidatePath = candidate.relativePath.slice(candidate.relativePath.indexOf(":") + 1);
+      const resolved = resolveRelativeLink(link, candidatePath);
+      if (resolved === null) {
+        return false;
+      }
+      return (resolved.endsWith(".md") ? resolved : `${resolved}.md`) === unprefixedPath;
+    };
+
     const backlinks = documents
       .filter((candidate) => candidate.relativePath !== document.relativePath)
-      .filter((candidate) => extractAllLocalLinks(candidate.body).some((link) => matchesTarget(candidate, link)))
+      .filter(
+        (candidate) =>
+          extractAllLocalLinks(candidate.body).some((link) => matchesTarget(candidate, link)) ||
+          extractMarkdownLinks(candidate.body).some((link) => matchesRelativeLink(candidate, link))
+      )
       .map((candidate) => ({ id: candidate.id, relativePath: candidate.relativePath, title: candidate.title }));
 
     return {

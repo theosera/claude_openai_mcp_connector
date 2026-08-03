@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { createTwoFilesPatch } from "diff";
 import { assertFrontmatterPatch, parseMarkdownSafe, serializeMarkdown, titleFromMarkdown } from "./frontmatter.js";
-import { extractAllLocalLinks } from "./markdownLinks.js";
+import { extractAllLocalLinks, extractMarkdownLinks, resolveRelativeLink } from "./markdownLinks.js";
 import { searchDocuments, type SearchFilters } from "./search.js";
 import type { StoreConfig } from "./config.js";
 import type {
@@ -13,7 +13,7 @@ import type {
   PlannedDocumentCreate,
   PlannedPatch,
   ProjectSummary,
-  SearchResult,
+  SearchResponse,
   TraceResult,
   VaultStore
 } from "./types.js";
@@ -92,7 +92,7 @@ export class KnowledgeStore implements VaultStore {
     return this.root();
   }
 
-  async search(filters: SearchFilters): Promise<SearchResult[]> {
+  async search(filters: SearchFilters): Promise<SearchResponse> {
     return searchDocuments(await this.listDocuments(), filters);
   }
 
@@ -332,11 +332,22 @@ export class KnowledgeStore implements VaultStore {
 
     const backlinks = documents
       .filter((candidate) => candidate.relativePath !== document.relativePath)
-      .filter((candidate) =>
-        extractAllLocalLinks(candidate.body).some(
-          (link) => linkTargets.has(link) || linkTargets.has(ensureMarkdownExtension(link))
-        )
-      )
+      .filter((candidate) => {
+        // Root-relative / wikilink form, matched literally.
+        if (
+          extractAllLocalLinks(candidate.body).some(
+            (link) => linkTargets.has(link) || linkTargets.has(ensureMarkdownExtension(link))
+          )
+        ) {
+          return true;
+        }
+        // Markdown links are written relative to the linking note's own
+        // directory, so they only match once resolved against it.
+        return extractMarkdownLinks(candidate.body).some((link) => {
+          const resolved = resolveRelativeLink(link, candidate.relativePath);
+          return resolved !== null && ensureMarkdownExtension(resolved) === document.relativePath;
+        });
+      })
       .map((candidate) => ({ id: candidate.id, relativePath: candidate.relativePath, title: candidate.title }));
 
     return {

@@ -356,7 +356,7 @@ describe("buildMcpServer tool surface", () => {
     await client.close();
   });
 
-  it("puts ChatGPT payloads at structuredContent top level, wraps native arrays under data", async () => {
+  it("puts ChatGPT payloads at structuredContent top level, wraps native payloads under data", async () => {
     const store = await makeStore();
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const server = buildMcpServer(store, { allowWrite: false, includeChatgptCompat: true });
@@ -371,9 +371,34 @@ describe("buildMcpServer tool surface", () => {
     const fetched = await client.callTool({ name: "fetch", arguments: { id: hit.id } });
     expect((fetched.structuredContent as { id?: string }).id).toBe(hit.id);
 
-    // Native tool returns an array -> wrapped under data (structuredContent must be an object)
+    // Native tool payloads stay wrapped under `data`; search_documents returns
+    // the counted envelope so a caller can see truncation without re-querying.
     const native = await client.callTool({ name: "search_documents", arguments: { query: "retrieval" } });
-    expect(Array.isArray((native.structuredContent as { data?: unknown[] }).data)).toBe(true);
+    const envelope = (native.structuredContent as { data?: { results?: unknown[]; total_count?: number } }).data;
+    expect(Array.isArray(envelope?.results)).toBe(true);
+    // Both fixture notes mention retrieval, and nothing was truncated here.
+    expect(envelope?.total_count).toBe(2);
+    expect(envelope?.total_count).toBe(envelope?.results?.length);
+
+    await client.close();
+  });
+
+  it("omits absolutePath from fetched documents (host layout stays server-side)", async () => {
+    const store = await makeStore();
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = buildMcpServer(store, { allowWrite: false });
+    await server.connect(serverTransport);
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await client.connect(clientTransport);
+
+    const fetched = await client.callTool({ name: "fetch_document", arguments: { id_or_path: "claude-plan-001" } });
+    const document = (fetched.structuredContent as { data: Record<string, unknown> }).data;
+
+    expect(document.absolutePath).toBeUndefined();
+    expect(JSON.stringify(document)).not.toContain(os.tmpdir());
+    // The identifiers a client actually needs are still there.
+    expect(document.relativePath).toBe("projects/claude/planning/connector-plan.md");
+    expect(document.id).toBe("claude-plan-001");
 
     await client.close();
   });
