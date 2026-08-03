@@ -138,6 +138,159 @@ tools scoped to one reserved subtree (`MCP_AUDIT_SUBDIR` +
   engine, full enumeration, and the out-of-vault git-SHA / signed-manifest trust
   anchor. Graduates to ✅ on merge.
 
+### MCP 2026-07-28 (stateless core) adoption — _reliability, not speed_ 🔭
+
+The 2026-07-28 revision makes the protocol stateless at its core: the
+`initialize` handshake and the `Mcp-Session-Id` header are gone (version /
+client info / capabilities ride in `_meta` on every request), all requests carry
+`Mcp-Method` / `Mcp-Name` headers for gateway routing, list results carry
+`ttlMs` / `cacheScope` cache hints, and server→client requests become Multi
+Round-Trip Requests (MRTR) instead of held-open SSE streams. Support lands in a
+**new package line** — `@modelcontextprotocol/server` + `@modelcontextprotocol/core`
+v2 — not in `@modelcontextprotocol/sdk` v1 (1.30.0 still pins
+`LATEST_PROTOCOL_VERSION = '2025-11-25'`, our current dependency).
+
+**Assessed benefit for _this_ connector: essentially no performance gain.** The
+headline wins are horizontal-scale wins (round-robin LB, serverless/edge, no
+sticky sessions, header-based routing), and this is a single-user, single-process,
+loopback-bound server behind a named tunnel — there is no second instance and no
+MCP-aware gateway. MRTR is a non-event because the server issues no
+elicitation / sampling / roots requests (the two-step approval flow returns a
+question in the tool _result_ and lets the client ask). Cache hints save one
+round trip per (re)connection on a ~15-tool surface that is static per scope:
+real, but not perceptible — and see the scope-privacy constraint in item 3
+below before caching any listing. **Do not adopt this for speed.**
+
+The reasons to adopt it anyway, in cost/benefit order:
+
+1. **Authorization hardening (cheapest, transport-independent) 🔭** — SEP-2468
+   applies RFC 9207 to close authorization-server mix-up. Note which half is
+   ours: we are the **AS**, so our work is that an AS _SHOULD_ include `iss` in
+   authorization responses (including error responses) and, if it does, _MUST_
+   advertise `authorization_response_iss_parameter_supported: true` in its
+   metadata — i.e. add `iss` to the `/authorize` redirect in
+   `src/oauth/provider.ts` and the flag to `authorizationServerMetadata()`,
+   together. The matching client duty (validate a supplied `iss` byte-for-byte
+   against the expected issuer, and reject a missing one when the AS advertises
+   support) falls on ChatGPT / Claude.ai, not on us. Applies to `src/oauth/` on
+   its own, with no transport migration. **Caveat:** the same revision deprecates DCR
+   in favour of Client Metadata Documents (CIMD). That invalidates a premise of
+   the [`client_id` appendix](#appendix--future-uses-of-the-authenticated-client_id)
+   — "DCR mints a fresh id whenever a client re-adds the connector, so it is not a
+   stable identity". Under CIMD it becomes stable, so the appendix's reasoning
+   about attribution / selective revocation must be revisited **before** any
+   `client_id`-keyed feature (i.e. before the audit log) is built on it.
+2. **v2 packages + dual-era serving 🔭 — this is the one that pays.** It closes
+   the **third** cause of "the connection dropped", the one §1 of
+   [`operations.md`](./operations.md) does not yet list. Causes (A) ephemeral
+   tunnel URL and (B) in-memory OAuth state are addressed (named tunnel /
+   `MCP_OAUTH_STATE_FILE`); the MCP **session** itself is not. `sessions` in
+   `src/httpServer.ts` is a process-memory `Map`, so every supervisor restart,
+   redeploy, or OOM invalidates all session ids and the server answers
+   `404 unknown_session`, forcing a client re-initialize. Removing the session id
+   removes exactly that failure mode — and no more. A restart still drops
+   in-flight requests, and any continuation across a multi-round-trip request
+   still needs an explicit, integrity-checked `requestState` (plus whatever
+   application state that round depends on); statelessness does not carry either
+   across a restart for free. Scoped that way it still directly serves guiding
+   priority #2. Secondary win: sessions are only reaped via `transport.onclose`
+   and each entry pins a transport **plus** a per-session `McpServer` instance —
+   whether a client that vanishes without a DELETE is reliably reaped is
+   unverified and worth checking on long uptimes; statelessness removes the class.
+3. **Cache hints (`ttlMs` / `cacheScope`) 🔭 — must be scope-private.** The tool
+   surface is static only _per scope_, not globally: `src/httpServer.ts` derives
+   `allowWrite` / `allowSkillWrite` / `allowAuditWrite` from the principal's
+   scopes and registers a different tool set for each (that is INV-6/INV-7). A
+   `cacheScope: 'shared'` listing would therefore be servable across principals,
+   handing write-tool metadata to a read-scoped client — the exact leak
+   "not registered, so not discoverable" exists to prevent. Use a private cache
+   scope, or a key that includes the effective scope and the enabled surfaces.
+   Treat this as a security-boundary change and pin it with a test.
+4. **Stateless scale-out / header routing — deliberately not pursued.** Gated on
+   multi-user graduating from 💭. Adopting it now buys nothing and widens surface.
+
+**No deadline pressure, so sequence this behind the security follow-ups.** v2's
+`createMcpHandler` serves the 2025 era and 2026-07-28 simultaneously by default
+(`legacy: 'stateless'`), and deprecations carry a floor of twelve months before
+the earliest possible removal. There is no cliff.
+
+**Migration cost is concentrated in re-pinning the security boundary, not in
+rewriting it.** Today `src/httpServer.ts` authenticates, resolves scope, then
+builds a server registering *only* the tools that scope permits, and binds it to
+the session — INV-6/INV-7 ("a read-scoped token never sees write tools because
+they were never registered") currently rests on the session model. Without
+sessions that resolution moves to per-request, which `createMcpHandler`'s
+per-request factory models cleanly, but every boundary test in
+`tests/httpServer.test.ts` / `tests/oauth.test.ts` has to be re-pinned.
+
+**DNS-rebinding protection is a prerequisite, not a sub-task of this migration**
+— it has its own section below, and that work stands on its own whether or not
+the v2 move ever happens. Do not assume the boundary survives because the option
+names still exist in v2; the check has to be re-established against whatever
+enforces it there. `src/index.ts` (stdio) changes to `serveStdio()` and can lag
+the HTTP side.
+
+### DNS-rebinding protection is on a deprecated API — _pin it, then move it_ 🔭
+
+INV-6 item 3 is currently enforced by three `StreamableHTTPServerTransport`
+options that `src/httpServer.ts` passes today —
+`enableDnsRebindingProtection` / `allowedHosts` / `allowedOrigins`. **All three
+are marked `@deprecated` in the SDK**, which points at the
+`server/middleware/hostHeaderValidation.js` middleware instead. The same options
+carry the same deprecation on the SSE transport.
+
+**This is not a live hole — say that plainly.** At the pinned
+`@modelcontextprotocol/sdk` 1.29.0 the options still fully enforce:
+`validateRequestHeaders` reads all three and returns a 403 on a bad `Host`.
+`loadHttpConfig` never leaves `allowedHosts` empty (it defaults to
+`<host>:<port>` + `localhost:<port>` and appends the public URL's host when
+`MCP_HTTP_PUBLIC_URL` is set), so the Host check really does run in every
+deployment. Deprecated is not removed. What follows is about keeping it that way.
+
+Two real problems, in the order they should be fixed:
+
+1. **Nothing pins the behaviour, so its removal would be silent 🔭 — do this
+   first, it is the cheap half.** There is no test anywhere that drives a hostile
+   `Host` or `Origin` header; worse, the HTTP integration suite constructs its
+   config with `allowedHosts: []` / `allowedOrigins: []`
+   (`tests/httpServer.test.ts`), so those tests run with host validation inert.
+   Meanwhile `package.json` floats on `^1.17.4` and Dependabot bumps weekly. A
+   routine dependency bump that drops the deprecated path would therefore take
+   INV-6 item 3 with it and **every test would still pass**. Add a regression
+   test that starts the real server with a populated `allowedHosts`, sends a
+   forged `Host` (and a listed vs. unlisted `Origin`), and asserts the 403 —
+   independent of any migration. That single test converts an invisible
+   dependency risk into a visible one.
+2. **Then migrate off the deprecated options — but it is not a drop-in swap 🔭.**
+   Two mismatches make a naive port wrong rather than merely tedious:
+   - **Port semantics differ.** The transport option compares the `Host` header
+     _exactly, including the port_ (`allowedHosts.includes(hostHeader)`, entries
+     like `127.0.0.1:8787`), while `hostHeaderValidation(allowedHostnames)`
+     validates the **hostname only, port-agnostic** and documents its input as
+     hostnames _without_ ports. `MCP_HTTP_ALLOWED_HOSTS` currently carries
+     `host:port` values, so handing the existing list straight to the middleware
+     matches nothing. The env contract has to be migrated deliberately, or the
+     values stripped at the boundary — and the operator-facing docs in
+     [`operations.md`](./operations.md) updated to match.
+   - **The middleware is Express-shaped.** It returns an Express
+     `RequestHandler`, and this server is plain `node:http` with no Express in
+     the dependency tree. So it cannot simply be `app.use()`-d; it needs a small
+     adapter, or an equivalent check written against `http.IncomingMessage` and
+     pinned by the test from (1).
+
+   Note the current Origin posture while you are in there, and decide it
+   deliberately rather than inheriting it: `allowedOrigins` defaults to empty
+   (so the Origin check is skipped unless `MCP_HTTP_ALLOWED_ORIGINS` is set), and
+   even when populated the transport only rejects a **present but unlisted**
+   Origin — a request with no `Origin` header passes. That is defensible for a
+   bearer-authed, non-browser client, but it should be a recorded decision.
+
+**Doc coupling:** INV-6 item 3 in
+[`mcp-vault-security`](../.claude/skills/mcp-vault-security/SKILL.md) and the
+skill-firing row in [`CLAUDE.md`](../CLAUDE.md) both name the transport options
+by name. Whichever PR moves the mechanism must update both in the same change,
+or the canon will describe an API the code no longer uses.
+
 ### Exact-path document creation — _safe write-back_ ✅
 
 The original `create_document` intentionally routes new notes to
@@ -209,8 +362,10 @@ _team / enterprise_ adoption rather than the core individual use case.
 **Suggested sequencing:** start with the cheap, high-signal items —
 (1) a **formal threat model** (STRIDE) to make the gaps explicit and prioritize
 the rest — ✅ drafted in [`threat-model.md`](./threat-model.md); next
-(2) an **audit log** (append-only, content-free events) which also seeds later
-OpenTelemetry work, then (3) commission a **third-party pen test** now that the
+(2) **RFC 9207 `iss`** (see the 2026-07-28 section), which is cheap on its own
+and settles what `client_id` means before anything keys on it; then
+(3) an **audit log** (append-only, content-free events) which also seeds later
+OpenTelemetry work, then (4) commission a **third-party pen test** now that the
 threat model exists. RBAC / DLP / sandboxing are larger bets gated on validated
 team-adoption demand.
 
@@ -267,15 +422,43 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       vault, `--unshare-all`, `--clearenv`, secrets invisible by construction),
       the Ubuntu 23.10+/24.04 AppArmor/userns caveat, and "prefer systemd for
       the daemon" guidance.
+- [ ] **Regression test for DNS-rebinding (INV-6 item 3)** — start the real
+      server with a populated `allowedHosts`, forge the `Host` header, assert the
+      403; cover listed vs. unlisted `Origin` too. Today nothing pins this and
+      the HTTP suite runs with `allowedHosts: []`, so a Dependabot bump that
+      drops the deprecated transport options would remove the protection with a
+      fully green test run. Cheapest item on this list and it guards an
+      **existing** invariant — do it before adding new ones.
+- [ ] **Migrate off the deprecated DNS-rebinding transport options** — see the
+      section above; not a drop-in (middleware is port-agnostic and Express-shaped,
+      our config carries `host:port` and we run plain `node:http`). Update INV-6
+      item 3 in the `mcp-vault-security` skill, the `CLAUDE.md` firing row, and
+      the `MCP_HTTP_ALLOWED_HOSTS` docs in `operations.md` in the same PR.
+- [ ] **RFC 9207 `iss` in the authorization response** (`src/oauth/`) — cheapest
+      slice of the 2026-07-28 authorization hardening; closes AS mix-up and needs
+      no transport migration. Do this **before** the audit log: the same revision
+      deprecates DCR for CIMD, which makes `client_id` a *stable* identity and so
+      invalidates a stated premise of the `client_id` appendix that the audit
+      log's attribution design leans on.
 - [ ] **Audit log** — append-only, content-free events (who searched / fetched /
-      wrote what, no note bodies) — the agreed #1 security follow-up; also seeds
-      OpenTelemetry later. Key each event on the authenticated **client_id**, not
+      wrote what, no note bodies) — the largest security follow-up, and still the
+      one that most improves the posture; it now sits **second** because the
+      RFC 9207 item above is a precondition for its attribution design, not
+      because it dropped in importance. Also seeds OpenTelemetry later. Key each
+      event on the authenticated **client_id**, not
       the spoofable `clientInfo.name` — see the
       [appendix on authenticated-client_id use cases](#appendix--future-uses-of-the-authenticated-client_id).
       (Distinct from the shipped **constrained audit write surface** above — that
       is the scanner's own vault-side output; this is a server-side event log.)
 - [ ] **One-command install / npx packaging** — remove the `pnpm build` step so
       the 🟢 non-engineer path needs no toolchain (see Onboarding above).
+- [ ] **Migrate to `@modelcontextprotocol/server`/`core` v2 with dual-era
+      serving** — adopt for restart transparency (guiding priority #2), not for
+      speed; see the 2026-07-28 section above. Chiefly a re-pin of the
+      scope→tool-surface boundary tests once that resolution moves from
+      per-session to per-request. Also add a third "why connections drop" cause
+      (process-memory MCP sessions → `404 unknown_session`) to
+      [`operations.md §1`](./operations.md) when this lands.
 - [ ] **Search P0 correctness slice** — NFKC search normalization, result
       timestamps/`size_bytes`, `total_count` envelope, backlink relative-link
       resolution (reproducible against the synthetic fixture), `absolutePath`
@@ -309,9 +492,12 @@ operational (attribution / limits / revocation), not authorization-of-a-person.
 
 Use cases, roughly by how real/soon they are:
 
-1. **Audit-log attribution (near-term 🔭, strongest).** The agreed #1 security
-   follow-up only becomes useful if each event records _which connector_ acted
-   ("ChatGPT read X", "Claude.ai attempted write Y"). Key it on `client_id`.
+1. **Audit-log attribution (near-term 🔭, strongest).** The audit log only
+   becomes useful if each event records _which connector_ acted ("ChatGPT read
+   X", "Claude.ai attempted write Y"). Key it on `client_id`. **Settle the CIMD
+   question first** (see the 2026-07-28 section): the ceiling described just
+   above assumes DCR mints a throwaway id per re-registration, which stops
+   holding once client metadata documents replace DCR.
 2. **Selective revocation (grew in value with token persistence).** The only
    _explicit_ revocation lever today is rotating the password (nukes _all_
    sessions). 🚧 A first automatic slice landed: client registrations holding no
