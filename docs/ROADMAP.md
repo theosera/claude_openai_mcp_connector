@@ -115,10 +115,17 @@ below before caching any listing. **Do not adopt this for speed.**
 
 The reasons to adopt it anyway, in cost/benefit order:
 
-1. **Authorization hardening (cheapest, transport-independent) 🔭** — RFC 9207
-   requires the AS to return `iss` and the client to validate it before redeeming
-   a code, closing authorization-server mix-up. Applies to `src/oauth/` on its
-   own, with no transport migration. **Caveat:** the same revision deprecates DCR
+1. **Authorization hardening (cheapest, transport-independent) 🔭** — SEP-2468
+   applies RFC 9207 to close authorization-server mix-up. Note which half is
+   ours: we are the **AS**, so our work is that an AS _SHOULD_ include `iss` in
+   authorization responses (including error responses) and, if it does, _MUST_
+   advertise `authorization_response_iss_parameter_supported: true` in its
+   metadata — i.e. add `iss` to the `/authorize` redirect in
+   `src/oauth/provider.ts` and the flag to `authorizationServerMetadata()`,
+   together. The matching client duty (validate a supplied `iss` byte-for-byte
+   against the expected issuer, and reject a missing one when the AS advertises
+   support) falls on ChatGPT / Claude.ai, not on us. Applies to `src/oauth/` on
+   its own, with no transport migration. **Caveat:** the same revision deprecates DCR
    in favour of Client Metadata Documents (CIMD). That invalidates a premise of
    the [`client_id` appendix](#appendix--future-uses-of-the-authenticated-client_id)
    — "DCR mints a fresh id whenever a client re-adds the connector, so it is not a
@@ -132,8 +139,12 @@ The reasons to adopt it anyway, in cost/benefit order:
    `MCP_OAUTH_STATE_FILE`); the MCP **session** itself is not. `sessions` in
    `src/httpServer.ts` is a process-memory `Map`, so every supervisor restart,
    redeploy, or OOM invalidates all session ids and the server answers
-   `404 unknown_session`, forcing a client re-initialize. With no session id,
-   restarts become transparent mid-conversation. Directly serves guiding
+   `404 unknown_session`, forcing a client re-initialize. Removing the session id
+   removes exactly that failure mode — and no more. A restart still drops
+   in-flight requests, and any continuation across a multi-round-trip request
+   still needs an explicit, integrity-checked `requestState` (plus whatever
+   application state that round depends on); statelessness does not carry either
+   across a restart for free. Scoped that way it still directly serves guiding
    priority #2. Secondary win: sessions are only reaped via `transport.onclose`
    and each entry pins a transport **plus** a per-session `McpServer` instance —
    whether a client that vanishes without a DELETE is reliably reaped is
@@ -162,10 +173,21 @@ the session — INV-6/INV-7 ("a read-scoped token never sees write tools because
 they were never registered") currently rests on the session model. Without
 sessions that resolution moves to per-request, which `createMcpHandler`'s
 per-request factory models cleanly, but every boundary test in
-`tests/httpServer.test.ts` / `tests/oauth.test.ts` has to be re-pinned. Verified
-non-issue: `allowedHosts` / `allowedOrigins` / `enableDnsRebindingProtection`
-all exist in v2, so DNS-rebinding protection survives the move. `src/index.ts`
-(stdio) changes to `serveStdio()` and can lag the HTTP side.
+`tests/httpServer.test.ts` / `tests/oauth.test.ts` has to be re-pinned.
+
+**DNS-rebinding protection needs its own migration step — and a look now.** The
+three options `src/httpServer.ts` passes to the transport today
+(`enableDnsRebindingProtection` / `allowedHosts` / `allowedOrigins`) are all
+marked `@deprecated` in the SDK, pointing at external middleware instead
+(`server/middleware/hostHeaderValidation.js`); the same options are deprecated
+on the SSE transport. That they still _exist_ under the same names in v2 proves
+nothing about whether the check still runs on every request, so this must be
+re-established rather than assumed: identify the v2 adapter or middleware that
+actually enforces host/origin validation per request, wire it explicitly, and
+pin it with a regression test that drives hostile `Host` and `Origin` headers
+through the real handler. Worth a check **before** any migration, since the
+deprecated path is what protects the loopback bind today. `src/index.ts` (stdio)
+changes to `serveStdio()` and can lag the HTTP side.
 
 ### Exact-path document creation — _safe write-back_ ✅
 
@@ -238,8 +260,10 @@ _team / enterprise_ adoption rather than the core individual use case.
 **Suggested sequencing:** start with the cheap, high-signal items —
 (1) a **formal threat model** (STRIDE) to make the gaps explicit and prioritize
 the rest — ✅ drafted in [`threat-model.md`](./threat-model.md); next
-(2) an **audit log** (append-only, content-free events) which also seeds later
-OpenTelemetry work, then (3) commission a **third-party pen test** now that the
+(2) **RFC 9207 `iss`** (see the 2026-07-28 section), which is cheap on its own
+and settles what `client_id` means before anything keys on it; then
+(3) an **audit log** (append-only, content-free events) which also seeds later
+OpenTelemetry work, then (4) commission a **third-party pen test** now that the
 threat model exists. RBAC / DLP / sandboxing are larger bets gated on validated
 team-adoption demand.
 
@@ -303,8 +327,11 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       invalidates a stated premise of the `client_id` appendix that the audit
       log's attribution design leans on.
 - [ ] **Audit log** — append-only, content-free events (who searched / fetched /
-      wrote what, no note bodies) — the agreed #1 security follow-up; also seeds
-      OpenTelemetry later. Key each event on the authenticated **client_id**, not
+      wrote what, no note bodies) — the largest security follow-up, and still the
+      one that most improves the posture; it now sits **second** because the
+      RFC 9207 item above is a precondition for its attribution design, not
+      because it dropped in importance. Also seeds OpenTelemetry later. Key each
+      event on the authenticated **client_id**, not
       the spoofable `clientInfo.name` — see the
       [appendix on authenticated-client_id use cases](#appendix--future-uses-of-the-authenticated-client_id).
       (Distinct from the shipped **constrained audit write surface** above — that
@@ -346,9 +373,12 @@ operational (attribution / limits / revocation), not authorization-of-a-person.
 
 Use cases, roughly by how real/soon they are:
 
-1. **Audit-log attribution (near-term 🔭, strongest).** The agreed #1 security
-   follow-up only becomes useful if each event records _which connector_ acted
-   ("ChatGPT read X", "Claude.ai attempted write Y"). Key it on `client_id`.
+1. **Audit-log attribution (near-term 🔭, strongest).** The audit log only
+   becomes useful if each event records _which connector_ acted ("ChatGPT read
+   X", "Claude.ai attempted write Y"). Key it on `client_id`. **Settle the CIMD
+   question first** (see the 2026-07-28 section): the ceiling described just
+   above assumes DCR mints a throwaway id per re-registration, which stops
+   holding once client metadata documents replace DCR.
 2. **Selective revocation (grew in value with token persistence).** The only
    _explicit_ revocation lever today is rotating the password (nukes _all_
    sessions). 🚧 A first automatic slice landed: client registrations holding no
