@@ -422,13 +422,16 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       vault, `--unshare-all`, `--clearenv`, secrets invisible by construction),
       the Ubuntu 23.10+/24.04 AppArmor/userns caveat, and "prefer systemd for
       the daemon" guidance.
-- [ ] **Regression test for DNS-rebinding (INV-6 item 3)** — start the real
-      server with a populated `allowedHosts`, forge the `Host` header, assert the
-      403; cover listed vs. unlisted `Origin` too. Today nothing pins this and
-      the HTTP suite runs with `allowedHosts: []`, so a Dependabot bump that
-      drops the deprecated transport options would remove the protection with a
-      fully green test run. Cheapest item on this list and it guards an
-      **existing** invariant — do it before adding new ones.
+- [x] **Regression test for DNS-rebinding (INV-6 item 3)** — ✅ pinned in
+      `tests/httpServer.test.ts`: forged `Host` (sent via `node:http` — `fetch`
+      silently drops it) → 403 with a genuine-Host control, allow-listed vs.
+      unlisted `Origin` on a server with `allowedOrigins` populated, and the
+      absent-Origin pass-through pinned **as a named compatibility baseline**
+      (a revisitable decision, not an invariant — flipping it to reject is a
+      deliberate design change that updates the test alongside). Red-green
+      verified: disabling `enableDnsRebindingProtection` fails exactly the two
+      boundary tests. A dependency bump that drops the deprecated transport
+      options now fails loudly instead of silently removing the protection.
 - [ ] **Migrate off the deprecated DNS-rebinding transport options** — see the
       section above; not a drop-in (middleware is port-agnostic and Express-shaped,
       our config carries `host:port` and we run plain `node:http`). Update INV-6
