@@ -109,8 +109,9 @@ loopback-bound server behind a named tunnel — there is no second instance and 
 MCP-aware gateway. MRTR is a non-event because the server issues no
 elicitation / sampling / roots requests (the two-step approval flow returns a
 question in the tool _result_ and lets the client ask). Cache hints save one
-round trip per (re)connection on a static ~15-tool surface: real, but not
-perceptible. **Do not adopt this for speed.**
+round trip per (re)connection on a ~15-tool surface that is static per scope:
+real, but not perceptible — and see the scope-privacy constraint in item 3
+below before caching any listing. **Do not adopt this for speed.**
 
 The reasons to adopt it anyway, in cost/benefit order:
 
@@ -137,8 +138,15 @@ The reasons to adopt it anyway, in cost/benefit order:
    and each entry pins a transport **plus** a per-session `McpServer` instance —
    whether a client that vanishes without a DELETE is reliably reaped is
    unverified and worth checking on long uptimes; statelessness removes the class.
-3. **Cache hints (`ttlMs` / `cacheScope`) 🔭** — near-free once on v2; the tool
-   surface is static, so `cacheScope: 'shared'` is correct.
+3. **Cache hints (`ttlMs` / `cacheScope`) 🔭 — must be scope-private.** The tool
+   surface is static only _per scope_, not globally: `src/httpServer.ts` derives
+   `allowWrite` / `allowSkillWrite` / `allowAuditWrite` from the principal's
+   scopes and registers a different tool set for each (that is INV-6/INV-7). A
+   `cacheScope: 'shared'` listing would therefore be servable across principals,
+   handing write-tool metadata to a read-scoped client — the exact leak
+   "not registered, so not discoverable" exists to prevent. Use a private cache
+   scope, or a key that includes the effective scope and the enabled surfaces.
+   Treat this as a security-boundary change and pin it with a test.
 4. **Stateless scale-out / header routing — deliberately not pursued.** Gated on
    multi-user graduating from 💭. Adopting it now buys nothing and widens surface.
 
