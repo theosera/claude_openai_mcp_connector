@@ -67,7 +67,7 @@ describe("KnowledgeStore", () => {
     spy.mockImplementationOnce(() => Promise.reject(Object.assign(new Error("try again"), { code: "EAGAIN" })));
     spy.mockImplementation((...args: Parameters<typeof fs.open>) => realOpen(...args));
 
-    const results = await store.search({ query: "retrieval", client: "chatgpt" });
+    const { results } = await store.search({ query: "retrieval", client: "chatgpt" });
     expect(results).toHaveLength(1); // the retried scan still surfaces the note
   });
 
@@ -84,12 +84,12 @@ describe("KnowledgeStore", () => {
     });
 
     // The unrelated target note is still found; the ENOENT note is silently dropped.
-    const results = await store.search({ query: "retrieval", client: "chatgpt" });
+    const { results } = await store.search({ query: "retrieval", client: "chatgpt" });
     expect(results).toHaveLength(1);
   });
 
   it("searches synthetic Markdown documents with filters", async () => {
-    const results = await store.search({ query: "retrieval", client: "chatgpt" });
+    const { results } = await store.search({ query: "retrieval", client: "chatgpt" });
 
     expect(results).toHaveLength(1);
     expect(results[0]).toMatchObject({
@@ -119,7 +119,7 @@ describe("KnowledgeStore", () => {
     expect(composed).not.toBe(decomposed); // this name is normalization-sensitive
     await fs.writeFile(path.join(root, decomposed), "# 見出し\n\nNFDMARKERBODY\n", "utf8");
 
-    const results = await store.search({ query: "NFDMARKERBODY" });
+    const { results } = await store.search({ query: "NFDMARKERBODY" });
     expect(results).toHaveLength(1);
     // The returned identifier is canonical NFC, not the raw NFD form on disk.
     expect(results[0].id).toBe(composed);
@@ -414,6 +414,27 @@ describe("KnowledgeStore", () => {
     expect(traced.backlinks).toEqual([expect.objectContaining({ id: "claude-plan-001" })]);
   });
 
+  it("counts a relative Markdown link as a backlink (resolved against the linking note)", async () => {
+    // shared-search.md links to the plan as `../claude/planning/connector-plan.md`.
+    // Literal string matching never saw that — the link only equals the target's
+    // vault-relative path once resolved against the linking note's directory, so
+    // this backlink was silently missing.
+    const traced = await store.traceSources("claude-plan-001");
+
+    expect(traced.backlinks).toEqual([expect.objectContaining({ id: "chatgpt-research-001" })]);
+  });
+
+  it("does not invent a backlink from a relative link that climbs out of the vault", async () => {
+    await fs.writeFile(
+      path.join(root, "escaper.md"),
+      "---\ntitle: Escaper\n---\n\n[out](../../../projects/claude/planning/connector-plan.md)\n",
+      "utf8"
+    );
+
+    const traced = await store.traceSources("claude-plan-001");
+    expect(traced.backlinks.map((backlink) => backlink.relativePath)).not.toContain("escaper.md");
+  });
+
   it("rejects path traversal", async () => {
     await expect(store.fetch("../outside.md")).rejects.toThrow(/escapes/);
   });
@@ -447,12 +468,16 @@ describe("KnowledgeStore", () => {
 
     // Well-formed documents are unaffected.
     const good = await store.search({ query: "retrieval", client: "chatgpt" });
-    expect(good).toHaveLength(1);
+    expect(good.results).toHaveLength(1);
 
     // The malformed notes are not dropped — still searchable by body, with
     // fallback (empty) metadata and a path-derived title.
-    expect((await store.search({ query: "ZZUNIQUEONE" })).map((result) => result.path)).toContain("broken-branch.md");
-    expect((await store.search({ query: "ZZUNIQUETWO" })).map((result) => result.path)).toContain("broken-seq.md");
+    expect((await store.search({ query: "ZZUNIQUEONE" })).results.map((result) => result.path)).toContain(
+      "broken-branch.md"
+    );
+    expect((await store.search({ query: "ZZUNIQUETWO" })).results.map((result) => result.path)).toContain(
+      "broken-seq.md"
+    );
 
     // Other read paths survive a malformed note too.
     await expect(store.listProjects()).resolves.toBeDefined();
@@ -479,11 +504,11 @@ describe("KnowledgeStore", () => {
     );
 
     // Well-formed documents remain searchable.
-    expect(await store.search({ query: "retrieval", client: "chatgpt" })).toHaveLength(1);
+    expect((await store.search({ query: "retrieval", client: "chatgpt" })).results).toHaveLength(1);
 
     // The corrupted notes are indexed by body, not dropped or crashing.
-    expect((await store.search({ query: "ZZCTRLFRONT" })).map((r) => r.path)).toContain("ctrl-front.md");
-    const body = await store.search({ query: "ZZCTRLBODY" });
+    expect((await store.search({ query: "ZZCTRLFRONT" })).results.map((r) => r.path)).toContain("ctrl-front.md");
+    const { results: body } = await store.search({ query: "ZZCTRLBODY" });
     expect(body.map((r) => r.path)).toContain("ctrl-body.md");
 
     // Results and fetched documents must be JSON-serializable (control chars escaped).
@@ -505,14 +530,16 @@ describe("KnowledgeStore", () => {
     );
 
     // Search across the whole vault does not throw and finds the note.
-    expect((await store.search({ query: "ZZNUMERIC" })).map((r) => r.path)).toContain("numeric.md");
+    expect((await store.search({ query: "ZZNUMERIC" })).results.map((r) => r.path)).toContain("numeric.md");
     // Well-formed docs remain searchable — the batch is not aborted.
-    expect(await store.search({ query: "retrieval", client: "chatgpt" })).toHaveLength(1);
+    expect((await store.search({ query: "retrieval", client: "chatgpt" })).results).toHaveLength(1);
     // list_projects does not throw and the numeric client/project are coerced to strings.
     const projects = await store.listProjects();
     expect(projects.some((p) => p.client === "2024" && p.project === "2025")).toBe(true);
     // Tag filtering still works against the coerced numeric tag.
-    expect((await store.search({ query: "ZZNUMERIC", tags: ["2024"] })).map((r) => r.path)).toContain("numeric.md");
+    expect((await store.search({ query: "ZZNUMERIC", tags: ["2024"] })).results.map((r) => r.path)).toContain(
+      "numeric.md"
+    );
   });
 });
 

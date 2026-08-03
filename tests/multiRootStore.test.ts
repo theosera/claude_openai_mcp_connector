@@ -145,7 +145,7 @@ describe("MultiRootStore", () => {
     await fs.writeFile(path.join(opsRoot, "secret.md"), "---\ntitle: Ops Secret\n---\n\nOPSSECRETBODY\n", "utf8");
 
     // search emits the colliding id for the vault note...
-    const hit = (await store.search({ query: "VAULTCOLLIDEBODY" })).find((r) => r.id === "ops:secret");
+    const hit = (await store.search({ query: "VAULTCOLLIDEBODY" })).results.find((r) => r.id === "ops:secret");
     expect(hit?.title).toBe("Vault Collide");
 
     // ...and fetch returns exactly that note, not the ops root's secret.md.
@@ -171,7 +171,7 @@ describe("MultiRootStore", () => {
   });
 
   it("searches across every root and labels hits with their root", async () => {
-    const results = await store.search({ query: "retrieval" });
+    const { results } = await store.search({ query: "retrieval" });
     const roots = new Set(results.map((result) => result.root));
 
     expect(roots).toEqual(new Set(["vault", "ops"]));

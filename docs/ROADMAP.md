@@ -66,14 +66,17 @@ Improve relevance and ergonomics of `search_documents` / `search`:
   exhausts file descriptors mid-search (`src/knowledgeStore.ts`).
 
 Concretized by the [context-engineering proposal](./context-engineering.md)
-(survey-based, 2026-07) into two slices — flip to 🚧 when the first PR opens:
+(survey-based, 2026-07) into two slices; the first has landed:
 
-- **P0 correctness slice** 🔭 — NFKC normalization in the search path (queries
-  and bodies; today only `pathSafety` normalizes), timestamps + `size_bytes` on
-  `SearchResult`, a `{results, total_count, offset, limit}` envelope so agents
-  can see truncation instead of re-querying blindly, backlink resolution of
-  relative Markdown links (fixture-reproducible gap), and dropping
-  `absolutePath` from `fetch_document` responses.
+- **P0 correctness slice** ✅ — NFKC folding on the search path (`src/searchText.ts`;
+  `pathSafety`'s NFC is untouched and stays identity-preserving), `modified_at` /
+  `updated_at` / `size_bytes` on `SearchResult`, a
+  `{results, total_count, offset, limit}` envelope so agents can see truncation
+  instead of re-querying blindly, backlink resolution of relative Markdown links
+  (`resolveRelativeLink`), and `absolutePath` dropped from every document
+  response via an allowlist projection. Two breaking changes (the envelope and
+  the `absolutePath` removal) land in the next minor; the ChatGPT aliases are
+  unchanged. Pinned by `tests/search.test.ts` + fixture backlink regressions.
 - **P1 quality slice** 🔭 — CJK segmentation via `Intl.Segmenter` (zero-dep),
   opt-out recency decay (`MCP_SEARCH_RECENCY_*`, `=0` restores today's
   ranking), `path_prefix` / `root` / date-range filters, `order` +
@@ -467,11 +470,13 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       per-session to per-request. Also add a third "why connections drop" cause
       (process-memory MCP sessions → `404 unknown_session`) to
       [`operations.md §1`](./operations.md) when this lands.
-- [ ] **Search P0 correctness slice** — NFKC search normalization, result
-      timestamps/`size_bytes`, `total_count` envelope, backlink relative-link
-      resolution (reproducible against the synthetic fixture), `absolutePath`
-      removal from `fetch_document` — the first slice of the
-      [context-engineering proposal](./context-engineering.md).
+- [x] **Search P0 correctness slice** — ✅ NFKC search folding (query + text,
+      snippets still sliced from the original), result
+      timestamps/`size_bytes`, `total_count`/`offset` envelope, backlink
+      relative-link resolution, `absolutePath` removed from document responses.
+      Next up in the same track: the **P1 quality slice** (CJK segmentation,
+      opt-in recency, path/root/date filters, two-window snippets, `explain`,
+      derived-text cache).
 - [x] **Exact-path document create** — ✅ two-step full-file plan, explicit
       target-path confirmation (`はい` + free text), confirmed-path echo at
       apply, content-integrity/no-overwrite checks, and MCP E2E coverage.

@@ -42,7 +42,9 @@ export async function chatgptSearch(
   query: string,
   options: { limit?: number; baseUrl?: string } = {}
 ): Promise<ChatgptSearchResult> {
-  const hits = await store.search({ query, limit: options.limit });
+  // The ChatGPT connector contract is frozen: it takes the ranked page and
+  // ignores the envelope's counters.
+  const { results: hits } = await store.search({ query, limit: options.limit });
   return {
     results: hits.map((hit) => ({
       id: hit.id,

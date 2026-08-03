@@ -28,6 +28,21 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Search P0 correctness slice** (first implementation slice of the
+  [context-engineering proposal](./docs/context-engineering.md)):
+  - **NFKC folding on the search path** (`src/searchText.ts`). Queries and note
+    text are folded before matching, so `ＭＣＰ` matches `MCP`, half-width kana
+    match full-width, a full-width space separates terms, and a decomposed (NFD)
+    body — what macOS filesystems hand back — matches a composed query. This is
+    deliberately separate from the NFC path normalization in `pathSafety.ts`,
+    which is unchanged: path normalization must preserve identity, search
+    normalization is intentionally lossy. Snippets are still sliced from the
+    original text, so bodies are returned exactly as written.
+  - **`offset` on `search_documents`**, plus `total_count` in the response (see
+    _Changed_), giving real paging over ranked results.
+  - **`modified_at`, `updated_at`, and `size_bytes` on each search result** —
+    `size_bytes` in particular lets a caller notice that a hit is a
+    megabyte-scale note before fetching it whole.
 - **Context-engineering proposal (docs only, no runtime change)** —
   [`docs/context-engineering.md`](./docs/context-engineering.md), a
   survey-based design for evolving the read plane from "search API" to
@@ -52,6 +67,21 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **BREAKING — `search_documents` returns a counted envelope.** The payload is
+  now `{ results, total_count, offset, limit }` instead of a bare array
+  (`structuredContent.data.results` rather than `structuredContent.data`).
+  Callers that iterated the array directly must read `.results`. Rationale: a
+  bare array cannot express "you are seeing 10 of 400", which is exactly what
+  makes an agent re-query blindly. The ChatGPT-compatible `search` / `fetch`
+  aliases are a frozen contract and are **unchanged**.
+- **BREAKING — document responses no longer include `absolutePath`.**
+  `fetch_document`, `create_document`, `apply_planned_document_create`, and
+  `apply_planned_update` now return a projected document (`toPublicDocument` in
+  `src/server.ts`) built from an explicit field allowlist, so the host
+  filesystem layout — home directory, vault location — is no longer handed to
+  every client. `id`, `relativePath`, `root`, `frontmatter`, `body`, `title`,
+  and `stats` are unchanged, and those are what round-trip back into `fetch`.
+  The ChatGPT `fetch` adapter never exposed the field.
 - Pin the development Node version to **24.13.0** via a new `.node-version` file
   (fnm reads it and auto-switches on `cd`; nvm does not read `.node-version`
   natively — nvm users can run `nvm use "$(cat .node-version)"`), and extend the
@@ -60,6 +90,24 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   runtime version). `engines` stays `>=22.12.0` — the server still supports Node
   22+, so this drops no runtime support; it only makes the recommended version
   explicit and keeps it under test alongside the floor.
+
+### Fixed
+
+- **`trace_sources` missed backlinks written as relative Markdown links.**
+  Backlink matching compared link text literally against the target's
+  vault-relative path, so `[plan](../../claude/planning/connector-plan.md)` —
+  the ordinary way to link between folders — never matched. Links are now
+  resolved against the linking note's own directory
+  (`resolveRelativeLink` in `src/markdownLinks.ts`, applied in both the
+  single-root and multi-root stores). Resolution is pure string math compared
+  against already-enumerated documents: it never touches the filesystem, a link
+  that climbs out of the vault resolves to nothing, and relative links are not
+  matched across knowledge roots. Existing literal and wikilink matching is
+  unchanged, so this only **adds** previously missing backlinks.
+- The synthetic fixture's own cross-folder link was off by one directory level
+  (`../` where the target needed `../../`), so it pointed at a path that does
+  not exist. Corrected, and the off-by-one is now pinned as its own case — a
+  link that climbs too few levels must not be snapped onto the intended target.
 
 ## [0.6.0] — 2026-07-18
 
