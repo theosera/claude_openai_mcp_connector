@@ -430,6 +430,10 @@ describe("OAuthProvider flow", () => {
     expect(as.issuer).toBe(config.issuer);
     expect(as.code_challenge_methods_supported).toEqual(["S256"]);
     expect(as.authorization_endpoint).toBe(`${config.issuer}/authorize`);
+    // RFC 9207: advertising iss support is mandatory while authorizePost emits
+    // it — these two assertions (here and in the code-issuance test) pin the
+    // pair so neither can be dropped alone.
+    expect(as.authorization_response_iss_parameter_supported).toBe(true);
     const pr = JSON.parse(provider.protectedResourceMetadata().body);
     expect(pr.resource).toBe(`${config.issuer}/mcp`);
     expect(pr.authorization_servers).toEqual([config.issuer]);
@@ -473,6 +477,8 @@ describe("OAuthProvider flow", () => {
     expect(granted.status).toBe(302);
     const location = new URL(granted.headers.location);
     expect(location.searchParams.get("state")).toBe("xyz");
+    // RFC 9207: the redirect binds itself to this AS (mix-up defense).
+    expect(location.searchParams.get("iss")).toBe(config.issuer);
     const code = location.searchParams.get("code")!;
 
     // Exchange the code with the matching verifier.
@@ -680,7 +686,9 @@ describe("OAuth end-to-end over HTTP", () => {
       redirect: "manual"
     });
     expect(authRes.status).toBe(302);
-    const code = new URL(authRes.headers.get("location")!).searchParams.get("code")!;
+    const grantedLocation = new URL(authRes.headers.get("location")!);
+    expect(grantedLocation.searchParams.get("iss")).toBe(issuer);
+    const code = grantedLocation.searchParams.get("code")!;
     expect(code).toBeTruthy();
 
     // Token exchange
