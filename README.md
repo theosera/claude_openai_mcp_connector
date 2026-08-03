@@ -317,11 +317,17 @@ env = { KNOWLEDGE_ROOT = "/abs/path/to/private/vault" }
 
 ## Tools
 
-- `search_documents` — `{ query, client?, project?, tags?, limit?, offset? }` →
-  `{ results, total_count, offset, limit }`. `total_count` is the match count
+- `search_documents` —
+  `{ query, client?, project?, tags?, limit?, offset?, path_prefix?, root?, updated_after?, updated_before?, order?, recency_weight?, explain? }`
+  → `{ results, total_count, offset, limit }`. `total_count` is the match count
   **before** `limit`, so a client can tell "10 hits" from "10 of 400" without
   re-querying. Queries and note text are folded with NFKC, so half-width /
-  full-width and decomposed / composed forms match each other.
+  full-width and decomposed / composed forms match each other, and a query in a
+  script without spaces (Japanese, say) is segmented into words — `検索エンジン設計`
+  finds a note that says `検索エンジンの設計`. `order` is `relevance` (default with a
+  query), `recent`, or `path` (default without one). `explain` adds a per-signal
+  `score_breakdown` to each result. Recency ranking is **off unless configured**
+  — see `MCP_SEARCH_RECENCY_WEIGHT` in `.env.example`.
 - `fetch_document`
 - `list_projects`
 - `trace_sources` — backlinks include relative Markdown links, resolved against

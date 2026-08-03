@@ -11,6 +11,20 @@ export interface DocumentMetadata {
   [key: string]: unknown;
 }
 
+/**
+ * Search text derived from the body once, when the file is parsed, and carried
+ * on the cached document — folding a whole corpus on every query is the search
+ * path's real cost. Internal: `toPublicDocument` is an allowlist, so this is
+ * never part of a tool response, and it is optional so a document built by hand
+ * (tests, fixtures) still searches correctly, just without the cache.
+ */
+export interface DerivedSearchText {
+  /** NFKC-folded, lowercased body — what scoring scans. */
+  foldedBody: string;
+  /** Whitespace-collapsed body — what snippets are sliced from. */
+  compactBody: string;
+}
+
 export interface MarkdownDocument {
   id: string;
   relativePath: string;
@@ -18,6 +32,7 @@ export interface MarkdownDocument {
   frontmatter: DocumentMetadata;
   body: string;
   title: string;
+  searchDerived?: DerivedSearchText;
   /** Name of the knowledge root the document came from (multi-root mode only). */
   root?: string;
   stats: {
@@ -46,6 +61,8 @@ export interface SearchResult {
    * archive, say) and reach for a narrower read instead of fetching it whole.
    */
   size_bytes: number;
+  /** Per-signal score contributions; present only when `explain` was set. */
+  score_breakdown?: ScoreBreakdown;
 }
 
 /**
@@ -102,6 +119,47 @@ export interface SearchFilters {
   limit?: number;
   /** Skip this many ranked matches before taking `limit` (paging). */
   offset?: number;
+  /**
+   * Restrict to documents whose vault-relative path starts with this prefix. In
+   * multi-root mode it is matched against the on-disk path, without the
+   * `<root>:` prefix — pair it with `root` to scope to one knowledge root.
+   */
+  path_prefix?: string;
+  /** Restrict to one named knowledge root (multi-root deployments only). */
+  root?: string;
+  /** ISO 8601 bounds on the document's effective timestamp. */
+  updated_after?: string;
+  updated_before?: string;
+  /**
+   * Ranking order. Defaults to `relevance` for a query, and `path` for an empty
+   * one — which keeps the empty query a stable listing of the vault.
+   */
+  order?: "relevance" | "recent" | "path";
+  /** Per-request override of the recency weight (0 disables it). */
+  recency_weight?: number;
+  /** Include `score_breakdown` on every result. */
+  explain?: boolean;
+}
+
+/** Operator-level search defaults, sourced from env by `loadConfig`. */
+export interface SearchDefaults {
+  recencyWeight?: number;
+  recencyHalfLifeDays?: number;
+  /** Injectable clock; tests pin recency decay without touching the real one. */
+  now?: number;
+}
+
+/**
+ * Per-signal contributions behind `SearchResult.score`, returned when `explain`
+ * is set. `recency` is the amount recency added, not the multiplier.
+ */
+export interface ScoreBreakdown {
+  title: number;
+  path: number;
+  tags: number;
+  body: number;
+  phrase: number;
+  recency: number;
 }
 
 export interface CreateDocumentInput {
@@ -149,7 +207,7 @@ export interface TraceResult {
  * it (the ChatGPT adapter has always omitted it). Built by an explicit allowlist
  * in `server.ts` so a future field on `MarkdownDocument` cannot leak by default.
  */
-export type PublicDocument = Omit<MarkdownDocument, "absolutePath">;
+export type PublicDocument = Omit<MarkdownDocument, "absolutePath" | "searchDerived">;
 
 export interface VaultStore {
   init(): Promise<void>;

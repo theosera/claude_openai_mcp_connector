@@ -54,7 +54,7 @@ Persist OAuth tokens / registered clients (previously in-memory only,
 - Pinned by `tests/oauth.test.ts`. See
   [`operations.md §1.B`](./operations.md#b-oauth-state--in-memory-by-default-persistable-via-a-state-file).
 
-### Search & retrieval UX 🔭
+### Search & retrieval UX ✅
 
 Improve relevance and ergonomics of `search_documents` / `search`:
 
@@ -66,7 +66,9 @@ Improve relevance and ergonomics of `search_documents` / `search`:
   exhausts file descriptors mid-search (`src/knowledgeStore.ts`).
 
 Concretized by the [context-engineering proposal](./context-engineering.md)
-(survey-based, 2026-07) into two slices; the first has landed:
+(survey-based, 2026-07) into two slices, both now landed — which closes out this
+item; further retrieval work continues under the context-engineering layer
+below:
 
 - **P0 correctness slice** ✅ — NFKC folding on the search path (`src/searchText.ts`;
   `pathSafety`'s NFC is untouched and stays identity-preserving), `modified_at` /
@@ -77,12 +79,16 @@ Concretized by the [context-engineering proposal](./context-engineering.md)
   response via an allowlist projection. Two breaking changes (the envelope and
   the `absolutePath` removal) land in the next minor; the ChatGPT aliases are
   unchanged. Pinned by `tests/search.test.ts` + fixture backlink regressions.
-- **P1 quality slice** 🔭 — CJK segmentation via `Intl.Segmenter` (zero-dep),
-  opt-out recency decay (`MCP_SEARCH_RECENCY_*`, `=0` restores today's
-  ranking), `path_prefix` / `root` / date-range filters, `order` +
-  pagination, two-window snippets, per-result `explain` score breakdown, and a
-  derived-text cache on the existing mtime+size invalidation (kills the
-  per-query full-corpus `toLowerCase()` re-normalization).
+- **P1 quality slice** ✅ — CJK query segmentation via `Intl.Segmenter`
+  (zero-dep, bigram fallback, phrase bonus so a verbatim match still wins),
+  **opt-in** recency decay (`MCP_SEARCH_RECENCY_WEIGHT` default 0, multiplicative
+  so it never surfaces a non-match; age from frontmatter before mtime, which git
+  rewrites), `path_prefix` / `root` / date-range filters, `order`
+  (`relevance` / `recent` / `path`), two-window snippets, per-result `explain`
+  score breakdown, and a derived-text cache on the existing mtime+size
+  invalidation (removes the per-query full-corpus fold). Pagination shipped
+  earlier with P0. Entirely additive: unset env and unset parameters reproduce
+  0.7.0 ranking exactly. Pinned by `tests/search.test.ts`.
 
 ### Context engineering layer — get_context / link graph / project state 🔭
 
@@ -470,13 +476,13 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       per-session to per-request. Also add a third "why connections drop" cause
       (process-memory MCP sessions → `404 unknown_session`) to
       [`operations.md §1`](./operations.md) when this lands.
-- [x] **Search P0 correctness slice** — ✅ NFKC search folding (query + text,
-      snippets still sliced from the original), result
-      timestamps/`size_bytes`, `total_count`/`offset` envelope, backlink
-      relative-link resolution, `absolutePath` removed from document responses.
-      Next up in the same track: the **P1 quality slice** (CJK segmentation,
-      opt-in recency, path/root/date filters, two-window snippets, `explain`,
-      derived-text cache).
+- [x] **Search P0 + P1 slices** — ✅ P0: NFKC search folding (query + text,
+      snippets still sliced from the original), result timestamps/`size_bytes`,
+      `total_count`/`offset` envelope, backlink relative-link resolution,
+      `absolutePath` removed from document responses. ✅ P1: CJK query
+      segmentation, opt-in recency, path/root/date filters, `order`,
+      two-window snippets, `explain`, derived-text cache. Next in this track is
+      **P2 (link graph)** under the context-engineering layer above.
 - [x] **Exact-path document create** — ✅ two-step full-file plan, explicit
       target-path confirmation (`はい` + free text), confirmed-path echo at
       apply, content-integrity/no-overwrite checks, and MCP E2E coverage.
