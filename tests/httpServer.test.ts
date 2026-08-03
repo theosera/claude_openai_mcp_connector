@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import type http from "node:http";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -458,5 +458,122 @@ describe("HTTP transport integration", () => {
     expect(Array.isArray(structured?.results)).toBe(true);
 
     await client.close();
+  });
+
+  // --- DNS-rebinding protection (INV-6 item 3) -------------------------------
+  // The three transport options enforcing this (enableDnsRebindingProtection /
+  // allowedHosts / allowedOrigins) are @deprecated upstream; these tests pin the
+  // *behavior* so a dependency bump that drops the deprecated path fails loudly
+  // instead of silently removing the boundary (ROADMAP: "pin it, then move it").
+
+  const initializeBody = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "test", version: "0.0.0" }
+    }
+  });
+
+  // fetch (undici) silently drops a caller-supplied Host header (forbidden
+  // header) and rewrites it from the URL, so a forged-Host request must be
+  // built with node:http, which sends it verbatim.
+  function rawInitialize(options: { port: number; hostHeader?: string; origin?: string }): Promise<{
+    status: number;
+    body: string;
+  }> {
+    return new Promise((resolve, reject) => {
+      const req = http.request(
+        {
+          host: "127.0.0.1",
+          port: options.port,
+          path: "/mcp",
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+            authorization: `Bearer ${token}`,
+            ...(options.hostHeader ? { host: options.hostHeader } : {}),
+            ...(options.origin ? { origin: options.origin } : {})
+          }
+        },
+        (res) => {
+          let data = "";
+          res.on("data", (chunk: Buffer) => {
+            data += chunk.toString("utf8");
+          });
+          res.on("end", () => resolve({ status: res.statusCode ?? 0, body: data }));
+        }
+      );
+      req.on("error", reject);
+      req.end(initializeBody);
+    });
+  }
+
+  it("rejects a forged Host header on session init (DNS-rebinding invariant)", async () => {
+    const port = Number(new URL(baseUrl).port);
+
+    // Control: the genuine Host (allow-listed in beforeEach) initializes fine.
+    const genuine = await rawInitialize({ port });
+    expect(genuine.status).toBe(200);
+
+    // A DNS-rebinding attacker reaches 127.0.0.1 through a hostile name; the
+    // Host header is the only trace. It must be refused before the MCP
+    // transport processes the request.
+    const forged = await rawInitialize({ port, hostHeader: "evil.example.com" });
+    expect(forged.status).toBe(403);
+
+    // Same with a port suffix — exact-match semantics, not substring.
+    const forgedWithPort = await rawInitialize({ port, hostHeader: `evil.example.com:${port}` });
+    expect(forgedWithPort.status).toBe(403);
+  });
+
+  describe("Origin validation (allowedOrigins configured)", () => {
+    let originServer: http.Server | undefined;
+    let originPort = 0;
+
+    beforeEach(async () => {
+      const store = await makeStore();
+      const originConfig: HttpConfig = {
+        host: "127.0.0.1",
+        port: 0,
+        authToken: token,
+        allowWrite: false,
+        allowSkillWrite: false,
+        allowedHosts: [],
+        allowedOrigins: ["https://allowed.example"]
+      };
+      originServer = await startHttpServer(store, originConfig);
+      const address = originServer.address();
+      originPort = typeof address === "object" && address ? address.port : 0;
+      originConfig.allowedHosts.push(`127.0.0.1:${originPort}`, `localhost:${originPort}`);
+    });
+
+    afterEach(async () => {
+      if (originServer) {
+        await new Promise<void>((resolve) => originServer!.close(() => resolve()));
+        originServer = undefined;
+      }
+    });
+
+    it("accepts an allow-listed Origin and rejects an unlisted one", async () => {
+      const listed = await rawInitialize({ port: originPort, origin: "https://allowed.example" });
+      expect(listed.status).toBe(200);
+
+      const unlisted = await rawInitialize({ port: originPort, origin: "https://evil.example" });
+      expect(unlisted.status).toBe(403);
+    });
+
+    it("compatibility baseline: a request without an Origin header is currently accepted", async () => {
+      // D-M1-ORIGIN-ABSENT — this is a revisitable compatibility DECISION, not
+      // a security invariant: non-browser MCP clients (CLI, SDKs) send no
+      // Origin, and the transport only rejects a present-but-unlisted value.
+      // If a scan ever shows practical exploitability, flipping this to reject
+      // is a deliberate design change — update this test alongside it.
+      const absent = await rawInitialize({ port: originPort });
+      expect(absent.status).toBe(200);
+    });
   });
 });
