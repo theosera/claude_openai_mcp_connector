@@ -1,8 +1,23 @@
 # Context Engineering 改善提案 — 「検索 API」から「Context Gateway」へ
 
-> **ステータス**: 調査に基づく提案 (2026-07-31 時点、v0.6.0 のコードを実査)。本文書は
-> 実装を含まない。各 Phase の着手時には [`ROADMAP.md`](./ROADMAP.md) の該当項目を
-> 🔭→🚧 に graduation し、同一 PR で本文書と ROADMAP を更新する (リポの発火表規律)。
+> **ステータス**: 調査に基づく設計提案 (調査時点 2026-07-31、**v0.6.0 のコードを実査**)。
+> 本文書は設計提案であり、**実装状況は下表と [`ROADMAP.md`](./ROADMAP.md) が持つ**。
+> 各 Phase の着手時には ROADMAP の該当項目を 🔭→🚧→✅ に graduation し、同一 PR で
+> 本文書の下表と ROADMAP を更新する (リポの発火表規律)。
+>
+> | Phase | 状況 | 出荷 |
+> | --- | --- | --- |
+> | **P0** 正確性 (NFKC / envelope+total_count / 結果の timestamp・size / backlink 相対リンク解決 / `absolutePath` 除去) | ✅ 実装済み | v0.7.0 |
+> | **P1** 検索品質 (CJK 分かち書き / opt-in recency / path・root・日付 filter / `order` / 2 窓 snippet / `explain` / 派生テキスト cache) | ✅ 実装済み | v0.7.0 |
+> | **P2** link graph & provenance | 🔭 未実装 | — |
+> | **P3** `get_context` | 🔭 未実装 | — |
+> | **P4** project memory (`get_project_state` / fetch sectioning) | 🔭 未実装 | — |
+> | **P5** 評価 & tuning | 💭 未着手 | — |
+>
+> **A 節・B 節は v0.6.0 時点のベースラインとして意図的に据え置く** — Gap の根拠
+> (「なぜこの改修が要るのか」) であり、現在のコードの説明ではない。P0/P1 が解消した
+> 項目 (NFKC 正規化の欠落・`absolutePath` 露出・backlink の相対リンク未解決など) は
+> 上表の ✅ が現状の正典であり、A 節の記述はその**改修前の状態**を指す。
 >
 > **位置付け**: [`PRFAQ.md`](./PRFAQ.md) が約束する「vault を丸ごと渡さず、**必要な
 > ときに必要な分だけ**渡す」の直接の発展形。現状の「必要な分」の単位は _ファイル_
