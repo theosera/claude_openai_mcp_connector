@@ -252,12 +252,13 @@ Orchestrator / Client (将来)          ← 本リポでは実装しない (消�
   `decay = 2^(-age_days / H)` (H = `MCP_SEARCH_RECENCY_HALFLIFE_DAYS`、既定 30)。合成は
   **乗算 boost** `final = text_score × (1 + w × decay)` — text score 0 の文書を recency が
   蘇生させない (`score > 0` gate 温存、`search.ts:22`)。`w` はリクエストの
-  `recency_weight?` > env `MCP_SEARCH_RECENCY_WEIGHT` (既定 **0.25**)。`w=0` で旧 ranking を
-  完全復元できる (escape hatch)。既定 on で出す — ranking 順序はテストで pin された契約では
-  なく (`tests/knowledgeStore.test.ts` は所属と filter を pin)、opt-in の改善は KPI に効かない。
-- **空クエリの意味変更**: 「path 順先頭 10 件」→「`effective_ts` 降順」(= 実質
-  `get_recent_context`)。`order?` で明示制御 (`relevance`/`recent`/`path`、既定はクエリ有
-  → relevance、無 → recent)。
+  `recency_weight?` > env `MCP_SEARCH_RECENCY_WEIGHT` (既定 **0 = off**。推奨値 0.25 を
+  `.env.example` に記載)。**既定 off で出す** — 「新 env 未設定時に挙動変化なし」の原則
+  (F 節 Security review 総括) と ChatGPT alias の契約凍結を、既定 on の KPI 効果より
+  優先する。KPI 検証は owner が推奨値で有効化して行う。
+- **空クエリの意味**: 既定は現行維持 (path 順)。`order: "recent"` の明示指定、または
+  `w > 0` のときに `effective_ts` 降順 (= 実質 `get_recent_context`)。`order?` は
+  `relevance`/`recent`/`path` (既定はクエリ有 → relevance、無 → path = 現行)。
 - **Pagination**: `offset?` + envelope `{results, total_count, offset, limit}`。
   `total_count` は filter 適用後・limit 適用前の件数で、**「自分のクエリが 400 件に
   当たっている」ことを agent が 1 回で知る**ための計器 (KPI 直結)。出力が配列 → object に
@@ -306,9 +307,15 @@ get_context(
 ```
 
 Token 推定は**依存ゼロ** (`src/tokenEstimate.ts`):
-`estTokens = ceil((ascii_chars/4.0 + cjk_chars/1.7) × 1.15)`。CJK 判定は Han / かな /
-ハングル / 全角記号のコードポイント範囲。1.15 の安全係数は「budget 超過より
-under-fill を選ぶ」bias。定数は export してテストで pin (tuning を 1 行 diff にする)。
+`estTokens = ceil((ascii_chars/4.0 + cjk_chars/1.7 + other_chars/2.0) × 1.15)`。
+CJK 判定は Han / かな / ハングル / 全角記号のコードポイント範囲。**`other_chars` は
+ASCII でも CJK でもない全 code point** (emoji・キリル・アクセント付きラテン等) の保守的
+fallback — どの分類にも落ちない文字を 0 と数えない。コードフェンス内の ASCII は
+`/4` でなく `/3` で数える (高エントロピー ASCII はトークン密度が高い)。さらに chunk
+ごとの JSON 枠 (metadata フィールド) を**固定 overhead 定数として別途加算**し、
+「応答全体の実効トークンが budget を超えない」ことを推定式でなくテストで pin する。
+1.15 の安全係数は「budget 超過より under-fill を選ぶ」bias。定数は export してテストで
+pin (tuning を 1 行 diff にする)。
 
 出力 `ContextPackage` (標準 `jsonResult` の `{data: …}` に包む):
 
@@ -407,19 +414,25 @@ get_project_state(project, client?, token_budget? = 3000,
   {
     "rules": [
       { "name": "permanent", "match": { "path_prefix": "permanent/" }, "weight": 1.5 },
-      { "name": "synthesis", "match": { "tag": "synthesis" }, "weight": 1.35 },
+      { "name": "synthesis", "match": { "path_prefix": "synthesis/" }, "weight": 1.35 },
       { "name": "agent-log", "match": { "root": "ops" }, "weight": 0.6 },
-      { "name": "inbox", "match": { "path_prefix": "inbox/" }, "weight": 0.3 }
+      { "name": "inbox", "match": { "path_prefix": "inbox/" }, "weight": 0.3 },
+      { "name": "tagged-synthesis", "match": { "tag": "synthesis" }, "weight": 1.2 }
     ],
-    "frontmatter_type_hint": { "enabled": false, "max_weight": 1.25 }
+    "frontmatter_type_hint": { "enabled": false, "max_weight": 1.25 },
+    "_note": "tag match の weight は type hint と同じ上限 (≤1.25) に clamp される"
   }
   ```
 
 - **Anti-forgery (本提案で新規に立てるべきセキュリティ論点)**: ノート本文が自己申告する
   frontmatter `type: permanent` を信頼重みの主軸にすると、web clip 等の注入コンテンツが
-  **自分の信頼度を自分で吊り上げる** ranking 注入経路になる。したがって信頼に効く導出は
-  owner 管理シグナル (root 名 > path_prefix > tag rules) に限定し、frontmatter type は
-  明示 opt-in + 上限 1.25× の**ヒント**に留める。さらに **`type` キーは INV-2 の patch
+  **自分の信頼度を自分で吊り上げる** ranking 注入経路になる。したがって **1.25× を超える
+  信頼重みは owner 管理シグナル (root 名 > path_prefix) だけ**から導出する。
+  **`tags` は owner 管理シグナルではない** — frontmatter 由来 (web clip が自己申告できる)
+  であり、しかも INV-2 の patch allowlist (`src/frontmatter.ts:8`) に**既に入っている** =
+  MCP write 経由でも書ける。したがって `match.tag` の weight は frontmatter type hint と
+  **同じ扱い** (上限 1.25× に clamp) とし、tag だけで permanent 級の信頼へ昇格する経路を
+  塞ぐ。frontmatter type は明示 opt-in + 上限 1.25× の**ヒント**に留める。さらに **`type` キーは INV-2 の patch
   allowlist (`src/frontmatter.ts:8` の 5 キー) に追加しない** — MCP write 経由で type を
   設定・昇格する経路を構造的に塞ぐ。type の変更は Obsidian 側の人間編集だけに残り、
   Knowledge Promotion の human-in-the-loop が allowlist の**現状維持**によって成立する
