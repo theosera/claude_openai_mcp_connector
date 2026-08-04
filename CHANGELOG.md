@@ -44,8 +44,14 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
      the real environment via `Environment=` / `EnvironmentFile=` and need no
      change). This step is a no-op under the current binary, so it is safe to do
      first.
-  2. Deploy, then restart.
-  3. Verify with `pnpm run check:http`.
+  2. Deploy, then **reload** each plist — `launchctl bootout gui/$(id -u)/<label>`
+     followed by `launchctl bootstrap gui/$(id -u) <plist>`.
+     `launchctl kickstart -k` restarts the process **without** re-reading the
+     plist, so the key stays in the file, never reaches the job, and the endpoint
+     crash-loops with the error above.
+  3. Confirm it reached the running job —
+     `launchctl print gui/$(id -u)/<label> | grep MCP_ENV_FILE` — then verify
+     with `pnpm run check:http`.
 
   Point each endpoint at **its own** file. Migrating fully restores previous
   behaviour, including the `MCP_AUDIT_SUBDIR` matching invariant between the two

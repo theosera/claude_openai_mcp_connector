@@ -707,7 +707,13 @@ two processes** — give each its own.
 >
 > 1. add `MCP_ENV_FILE` to **BOTH** plists — interactive *and* scan (Step 4) —
 >    **before** you deploy this version and restart;
-> 2. then restart, then verify with `pnpm run check:http` (Step 5).
+> 2. deploy, then **reload** each plist with `launchctl bootout` +
+>    `launchctl bootstrap` (Step 4). `launchctl kickstart -k` restarts the
+>    process **without** re-reading the plist, so on its own it crash-loops with
+>    exactly the error above even though the key is in the file;
+> 3. confirm the key reached the running job —
+>    `launchctl print gui/$(id -u)/<label> | grep MCP_ENV_FILE` — then verify
+>    with `pnpm run check:http` (Step 5).
 >
 > Migrating fully **restores the previous behaviour exactly**: same parsing
 > (dotenv), same precedence (a value already in the real environment still wins
@@ -814,12 +820,50 @@ to both plists before restarting.** The scan agent runs the **same**
 The interactive agent is identical except that its `MCP_ENV_FILE` points at the
 interactive file (e.g. `/abs/path/to/claude_openai_mcp_connector/.env`). Use a
 **stable** `node` path (version-manager shims disappear per-shell and break
-`KeepAlive`). Load with `launchctl load -w …`; restart after a rebuild with
-`launchctl kickstart -k gui/$(id -u)/<label>`. The `audit=…` flag on the
-connector's stderr startup line tells you which surface came up on each endpoint
-— if an agent is instead crash-looping, its `StandardErrorPath` log will show
-`KNOWLEDGE_ROOT (or KNOWLEDGE_ROOTS) is required`, which means that plist is
-still missing `MCP_ENV_FILE`.
+`KeepAlive`).
+
+**Which restart you need depends on what you changed**, and getting this wrong
+is the likeliest way to fail the `MCP_ENV_FILE` migration:
+
+```bash
+# First load:
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/<label>.plist
+
+# Code only (after a rebuild) — the job definition did not change:
+launchctl kickstart -k gui/$(id -u)/<label>
+
+# The PLIST changed — adding MCP_ENV_FILE is exactly this:
+launchctl bootout   gui/$(id -u)/<label>
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/<label>.plist
+```
+
+`kickstart -k` restarts the process but does **not** re-read the plist: launchd
+keeps the job definition it was handed at bootstrap, so an edited
+`EnvironmentVariables` dict never reaches the process. It is the launchd
+counterpart of the `systemctl daemon-reload` in [§2 systemd](#systemd-linux) —
+except launchd has no separate reload verb, so you unload and load. Verify
+against the environment launchd actually holds rather than the file on disk:
+
+```bash
+launchctl print gui/$(id -u)/<label> | grep MCP_ENV_FILE   # no output = not reloaded
+```
+
+One `bootstrap` failure is expected and is **not** a plist problem: if that
+agent was previously turned off with `launchctl disable`, `bootstrap` answers
+`5: Input/output error` and the job stays down. That is the disable working as
+intended — run `launchctl enable gui/$(id -u)/<label>` first if you really do
+mean to bring it back. Worth stating because everything else in this section
+trains you to suspect the plist.
+
+The `audit=…` flag on the connector's stderr startup line tells you which
+surface came up on each endpoint. If an agent is instead crash-looping, its
+`StandardErrorPath` log shows `KNOWLEDGE_ROOT (or KNOWLEDGE_ROOTS) is required`,
+repeated once per `KeepAlive` respawn. That means the **running job** has no
+`MCP_ENV_FILE` — which is either a plist that still lacks the key, or a plist
+that has it and was never reloaded. Compare the two directly to tell them apart:
+`plutil -extract EnvironmentVariables.MCP_ENV_FILE raw <plist>` reads the file,
+the `launchctl print` above reads the job. File yes / job no means `bootout` +
+`bootstrap`.
 
 > After (re)starting either agent, verify its surface with `pnpm run check:http`
 > (Step 5) — it confirms the scan endpoint never exposes the general write tools.
