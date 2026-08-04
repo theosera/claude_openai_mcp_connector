@@ -393,6 +393,45 @@ describe("KnowledgeStore", () => {
     expect((await fs.stat(legacyDir)).mode & 0o777).toBe(0o700);
   });
 
+  it("restores owner write on a patch state directory left at 0500", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    // 0500 has no group/other bits, so a check of `mode & 0o077` sees nothing to
+    // do — but the owner cannot create files in an r-x directory, so every plan
+    // write would fail. The whole triad has to be compared.
+    const lockedDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-locked-patches-"));
+    await fs.chmod(lockedDir, 0o500);
+
+    const upgraded = new KnowledgeStore({ knowledgeRoot: root, writeMode: "two_step", patchStateDir: lockedDir });
+    await upgraded.init();
+
+    expect((await fs.stat(lockedDir)).mode & 0o777).toBe(0o700);
+  });
+
+  it("refuses to start when the patch state directory is a symbolic link", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    // `fs.mkdir(recursive)` follows the link and succeeds, and the plan writes
+    // that follow use the same pathname — so the files land in whatever
+    // directory the link points at. 0600 on the files is no defence there:
+    // unlink and rename are governed by the directory's permissions, so the
+    // owner of the target could swap a staged plan for one carrying different
+    // content and a matching content_sha256. Fail closed instead of warning.
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-symlink-patches-"));
+    const target = path.join(base, "elsewhere");
+    const link = path.join(base, "state");
+    await fs.mkdir(target);
+    await fs.symlink(target, link);
+
+    const viaLink = new KnowledgeStore({ knowledgeRoot: root, writeMode: "two_step", patchStateDir: link });
+    await expect(viaLink.init()).rejects.toThrow(/symbolic link/);
+
+    // Nothing was staged through the link.
+    expect(await fs.readdir(target)).toEqual([]);
+  });
+
   it("rejects stale patch application", async () => {
     const plan = await store.planUpdate({
       id_or_path: "chatgpt-research-001",
