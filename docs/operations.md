@@ -442,8 +442,9 @@ exec bwrap \
   `# Deterministic cwd: the client may spawn this from ~ or the checkout,` \
   `# neither of which exists inside. Without --chdir, bwrap falls back to /` \
   `# (read-only), where any RELATIVE MCP_PATCH_STATE_DIR you set would fail to` \
-  `# write. /tmp is the writable tmpfs. (The default is absolute, so it is the` \
-  `# home directory that has to be writable when you leave it unset.)` \
+  `# write. /tmp is the writable tmpfs. Note --clearenv below leaves no HOME,` \
+  `# so the default patch-state location cannot be derived and the server exits` \
+  `# with a message: when writes are on here, set MCP_PATCH_STATE_DIR (below).` \
   --chdir /tmp \
   `# Unshare every namespace, including network — stdio talks over pipes.` \
   --unshare-all \

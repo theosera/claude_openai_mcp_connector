@@ -110,10 +110,30 @@ export interface StoreConfig {
 // results, so keep them short, lowercase, and unambiguous.
 const ROOT_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
-// Where two-step plans live when the operator names no location. Absolute by
-// construction: a plan is vault plaintext, so the fallback must not depend on
-// the working directory the process was started in.
-const DEFAULT_PATCH_STATE_DIR = path.join(os.homedir(), ".mcp-state", "patches");
+/**
+ * Where two-step plans live when the operator names no location.
+ *
+ * A plan holds vault plaintext, so this must never resolve against the working
+ * directory — for a client-spawned stdio server the client picks that. The home
+ * directory is the anchor, but it is not guaranteed to supply one: `os.homedir()`
+ * returns `""` when HOME is set to an empty value and cannot fall back to a
+ * passwd entry, and it returns HOME verbatim when HOME is relative. Either way
+ * `path.join` yields a relative string and `path.resolve` re-anchors it to the
+ * cwd — reinstating the exact placement this default exists to prevent, in the
+ * environments most likely to strip HOME (service accounts, and the `--clearenv`
+ * bwrap recipe in `docs/operations.md`). So refuse to guess and make the
+ * operator name it, rather than silently writing plaintext somewhere else.
+ */
+function defaultPatchStateDir(): string {
+  const home = os.homedir();
+  if (!path.isAbsolute(home)) {
+    throw new Error(
+      "MCP_PATCH_STATE_DIR must be set to an absolute path: no home directory is available to derive the " +
+        "default from. Two-step plan state holds vault plaintext and must not fall back to the working directory."
+    );
+  }
+  return path.join(home, ".mcp-state", "patches");
+}
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const knowledgeRoots = parseKnowledgeRoots(env);
@@ -173,10 +193,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     // two-step plan holds the full proposed document text, so that put vault
     // plaintext wherever the process happened to start — and for a stdio server
     // the client picks that directory. The default is now anchored to the home
-    // directory, which does not move with the caller. An explicit relative value
-    // is still honoured (and still resolved against the cwd): overriding it is a
-    // deliberate act, unlike inheriting a default.
-    patchStateDir: path.resolve(env.MCP_PATCH_STATE_DIR?.trim() || DEFAULT_PATCH_STATE_DIR),
+    // directory, or refuses to resolve at all if there is no usable one. An
+    // explicit relative value is still honoured (and still resolved against the
+    // cwd): overriding it is a deliberate act, unlike inheriting a default. The
+    // `||` short-circuit matters — an explicit setting must keep working on a
+    // host with no home directory, so the fallback is only evaluated when the
+    // operator named nothing.
+    patchStateDir: path.resolve(env.MCP_PATCH_STATE_DIR?.trim() || defaultPatchStateDir()),
     skillsSubdir,
     auditSubdir,
     scanConcurrency,

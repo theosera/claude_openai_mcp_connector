@@ -58,11 +58,22 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   chooses that directory, so the plaintext landed wherever the caller pointed.
   The previous release closed the matching hole for env files (the server stopped
   reading `.env` from its working directory) and named this as the remaining
-  follow-up. The default is now `~/.mcp-state/patches`, absolute by construction.
-  An explicit `MCP_PATCH_STATE_DIR` is still honoured exactly as before,
-  including a relative one — overriding the setting is deliberate in a way that
-  inheriting a default is not. Pinned by `tests/config.test.ts`, which asserts
-  the default is unchanged across a `chdir`.
+  follow-up. The default is now `~/.mcp-state/patches`.
+
+  The home directory is an anchor, not a guarantee: `os.homedir()` returns `""`
+  when HOME is empty with no passwd entry to fall back on, and returns HOME
+  verbatim when HOME is relative. Either would make `path.join` produce a
+  relative string that `path.resolve` re-anchors to the working directory —
+  reinstating the very placement this default exists to prevent, and doing so
+  precisely in the environments that strip HOME (service accounts, and the
+  `--clearenv` bwrap recipe in [`operations.md`](./docs/operations.md#6-sandboxing-the-local-stdio-server-bwrap-optional)).
+  When no absolute home is available the server therefore **refuses to start**
+  and names the setting to configure, instead of quietly writing plaintext
+  somewhere else. An explicit `MCP_PATCH_STATE_DIR` is still honoured exactly as
+  before, including a relative one and including on a host with no home
+  directory — overriding the setting is deliberate in a way that inheriting a
+  default is not. Pinned by `tests/config.test.ts`, which asserts the default is
+  unchanged across a `chdir` and that an unusable home fails closed.
 
   **Migration.** Deployments that set `MCP_PATCH_STATE_DIR` are unaffected; the
   documented systemd and launchd units already set it. If you relied on the

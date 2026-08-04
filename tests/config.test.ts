@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig, loadEnvFile, loadHttpConfig, selectedTransport } from "../src/config.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -217,6 +217,27 @@ describe("patch state directory default", () => {
       expect(after).toBe(path.join(os.homedir(), ".mcp-state", "patches"));
     } finally {
       process.chdir(original);
+    }
+  });
+
+  it("refuses to guess when no home directory is available", () => {
+    // os.homedir() returns "" when HOME is empty with no passwd fallback, and
+    // returns HOME verbatim when HOME is relative. Both make path.join produce a
+    // relative string that path.resolve re-anchors to the cwd — the placement
+    // this default exists to prevent, in exactly the environments that strip
+    // HOME (service accounts, the --clearenv bwrap recipe in operations.md).
+    for (const home of ["", "relative-home"]) {
+      const spy = vi.spyOn(os, "homedir").mockReturnValue(home);
+      try {
+        expect(() => loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault" })).toThrow(/MCP_PATCH_STATE_DIR/);
+        // An explicit setting must still work on such a host: the fallback is
+        // only consulted when the operator named nothing.
+        expect(loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault", MCP_PATCH_STATE_DIR: "/srv/state" }).patchStateDir).toBe(
+          path.resolve("/srv/state")
+        );
+      } finally {
+        spy.mockRestore();
+      }
     }
   });
 
