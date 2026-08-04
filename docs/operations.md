@@ -782,11 +782,15 @@ tailscale funnel status
 Run two LaunchAgents (two labels, e.g. `com.you.mcp-connector` and
 `com.you.mcp-connector-scan`). The key is **`MCP_ENV_FILE`**: it selects which
 env file each process loads, keeping secrets in the mode-`600` files instead of
-the plist (where `launchctl print` would expose them). It is the **only** thing
-that selects the configuration now — `WorkingDirectory` no longer does, so a
-plist without `MCP_ENV_FILE` (or without the settings inline) will crash-loop
-under `KeepAlive`. **Add this key to both plists before restarting.** The scan
-agent runs the **same** `dist/index.js`, pointed at the scan file:
+the plist (where `launchctl print` would expose them). It is now the **only**
+thing that selects an env *file* — `WorkingDirectory` no longer does — so a
+plist that neither names a file nor carries the settings inline will crash-loop
+under `KeepAlive`. Settings placed directly in `EnvironmentVariables` still
+work, and still win over the file. `WorkingDirectory` also still decides one
+thing: a **relative** value such as `MCP_PATCH_STATE_DIR` is resolved against it
+(`src/config.ts`), so give that one an absolute path too. **Add `MCP_ENV_FILE`
+to both plists before restarting.** The scan agent runs the **same**
+`dist/index.js`, pointed at the scan file:
 
 ```xml
 <!-- scan agent: ~/Library/LaunchAgents/com.you.mcp-connector-scan.plist -->
