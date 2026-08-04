@@ -4,6 +4,7 @@ import path from "node:path";
 import { createTwoFilesPatch } from "diff";
 import matter from "gray-matter";
 import { z } from "zod";
+import { SAFE_MATTER_OPTIONS } from "./frontmatter.js";
 import { relativeToRoot, resolveExistingRoot, resolveInsideRoot, toPosixPath } from "./pathSafety.js";
 
 const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -274,7 +275,10 @@ function validateSkillMarkdown(skillName: string, content: string): void {
   }
   let parsed: matter.GrayMatterFile<string>;
   try {
-    parsed = matter(content);
+    // Defense in depth: the `---\n` prefix check above already refuses a
+    // language-tagged block such as `---js`, but the parse still runs with the
+    // executable engines stubbed out so this call site can never eval SKILL.md.
+    parsed = matter(content, SAFE_MATTER_OPTIONS);
   } catch {
     throw new Error("SKILL.md frontmatter is invalid YAML.");
   }

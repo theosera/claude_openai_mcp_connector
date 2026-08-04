@@ -6,6 +6,41 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- **Front matter is no longer parsed with an engine the document itself
+  selects.** `gray-matter` picks its parser from the language tag on the opening
+  delimiter (`---js`), and its `javascript` engine's `parse` is a raw `eval()`.
+  Vault content is untrusted by design, so a single planted note executed
+  arbitrary code inside the server on the always-on read path — every
+  `search_documents` / `fetch_document` / `list_projects` / `trace_sources` call
+  walks and parses every file. The same engine was reachable from the write
+  side: `matter.stringify` re-parses a string argument before serializing, so a
+  client-supplied `body` / `new_body` was evaluated during the `plan_*` step,
+  which is advertised as non-mutating and therefore precedes any user approval.
+  Both call sites, and the one in `src/skillStore.ts`, now pass a hardened
+  options object that replaces the `javascript` and `js` engines with a thrower.
+  Note that `engines` is **merged** over gray-matter's defaults rather than
+  replacing them, so an allowlist of `{ yaml, json }` would leave the dangerous
+  engine in place; and `matter.stringify` runs the payload *before* it throws
+  "stringifying JavaScript is not supported", so asserting that an error was
+  raised does not prove non-execution. The tests assert non-execution directly,
+  via a `globalThis` marker that must stay undefined.
+
+- **A document body can no longer inject keys into the front matter it is
+  written with** (INV-2). Because `matter.stringify` re-parsed its string
+  argument, a leading `---` YAML block in a client-supplied body was merged into
+  the emitted front matter, bypassing `assertFrontmatterPatch` — the only
+  server-side field allowlist. `serializeMarkdown` now passes an explicit file
+  object so the body is opaque. Server-managed keys (`id`, `updated_at`,
+  `title`) always won the merge, so document identity was never forgeable; what
+  did get through was arbitrary non-managed keys such as `date:`, which silently
+  changes search ranking through `effectiveTimestamp`.
+
+  A body that begins with a `---` YAML block is now preserved verbatim in the
+  body instead of being absorbed into the front matter. Bodies that do not begin
+  with `---` serialize byte-identically to before.
+
 ## [0.7.0] — 2026-08-03
 
 ### Security

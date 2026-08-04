@@ -108,6 +108,27 @@ describe("SkillStore", () => {
     ).rejects.toThrow(/only name and description/);
   });
 
+  it("never evaluates an executable front-matter block in SKILL.md", async () => {
+    // gray-matter dispatches a language-tagged block (`---js`) to its bundled
+    // javascript engine, whose parse() is a raw eval(). The `---\n` prefix check
+    // refuses the bundle before matter() is reached, and the parse itself runs
+    // with the executable engines stubbed out. Assert NON-EXECUTION via a
+    // globalThis marker, not merely that an error was raised.
+    const marker = "__skillFrontmatterExecuted__";
+    const host = globalThis as unknown as Record<string, unknown>;
+    try {
+      await expect(
+        store.planCreate({
+          ...validInput(),
+          skill_md: `---js\nglobalThis[${JSON.stringify(marker)}] = "executed";\n---\n\n# Improve AI Harness\n`
+        })
+      ).rejects.toThrow(/must begin with YAML frontmatter/);
+      expect(host[marker]).toBeUndefined();
+    } finally {
+      delete host[marker];
+    }
+  });
+
   it("rejects duplicate files and NUL content", async () => {
     await expect(
       store.planCreate({
