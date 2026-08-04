@@ -1,6 +1,30 @@
 import matter from "gray-matter";
 import type { DocumentMetadata } from "./types.js";
 
+function refuseExecutableFrontmatter(): never {
+  throw new Error("Executable front matter is not supported.");
+}
+
+// gray-matter honours a language tag after the opening delimiter (`---js`) and
+// dispatches that block to the matching engine; its bundled `javascript` engine
+// parses with a raw eval(). Vault files and client-supplied bodies are untrusted
+// data, so every matter() / matter.stringify() call in this repo must pass these
+// options, which replace the executable engines with throwers.
+//
+// gray-matter MERGES this map over its defaults (lib/defaults.js:
+// `Object.assign({}, engines, opts.parsers, opts.engines)`), so an allowlist
+// shaped like `{ engines: { yaml, json } }` would leave the javascript engine
+// registered and the payload would still run — the engines have to be stubbed by
+// name. Language tags are lower-cased before lookup, so `javascript` and `js`
+// cover `js` / `javascript` / `JS` / `JavaScript`; the remaining non-default
+// aliases (`coffee` / `cson` / …) are unregistered and already throw.
+export const SAFE_MATTER_OPTIONS = {
+  engines: {
+    javascript: { parse: refuseExecutableFrontmatter, stringify: refuseExecutableFrontmatter },
+    js: { parse: refuseExecutableFrontmatter, stringify: refuseExecutableFrontmatter }
+  }
+};
+
 // Keys a client may patch on an existing document via plan_document_update.
 // `id` (document identity) and `updated_at` (server-stamped) are intentionally
 // excluded. Any other key is rejected to block frontmatter/YAML field injection
@@ -44,7 +68,7 @@ function validatePatchValue(key: string, value: unknown): unknown {
 }
 
 export function parseMarkdown(raw: string): { frontmatter: DocumentMetadata; body: string } {
-  const parsed = matter(raw);
+  const parsed = matter(raw, SAFE_MATTER_OPTIONS);
   return {
     frontmatter: normalizeMetadata(parsed.data as DocumentMetadata),
     body: parsed.content
@@ -52,8 +76,9 @@ export function parseMarkdown(raw: string): { frontmatter: DocumentMetadata; bod
 }
 
 // Fault-tolerant wrapper used on the read path. A single vault document with
-// malformed frontmatter — broken YAML/JSON, or raw control characters that leak
-// in from a web clipping — makes gray-matter throw. Because the store parses
+// malformed frontmatter — broken YAML/JSON, raw control characters that leak in
+// from a web clipping, or a refused executable language tag (`---js`, see
+// SAFE_MATTER_OPTIONS) — makes gray-matter throw. Because the store parses
 // every file when listing/searching, one such file would otherwise abort the
 // whole operation (search / list / fetch / trace all fail). Instead we swallow
 // the parse error, fall back to empty frontmatter over the raw body so the note
@@ -77,7 +102,16 @@ export function parseMarkdownSafe(raw: string): {
 }
 
 export function serializeMarkdown(frontmatter: DocumentMetadata, body: string): string {
-  return matter.stringify(body.trimEnd() + "\n", normalizeMetadata(frontmatter));
+  // The body is untrusted client input (`body` / `new_body`), so it is handed
+  // over as a file OBJECT, never as a string: matter.stringify() re-parses a
+  // string argument (`if (typeof file === 'string') file = matter(file, options)`)
+  // before writing it, which would (a) run a front-matter engine over that input
+  // and (b) merge any leading `---` block of the body into the emitted
+  // frontmatter (lib/stringify.js: `Object.assign({}, file.data, data)`),
+  // smuggling keys past the write-time allowlist (INV-2). With `{ content }`
+  // there is no `file.data`, so only the server-computed metadata is emitted and
+  // a body that starts with `---` is written through verbatim.
+  return matter.stringify({ content: body.trimEnd() + "\n" }, normalizeMetadata(frontmatter), SAFE_MATTER_OPTIONS);
 }
 
 export function normalizeMetadata(input: DocumentMetadata): DocumentMetadata {
