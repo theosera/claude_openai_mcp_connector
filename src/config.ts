@@ -1,10 +1,61 @@
+import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import dotenv from "dotenv";
 import type { OAuthConfig } from "./oauth/provider.js";
 import { assertRelativePath, posixContains, toPosixPath } from "./pathSafety.js";
 
-dotenv.config();
+/**
+ * Load an optional operator-named env file into `env`.
+ *
+ * This module used to call `dotenv.config()` as an import-time side effect,
+ * which reads `.env` from the **process working directory**. In the documented
+ * stdio deployment the MCP client spawns `node dist/index.js` with only
+ * `KNOWLEDGE_ROOT` in its `env`, so the cwd is whatever directory the client
+ * happened to be started in — untrusted ground. A `.env` sitting there could
+ * therefore choose `MCP_AUTH_TOKEN`, `MCP_OAUTH_PASSWORD`, `MCP_TRANSPORT`,
+ * `MCP_HTTP_HOST`, the `MCP_HTTP_ALLOW_*` write opt-ins and `KNOWLEDGE_ROOTS`
+ * (which outranks `KNOWLEDGE_ROOT`) — turning a local, read-only stdio server
+ * into a write-enabled HTTP listener with an attacker-known bearer token.
+ *
+ * So there is **no cwd fallback and no search**: a file is read only when the
+ * operator names one explicitly, by ABSOLUTE path, in the real process
+ * environment (`MCP_ENV_FILE`). A relative or unreadable path is a startup
+ * error rather than a silent skip. Parsing and precedence stay dotenv's own —
+ * `dotenv.parse` on the file bytes, then populate WITHOUT override, so a value
+ * already present in the environment always wins over the file.
+ *
+ * Called once from `src/index.ts` at startup, never on import, so importing
+ * this module can no longer mutate `process.env`.
+ */
+export function loadEnvFile(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const configured = env.MCP_ENV_FILE?.trim();
+  if (!configured) {
+    return undefined;
+  }
+  if (!path.isAbsolute(configured)) {
+    throw new Error(
+      `MCP_ENV_FILE must be an absolute path (got "${configured}"). A relative path would resolve against the process working directory, which is exactly what this variable exists to avoid.`
+    );
+  }
+  let contents: string;
+  try {
+    contents = fs.readFileSync(configured, "utf8");
+  } catch (error) {
+    throw new Error(
+      `Cannot read MCP_ENV_FILE="${configured}": ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error }
+    );
+  }
+  for (const [key, value] of Object.entries(dotenv.parse(contents))) {
+    // dotenv's populate semantics without `override`: a key already present in
+    // the environment is never replaced by a file value.
+    if (!Object.prototype.hasOwnProperty.call(env, key)) {
+      env[key] = value;
+    }
+  }
+  return configured;
+}
 
 /** One named knowledge root. The FIRST configured root is the primary
  *  (writable) root; every additional root is exposed strictly read-only. */

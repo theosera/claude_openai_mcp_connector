@@ -31,7 +31,11 @@ non-engineers. Goal: a copy-paste path that does **not** require a manual build.
   removing the Node/pnpm build step.
 - A **"first-time / prerequisites"** quickstart with install links (Node) and a
   3-tier path: 🟢 local + Claude Desktop → 🟡 CLI clients → 🔴 web + OAuth.
-- Optional: a guided `init` that writes `.env` interactively.
+- Optional: a guided `init` that writes an env file interactively — it must also
+  wire up the **`MCP_ENV_FILE`** (absolute path) that names that file, because
+  the server no longer reads `.env` from its working directory (for a
+  client-spawned stdio server that directory is attacker-choosable; see the
+  `[Unreleased]` Security/Migration entries in [`CHANGELOG.md`](../CHANGELOG.md)).
 - _Why:_ the target audience skews technical but the build step is the main
   drop-off point; the web/OAuth path stays "advanced".
 
