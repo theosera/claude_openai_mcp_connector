@@ -29,6 +29,11 @@ Claude Code のセッション transcript (JSONL) を Markdown 1 ノート/セ�
   無ければ `$HOME/*/` 直下の `.claude-session-vault` マーカーファイルを走査。
   保存先サブディレクトリは `$SESSION_LOG_SUBDIR` > マーカー 1 行目 > 既定
   `claude-sessions`。**どちらも見つからなければ全 hook は no-op** (fail-safe)。
+- **走査は「ちょうど 1 件」でしか解決しない** (fail-closed)。走査結果はセッション
+  全文の push 先なので、複数一致を先頭勝ちで採ると `$HOME` 直下にマーカー付き
+  clone を置ける者が glob 順を取って全 transcript を受け取れる。2 件以上なら
+  **何も archive せず**件数だけ stderr に出す。正当に vault が複数ある構成は
+  `SESSION_VAULT_REPO` で明示する (env は走査より優先)。
 - **secret マスキングは ops-logging と同一規則** (`mask()` を同期させる —
   token 形式を追加したら capture-command.sh と archive-session.sh の両方を更新)。
 - push が non-fast-forward なら `git pull --rebase --autostash` → 再 push

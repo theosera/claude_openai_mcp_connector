@@ -8,6 +8,35 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **The session-archive hook no longer resolves an ambiguous vault scan, so the
+  push target for a full transcript cannot be claimed by planting a directory.**
+  `archive-session.sh` locates the private vault clone from `$SESSION_VAULT_REPO`
+  or, failing that, by scanning `$HOME/*/` for a `.claude-session-vault` marker
+  next to a `.git`. It took the **first** hit, and that scan decides where the
+  entire session transcript — every user message, assistant reply, tool call and
+  tool result — is committed and pushed. Anyone able to drop a marked git clone
+  under `$HOME` therefore only had to win the lexical glob order to receive every
+  future session; a directory named ahead of the real vault, with `origin`
+  pointing anywhere, was the whole exploit. Measured against the unpatched
+  script: the planted remote received the transcript (canary included) and the
+  legitimate vault received nothing.
+
+  The scan now resolves **only when it finds exactly one candidate** and
+  otherwise archives nothing, which is the same no-op the "no vault found" case
+  already took. `$SESSION_VAULT_REPO` still wins outright, so a host that
+  genuinely holds two vault clones names the one it means — verified to still
+  archive correctly with two candidates present. Two or more candidates and no
+  env print a one-line count to stderr: silence here would be indistinguishable
+  from a working archive that quietly stopped writing, and the count is what the
+  operator acts on. The candidate paths are deliberately **not** printed — this
+  script ships byte-identical in this public repo, and those paths are the vault
+  location.
+
+  Rejected as too broad: refusing an `origin` that carries several push URLs
+  (breaks legitimate mirrors) and pinning one vault+origin pair per machine
+  (locks out a second legitimate vault until a pin file is removed). Neither is
+  needed to close the exploit.
+
 - **Front matter that expands exponentially when serialized is refused instead
   of materialized.** js-yaml resolves an alias (`*a`) as a *shared reference*,
   so a few hundred bytes of nested anchors parse in microseconds while
