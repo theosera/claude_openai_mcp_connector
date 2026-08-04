@@ -8,6 +8,26 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **Link extraction is linear in body length, so one poisoned note can no
+  longer stall every `trace_sources` call.** Both patterns in
+  `src/markdownLinks.ts` used negated character classes that accepted the
+  pattern's own opening delimiter, so on unterminated input the engine walked
+  the tail and threw the work away at every `[` — quadratic, and run over every
+  document in the vault on every call. A ~1 MiB body of `[x](` repeated
+  extrapolates to roughly 9–15 minutes of blocked event loop; measured at 200k
+  characters the base takes 4.6–31.7 s where the replacement takes 0.0–2.3 ms.
+  Both extractors are now forward-only `indexOf` scans.
+
+  Recall is unchanged, which matters because `trace_sources` output is derived
+  from these functions and the relative-link resolution they feed was itself a
+  bug fixed in the P0 slice. Rather than tightening the character classes —
+  which would silently drop `[a[b](t)` and `[[[[a]]`, both of which match today
+  — the accepted language is preserved exactly and pinned by keeping the
+  original regexes in the test file as a reference implementation: the new
+  scanners are asserted equal to them over a named corpus, every synthetic
+  fixture, seeded random bodies, and an exhaustive sweep of the delimiter
+  alphabet. `resolveRelativeLink` is untouched.
+
 - **Front matter is no longer parsed with an engine the document itself
   selects.** `gray-matter` picks its parser from the language tag on the opening
   delimiter (`---js`), and its `javascript` engine's `parse` is a raw `eval()`.
