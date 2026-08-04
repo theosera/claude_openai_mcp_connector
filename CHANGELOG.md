@@ -26,7 +26,12 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   authoritative one, immediately before the write), both points in
   `resolveForWrite`, and `validateCreateTarget` — using the same lexical plus
   `realpath` comparison, so symlink, NFD and case-variant spellings are covered
-  rather than only the client's literal string. Reads are untouched: Skills stay
+  rather than only the client's literal string. `validateCreateTarget` checks the
+  *resolved* target, since its parent walk has already replaced every existing
+  parent with its realpath; that also closes the same gap on the **audit** side,
+  where a create aimed at a symlink alias of the reserved subtree used to plan
+  successfully and only fail at apply, persisting a patch that could never be
+  applied. Reads are untouched: Skills stay
   searchable, fetchable and indexed. The constrained `plan_skill_create` /
   `apply_planned_skill_create` surface is unaffected, because `SkillStore` does
   not go through `KnowledgeStore`.

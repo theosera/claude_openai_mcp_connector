@@ -600,6 +600,7 @@ export class KnowledgeStore implements VaultStore {
       .split(path.sep)
       .filter((segment) => segment !== ".");
     let current = root;
+    let resolvedDepth = 0;
     for (const segment of parentSegments) {
       const candidate = path.join(current, segment);
       try {
@@ -612,11 +613,23 @@ export class KnowledgeStore implements VaultStore {
         }
         current = await fs.realpath(candidate);
         relativeToRoot(root, current);
+        resolvedDepth += 1;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
         throw error;
       }
     }
+
+    // INV-9 / INV-8 on the RESOLVED path, mirroring the authoritative check in
+    // resolveForWrite. The loop above replaced every existing parent with its
+    // realpath, so a reserved subtree reached through a symlink alias — invisible
+    // to the lexical check on the client's string above — is caught here. Without
+    // this, such a create planned successfully and was then rejected at apply
+    // time, persisting a plan that could never be applied. Segments from
+    // `resolvedDepth` on do not exist yet, so joining them lexically is exact.
+    const resolvedTarget = path.join(current, ...parentSegments.slice(resolvedDepth), path.basename(safeRelative));
+    await this.assertNotAuditReserved(relativeToRoot(root, resolvedTarget), resolvedTarget);
+    await this.assertNotSkillReserved(relativeToRoot(root, resolvedTarget), resolvedTarget);
 
     const target = path.resolve(root, safeRelative);
     relativeToRoot(root, target);

@@ -774,6 +774,37 @@ Created by the constrained Skill surface.
     expect(await fs.readFile(realSkill, "utf8")).toBe(SKILL_MD);
   });
 
+  it("rejects a create PLAN addressed through the real name of a symlinked Skills subdir", async () => {
+    // Same aliasing as the test above, on the create path. resolveForWrite would
+    // refuse this at apply time regardless, so nothing could ever be written —
+    // but planning it succeeded, persisting a patch that was guaranteed to fail.
+    // validateCreateTarget now re-checks the resolved path, so it fails at plan.
+    const linkedRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-inv8-linked-create-"));
+    await fs.mkdir(path.join(linkedRoot, "real-skills"), { recursive: true });
+    await fs.mkdir(path.join(linkedRoot, "knowledge"), { recursive: true });
+    await fs.symlink(path.join(linkedRoot, "real-skills"), path.join(linkedRoot, "knowledge", "skills"));
+    const linkedStore = new KnowledgeStore({
+      knowledgeRoot: linkedRoot,
+      writeMode: "two_step",
+      patchStateDir,
+      skillsSubdir: "knowledge/skills"
+    });
+    await linkedStore.init();
+
+    await expect(
+      linkedStore.planDocumentCreate({
+        relative_path: "real-skills/planted/SKILL.md",
+        title: "Planted",
+        body: "x",
+        reason: "plant a Skill through the subdir's real name"
+      })
+    ).rejects.toThrow(/reserved/);
+
+    // The deepest existing parent is `real-skills`; `planted/` does not exist, so
+    // this also covers the branch where the parent walk stops early.
+    await expect(fs.stat(path.join(linkedRoot, "real-skills", "planted"))).rejects.toThrow();
+  });
+
   it("refuses to plan or apply an exact-path create of a new SKILL.md", async () => {
     await expect(
       store.planDocumentCreate({
