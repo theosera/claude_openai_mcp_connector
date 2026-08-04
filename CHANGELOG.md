@@ -8,6 +8,71 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **Front matter that expands exponentially when serialized is refused instead
+  of materialized.** js-yaml resolves an alias (`*a`) as a *shared reference*,
+  so a few hundred bytes of nested anchors parse in microseconds while
+  describing a tree with millions of leaves. Nothing pays for that until
+  something walks the value as a tree — `String()` in `toStringArray`, or
+  `JSON.stringify` of a fetched document — at which point the single-threaded
+  event loop blocks while allocating toward the V8 max-string limit, which on a
+  memory-capped host is a fatal heap OOM rather than a caught error. A ~500-byte
+  block measured a 79 MB `JSON.stringify` and killed a 256 MB child process.
+
+  Both halves were reachable. Under `tags` / `source_refs` / `client` /
+  `project` the expansion happened on the always-on scan path, so the first
+  `search_documents` / `list_projects` / `trace_sources` after the file appeared
+  paid it. Under any other key it survived `normalizeMetadata` untouched into
+  the returned document, so **every** `fetch_document` re-ran it. Vault content
+  is untrusted, and an `append_audit_report` body is arbitrary client text that
+  later scans walk, so this was reachable even on a scan-only deployment with
+  general writes off.
+
+  `parseMarkdown` now walks the parsed value the way a stringifier does —
+  revisiting a shared node once per reference, which *is* the expansion — with
+  an explicit stack, and throws once the accumulated size passes a budget of
+  `max(64 KiB, frontmatter source length × 16)`. Work is bounded by the budget,
+  never by the expansion, and a cycle terminates because every visit adds at
+  least one byte. Throwing lets `parseMarkdownSafe` degrade that note exactly
+  like any other malformed front matter (empty metadata, raw body, `parseError`),
+  so one hostile note still cannot abort a vault scan.
+
+  **The budget is derived from `raw`, deliberately not from `parsed.matter`.**
+  gray-matter defines that property as non-enumerable and its content-keyed
+  cache returns `Object.assign({}, cached)`, which drops non-enumerable
+  properties — so it is `undefined` on every repeat parse of content the process
+  has already seen. A budget read from it collapses to the floor on the second
+  read of a note, or on a second byte-identical note, and silently strips the
+  metadata off large but perfectly legitimate front matter: a session-archive
+  index with 900 `source_refs` lost its `id`, `client` and tags and fell back to
+  a path-derived id. Reading `raw` keeps the budget identical on the first parse
+  and every repeat.
+
+  Measured amplification of legitimate front matter under this accounting:
+  0.98× for that 900-`source_refs` index, 0.84× for a 5000-entry block tag list,
+  2.0× for the worst legitimate shape (flow-style one-character tags) and 4.3×
+  for an all-`!!timestamp` block — at least 3.7× headroom under the 16×
+  multiplier, and the 64 KiB floor covers everything small. A 28-shape battery
+  covering deep nesting, block scalars, `!!binary`, `!!set`, `!!omap`, merge
+  keys, CRLF, BOM and CJK found nothing legitimate that trips it.
+
+  **A scalar is charged what `JSON.stringify` emits for it, not its length in
+  memory.** Charging the length is not merely loose, it is wrong in the
+  attacker's favour: a control character costs two characters to write in YAML
+  (`\0`) and six to serialize (`\u0000`), so a 16× budget bought ~32 references
+  charged at 1 and emitted at 6 — an output of ~96× the source. Measured on that
+  accounting, an 800 KB front-matter block passed the guard and produced a 62 MB
+  `JSON.stringify`, which is the same heap OOM the guard exists to prevent, only
+  bought with a larger file. The escaped size is now counted, with the scan
+  bailing out as soon as the running total passes the budget so the walk stays
+  proportional to the budget. The amplification figures above are unchanged by
+  this: every string in every one of those shapes is escape-free, so it is
+  charged `length + 2` either way.
+
+  Incidentally this also fixes a pre-existing crash: a recursive anchor
+  (`a: &a [*a]`) produced a genuinely circular object that made `fetch_document`
+  throw `TypeError: Converting circular structure to JSON`, leaving the note
+  unfetchable. It now degrades instead.
+
 - **The server no longer reads a `.env` from its working directory.**
   ⚠️ **Action required before restarting — see the migration below.**
 
