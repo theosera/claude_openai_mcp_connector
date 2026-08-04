@@ -8,6 +8,50 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **Two-step plan files are written owner-only.** A plan holds the pre-edit text
+  (inside its diff) and the full proposed text of a private note, so
+  `MCP_PATCH_STATE_DIR` is the one place vault plaintext is copied outside the
+  vault — and it was the only state store in the repo written without a mode:
+  files landed at `0644` inside a `0755` directory under the usual umask, so any
+  other local account could read staged note plaintext without ever
+  authenticating to the MCP endpoint. Plans are only unlinked on a successful
+  apply, so abandoned ones accumulate.
+
+  The repository also contradicted itself here: `SkillStore` created that same
+  directory with `mode: 0o700` while `KnowledgeStore` created it with no mode,
+  and `KnowledgeStore.init()` runs first — so the permissive mode won. Both now
+  go through one helper (`src/patchState.ts`) that creates the directory `0700`
+  and writes plan files `0600`.
+
+  Because `fs.mkdir` does not chmod a directory that already exists, init also
+  tightens a directory left permissive by an earlier version. That is done
+  through a single descriptor opened `O_RDONLY|O_DIRECTORY|O_NOFOLLOW`, so the
+  check and the change cannot be split by a swap; it is never recursive and never
+  touches a parent. The whole permission triad is compared rather than only the
+  group/other bits, because a directory left at `0500` clears `& 0o077` yet
+  denies the owner the write permission every plan write needs.
+
+  If the chmod fails — another owner, a filesystem without POSIX modes — the
+  server warns on stderr and continues rather than refusing to start: the `0600`
+  file mode is the primary control and does not depend on it, so failing start
+  would turn a safe server into an outage. The warning names the environment
+  variable only, never the resolved path.
+
+  **A symlinked directory is the one case that fails closed instead.**
+  `O_NOFOLLOW` surfaces it as `ELOOP`/`ENOTDIR`, and `fs.mkdir(recursive)`
+  follows such a link happily, so this is where it is caught. Warning past it
+  would be unsound: plan files would be written through the link into a directory
+  another account owns, and `0600` on the files is no defence there, because
+  unlink and rename are governed by the **directory's** permissions — that
+  account could swap a staged plan for one carrying different content and a
+  matching `content_sha256`, which is precisely the approve-this-exact-diff
+  guarantee (INV-3) the two-step write exists to provide.
+
+  **Operational note:** a deployment where processes under different UIDs share
+  one `MCP_PATCH_STATE_DIR` stops working. Every documented deployment is single
+  -UID, and under the default umask a second UID could not have written there
+  anyway.
+
 - **The general document-write surface can no longer reach the Skills subtree**
   (INV-8). `SECURITY.md`, the README and `CLAUDE.md` all stated that existing
   Skills are immutable, but the only subtree reservation on the write path

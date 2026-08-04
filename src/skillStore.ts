@@ -5,6 +5,7 @@ import { createTwoFilesPatch } from "diff";
 import matter from "gray-matter";
 import { z } from "zod";
 import { SAFE_MATTER_OPTIONS } from "./frontmatter.js";
+import { ensurePatchStateDir } from "./patchState.js";
 import { relativeToRoot, resolveExistingRoot, resolveInsideRoot, toPosixPath } from "./pathSafety.js";
 
 const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -83,7 +84,7 @@ export class SkillStore {
     }
     this.skillsRootRealPath = await fs.realpath(skillsCandidate);
     relativeToRoot(this.rootRealPath, this.skillsRootRealPath);
-    await fs.mkdir(this.config.patchStateDir, { recursive: true, mode: 0o700 });
+    await ensurePatchStateDir(this.config.patchStateDir);
   }
 
   async planCreate(input: PlanSkillCreateInput): Promise<PlannedSkillCreate> {
