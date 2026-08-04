@@ -300,6 +300,35 @@ describe("MultiRootStore", () => {
     ).rejects.toThrow(/not found/i);
   });
 
+  it("reserves the primary root's Skills subtree against general writes (INV-8)", async () => {
+    // The Skills reservation is primary-root-relative and must survive the
+    // composite: a Skill stays readable, but the general write surface cannot
+    // rewrite the instructions a later agent session loads.
+    const skillPath = path.join(vaultRoot, "knowledge", "skills", "demo-skill", "SKILL.md");
+    await fs.mkdir(path.dirname(skillPath), { recursive: true });
+    const skillMd = "---\nname: demo-skill\ndescription: demo\n---\n\nbody\n";
+    await fs.writeFile(skillPath, skillMd, "utf8");
+    const reserved = new MultiRootStore({
+      ...makeConfig([
+        { name: "vault", path: vaultRoot },
+        { name: "ops", path: opsRoot }
+      ]),
+      skillsSubdir: "knowledge/skills"
+    });
+    await reserved.init();
+
+    await expect(
+      reserved.planUpdate({
+        id_or_path: "vault:knowledge/skills/demo-skill/SKILL.md",
+        new_body: "hijacked",
+        reason: "x"
+      })
+    ).rejects.toThrow(/reserved/);
+    expect(await fs.readFile(skillPath, "utf8")).toBe(skillMd);
+    // Still readable through the composite.
+    expect((await reserved.fetch("vault:knowledge/skills/demo-skill/SKILL.md")).body).toContain("body");
+  });
+
   it("traces sources through the root prefix", async () => {
     const traced = await store.traceSources("ops:logs/session.md");
     expect(traced.document.relativePath).toBe("ops:logs/session.md");

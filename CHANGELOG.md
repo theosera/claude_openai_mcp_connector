@@ -8,6 +8,43 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **The general document-write surface can no longer reach the Skills subtree**
+  (INV-8). `SECURITY.md`, the README and `CLAUDE.md` all stated that existing
+  Skills are immutable, but the only subtree reservation on the write path
+  checked `MCP_AUDIT_SUBDIR`; `StoreConfig` never received `skillsSubdir` at
+  all. A `SKILL.md` under `MCP_SKILLS_SUBDIR` was therefore an ordinary indexed
+  document that `plan_document_update` → `apply_planned_update` could rewrite
+  wholesale — and Skills are loaded as *instructions* by later agent sessions,
+  so "edit a note" was a route to persistent agent-instruction injection. The
+  same gap let exact-path create plant a new Skill bundle bypassing
+  `SkillStore`'s name pattern, file allowlist and size caps. Notably
+  `MCP_HTTP_ALLOW_SKILL_WRITE` did not need to be on: the general
+  `MCP_HTTP_ALLOW_WRITE` surface was enough.
+
+  The Skills subtree now carries the same reservation the audit subtree has
+  (INV-9), at the same choke points — `planUpdate`, `applyPlannedUpdate` (the
+  authoritative one, immediately before the write), both points in
+  `resolveForWrite`, and `validateCreateTarget` — using the same lexical plus
+  `realpath` comparison, so symlink, NFD and case-variant spellings are covered
+  rather than only the client's literal string. Reads are untouched: Skills stay
+  searchable, fetchable and indexed. The constrained `plan_skill_create` /
+  `apply_planned_skill_create` surface is unaffected, because `SkillStore` does
+  not go through `KnowledgeStore`.
+
+  **Operating condition, same as INV-9's:** the reservation only holds in a
+  process that actually sets `MCP_SKILLS_SUBDIR`. Every process that can write
+  the vault — the interactive HTTP endpoint *and* any local stdio server — must
+  set the same value, or a Skill remains editable through the one that does not.
+
+  The gate is inert when `MCP_SKILLS_SUBDIR` is unset, so nothing changes for
+  operators who do not configure Skills. Note that `MCP_AUDIT_SUBDIR` has a
+  boot-time assert that it is disjoint from `projects/`, and the Skills subdir
+  does not: pointing `MCP_SKILLS_SUBDIR` at `projects/` or an ancestor would
+  make every `create_document` fail at runtime with a self-describing error
+  rather than at startup. Every documented value is disjoint, and adding the
+  assert now would turn a currently-bootable server into one that refuses to
+  start, so it is left as a follow-up.
+
 - **Link extraction is linear in body length, so one poisoned note can no
   longer stall every `trace_sources` call.** Both patterns in
   `src/markdownLinks.ts` used negated character classes that accepted the
