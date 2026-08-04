@@ -353,6 +353,46 @@ describe("KnowledgeStore", () => {
     expect(result.document.frontmatter.tags).toEqual(["mcp", "updated"]);
   });
 
+  it("stages two-step plans owner-only, inside an owner-only state directory", async () => {
+    if (process.platform === "win32") {
+      return; // POSIX mode bits are not meaningful here (same guard as tests/oauth.test.ts).
+    }
+    const updatePlan = await store.planUpdate({
+      id_or_path: "claude-plan-001",
+      new_body: "# Claude Connector Plan\n\nStaged plaintext.",
+      reason: "permissions test"
+    });
+    const createPlan = await store.planDocumentCreate({
+      relative_path: "reports/permissions.md",
+      title: "Permissions",
+      body: "staged plaintext",
+      reason: "permissions test"
+    });
+
+    // A staged plan is the one copy of vault plaintext outside the vault (the
+    // pre-edit text lives in `diff`, the full proposed text in `new_content`)
+    // and it survives until apply, so no other local account may read it.
+    for (const patchId of [updatePlan.patch_id, createPlan.patch_id]) {
+      expect((await fs.stat(path.join(patchStateDir, `${patchId}.json`))).mode & 0o777).toBe(0o600);
+    }
+    expect((await fs.stat(patchStateDir)).mode & 0o777).toBe(0o700);
+  });
+
+  it("tightens an already permissive patch state directory on init", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    // mkdir never chmods an existing directory, so upgrading a deployment whose
+    // state dir was created world-readable has to fix the mode explicitly.
+    const legacyDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-legacy-patches-"));
+    await fs.chmod(legacyDir, 0o777);
+
+    const upgraded = new KnowledgeStore({ knowledgeRoot: root, writeMode: "two_step", patchStateDir: legacyDir });
+    await upgraded.init();
+
+    expect((await fs.stat(legacyDir)).mode & 0o777).toBe(0o700);
+  });
+
   it("rejects stale patch application", async () => {
     const plan = await store.planUpdate({
       id_or_path: "chatgpt-research-001",

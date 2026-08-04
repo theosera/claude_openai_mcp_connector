@@ -4,6 +4,7 @@ import path from "node:path";
 import { createTwoFilesPatch } from "diff";
 import { assertFrontmatterPatch, parseMarkdownSafe, serializeMarkdown, titleFromMarkdown } from "./frontmatter.js";
 import { extractAllLocalLinks, extractMarkdownLinks, resolveRelativeLink } from "./markdownLinks.js";
+import { ensurePatchStateDir, PATCH_STATE_FILE_MODE } from "./patchState.js";
 import { compactWhitespace, searchDocuments, type SearchFilters } from "./search.js";
 import { normalizeForMatch } from "./searchText.js";
 import type { StoreConfig } from "./config.js";
@@ -86,7 +87,7 @@ export class KnowledgeStore implements VaultStore {
 
   async init(): Promise<void> {
     this.rootRealPath = await resolveExistingRoot(this.config.knowledgeRoot);
-    await fs.mkdir(this.config.patchStateDir, { recursive: true });
+    await ensurePatchStateDir(this.config.patchStateDir);
   }
 
   /** Resolved real path of this store's root (used for multi-root overlap checks). */
@@ -219,10 +220,11 @@ export class KnowledgeStore implements VaultStore {
       }
     };
 
-    await fs.mkdir(this.config.patchStateDir, { recursive: true });
+    await ensurePatchStateDir(this.config.patchStateDir);
     await fs.writeFile(this.patchPath(patch.patch_id), JSON.stringify(patch, null, 2), {
       encoding: "utf8",
-      flag: "wx"
+      flag: "wx",
+      mode: PATCH_STATE_FILE_MODE
     });
     return patch;
   }
@@ -307,8 +309,11 @@ export class KnowledgeStore implements VaultStore {
       diff
     };
 
-    await fs.mkdir(this.config.patchStateDir, { recursive: true });
-    await fs.writeFile(this.patchPath(patch.patch_id), JSON.stringify(patch, null, 2), "utf8");
+    await ensurePatchStateDir(this.config.patchStateDir);
+    await fs.writeFile(this.patchPath(patch.patch_id), JSON.stringify(patch, null, 2), {
+      encoding: "utf8",
+      mode: PATCH_STATE_FILE_MODE
+    });
     return patch;
   }
 
