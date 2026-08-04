@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import dotenv from "dotenv";
@@ -109,6 +110,11 @@ export interface StoreConfig {
 // results, so keep them short, lowercase, and unambiguous.
 const ROOT_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
+// Where two-step plans live when the operator names no location. Absolute by
+// construction: a plan is vault plaintext, so the fallback must not depend on
+// the working directory the process was started in.
+const DEFAULT_PATCH_STATE_DIR = path.join(os.homedir(), ".mcp-state", "patches");
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const knowledgeRoots = parseKnowledgeRoots(env);
 
@@ -119,6 +125,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   const rawSkillsSubdir = env.MCP_SKILLS_SUBDIR?.trim();
   const skillsSubdir = rawSkillsSubdir ? toPosixPath(assertRelativePath(rawSkillsSubdir)) : undefined;
+  if (skillsSubdir && (posixContains("projects", skillsSubdir) || posixContains(skillsSubdir, "projects"))) {
+    // The Skills subtree is reserved against the general write surface (INV-8),
+    // and create_document always writes under "projects/". Overlapping the two
+    // means the reservation fires on ordinary creates, so the create root is
+    // dead for as long as the misconfiguration stands. Fail at boot, where the
+    // cause is legible, rather than once per create — the same reason the audit
+    // subdir is checked against "projects/" just below.
+    throw new Error('MCP_SKILLS_SUBDIR must be disjoint from the "projects/" document-create root.');
+  }
 
   const rawAuditSubdir = env.MCP_AUDIT_SUBDIR?.trim();
   const auditSubdir = rawAuditSubdir ? toPosixPath(assertRelativePath(rawAuditSubdir)) : undefined;
@@ -153,7 +168,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   return {
     knowledgeRoots,
     writeMode,
-    patchStateDir: path.resolve(env.MCP_PATCH_STATE_DIR?.trim() || ".mcp-state/patches"),
+    // An unset MCP_PATCH_STATE_DIR used to default to ".mcp-state/patches",
+    // which path.resolve interprets against the process working directory. A
+    // two-step plan holds the full proposed document text, so that put vault
+    // plaintext wherever the process happened to start — and for a stdio server
+    // the client picks that directory. The default is now anchored to the home
+    // directory, which does not move with the caller. An explicit relative value
+    // is still honoured (and still resolved against the cwd): overriding it is a
+    // deliberate act, unlike inheriting a default.
+    patchStateDir: path.resolve(env.MCP_PATCH_STATE_DIR?.trim() || DEFAULT_PATCH_STATE_DIR),
     skillsSubdir,
     auditSubdir,
     scanConcurrency,

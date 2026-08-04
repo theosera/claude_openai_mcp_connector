@@ -156,6 +156,52 @@ describe("redirect_uri policy", () => {
     expect(isAllowedRedirectUri("https://*/cb")).toBe(false);
     expect(isAllowedRedirectUri("https://*.example.com/cb")).toBe(false);
   });
+
+  it("rejects control characters, which the URL parser strips rather than rejects", () => {
+    for (const c of ["\t", "\n", "\r"]) {
+      const uri = `https://claude.ai${c}.evil.example/cb`;
+      // The divergence itself: the string reads as claude.ai, the parse resolves
+      // elsewhere. The consent page names a host derived from the parse, so a
+      // registered value that can move the host must not be storable at all.
+      expect(new URL(uri).host).toBe("claude.ai.evil.example");
+      expect(isAllowedRedirectUri(uri)).toBe(false);
+    }
+    expect(isAllowedRedirectUri("https://claude.ai/cb\u0000")).toBe(false);
+    expect(isAllowedRedirectUri("https://claude.ai/cb\u007f")).toBe(false);
+  });
+
+  it("rejects userinfo, which normalization leaves intact", () => {
+    // This one round-trips byte-for-byte, so a "reject anything not already
+    // normalized" rule would pass it while the host is still attacker-chosen.
+    // Refusing userinfo outright is what closes it.
+    const uri = "https://claude.ai@evil.example/cb";
+    expect(new URL(uri).href).toBe(uri);
+    expect(new URL(uri).host).toBe("evil.example");
+    expect(isAllowedRedirectUri(uri)).toBe(false);
+    expect(isAllowedRedirectUri("https://claude.ai:pw@evil.example/cb")).toBe(false);
+  });
+
+  it("still accepts the callback shapes real connectors register", () => {
+    // Non-regression guard for the live connectors. The rule above must stay a
+    // ban on host-moving characters and must not drift into "must already be
+    // normalized", which would reject ordinary registrations such as an
+    // explicit :443 or a mixed-case host — neither of which moves the host.
+    //
+    // The first two are the shapes actually observed in a deployment's OAuth
+    // store. ChatGPT registers a per-connector callback path, so the trailing
+    // segment here is a stand-in — the real one identifies a specific connector
+    // registration and does not belong in a public repository.
+    for (const uri of [
+      "https://chatgpt.com/connector/oauth/AbCdEfGh1234",
+      "https://claude.ai/api/mcp/auth_callback",
+      "https://chatgpt.com/oauth/callback",
+      "https://chatgpt.com:443/cb",
+      "https://ChatGPT.com/cb",
+      "http://127.0.0.1:8787/callback"
+    ]) {
+      expect(isAllowedRedirectUri(uri)).toBe(true);
+    }
+  });
 });
 
 describe("OAuthStore", () => {
@@ -608,6 +654,43 @@ describe("OAuthProvider flow", () => {
     ] as string;
     const redirectOrigin = new URL("https://chatgpt.com/cb").origin;
     expect(csp).toContain(`form-action 'self' ${redirectOrigin}`);
+  });
+
+  it("names the destination the success redirect actually uses", () => {
+    // The consent page has to let the operator see where approving sends the
+    // code. That statement is only worth anything if it names the same origin
+    // the 302 goes to, so assert the page against the real redirect rather than
+    // against the registered string.
+    const { provider, clientId } = setup();
+    const { challenge } = pkcePair();
+    const page = provider.authorizeGet(authorizeParams(clientId, challenge)).body;
+    const form = authorizeParams(clientId, challenge);
+    form.set("password", "hunter2");
+    const redirect = provider.authorizePost(form);
+    expect(redirect.status).toBe(302);
+    const actualOrigin = new URL(redirect.headers.location).origin;
+    expect(actualOrigin).toBe("https://chatgpt.com");
+    // Assert the rendered statement, not just the origin appearing somewhere in
+    // the markup: the form already carries redirect_uri in a hidden input, so a
+    // bare substring check passes even when the page shows the operator nothing.
+    expect(page).toContain(`<strong>${actualOrigin}</strong>`);
+  });
+
+  it("marks the client name as unverified and escapes it", () => {
+    // client_name is whatever the client sent to /register, so the page must not
+    // present it as an identity — and must not let it inject markup into the
+    // page that carries the destination.
+    const provider = new OAuthProvider(config);
+    const reg = provider.register({
+      redirect_uris: ["https://chatgpt.com/cb"],
+      client_name: '<img src=x onerror=alert(1)>"Claude.ai"'
+    });
+    const clientId = JSON.parse(reg.body).client_id as string;
+    const { challenge } = pkcePair();
+    const page = provider.authorizeGet(authorizeParams(clientId, challenge)).body;
+    expect(page).toContain("not verified");
+    expect(page).not.toContain("<img src=x");
+    expect(page).toContain("&lt;img src=x onerror=alert(1)&gt;&quot;Claude.ai&quot;");
   });
 
   it("keeps form-action 'self'-only on error pages (no client origin echoed)", () => {

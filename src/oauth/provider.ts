@@ -296,6 +296,7 @@ export class OAuthProvider {
       ok: true,
       params: {
         clientId,
+        clientName: client.clientName ?? "",
         redirectUri,
         codeChallenge,
         scope: params.get("scope") ?? "",
@@ -312,13 +313,35 @@ export class OAuthProvider {
     // redirect target too, so a `form-action 'self'`-only policy silently blocks
     // the whole submission. Allow exactly this client's redirect origin — it is
     // already exact-match + scheme validated (INV-7.3), so this stays tight.
+    //
+    // Everything this page SAYS about the redirect is derived from this parse —
+    // the same one `authorizePost` builds its 302 from — and never from the
+    // registered string. A string and the URL parsed from it can name different
+    // hosts, so a page quoting the raw value could name a host that never
+    // receives the code. Deriving both from `new URL(...)` makes the statement
+    // and the navigation one fact rather than two that must be kept in step.
     const redirectOrigin = new URL(params.redirectUri).origin;
     const hidden = (name: string, value: string) =>
       `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}" />`;
     const errorHtml = error ? `<p style="color:#b00">${escapeHtml(error)}</p>` : "";
+    // The client name is whatever the client sent to /register. Showing it helps
+    // the operator recognise a request, but it is self-asserted, so it is
+    // labelled as such and the destination is what the decision rests on.
+    const clientRow = params.clientName
+      ? `<p>Client name: <strong>${escapeHtml(params.clientName)}</strong><br />` +
+        `<small>Chosen by the client at registration and not verified — judge this ` +
+        `request by the destination below.</small></p>`
+      : "";
+    // Granted scope is deliberately not shown yet. `vault.read` is not enforced
+    // on the read tools today, so a scope line would state a restriction the
+    // server does not apply; it lands with the per-request scope resolution
+    // (ROADMAP item 2b), which is what makes such a line true.
     const body = `
       <h1>Connect to private vault</h1>
       <p>Authorize this client to access your Markdown vault (read-only unless writes are enabled).</p>
+      ${clientRow}
+      <p>On approval this browser is sent to <strong>${escapeHtml(redirectOrigin)}</strong>,
+         which receives the authorization code. Stop if you do not recognise it.</p>
       ${errorHtml}
       <form method="POST" action="/authorize">
         ${hidden("client_id", params.clientId)}
@@ -338,6 +361,8 @@ export class OAuthProvider {
 
 interface AuthorizeParams {
   clientId: string;
+  /** Self-reported at registration. Displayed as such; never an authorization input. */
+  clientName: string;
   redirectUri: string;
   codeChallenge: string;
   scope: string;
@@ -347,10 +372,30 @@ interface AuthorizeParams {
 
 /** Only https, or http on loopback (for local testing), may be a redirect target. */
 export function isAllowedRedirectUri(uri: string): boolean {
+  // Checked before parsing, because the WHATWG parser *removes* tab / CR / LF
+  // from anywhere in the input rather than failing: `https://claude.ai<TAB>.evil
+  // .example/cb` registers as one string and resolves to a different host. The
+  // consent page names the redirect target, and that can only be honest if no
+  // character is able to move the host between the string we store and the URL
+  // we later build from it. No control character belongs in a redirect_uri.
+  for (let i = 0; i < uri.length; i += 1) {
+    const code = uri.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f) {
+      return false;
+    }
+  }
   let parsed: URL;
   try {
     parsed = new URL(uri);
   } catch {
+    return false;
+  }
+  // Userinfo puts a plausible prefix in front of the real host
+  // (`https://claude.ai@evil.example/cb` resolves to evil.example) and survives
+  // normalization byte-for-byte, so comparing the input against its own
+  // round-trip would not catch it — only refusing userinfo does. Credentials
+  // have no legitimate use in a redirect target.
+  if (parsed.username || parsed.password) {
     return false;
   }
   // A registered redirect_uri must resolve to a concrete host. Reject wildcard

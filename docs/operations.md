@@ -441,8 +441,9 @@ exec bwrap \
   --ro-bind "$VAULT" /vault \
   `# Deterministic cwd: the client may spawn this from ~ or the checkout,` \
   `# neither of which exists inside. Without --chdir, bwrap falls back to /` \
-  `# (read-only), where any relative default — e.g. MCP_PATCH_STATE_DIR's` \
-  `# .mcp-state/patches — would fail to write. /tmp is the writable tmpfs.` \
+  `# (read-only), where any RELATIVE MCP_PATCH_STATE_DIR you set would fail to` \
+  `# write. /tmp is the writable tmpfs. (The default is absolute, so it is the` \
+  `# home directory that has to be writable when you leave it unset.)` \
   --chdir /tmp \
   `# Unshare every namespace, including network — stdio talks over pipes.` \
   --unshare-all \
@@ -793,9 +794,10 @@ thing that selects an env *file* — `WorkingDirectory` no longer does — so a
 plist that neither names a file nor carries the settings inline will crash-loop
 under `KeepAlive`. Settings placed directly in `EnvironmentVariables` still
 work, and still win over the file. `WorkingDirectory` also still decides one
-thing: a **relative** value such as `MCP_PATCH_STATE_DIR` is resolved against it
-(`src/config.ts`), so give that one an absolute path too. **Add `MCP_ENV_FILE`
-to both plists before restarting.** The scan agent runs the **same**
+thing: a **relative** `MCP_PATCH_STATE_DIR` is resolved against it
+(`src/config.ts`), so if you set that one, give it an absolute path. Left unset
+it now defaults to `~/.mcp-state/patches`, which `WorkingDirectory` cannot move.
+**Add `MCP_ENV_FILE` to both plists before restarting.** The scan agent runs the **same**
 `dist/index.js`, pointed at the scan file:
 
 ```xml

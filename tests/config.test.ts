@@ -199,3 +199,29 @@ describe("startup env boundary (spawned entrypoint)", () => {
     expect(absent.stderr).toMatch(/Cannot read MCP_ENV_FILE/);
   }, 30_000);
 });
+
+describe("patch state directory default", () => {
+  // A two-step plan holds the full proposed document text, so where the default
+  // lands decides where vault plaintext lands. Resolved against the working
+  // directory it followed the caller, and for a client-spawned stdio server the
+  // caller chooses that directory.
+  it("resolves the default independently of the working directory", async () => {
+    const before = loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault" }).patchStateDir;
+    const elsewhere = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-cwd-"));
+    const original = process.cwd();
+    try {
+      process.chdir(elsewhere);
+      const after = loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault" }).patchStateDir;
+      expect(after).toBe(before);
+      expect(path.isAbsolute(after)).toBe(true);
+      expect(after).toBe(path.join(os.homedir(), ".mcp-state", "patches"));
+    } finally {
+      process.chdir(original);
+    }
+  });
+
+  it("still honours an explicit MCP_PATCH_STATE_DIR", () => {
+    const dir = loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault", MCP_PATCH_STATE_DIR: "/srv/state" }).patchStateDir;
+    expect(dir).toBe(path.resolve("/srv/state"));
+  });
+});
