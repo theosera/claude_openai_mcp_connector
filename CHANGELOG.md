@@ -62,9 +62,11 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   derives from the vault's own path.
 
   The home directory is an anchor, not a guarantee: `os.homedir()` returns `""`
-  when HOME is empty with no passwd entry to fall back on, and returns HOME
-  verbatim when HOME is relative. Either would make `path.join` produce a
-  relative string that `path.resolve` re-anchors to the working directory —
+  when HOME is empty with no passwd entry to fall back on, returns HOME verbatim
+  when HOME is relative, and throws outright when neither resolves at all (a
+  container running as a numeric UID with no `/etc/passwd` row). The first two
+  would make `path.join` produce a relative string that `path.resolve` re-anchors
+  to the working directory —
   reinstating the very placement this default exists to prevent, and doing so
   precisely in the environments that strip HOME (service accounts, and the
   `--clearenv` bwrap recipe in [`operations.md`](./docs/operations.md#6-sandboxing-the-local-stdio-server-bwrap-optional)).

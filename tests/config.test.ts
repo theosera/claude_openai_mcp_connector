@@ -234,6 +234,26 @@ describe("patch state directory default", () => {
     }
   });
 
+  it("names the setting even when os.homedir() throws instead of returning ''", () => {
+    // Node routes the libuv call through a checked wrapper, so a host where
+    // neither HOME nor a passwd entry resolves raises ERR_SYSTEM_ERROR rather
+    // than handing back "". The start-up still has to fail — but with the
+    // message that says which setting to add, not with a bare system error.
+    const spy = vi.spyOn(os, "homedir").mockImplementation(() => {
+      throw new Error("ERR_SYSTEM_ERROR: uv_os_homedir returned ENOENT");
+    });
+    try {
+      expect(() => loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault" })).toThrow(/MCP_PATCH_STATE_DIR/);
+      // And an explicit setting still starts on such a host: the fallback is
+      // only consulted when the operator named nothing.
+      expect(loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault", MCP_PATCH_STATE_DIR: "/srv/state" }).patchStateDir).toBe(
+        path.resolve("/srv/state")
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("keys the tag on the NFC form, so one vault does not get two directories", () => {
     // macOS hands back NFD for non-ASCII path components, so the same vault
     // arrives spelled two ways depending on how the value was produced. path.resolve

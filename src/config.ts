@@ -118,15 +118,29 @@ const ROOT_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
  * directory — for a client-spawned stdio server the client picks that. The home
  * directory is the anchor, but it is not guaranteed to supply one: `os.homedir()`
  * returns `""` when HOME is set to an empty value and cannot fall back to a
- * passwd entry, and it returns HOME verbatim when HOME is relative. Either way
- * `path.join` yields a relative string and `path.resolve` re-anchors it to the
- * cwd — reinstating the exact placement this default exists to prevent, in the
+ * passwd entry, it returns HOME verbatim when HOME is relative, and it throws
+ * outright when neither HOME nor a passwd entry resolves at all. In the first
+ * two cases `path.join` yields a relative string and `path.resolve` re-anchors
+ * it to the cwd — reinstating the exact placement this default exists to
+ * prevent, in the
  * environments most likely to strip HOME (service accounts, and the `--clearenv`
  * bwrap recipe in `docs/operations.md`). So refuse to guess and make the
  * operator name it, rather than silently writing plaintext somewhere else.
  */
 function defaultPatchStateDir(primaryRoot: string): string {
-  const home = os.homedir();
+  // os.homedir() does not always return a string. Node runs the libuv call
+  // through a checked wrapper that raises ERR_SYSTEM_ERROR when neither HOME nor
+  // a passwd entry resolves — the shape a container running as a numeric UID
+  // with no /etc/passwd row takes, which is the same class of environment as the
+  // empty and relative cases below. Failing closed is right either way, but a
+  // raw system error does not tell the operator which setting fixes it, so fold
+  // the throw into the one message that names MCP_PATCH_STATE_DIR.
+  let home: string;
+  try {
+    home = os.homedir();
+  } catch {
+    home = "";
+  }
   if (!path.isAbsolute(home)) {
     throw new Error(
       "MCP_PATCH_STATE_DIR must be set to an absolute path: no home directory is available to derive the " +
