@@ -32,10 +32,13 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   argument, a leading `---` YAML block in a client-supplied body was merged into
   the emitted front matter, bypassing `assertFrontmatterPatch` — the only
   server-side field allowlist. `serializeMarkdown` now passes an explicit file
-  object so the body is opaque. Server-managed keys (`id`, `updated_at`,
-  `title`) always won the merge, so document identity was never forgeable; what
-  did get through was arbitrary non-managed keys such as `date:`, which silently
-  changes search ranking through `effectiveTimestamp`.
+  object so the body is opaque. What decided the merge was not whether a key is
+  server-managed but whether the serializer writes it at all: every key present
+  in the metadata argument won, so the server-managed `id` and `updated_at` held
+  and document identity was never forgeable. (`title` won too, but it is not
+  server-managed — it is one of the five keys an approved `frontmatter_patch`
+  may set.) What did get through was keys the serializer does not write, such as
+  `date:`, which silently changes search ranking through `effectiveTimestamp`.
 
   A body that begins with a `---` YAML block is now preserved verbatim in the
   body instead of being absorbed into the front matter. Bodies that do not begin
