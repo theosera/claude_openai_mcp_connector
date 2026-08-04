@@ -275,6 +275,9 @@ export class KnowledgeStore implements VaultStore {
     // INV-9: refuse to stage an update against the reserved audit subtree (early
     // reject; applyPlannedUpdate re-checks authoritatively at write time).
     await this.assertNotAuditReserved(document.relativePath, document.absolutePath);
+    // INV-8: likewise for the reserved Skills subtree — a general update must not
+    // rewrite an existing SKILL.md (early reject; apply re-checks at write time).
+    await this.assertNotSkillReserved(document.relativePath, document.absolutePath);
     // Reject any non-allowlisted frontmatter key before it can reach the file
     // (frontmatter field-injection defense). `id` / `updated_at` stay server-owned.
     const frontmatterPatch = assertFrontmatterPatch(input.frontmatter_patch ?? {});
@@ -319,6 +322,10 @@ export class KnowledgeStore implements VaultStore {
     // INV-9: a general update must never touch the reserved audit subtree
     // (authoritative gate — this is where the actual overwrite happens).
     await this.assertNotAuditReserved(relativeToRoot(await this.root(), absolutePath), absolutePath);
+    // INV-8: same authoritative gate for the reserved Skills subtree — Skills are
+    // loaded as agent INSTRUCTIONS, so the only overwriting write in the codebase
+    // must never be able to replace a SKILL.md / references file.
+    await this.assertNotSkillReserved(relativeToRoot(await this.root(), absolutePath), absolutePath);
     const currentRaw = await fs.readFile(absolutePath, "utf8");
     const currentSha = sha256(currentRaw);
 
@@ -474,9 +481,10 @@ export class KnowledgeStore implements VaultStore {
   private async resolveForWrite(relativePath: string): Promise<string> {
     const root = await this.root();
     const safeRelative = assertRelativePath(relativePath);
-    // INV-9: reject a write aimed at the reserved audit subtree BEFORE creating
+    // INV-9 / INV-8: reject a write aimed at a reserved subtree BEFORE creating
     // any parent directories, so a rejected write never litters empty dirs.
     await this.assertNotAuditReserved(toPosixPath(safeRelative));
+    await this.assertNotSkillReserved(toPosixPath(safeRelative));
     const parentSegments = path
       .dirname(safeRelative)
       .split(path.sep)
@@ -508,10 +516,11 @@ export class KnowledgeStore implements VaultStore {
       relativeToRoot(root, current);
     }
     const target = path.join(current, path.basename(safeRelative));
-    // INV-9 authoritative check on the resolved realpath: `current` is the
+    // INV-9 / INV-8 authoritative check on the resolved realpath: `current` is the
     // realpath of the target's parent, so this defeats a symlink / NFD / case
     // variant that a lexical check on the client string could miss.
     await this.assertNotAuditReserved(relativeToRoot(root, target), target);
+    await this.assertNotSkillReserved(relativeToRoot(root, target), target);
     return target;
   }
 
@@ -519,34 +528,59 @@ export class KnowledgeStore implements VaultStore {
    * INV-9 (audit-trail integrity): reject any GENERAL document write whose target
    * is at or inside the reserved audit subtree (MCP_AUDIT_SUBDIR). Only the
    * constrained AuditStore surface may write there, so a compromised general-write
-   * session cannot forge or clobber audit files. The lexical check works even
-   * before the audit directory exists; the realpath check (when it exists)
-   * neutralizes symlink, NFD, and case-fold evasions.
+   * session cannot forge or clobber audit files.
    */
   private async assertNotAuditReserved(targetRelativePosix: string, targetRealPath?: string): Promise<void> {
-    const reserved = this.config.auditSubdir;
+    await this.assertNotReserved(this.config.auditSubdir, auditReservedError, targetRelativePosix, targetRealPath);
+  }
+
+  /**
+   * INV-8 (Skill immutability): reject any GENERAL document write whose target is
+   * at or inside the reserved Skills subtree (MCP_SKILLS_SUBDIR). Skills are loaded
+   * as INSTRUCTIONS by later agent sessions, so only the constrained, create-only
+   * SkillStore surface (plan_skill_create → apply_planned_skill_create, which never
+   * goes through KnowledgeStore) may write there. Without this, the general
+   * document-write surface could overwrite an existing SKILL.md wholesale, or plant
+   * a new one that bypasses SkillStore's name pattern, file allowlist and size caps.
+   */
+  private async assertNotSkillReserved(targetRelativePosix: string, targetRealPath?: string): Promise<void> {
+    await this.assertNotReserved(this.config.skillsSubdir, skillReservedError, targetRelativePosix, targetRealPath);
+  }
+
+  /**
+   * Shared reservation check for the two constrained write surfaces above. Inert
+   * when the subtree is not configured. The lexical check works even before the
+   * reserved directory exists; the realpath check (when it exists) neutralizes
+   * symlink, NFD, and case-fold evasions.
+   */
+  private async assertNotReserved(
+    reserved: string | undefined,
+    reservedError: () => Error,
+    targetRelativePosix: string,
+    targetRealPath?: string
+  ): Promise<void> {
     if (!reserved) {
       return;
     }
     if (posixContains(reserved, targetRelativePosix)) {
-      throw auditReservedError();
+      throw reservedError();
     }
     if (!targetRealPath) {
       return;
     }
     const root = await this.root();
-    let auditReal: string;
+    let reservedReal: string;
     try {
-      auditReal = await fs.realpath(path.join(root, ...reserved.split("/")));
+      reservedReal = await fs.realpath(path.join(root, ...reserved.split("/")));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return; // audit subtree not created yet — the lexical check above suffices
+        return; // reserved subtree not created yet — the lexical check above suffices
       }
       throw error;
     }
-    const relative = path.relative(auditReal, targetRealPath);
+    const relative = path.relative(reservedReal, targetRealPath);
     if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
-      throw auditReservedError();
+      throw reservedError();
     }
   }
 
@@ -556,15 +590,17 @@ export class KnowledgeStore implements VaultStore {
     if (!safeRelative.endsWith(".md")) {
       throw new Error("Document create target must end with .md.");
     }
-    // INV-9: an exact-path create must not target the reserved audit subtree
+    // INV-9 / INV-8: an exact-path create must not target a reserved subtree
     // (early reject; resolveForWrite re-checks authoritatively at write time).
     await this.assertNotAuditReserved(toPosixPath(safeRelative));
+    await this.assertNotSkillReserved(toPosixPath(safeRelative));
 
     const parentSegments = path
       .dirname(safeRelative)
       .split(path.sep)
       .filter((segment) => segment !== ".");
     let current = root;
+    let resolvedDepth = 0;
     for (const segment of parentSegments) {
       const candidate = path.join(current, segment);
       try {
@@ -577,11 +613,23 @@ export class KnowledgeStore implements VaultStore {
         }
         current = await fs.realpath(candidate);
         relativeToRoot(root, current);
+        resolvedDepth += 1;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
         throw error;
       }
     }
+
+    // INV-9 / INV-8 on the RESOLVED path, mirroring the authoritative check in
+    // resolveForWrite. The loop above replaced every existing parent with its
+    // realpath, so a reserved subtree reached through a symlink alias — invisible
+    // to the lexical check on the client's string above — is caught here. Without
+    // this, such a create planned successfully and was then rejected at apply
+    // time, persisting a plan that could never be applied. Segments from
+    // `resolvedDepth` on do not exist yet, so joining them lexically is exact.
+    const resolvedTarget = path.join(current, ...parentSegments.slice(resolvedDepth), path.basename(safeRelative));
+    await this.assertNotAuditReserved(relativeToRoot(root, resolvedTarget), resolvedTarget);
+    await this.assertNotSkillReserved(relativeToRoot(root, resolvedTarget), resolvedTarget);
 
     const target = path.resolve(root, safeRelative);
     relativeToRoot(root, target);
@@ -676,5 +724,11 @@ function sha256(value: string): string {
 function auditReservedError(): Error {
   return new Error(
     "This path is reserved for the audit write surface (MCP_AUDIT_SUBDIR) and cannot be modified by general document writes."
+  );
+}
+
+function skillReservedError(): Error {
+  return new Error(
+    "This path is reserved for the Skill write surface (MCP_SKILLS_SUBDIR) and cannot be created or modified by general document writes."
   );
 }

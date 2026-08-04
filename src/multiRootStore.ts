@@ -45,8 +45,9 @@ export class MultiRootStore implements VaultStore {
         knowledgeRoot: root.path,
         writeMode: config.writeMode,
         patchStateDir: config.patchStateDir,
-        // The audit subtree is a primary-root-relative reservation, and writes
-        // only ever reach the primary root — so reserve it on entry 0 only.
+        // The Skills / audit subtrees are primary-root-relative reservations, and
+        // writes only ever reach the primary root — so reserve them on entry 0 only.
+        skillsSubdir: index === 0 ? config.skillsSubdir : undefined,
         auditSubdir: index === 0 ? config.auditSubdir : undefined,
         scanConcurrency: config.scanConcurrency
       })
@@ -288,6 +289,7 @@ export function createStore(config: AppConfig): VaultStore {
       knowledgeRoot: config.knowledgeRoots[0].path,
       writeMode: config.writeMode,
       patchStateDir: config.patchStateDir,
+      skillsSubdir: config.skillsSubdir,
       auditSubdir: config.auditSubdir,
       scanConcurrency: config.scanConcurrency
     });

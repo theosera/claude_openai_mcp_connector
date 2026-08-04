@@ -40,6 +40,10 @@ export interface StoreConfig {
   knowledgeRoot: string;
   writeMode: "two_step";
   patchStateDir: string;
+  /** Vault-relative subtree reserved for the constrained Skill write surface.
+   *  General document writes into it are rejected (INV-8) — only SkillStore may
+   *  create Skills there. Set on the PRIMARY root only. */
+  skillsSubdir?: string;
   /** Vault-relative subtree reserved for the audit write surface. General
    *  document writes into it are rejected (INV-9). Set on the PRIMARY root only. */
   auditSubdir?: string;
