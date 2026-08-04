@@ -114,6 +114,12 @@ const EXPANSION_BUDGET_FLOOR_BYTES = 64 * 1024;
  * 2.0x for the worst legitimate shape (flow-style one-character tags), and
  * 4.3x for an all-`!!timestamp` block (Dates are charged OPAQUE_LEAF_BYTES).
  * 16x keeps at least 3.7x headroom over every one of those.
+ *
+ * Those figures survived the switch to JSON-escaped string accounting
+ * (jsonStringCost) unchanged: every string in every one of those shapes is
+ * escape-free, so it is charged exactly `length + 2` either way. Only a string
+ * carrying `"`, `\`, a control character or a lone surrogate is charged more
+ * now — and that is the point, since those are what the serializer expands.
  */
 const EXPANSION_BUDGET_MULTIPLIER = 16;
 /** Serialized size charged to a non-container object (a `!!timestamp` Date, …). */
@@ -122,6 +128,56 @@ const OPAQUE_LEAF_BYTES = 64;
 const BINARY_BYTE_BYTES = 4;
 
 const FRONTMATTER_DELIMITER = "---";
+
+/**
+ * Number of characters `JSON.stringify` emits for `value`, including its two
+ * quotes.
+ *
+ * Charging `value.length` instead is not conservative, it is wrong in the
+ * attacker's favour: JSON escapes a control character as `\u0000` — SIX
+ * characters — while the YAML source needs only two to write it (`\0`). Under
+ * a budget of 16x the source that buys ~32 references to a scalar the walk
+ * charges at 1 char each and the serializer emits at 6, so the output lands at
+ * ~96x the source instead of the intended 16x. Measured on the unfixed
+ * accounting: an 800 KB frontmatter block passed the guard and produced a
+ * 62 MB `JSON.stringify`, which is the same heap-OOM this guard exists to
+ * prevent, only bought with a larger file.
+ *
+ * `remaining` bounds the scan. The caller throws as soon as the running total
+ * passes the budget, so returning early there keeps this walk proportional to
+ * the budget rather than to the scalar it is measuring.
+ */
+function jsonStringCost(value: string, remaining: number): number {
+  let cost = 2; // the quotes
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code === 0x22 || code === 0x5c) {
+      cost += 2; // \" or \\
+    } else if (code < 0x20) {
+      // \b \t \n \f \r have two-character forms; every other control character
+      // is emitted as \u00XX.
+      const hasShortForm = code === 0x08 || code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d;
+      cost += hasShortForm ? 2 : 6;
+    } else if (code >= 0xd800 && code <= 0xdfff) {
+      // A well-formed pair is emitted verbatim (two units, two characters); a
+      // lone surrogate is escaped as \uXXXX (well-formed JSON.stringify).
+      const low = code <= 0xdbff && index + 1 < value.length ? value.charCodeAt(index + 1) : 0;
+      if (low >= 0xdc00 && low <= 0xdfff) {
+        cost += 2;
+        index += 1;
+      } else {
+        cost += 6;
+      }
+    } else {
+      cost += 1;
+    }
+
+    if (cost > remaining) {
+      return cost;
+    }
+  }
+  return cost;
+}
 
 /**
  * Upper bound on the YAML block gray-matter parsed out of `raw`, derived ONLY
@@ -158,7 +214,7 @@ function assertBoundedFrontmatterExpansion(data: unknown, raw: string): void {
     const node = pending.pop();
 
     if (typeof node === "string") {
-      expanded += node.length + 2; // quotes
+      expanded += jsonStringCost(node, budget - expanded);
     } else if (node === null || node === undefined) {
       expanded += 4;
     } else if (typeof node === "number" || typeof node === "boolean" || typeof node === "bigint") {
@@ -177,7 +233,9 @@ function assertBoundedFrontmatterExpansion(data: unknown, raw: string): void {
         const isPlainMap = prototype === Object.prototype || prototype === null;
         expanded += isPlainMap ? 2 : OPAQUE_LEAF_BYTES; // braces, or a Date's serialized form
         for (const [key, value] of Object.entries(node)) {
-          expanded += key.length + 4; // quoted key, colon, separator
+          // A mapping key is a JSON string too, and a quoted YAML key can carry
+          // the same escapes a value can.
+          expanded += jsonStringCost(key, budget - expanded) + 2; // colon, separator
           pending.push(value);
         }
       }

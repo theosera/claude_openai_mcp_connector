@@ -55,6 +55,19 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   covering deep nesting, block scalars, `!!binary`, `!!set`, `!!omap`, merge
   keys, CRLF, BOM and CJK found nothing legitimate that trips it.
 
+  **A scalar is charged what `JSON.stringify` emits for it, not its length in
+  memory.** Charging the length is not merely loose, it is wrong in the
+  attacker's favour: a control character costs two characters to write in YAML
+  (`\0`) and six to serialize (`\u0000`), so a 16× budget bought ~32 references
+  charged at 1 and emitted at 6 — an output of ~96× the source. Measured on that
+  accounting, an 800 KB front-matter block passed the guard and produced a 62 MB
+  `JSON.stringify`, which is the same heap OOM the guard exists to prevent, only
+  bought with a larger file. The escaped size is now counted, with the scan
+  bailing out as soon as the running total passes the budget so the walk stays
+  proportional to the budget. The amplification figures above are unchanged by
+  this: every string in every one of those shapes is escape-free, so it is
+  charged `length + 2` either way.
+
   Incidentally this also fixes a pre-existing crash: a recursive anchor
   (`a: &a [*a]`) produced a genuinely circular object that made `fetch_document`
   throw `TypeError: Converting circular structure to JSON`, leaving the note

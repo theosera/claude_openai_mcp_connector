@@ -308,6 +308,45 @@ describe("frontmatter YAML anchor/alias expansion guard", () => {
     expect(parseMarkdownSafe(small)).toEqual(first);
     expect(first.frontmatter.tags).toEqual(["a", "b"]);
   });
+
+  // The budget is spent in SERIALIZED characters, so a scalar has to be charged
+  // what JSON.stringify emits for it, not what it costs in memory. A control
+  // character is two source characters (`\0`) and six emitted ones (`\u0000`),
+  // so charging `length` let ~32 references through a 16x budget and serialized
+  // to ~96x the source — the same heap-OOM this guard exists to prevent, only
+  // bought with a larger file. Charging `length` here makes this test pass a
+  // ~96x expansion.
+  it("charges a scalar its JSON-escaped size, not its in-memory length", () => {
+    const scalar = '"' + "\\0".repeat(20_000) + '"';
+    const raw =
+      "---\n" + `a: &a ${scalar}\n` + `b: [${Array.from({ length: 31 }, () => "*a").join(",")}]\n` + "---\n\nbody\n";
+
+    expect(() => parseMarkdown(raw)).toThrow(/refusing to materialize/);
+
+    const degraded = parseMarkdownSafe(raw);
+    expect(degraded.parseError).toMatch(/refusing to materialize/);
+    expect(degraded.body).toBe(raw);
+    expect(JSON.stringify(degraded.frontmatter).length).toBeLessThan(1000);
+  });
+
+  // The same accounting has to leave legitimate escapes alone: a title with
+  // quotes and a multi-line block scalar are charged 2 per escaped character,
+  // which is nowhere near the 16x budget.
+  it("keeps front matter that legitimately contains quotes, backslashes and newlines", () => {
+    const raw =
+      "---\n" +
+      "id: quoted-1\n" +
+      'title: "He said \\"hello\\" and left C:\\\\Users\\\\me"\n' +
+      "description: |\n" +
+      Array.from({ length: 200 }, (_, i) => `  line ${i} of a block scalar\n`).join("") +
+      "tags: [α, 日本語, 👋]\n" +
+      "---\n\nbody\n";
+
+    const parsed = parseMarkdownSafe(raw);
+    expect(parsed.parseError).toBeUndefined();
+    expect(parsed.frontmatter.title).toBe('He said "hello" and left C:\\Users\\me');
+    expect(parsed.frontmatter.tags).toEqual(["α", "日本語", "👋"]);
+  });
 });
 
 describe("KnowledgeStore with expansion-bomb and repeated content", () => {
@@ -322,6 +361,11 @@ describe("KnowledgeStore with expansion-bomb and repeated content", () => {
     await store.init();
   });
 
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(patchStateDir, { recursive: true, force: true });
+  });
+
   it("completes a vault walk past a bomb note and still returns the other notes", async () => {
     await fs.writeFile(path.join(root, "bomb-tags.md"), aliasBomb("tags"), "utf8");
     await fs.writeFile(path.join(root, "bomb-other.md"), aliasBomb("note"), "utf8");
@@ -331,9 +375,11 @@ describe("KnowledgeStore with expansion-bomb and repeated content", () => {
       "utf8"
     );
 
-    const started = Date.now();
+    // No wall-clock assertion: it would flake on a loaded runner, and the bomb
+    // is sized so that a regression still TERMINATES (materializing ~40 MB
+    // rather than hanging), which the serialized-size assertion below catches
+    // deterministically.
     const { results } = await store.search({ query: "marker" });
-    expect(Date.now() - started).toBeLessThan(5000);
 
     // The scan is not aborted: the healthy note is indexed, and the bomb notes
     // are indexed by body only.
