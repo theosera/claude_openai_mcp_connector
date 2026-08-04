@@ -848,6 +848,13 @@ against the environment launchd actually holds rather than the file on disk:
 launchctl print gui/$(id -u)/<label> | grep MCP_ENV_FILE   # no output = not reloaded
 ```
 
+One `bootstrap` failure is expected and is **not** a plist problem: if that
+agent was previously turned off with `launchctl disable`, `bootstrap` answers
+`5: Input/output error` and the job stays down. That is the disable working as
+intended — run `launchctl enable gui/$(id -u)/<label>` first if you really do
+mean to bring it back. Worth stating because everything else in this section
+trains you to suspect the plist.
+
 The `audit=…` flag on the connector's stderr startup line tells you which
 surface came up on each endpoint. If an agent is instead crash-looping, its
 `StandardErrorPath` log shows `KNOWLEDGE_ROOT (or KNOWLEDGE_ROOTS) is required`,
