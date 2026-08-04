@@ -69,10 +69,129 @@ function validatePatchValue(key: string, value: unknown): unknown {
 
 export function parseMarkdown(raw: string): { frontmatter: DocumentMetadata; body: string } {
   const parsed = matter(raw, SAFE_MATTER_OPTIONS);
+  // Reject anchor/alias expansion bombs BEFORE anything materializes the parsed
+  // frontmatter as text (normalizeMetadata's String(), JSON.stringify on the
+  // fetch path). See assertBoundedFrontmatterExpansion.
+  assertBoundedFrontmatterExpansion(parsed.data, raw);
   return {
     frontmatter: normalizeMetadata(parsed.data as DocumentMetadata),
     body: parsed.content
   };
+}
+
+// --- YAML anchor/alias expansion guard --------------------------------------
+// js-yaml resolves an alias (`*a`) as a SHARED REFERENCE to the anchored node,
+// so a ~1 KB block of nested anchors parses cheaply while describing a tree
+// with exponentially many nodes. Nothing pays for that until something walks
+// the value as a tree — `String()` in toStringArray below, `JSON.stringify` of
+// the fetched document in src/server.ts — at which point the single-threaded
+// event loop blocks while allocating toward the V8 max-string limit (a fatal
+// heap OOM on a memory-capped host). Vault content is untrusted (web clips,
+// and an `append_audit_report` body is arbitrary client text that later scans
+// walk), so the always-on read path must bound this.
+//
+// The check below walks the parsed value the way a stringifier walks it —
+// revisiting a shared node once per reference, which IS the expansion — with an
+// explicit stack, accumulating the size the output would have, and gives up as
+// soon as that exceeds a budget derived from the size of the YAML the client
+// actually wrote. Work is therefore proportional to the budget, never to the
+// expansion, and a cycle (`a: &x {b: *x}`) terminates because every visit adds
+// at least one byte. Throwing lets parseMarkdownSafe degrade the note exactly
+// like any other malformed frontmatter (empty frontmatter, raw body,
+// parseError), so one hostile note never aborts a whole vault scan.
+//
+// Rejected alternatives: counting `&`/`*` lexically (false-positives on
+// `title: "a & b"` and `**bold**` inside a folded scalar), capping the
+// frontmatter block size (the bomb is a few hundred bytes), and capping the
+// alias count (misses one large scalar aliased many times).
+
+/** Minimum expansion allowed regardless of input size. Nothing this small hurts. */
+const EXPANSION_BUDGET_FLOOR_BYTES = 64 * 1024;
+/**
+ * Expansion allowed per byte of frontmatter source. Measured amplification of
+ * legitimate frontmatter under this accounting: 0.98x for a session-archive
+ * index note with 900 `source_refs`, 0.84x for a 5000-entry block tag list,
+ * 2.0x for the worst legitimate shape (flow-style one-character tags), and
+ * 4.3x for an all-`!!timestamp` block (Dates are charged OPAQUE_LEAF_BYTES).
+ * 16x keeps at least 3.7x headroom over every one of those.
+ */
+const EXPANSION_BUDGET_MULTIPLIER = 16;
+/** Serialized size charged to a non-container object (a `!!timestamp` Date, …). */
+const OPAQUE_LEAF_BYTES = 64;
+/** Serialized size charged per byte of a `!!binary` Buffer (`{"type":"Buffer","data":[…]}`). */
+const BINARY_BYTE_BYTES = 4;
+
+const FRONTMATTER_DELIMITER = "---";
+
+/**
+ * Upper bound on the YAML block gray-matter parsed out of `raw`, derived ONLY
+ * from `raw`.
+ *
+ * Deliberately NOT `parsed.matter`: gray-matter defines that property as
+ * non-enumerable (lib/to-file.js) and its content-keyed cache returns
+ * `Object.assign({}, cached)` (index.js), which drops non-enumerable
+ * properties. It is therefore `undefined` for every repeat parse of content the
+ * process has already seen — a budget read from it would silently collapse to
+ * the floor on the second read of a note and strip the metadata off large but
+ * perfectly legitimate frontmatter (a session-archive index with hundreds of
+ * `source_refs`). Reading `raw` keeps the budget identical on the first parse
+ * and every repeat parse of identical content.
+ *
+ * Over-estimating is safe (a looser budget, never a false positive), so any
+ * input that does not look like default-delimited frontmatter falls back to the
+ * whole input length.
+ */
+function frontmatterSourceLength(raw: string): number {
+  if (!raw.startsWith(FRONTMATTER_DELIMITER)) {
+    return raw.length;
+  }
+  const close = raw.indexOf("\n" + FRONTMATTER_DELIMITER, FRONTMATTER_DELIMITER.length);
+  return close === -1 ? raw.length : close;
+}
+
+function assertBoundedFrontmatterExpansion(data: unknown, raw: string): void {
+  const budget = Math.max(EXPANSION_BUDGET_FLOOR_BYTES, frontmatterSourceLength(raw) * EXPANSION_BUDGET_MULTIPLIER);
+  const pending: unknown[] = [data];
+  let expanded = 0;
+
+  while (pending.length > 0) {
+    const node = pending.pop();
+
+    if (typeof node === "string") {
+      expanded += node.length + 2; // quotes
+    } else if (node === null || node === undefined) {
+      expanded += 4;
+    } else if (typeof node === "number" || typeof node === "boolean" || typeof node === "bigint") {
+      expanded += String(node).length;
+    } else if (Array.isArray(node)) {
+      expanded += 2 + node.length; // brackets + one separator per element
+      for (const item of node) {
+        pending.push(item);
+      }
+    } else if (typeof node === "object") {
+      if (ArrayBuffer.isView(node)) {
+        // `!!binary` yields a Buffer, which serializes one decimal per byte.
+        expanded += 2 + node.byteLength * BINARY_BYTE_BYTES;
+      } else {
+        const prototype = Object.getPrototypeOf(node) as object | null;
+        const isPlainMap = prototype === Object.prototype || prototype === null;
+        expanded += isPlainMap ? 2 : OPAQUE_LEAF_BYTES; // braces, or a Date's serialized form
+        for (const [key, value] of Object.entries(node)) {
+          expanded += key.length + 4; // quoted key, colon, separator
+          pending.push(value);
+        }
+      }
+    } else {
+      expanded += OPAQUE_LEAF_BYTES;
+    }
+
+    if (expanded > budget) {
+      throw new Error(
+        `Frontmatter expands to more than ${budget} bytes when serialized ` +
+          `(YAML anchor/alias expansion); refusing to materialize it.`
+      );
+    }
+  }
 }
 
 // Fault-tolerant wrapper used on the read path. A single vault document with
