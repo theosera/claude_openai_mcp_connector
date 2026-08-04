@@ -153,6 +153,12 @@ MCP_SKILLS_SUBDIR=path/to/skills
 MCP_HTTP_ALLOW_SKILL_WRITE=1
 ```
 
+The directory must be **disjoint from `projects/`**, the root `create_document`
+writes into — not `projects` itself, not a directory under it, and not `./`
+(the whole vault). The Skills subtree is reserved against the general write
+surface, so an overlap would make every document create fail; the server
+refuses to start rather than let that surface silently stop working.
+
 This surface is create-only: it accepts `SKILL.md`, optional flat
 `references/*.md`, and optional `agents/openai.yaml`; it rejects scripts,
 assets, arbitrary paths, and attempts to overwrite an existing Skill.

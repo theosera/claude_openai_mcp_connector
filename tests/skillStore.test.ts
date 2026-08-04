@@ -182,8 +182,16 @@ describe("loadConfig skills subtree disjointness (INV-8)", () => {
     );
   });
 
-  it("rejects a skills subdir that contains projects/", () => {
+  it("rejects a skills subdir equal to projects/", () => {
     expect(() => loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault", MCP_SKILLS_SUBDIR: "projects" })).toThrow(/disjoint/);
+  });
+
+  it("rejects a skills subdir that contains projects/", () => {
+    // The reverse containment branch, which the equality case above does not
+    // reach. "./" is the one value that survives assertRelativePath while still
+    // being a parent of "projects" — it would reserve the entire vault against
+    // the general write surface, so the boot check has to catch it.
+    expect(() => loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault", MCP_SKILLS_SUBDIR: "./" })).toThrow(/disjoint/);
   });
 
   it("accepts a skills subdir outside projects/", () => {

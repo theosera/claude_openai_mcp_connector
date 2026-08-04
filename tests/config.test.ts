@@ -206,17 +206,24 @@ describe("patch state directory default", () => {
   // directory it followed the caller, and for a client-spawned stdio server the
   // caller chooses that directory.
   it("resolves the default independently of the working directory", async () => {
-    const before = loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault" }).patchStateDir;
+    // The home directory is pinned to a known value rather than read back from
+    // os.homedir(): deriving the expectation from the same call the code makes
+    // would assert only that two identical expressions agree, and would still
+    // pass if the derivation were wrong in the same way on both sides.
+    const spy = vi.spyOn(os, "homedir").mockReturnValue("/fake/home");
     const elsewhere = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-cwd-"));
     const original = process.cwd();
     try {
+      const before = loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault" }).patchStateDir;
       process.chdir(elsewhere);
       const after = loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault" }).patchStateDir;
+      expect(before).toBe(path.join("/fake", "home", ".mcp-state", "patches"));
       expect(after).toBe(before);
-      expect(path.isAbsolute(after)).toBe(true);
-      expect(after).toBe(path.join(os.homedir(), ".mcp-state", "patches"));
+      expect(after.startsWith(elsewhere)).toBe(false);
     } finally {
       process.chdir(original);
+      spy.mockRestore();
+      await fs.rm(elsewhere, { recursive: true, force: true });
     }
   });
 
@@ -244,5 +251,14 @@ describe("patch state directory default", () => {
   it("still honours an explicit MCP_PATCH_STATE_DIR", () => {
     const dir = loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault", MCP_PATCH_STATE_DIR: "/srv/state" }).patchStateDir;
     expect(dir).toBe(path.resolve("/srv/state"));
+  });
+
+  it("still resolves an explicit relative MCP_PATCH_STATE_DIR against the cwd", () => {
+    // Documented compatibility: only the *default* stopped following the caller.
+    // Naming a relative directory stays a deliberate choice that keeps working,
+    // so a future tightening of the default cannot silently take it with it.
+    const dir = loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault", MCP_PATCH_STATE_DIR: "relative/state" }).patchStateDir;
+    expect(dir).toBe(path.resolve("relative/state"));
+    expect(dir.startsWith(process.cwd())).toBe(true);
   });
 });

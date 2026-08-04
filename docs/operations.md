@@ -578,6 +578,16 @@ root that already exists** — the server does **not** create it, and it rejects
 absolute paths, `..`, or anything resolving outside the root. If Skill writes are
 enabled but `MCP_SKILLS_SUBDIR` is unset, the server **refuses to start**.
 
+It must also be **disjoint from `projects/`** — the root `create_document`
+writes into — and from `MCP_AUDIT_SUBDIR`. Both are checked at start-up, so
+`projects`, anything beneath it, and `./` (which would reserve the entire vault)
+are refused with a message naming the setting. The reason is not tidiness: the
+Skills subtree is reserved against the general write surface, so an overlap
+leaves every document create failing that reservation, once per call and far
+from the cause. If an existing deployment points `MCP_SKILLS_SUBDIR` at
+`projects/...`, move it to a sibling directory (e.g. `_skills`) before
+upgrading; nothing already written is touched by the move.
+
 ```bash
 # relative to KNOWLEDGE_ROOT (the primary root); create the directory first
 MCP_SKILLS_SUBDIR=path/to/skills
