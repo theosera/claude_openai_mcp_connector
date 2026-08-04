@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -124,7 +125,7 @@ const ROOT_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
  * bwrap recipe in `docs/operations.md`). So refuse to guess and make the
  * operator name it, rather than silently writing plaintext somewhere else.
  */
-function defaultPatchStateDir(): string {
+function defaultPatchStateDir(primaryRoot: string): string {
   const home = os.homedir();
   if (!path.isAbsolute(home)) {
     throw new Error(
@@ -132,7 +133,21 @@ function defaultPatchStateDir(): string {
         "default from. Two-step plan state holds vault plaintext and must not fall back to the working directory."
     );
   }
-  return path.join(home, ".mcp-state", "patches");
+  // Per vault, so two servers started against different roots never share a plan
+  // directory by accident. `applyPlannedUpdate` looks a plan up by `patch_id`
+  // alone and resolves its target path against whichever root the running store
+  // has, so a shared directory lets a plan staged for one vault be applied to
+  // another. The stale check still has to pass — that needs byte-identical
+  // content at the same relative path in both — but nothing else stands in the
+  // way, and a single shared default would have made that the normal setup.
+  //
+  // Suffixed, not nested: `patches/<tag>` would put the state directory one
+  // level deeper, and `ensurePatchStateDir` only refuses a symlink at the leaf
+  // (`mkdir` with `recursive` follows symlinked parents), so nesting would add a
+  // parent that nothing checks. Same depth as before keeps that guard's reach
+  // unchanged.
+  const tag = crypto.createHash("sha256").update(primaryRoot).digest("hex").slice(0, 16);
+  return path.join(home, ".mcp-state", `patches-${tag}`);
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -199,7 +214,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     // `||` short-circuit matters — an explicit setting must keep working on a
     // host with no home directory, so the fallback is only evaluated when the
     // operator named nothing.
-    patchStateDir: path.resolve(env.MCP_PATCH_STATE_DIR?.trim() || defaultPatchStateDir()),
+    patchStateDir: path.resolve(env.MCP_PATCH_STATE_DIR?.trim() || defaultPatchStateDir(knowledgeRoots[0].path)),
     skillsSubdir,
     auditSubdir,
     scanConcurrency,

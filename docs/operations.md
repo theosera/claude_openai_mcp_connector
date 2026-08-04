@@ -807,7 +807,8 @@ under `KeepAlive`. Settings placed directly in `EnvironmentVariables` still
 work, and still win over the file. `WorkingDirectory` also still decides one
 thing: a **relative** `MCP_PATCH_STATE_DIR` is resolved against it
 (`src/config.ts`), so if you set that one, give it an absolute path. Left unset
-it now defaults to `~/.mcp-state/patches`, which `WorkingDirectory` cannot move.
+it now defaults to `~/.mcp-state/patches-<hash of the vault path>`, which
+`WorkingDirectory` cannot move.
 **Add `MCP_ENV_FILE` to both plists before restarting.** The scan agent runs the **same**
 `dist/index.js`, pointed at the scan file:
 

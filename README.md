@@ -122,9 +122,11 @@ Then set:
 ```text
 KNOWLEDGE_ROOT=/path/to/private/obsidian-vault
 MCP_WRITE_MODE=two_step
-# Optional. Defaults to ~/.mcp-state/patches; set it only to move that
-# elsewhere, and use an absolute path (a relative one follows the caller's
-# working directory, which a client-spawned stdio server does not control).
+# Optional. Defaults to ~/.mcp-state/patches-<hash of this vault's path>. The
+# hash keeps servers started against different vaults from sharing one plan
+# directory. Set this only to put plan state somewhere else, and use an absolute
+# path — a relative one follows the caller's working directory, which a
+# client-spawned stdio server does not control.
 #MCP_PATCH_STATE_DIR=/abs/path/to/.mcp-state/patches
 ```
 

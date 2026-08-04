@@ -205,6 +205,30 @@ describe("patch state directory default", () => {
   // lands decides where vault plaintext lands. Resolved against the working
   // directory it followed the caller, and for a client-spawned stdio server the
   // caller chooses that directory.
+  it("derives a different default for each knowledge root", () => {
+    // applyPlannedUpdate finds a plan by patch_id alone and applies its target
+    // path against whichever root the running store has, so two servers sharing
+    // a plan directory can cross over. A single shared default would have made
+    // that the out-of-the-box arrangement; per-root keeps them apart.
+    const spy = vi.spyOn(os, "homedir").mockReturnValue("/fake/home");
+    try {
+      const a = loadConfig({ KNOWLEDGE_ROOT: "/vaults/alpha" }).patchStateDir;
+      const b = loadConfig({ KNOWLEDGE_ROOT: "/vaults/beta" }).patchStateDir;
+      expect(a).not.toBe(b);
+      // Stable for a given root, so plans survive a restart.
+      expect(loadConfig({ KNOWLEDGE_ROOT: "/vaults/alpha" }).patchStateDir).toBe(a);
+      // One level under ~/.mcp-state, not nested deeper: ensurePatchStateDir
+      // only refuses a symlink at the leaf, so an extra level would add an
+      // unchecked parent.
+      expect(path.dirname(a)).toBe(path.join("/fake", "home", ".mcp-state"));
+      // In multi-root setups the PRIMARY root selects it — that is the only
+      // writable one, so it is the only one plans can target.
+      expect(loadConfig({ KNOWLEDGE_ROOTS: "alpha=/vaults/alpha,other=/vaults/beta" }).patchStateDir).toBe(a);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("resolves the default independently of the working directory", async () => {
     // The home directory is pinned to a known value rather than read back from
     // os.homedir(): deriving the expectation from the same call the code makes
@@ -217,7 +241,7 @@ describe("patch state directory default", () => {
       const before = loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault" }).patchStateDir;
       process.chdir(elsewhere);
       const after = loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault" }).patchStateDir;
-      expect(before).toBe(path.join("/fake", "home", ".mcp-state", "patches"));
+      expect(path.dirname(before)).toBe(path.join("/fake", "home", ".mcp-state"));
       expect(after).toBe(before);
       expect(after.startsWith(elsewhere)).toBe(false);
     } finally {

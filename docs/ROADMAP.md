@@ -503,6 +503,20 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       the same revision deprecates DCR for CIMD, which makes `client_id` a
       *stable* identity — revisit the `client_id` appendix **before** building
       the audit log's attribution on it.
+- [ ] **Bind a two-step plan to the vault that staged it** — `applyPlannedUpdate`
+      looks a plan up by `patch_id` alone and resolves its `target_path` against
+      whichever root the running store has; the plan record does not say which
+      vault it was staged for. Two servers sharing a plan directory can therefore
+      cross over. The default directory is now derived per primary root, so they
+      no longer share one by accident, but an explicitly shared
+      `MCP_PATCH_STATE_DIR` still can. Record the originating primary root in the
+      plan and verify it at apply. Treat as a **security-boundary change** (INV-3:
+      it alters the on-disk record and the apply-time checks) and land it on its
+      own, not bundled with unrelated fixes. Note what already limits it: apply is
+      stale-safe, so a cross-vault write needs the same relative path to exist in
+      the second vault with byte-identical pre-edit content. Raised by CodeRabbit
+      on #86, which withdrew its CWE-639 classification — both instances run as
+      the same user, so this is vault confusion, not an authorization bypass.
 - [ ] **Audit log** — append-only, content-free events (who searched / fetched /
       wrote what, no note bodies) — the largest security follow-up, and still the
       one that most improves the posture; it now sits **second** because the

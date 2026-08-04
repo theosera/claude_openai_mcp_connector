@@ -58,7 +58,8 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   chooses that directory, so the plaintext landed wherever the caller pointed.
   The previous release closed the matching hole for env files (the server stopped
   reading `.env` from its working directory) and named this as the remaining
-  follow-up. The default is now `~/.mcp-state/patches`.
+  follow-up. The default is now `~/.mcp-state/patches-<hash>`, where the hash
+  derives from the vault's own path.
 
   The home directory is an anchor, not a guarantee: `os.homedir()` returns `""`
   when HOME is empty with no passwd entry to fall back on, and returns HOME
