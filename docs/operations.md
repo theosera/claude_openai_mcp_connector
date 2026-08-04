@@ -320,9 +320,10 @@ launchctl load -w ~/Library/LaunchAgents/local.mcp-connector.plist
 
 > **Secrets:** don't inline `MCP_OAUTH_PASSWORD` / `MCP_AUTH_TOKEN` in the plist
 > (it is readable and shows up in `launchctl print`). Keep them in a mode-`600`
-> file and source it from a tiny wrapper script that the plist runs instead of
-> `node` directly — the launchd analogue of the systemd `EnvironmentFile` advice
-> above.
+> file and name it with **`MCP_ENV_FILE`** (an absolute path, in
+> `EnvironmentVariables`) — the launchd analogue of the systemd `EnvironmentFile`
+> advice above. The connector reads that file and nothing else; it does **not**
+> read a `.env` from its working directory.
 
 > **Use a STABLE `node` path.** Version-manager shims are often **per-shell** and
 > disappear after a reboot, which breaks `KeepAlive` (launchd can no longer find
@@ -653,6 +654,23 @@ no hands). Run **two** connector processes:
 > endpoint it just reserves the subtree (its general writes are excluded); on the
 > scan endpoint it also enables the audit tools. A write-capable process that omits
 > it can still edit audit files through a general write.
+>
+> **Since the working-directory `.env` was removed, "sets it" means: in the
+> process's real environment, or in its own `MCP_ENV_FILE`** (Step 2). This
+> includes every **stdio client registration** — the `env` blocks in
+> [`README.md`](../README.md) carry only `KNOWLEDGE_ROOT`, and a stdio server is
+> always write-capable, so a registration that names neither
+> `MCP_AUDIT_SUBDIR`/`MCP_SKILLS_SUBDIR` nor an `MCP_ENV_FILE` that does starts
+> **normally, with writes on and the reservation off**. A missing
+> `MCP_AUDIT_SUBDIR` is deliberately *not* a startup error (it is optional), so
+> check the startup line the server now writes to **stderr**:
+>
+> ```text
+> MCP stdio transport ready (write=on, documents=on, skills=off, audit=off)
+> ```
+>
+> `audit=off` on a write-capable process means the reservation is not in effect
+> there. The HTTP branch prints the same four fields (plus `oauth=`).
 
 ### Step 1 — create the audit subtree
 
@@ -664,22 +682,41 @@ no hands). Run **two** connector processes:
 mkdir -p "$KNOWLEDGE_ROOT/90_Audit/vault-scan/reports"
 ```
 
-### Step 2 — two env files (one per working directory)
+### Step 2 — two env files, each named by `MCP_ENV_FILE`
 
-The connector loads `.env` from its **working directory** (`dotenv`,
-`src/config.ts`), so give each process **its own directory** with its own `.env`.
-Keep the shared settings identical; differ only on the marked lines. **The OAuth
-state file must NOT be shared between the two processes** — give each its own.
+Give each process **its own env file** and point the process at it with the
+**absolute** path in `MCP_ENV_FILE`. Keep the shared settings identical; differ
+only on the marked lines. **The OAuth state file must NOT be shared between the
+two processes** — give each its own.
 
-> ⚠️ **Do not run the scan process with the connector repo as its working
-> directory.** `dotenv` does not override variables already in the environment,
-> but it *does* fill in any that are unset — so from the connector repo it would
-> load the interactive `.env` (with `MCP_HTTP_ALLOW_WRITE=1`) for every variable
-> the scan config leaves unset, silently re-enabling general writes on the scan
-> endpoint and defeating the whole separation. Run the scan process from a
-> **different** directory whose `.env` *is* the scan config.
+> 🚨 **MIGRATION — REQUIRED BEFORE YOU RESTART EITHER ENDPOINT.** Up to v0.7.0
+> the connector loaded `.env` from its **working directory** (`dotenv.config()`
+> at import time), so a plist could carry the whole configuration in
+> `WorkingDirectory` alone. **That is gone** — the working directory is chosen
+> by whoever spawns the process (for stdio, the MCP client), so an untrusted
+> directory could otherwise pick the bearer token, the transport, the bind
+> address and the write opt-ins. The connector now reads an env file **only**
+> from the absolute path in `MCP_ENV_FILE` (`loadEnvFile`, `src/config.ts`) —
+> there is no working-directory fallback and no search.
+>
+> **This is a hard stop, not a warning.** A process whose configuration lived in
+> a working-directory `.env` and that now gets no `MCP_ENV_FILE` **exits 1 at
+> startup** with `KNOWLEDGE_ROOT (or KNOWLEDGE_ROOTS) is required`, and under
+> `KeepAlive` launchd will **crash-loop** it. `pnpm run check:http` fails for the
+> same reason (the endpoint never comes up). So:
+>
+> 1. add `MCP_ENV_FILE` to **BOTH** plists — interactive *and* scan (Step 4) —
+>    **before** you deploy this version and restart;
+> 2. then restart, then verify with `pnpm run check:http` (Step 5).
+>
+> Migrating fully **restores the previous behaviour exactly**: same parsing
+> (dotenv), same precedence (a value already in the real environment still wins
+> over the file), same settings. Pointing each endpoint at **its own** file also
+> preserves the `MCP_AUDIT_SUBDIR` matching invariant between them (the INV-9
+> note above) — the two files simply have to keep naming the same subtree.
 
-Interactive `.env` — in the connector repo (e.g. `…/claude_openai_mcp_connector/.env`):
+Interactive env file — e.g. `…/claude_openai_mcp_connector/.env` (any absolute
+path works now; it no longer has to sit in a working directory):
 
 ```text
 KNOWLEDGE_ROOT="/abs/path/to/vault"
@@ -699,7 +736,7 @@ MCP_HTTP_ALLOW_SKILL_WRITE=1                      # optional
 # MCP_HTTP_ALLOW_AUDIT_WRITE stays UNSET here
 ```
 
-Scan `.env` — in its own directory, e.g. next to your scan scripts
+Scan env file — its own file, e.g. next to your scan scripts
 (`…/_cowork/.env`):
 
 ```text
@@ -724,6 +761,11 @@ audiences** (a token minted for one is rejected on the other, RFC 8707), and the
 different bearer means a scan token can't be replayed against the interactive
 endpoint.
 
+Each file must now be **complete on its own**: nothing is inherited from a
+working directory any more, so a setting missing from a file is simply unset for
+that process (the flip side is that the old "the scan process picks up the
+interactive `.env`" hazard is gone by construction). Keep the files mode `600`.
+
 ### Step 3 — two Tailscale Funnels
 
 Funnel exposes the machine's `*.ts.net` hostname on one of three ports — `443`,
@@ -738,10 +780,13 @@ tailscale funnel status
 ### Step 4 — two launchd agents
 
 Run two LaunchAgents (two labels, e.g. `com.you.mcp-connector` and
-`com.you.mcp-connector-scan`). The key is **`WorkingDirectory`**: it selects which
-`.env` each process loads, keeping secrets in the mode-`600` `.env` files instead
-of the plist (where `launchctl print` would expose them). The scan agent runs the
-**same** `dist/index.js` but from the scan directory:
+`com.you.mcp-connector-scan`). The key is **`MCP_ENV_FILE`**: it selects which
+env file each process loads, keeping secrets in the mode-`600` files instead of
+the plist (where `launchctl print` would expose them). It is the **only** thing
+that selects the configuration now — `WorkingDirectory` no longer does, so a
+plist without `MCP_ENV_FILE` (or without the settings inline) will crash-loop
+under `KeepAlive`. **Add this key to both plists before restarting.** The scan
+agent runs the **same** `dist/index.js`, pointed at the scan file:
 
 ```xml
 <!-- scan agent: ~/Library/LaunchAgents/com.you.mcp-connector-scan.plist -->
@@ -750,19 +795,27 @@ of the plist (where `launchctl print` would expose them). The scan agent runs th
   <string>/abs/path/to/node</string>
   <string>/abs/path/to/claude_openai_mcp_connector/dist/index.js</string>
 </array>
-<key>WorkingDirectory</key><string>/abs/path/to/scan-dir</string>   <!-- loads scan-dir/.env -->
+<key>EnvironmentVariables</key>
+<dict>
+  <!-- REQUIRED: absolute path; the interactive agent names its own file -->
+  <key>MCP_ENV_FILE</key><string>/abs/path/to/scan-dir/.env</string>
+</dict>
+<key>WorkingDirectory</key><string>/abs/path/to/scan-dir</string>   <!-- cwd only; selects no config -->
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><true/>
 <key>StandardOutPath</key><string>/abs/path/to/logs/mcp-scan.out.log</string>
 <key>StandardErrorPath</key><string>/abs/path/to/logs/mcp-scan.err.log</string>
 ```
 
-The interactive agent is identical except `WorkingDirectory` points at the
-connector repo (loading its `.env`). Use a **stable** `node` path (version-manager
-shims disappear per-shell and break `KeepAlive`). Load with `launchctl load -w …`;
-restart after a rebuild with `launchctl kickstart -k gui/$(id -u)/<label>`. The
-`audit=…` flag on the connector's stderr startup line tells you which surface came
-up on each endpoint.
+The interactive agent is identical except that its `MCP_ENV_FILE` points at the
+interactive file (e.g. `/abs/path/to/claude_openai_mcp_connector/.env`). Use a
+**stable** `node` path (version-manager shims disappear per-shell and break
+`KeepAlive`). Load with `launchctl load -w …`; restart after a rebuild with
+`launchctl kickstart -k gui/$(id -u)/<label>`. The `audit=…` flag on the
+connector's stderr startup line tells you which surface came up on each endpoint
+— if an agent is instead crash-looping, its `StandardErrorPath` log will show
+`KNOWLEDGE_ROOT (or KNOWLEDGE_ROOTS) is required`, which means that plist is
+still missing `MCP_ENV_FILE`.
 
 > After (re)starting either agent, verify its surface with `pnpm run check:http`
 > (Step 5) — it confirms the scan endpoint never exposes the general write tools.
@@ -787,6 +840,11 @@ the scan endpoint exposing `create_document` — which is exactly the
 confused-deputy regression this split prevents. A surface **narrower** than
 declared (a flag on but the tool missing) is a warning, not a failure. With no
 `--env`, it checks `./.env` (the interactive endpoint) alone.
+
+The check reads each file from the path you pass and never from a working
+directory, so it is unaffected by the `MCP_ENV_FILE` change — but it **fails
+while an endpoint is down**, which is what a plist that still lacks
+`MCP_ENV_FILE` looks like from here (`no response` / connection refused).
 
 <details>
 <summary>Manual equivalent (curl)</summary>

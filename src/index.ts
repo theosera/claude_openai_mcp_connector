@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { loadConfig, loadHttpConfig, selectedTransport } from "./config.js";
+import { loadConfig, loadEnvFile, loadHttpConfig, selectedTransport } from "./config.js";
 import { startHttpServer } from "./httpServer.js";
 import { AuditStore } from "./auditStore.js";
 import { createStore } from "./multiRootStore.js";
 import { buildMcpServer } from "./server.js";
 import { SkillStore } from "./skillStore.js";
+
+// Optional env file, read ONCE here at startup and ONLY from the absolute path
+// in MCP_ENV_FILE — never from the process working directory, which a local
+// stdio client picks for us and an untrusted repo could therefore control.
+loadEnvFile();
 
 // Single KNOWLEDGE_ROOT -> plain KnowledgeStore (unchanged behavior).
 // KNOWLEDGE_ROOTS -> multi-root composite: first root writable, rest read-only.
@@ -62,4 +67,12 @@ if (transport === "http") {
     includeChatgptCompat: true
   });
   await server.connect(new StdioServerTransport());
+  // stderr only — stdout is the JSON-RPC channel on stdio. Names the effective
+  // write surface the way the HTTP branch above does, so an unset
+  // MCP_AUDIT_SUBDIR (which leaves this write-capable process with the INV-9
+  // audit-subtree reservation OFF) is visible instead of silent.
+  process.stderr.write(
+    `MCP stdio transport ready (write=on, documents=on, ` +
+      `skills=${skillStore ? "on" : "off"}, audit=${auditStore ? "on" : "off"})\n`
+  );
 }

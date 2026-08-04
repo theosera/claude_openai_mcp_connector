@@ -8,6 +8,60 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **The server no longer reads a `.env` from its working directory.**
+  ⚠️ **Action required before restarting — see the migration below.**
+
+  `dotenv.config()` ran at import time with no path, so it read `.env` from
+  `process.cwd()` and injected every key not already in the real environment.
+  For the documented stdio deployment the MCP client spawns the server with only
+  `KNOWLEDGE_ROOT` in `env`, which means **the working directory is whatever
+  project the user happened to open** — untrusted ground. A committed `.env` in
+  a cloned repository could therefore set `MCP_TRANSPORT=http`,
+  `MCP_HTTP_HOST=0.0.0.0`, `MCP_HTTP_ALLOW_WRITE=1` and an attacker-known
+  `MCP_AUTH_TOKEN`, turning a local read-only vault server into a network
+  listener whose bearer secret the attacker chose. It could equally set
+  `KNOWLEDGE_ROOTS`, which outranks the operator's `KNOWLEDGE_ROOT`. The
+  DNS-rebinding allowlist is no barrier to a non-browser client, which sends any
+  `Host` it likes — and the same file could set `MCP_HTTP_ALLOWED_HOSTS` anyway.
+
+  An env file is now read **only** from an absolute path named by `MCP_ENV_FILE`
+  in the real process environment, loaded once at startup rather than as an
+  import-time side effect. There is no working-directory fallback. A relative or
+  unreadable `MCP_ENV_FILE` fails at startup. Parsing and precedence are
+  unchanged — the same `dotenv.parse`, so quoting, multi-line values, `export `
+  prefixes, comments and BOM behave identically, and a value already in the real
+  environment still wins over the file. Removing the `dotenv.config()` call also
+  removes a banner it wrote to **stdout**, which on the stdio transport is the
+  JSON-RPC channel.
+
+  **Migration — do step 1 before deploying.** A supervised endpoint that keeps
+  its configuration in `.env` will not start after this change; under `KeepAlive`
+  it crash-loops, and `StandardErrorPath` will show
+  `KNOWLEDGE_ROOT (or KNOWLEDGE_ROOTS) is required`.
+
+  1. Add `MCP_ENV_FILE` with the **absolute** path of that endpoint's `.env` to
+     each launchd plist's `EnvironmentVariables` dict (systemd users already pass
+     the real environment via `Environment=` / `EnvironmentFile=` and need no
+     change). This step is a no-op under the current binary, so it is safe to do
+     first.
+  2. Deploy, then restart.
+  3. Verify with `pnpm run check:http`.
+
+  Point each endpoint at **its own** file. Migrating fully restores previous
+  behaviour, including the `MCP_AUDIT_SUBDIR` matching invariant between the two
+  endpoints.
+
+  **A second thing to check, which does *not* fail loudly.** A write-capable
+  process that receives `KNOWLEDGE_ROOT` from its MCP client registration but
+  took `MCP_AUDIT_SUBDIR` / `MCP_SKILLS_SUBDIR` from the working-directory `.env`
+  will now start **normally with writes on and those subtree reservations off** —
+  `assertNotAuditReserved` returns immediately when the subdir is unset. Every
+  write-capable process must now carry those values in its real environment or
+  its own `MCP_ENV_FILE`. To make the state observable, the stdio branch now
+  prints its effective surface on stderr, e.g.
+  `MCP stdio transport ready (write=on, documents=on, skills=off, audit=off)`,
+  mirroring what the HTTP branch already did. stdout stays pure JSON-RPC.
+
 - **Two-step plan files are written owner-only.** A plan holds the pre-edit text
   (inside its diff) and the full proposed text of a private note, so
   `MCP_PATCH_STATE_DIR` is the one place vault plaintext is copied outside the

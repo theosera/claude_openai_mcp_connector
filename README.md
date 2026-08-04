@@ -125,6 +125,23 @@ MCP_WRITE_MODE=two_step
 MCP_PATCH_STATE_DIR=.mcp-state/patches
 ```
 
+**Point the server at that file with `MCP_ENV_FILE` (absolute path).** The
+connector reads an env file **only** from `MCP_ENV_FILE`; it does **not** read
+`.env` from its working directory, because for a locally-spawned stdio server
+that directory is chosen by the MCP client — an untrusted directory could
+otherwise supply the bearer token, the transport, the bind address, and the
+write opt-ins:
+
+```bash
+MCP_ENV_FILE=/abs/path/to/claude_openai_mcp_connector/.env node dist/index.js
+```
+
+Variables already present in the real environment always win over the file, and
+a relative or unreadable `MCP_ENV_FILE` is a startup error rather than a silent
+skip. Setting everything directly in the environment (systemd `Environment=`,
+a launchd `EnvironmentVariables` dict, an MCP client's `env` block) works
+exactly as before and needs no file at all.
+
 To allow a remote client to create instruction-only Skills without exposing
 general document writes, also set a vault-relative, pre-existing directory:
 
@@ -258,12 +275,24 @@ by discarding the state (everyone simply re-authorizes).
 
 ## Client registration
 
+> **Every setting a stdio server needs must be in the `env` block below or in
+> the file named by `MCP_ENV_FILE`** — the server does not read a `.env` from
+> the directory the client happens to spawn it in. A stdio server is always
+> write-capable, so if you use the reserved subtrees, carry
+> **`MCP_AUDIT_SUBDIR`** (and `MCP_SKILLS_SUBDIR`) here too: they are optional,
+> so omitting `MCP_AUDIT_SUBDIR` does **not** fail startup — it just starts with
+> the INV-9 audit-subtree reservation **off**. The startup line on stderr
+> (`… audit=off`) is how you see that; see
+> [`operations.md` §9](./docs/operations.md#9-two-endpoint-deployment-interactive--unattended-audit-scan).
+
 ### Claude Code (CLI, stdio)
 
 ```bash
 claude mcp add vault -- node /abs/path/to/claude_openai_mcp_connector/dist/index.js
 # set KNOWLEDGE_ROOT in the spawned env, e.g. via a wrapper or:
 claude mcp add vault --env KNOWLEDGE_ROOT=/abs/path/to/vault -- node /abs/.../dist/index.js
+# or keep the whole configuration in one file:
+claude mcp add vault --env MCP_ENV_FILE=/abs/path/to/vault.env -- node /abs/.../dist/index.js
 ```
 
 ### Codex CLI (stdio)
