@@ -130,16 +130,20 @@ Environment=MCP_AUTH_TOKEN=replace-with-openssl-rand-hex-32
 # --- vault ---
 Environment=KNOWLEDGE_ROOT=/abs/path/to/vault
 # Two-step write patch state. Only used when writes are enabled, but set it
-# explicitly to an ABSOLUTE path: the default (.mcp-state/patches) resolves
-# relative to the process cwd (src/config.ts), which under ProtectSystem=strict
-# may not be covered by ReadWritePaths — causing plan_document_update to fail.
+# explicitly to an ABSOLUTE path, for two reasons. Left unset the default lands
+# under $HOME (~/.mcp-state/patches-<hash>), which the hardening drop-in below
+# hides with ProtectHome= — the directory cannot then be created and the service
+# fails at start-up. And a RELATIVE value you set is resolved against the process
+# cwd (src/config.ts), which under ProtectSystem=strict may not be covered by
+# ReadWritePaths — causing plan_document_update to fail.
 Environment=MCP_PATCH_STATE_DIR=/abs/path/to/state/patches
 # Writes stay OFF unless you explicitly need them:
 # Environment=MCP_HTTP_ALLOW_WRITE=1
 # To expose only constrained, create-only Skill writes instead:
 # Environment=MCP_SKILLS_SUBDIR=path/to/skills
 # Environment=MCP_HTTP_ALLOW_SKILL_WRITE=1
-# Pin the cwd so any relative default also resolves predictably:
+# Pin the cwd so an explicitly RELATIVE setting still resolves predictably
+# (the patch-state default is absolute and does not depend on this):
 WorkingDirectory=/abs/path/to/claude_openai_mcp_connector
 ExecStart=/usr/bin/node /abs/path/to/claude_openai_mcp_connector/dist/index.js
 Restart=always
@@ -244,6 +248,10 @@ for this daemon).
 - **`ProtectHome=true` vs a vault under `/home`.** If `KNOWLEDGE_ROOT`, the
   patch-state dir, or your `EnvironmentFile` lives under a home directory,
   `ProtectHome` makes them invisible and the service fails to read the vault.
+  **The patch-state directory is the easy one to miss: left unset it now defaults
+  to `~/.mcp-state/patches-<hash>`, so it is under a home directory by default
+  even if nothing you wrote put it there** — which is why the base unit above
+  sets `MCP_PATCH_STATE_DIR` explicitly rather than leaving it out.
   Prefer moving the vault and state **out of `/home`** (e.g. `/srv/vault`,
   `/var/lib/vault-mcp/state`) for a daemon. If you must keep them under `/home`,
   re-expose just those paths with `BindReadOnlyPaths=`/`BindPaths=`, or relax to

@@ -70,7 +70,8 @@ injection」「③ 既存ノートの破壊的/stale 上書き」「④ public r
 既存ファイル編集は必ず 2 段階:
 
 - `plan_document_update`: diff + `expected_sha256` (plan 時の現本文ハッシュ) を
-  `.mcp-state/patches/<uuid>.json` に保存。**ファイルは触らない**。
+  `<MCP_PATCH_STATE_DIR>/<uuid>.json` に保存 (既定は
+  `~/.mcp-state/patches-<primary root の hash>`)。**ファイルは触らない**。
 - `apply_planned_update`: 現本文を再ハッシュし `expected_sha256` と照合。**不一致なら
   「stale」で適用拒否** (plan 後に外部編集が入ったら上書きしない)。`patch_id` は UUID
   形式を検証 (`patchPath`) — patch_id 経由で任意ファイルを読まないため。
