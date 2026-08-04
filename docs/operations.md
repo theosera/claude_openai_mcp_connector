@@ -130,16 +130,20 @@ Environment=MCP_AUTH_TOKEN=replace-with-openssl-rand-hex-32
 # --- vault ---
 Environment=KNOWLEDGE_ROOT=/abs/path/to/vault
 # Two-step write patch state. Only used when writes are enabled, but set it
-# explicitly to an ABSOLUTE path: the default (.mcp-state/patches) resolves
-# relative to the process cwd (src/config.ts), which under ProtectSystem=strict
-# may not be covered by ReadWritePaths — causing plan_document_update to fail.
+# explicitly to an ABSOLUTE path, for two reasons. Left unset the default lands
+# under $HOME (~/.mcp-state/patches-<hash>), which the hardening drop-in below
+# hides with ProtectHome= — the directory cannot then be created and the service
+# fails at start-up. And a RELATIVE value you set is resolved against the process
+# cwd (src/config.ts), which under ProtectSystem=strict may not be covered by
+# ReadWritePaths — causing plan_document_update to fail.
 Environment=MCP_PATCH_STATE_DIR=/abs/path/to/state/patches
 # Writes stay OFF unless you explicitly need them:
 # Environment=MCP_HTTP_ALLOW_WRITE=1
 # To expose only constrained, create-only Skill writes instead:
 # Environment=MCP_SKILLS_SUBDIR=path/to/skills
 # Environment=MCP_HTTP_ALLOW_SKILL_WRITE=1
-# Pin the cwd so any relative default also resolves predictably:
+# Pin the cwd so an explicitly RELATIVE setting still resolves predictably
+# (the patch-state default is absolute and does not depend on this):
 WorkingDirectory=/abs/path/to/claude_openai_mcp_connector
 ExecStart=/usr/bin/node /abs/path/to/claude_openai_mcp_connector/dist/index.js
 Restart=always
@@ -244,6 +248,10 @@ for this daemon).
 - **`ProtectHome=true` vs a vault under `/home`.** If `KNOWLEDGE_ROOT`, the
   patch-state dir, or your `EnvironmentFile` lives under a home directory,
   `ProtectHome` makes them invisible and the service fails to read the vault.
+  **The patch-state directory is the easy one to miss: left unset it now defaults
+  to `~/.mcp-state/patches-<hash>`, so it is under a home directory by default
+  even if nothing you wrote put it there** — which is why the base unit above
+  sets `MCP_PATCH_STATE_DIR` explicitly rather than leaving it out.
   Prefer moving the vault and state **out of `/home`** (e.g. `/srv/vault`,
   `/var/lib/vault-mcp/state`) for a daemon. If you must keep them under `/home`,
   re-expose just those paths with `BindReadOnlyPaths=`/`BindPaths=`, or relax to
@@ -441,8 +449,10 @@ exec bwrap \
   --ro-bind "$VAULT" /vault \
   `# Deterministic cwd: the client may spawn this from ~ or the checkout,` \
   `# neither of which exists inside. Without --chdir, bwrap falls back to /` \
-  `# (read-only), where any relative default — e.g. MCP_PATCH_STATE_DIR's` \
-  `# .mcp-state/patches — would fail to write. /tmp is the writable tmpfs.` \
+  `# (read-only), where any RELATIVE MCP_PATCH_STATE_DIR you set would fail to` \
+  `# write. /tmp is the writable tmpfs. Note --clearenv below leaves no HOME,` \
+  `# so the default patch-state location cannot be derived and the server exits` \
+  `# with a message: when writes are on here, set MCP_PATCH_STATE_DIR (below).` \
   --chdir /tmp \
   `# Unshare every namespace, including network — stdio talks over pipes.` \
   --unshare-all \
@@ -575,6 +585,16 @@ Set `MCP_SKILLS_SUBDIR` to a **vault-relative path inside the primary knowledge
 root that already exists** — the server does **not** create it, and it rejects
 absolute paths, `..`, or anything resolving outside the root. If Skill writes are
 enabled but `MCP_SKILLS_SUBDIR` is unset, the server **refuses to start**.
+
+It must also be **disjoint from `projects/`** — the root `create_document`
+writes into — and from `MCP_AUDIT_SUBDIR`. Both are checked at start-up, so
+`projects`, anything beneath it, and `./` (which would reserve the entire vault)
+are refused with a message naming the setting. The reason is not tidiness: the
+Skills subtree is reserved against the general write surface, so an overlap
+leaves every document create failing that reservation, once per call and far
+from the cause. If an existing deployment points `MCP_SKILLS_SUBDIR` at
+`projects/...`, move it to a sibling directory (e.g. `_skills`) before
+upgrading; nothing already written is touched by the move.
 
 ```bash
 # relative to KNOWLEDGE_ROOT (the primary root); create the directory first
@@ -793,9 +813,11 @@ thing that selects an env *file* — `WorkingDirectory` no longer does — so a
 plist that neither names a file nor carries the settings inline will crash-loop
 under `KeepAlive`. Settings placed directly in `EnvironmentVariables` still
 work, and still win over the file. `WorkingDirectory` also still decides one
-thing: a **relative** value such as `MCP_PATCH_STATE_DIR` is resolved against it
-(`src/config.ts`), so give that one an absolute path too. **Add `MCP_ENV_FILE`
-to both plists before restarting.** The scan agent runs the **same**
+thing: a **relative** `MCP_PATCH_STATE_DIR` is resolved against it
+(`src/config.ts`), so if you set that one, give it an absolute path. Left unset
+it now defaults to `~/.mcp-state/patches-<hash of the vault path>`, which
+`WorkingDirectory` cannot move.
+**Add `MCP_ENV_FILE` to both plists before restarting.** The scan agent runs the **same**
 `dist/index.js`, pointed at the scan file:
 
 ```xml

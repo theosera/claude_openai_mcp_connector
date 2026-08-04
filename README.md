@@ -122,7 +122,12 @@ Then set:
 ```text
 KNOWLEDGE_ROOT=/path/to/private/obsidian-vault
 MCP_WRITE_MODE=two_step
-MCP_PATCH_STATE_DIR=.mcp-state/patches
+# Optional. Defaults to ~/.mcp-state/patches-<hash of this vault's path>. The
+# hash keeps servers started against different vaults from sharing one plan
+# directory. Set this only to put plan state somewhere else, and use an absolute
+# path — a relative one follows the caller's working directory, which a
+# client-spawned stdio server does not control.
+#MCP_PATCH_STATE_DIR=/abs/path/to/.mcp-state/patches
 ```
 
 **Point the server at that file with `MCP_ENV_FILE` (absolute path).** The
@@ -149,6 +154,12 @@ general document writes, also set a vault-relative, pre-existing directory:
 MCP_SKILLS_SUBDIR=path/to/skills
 MCP_HTTP_ALLOW_SKILL_WRITE=1
 ```
+
+The directory must be **disjoint from `projects/`**, the root `create_document`
+writes into — not `projects` itself, not a directory under it, and not `./`
+(the whole vault). The Skills subtree is reserved against the general write
+surface, so an overlap would make every document create fail; the server
+refuses to start rather than let that surface silently stop working.
 
 This surface is create-only: it accepts `SKILL.md`, optional flat
 `references/*.md`, and optional `agents/openai.yaml`; it rejects scripts,

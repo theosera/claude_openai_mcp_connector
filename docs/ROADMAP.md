@@ -238,6 +238,19 @@ The reasons to adopt it anyway, in cost/benefit order:
      single request_. The cost is concentrated in re-pinning, not rewriting:
      every boundary test in `tests/httpServer.test.ts` and `tests/oauth.test.ts`
      has to be re-established against per-request resolution. Requires 2a.
+
+     **Carry one existing gap into this node: `vault.read` is not enforced.**
+     Only the write surfaces consult the token's scopes. `buildMcpServer`
+     registers the read tools unconditionally, and `authenticate` returns a
+     principal for a token whose grant is empty — `{scopes: []}` is non-null, so
+     it passes the gate — which means a token carrying no scope at all can read
+     the whole vault. It is not an authentication hole (issuing that token still
+     requires the login password) but the scope half of INV-7.5 is missing on the
+     read side, and the consent page cannot honestly state what a grant permits
+     while that is true. Enforcement belongs here, in the pass that decides the
+     visible surface from the presented scopes, rather than in a separate change
+     that 2b would immediately rewrite. Completion condition: an empty-scope
+     token sees no tools (or is refused), pinned by a test.
    - **2c. stdio + operations migration 🔭.** `src/index.ts` moves to
      `serveStdio()`, and [`operations.md §1`](./operations.md) gains the third
      "why connections drop" cause plus any restart-procedure change. The stdio
@@ -490,6 +503,20 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       the same revision deprecates DCR for CIMD, which makes `client_id` a
       *stable* identity — revisit the `client_id` appendix **before** building
       the audit log's attribution on it.
+- [ ] **Bind a two-step plan to the vault that staged it** — `applyPlannedUpdate`
+      looks a plan up by `patch_id` alone and resolves its `target_path` against
+      whichever root the running store has; the plan record does not say which
+      vault it was staged for. Two servers sharing a plan directory can therefore
+      cross over. The default directory is now derived per primary root, so they
+      no longer share one by accident, but an explicitly shared
+      `MCP_PATCH_STATE_DIR` still can. Record the originating primary root in the
+      plan and verify it at apply. Treat as a **security-boundary change** (INV-3:
+      it alters the on-disk record and the apply-time checks) and land it on its
+      own, not bundled with unrelated fixes. Note what already limits it: apply is
+      stale-safe, so a cross-vault write needs the same relative path to exist in
+      the second vault with byte-identical pre-edit content. Raised by CodeRabbit
+      on #86, which withdrew its CWE-639 classification — both instances run as
+      the same user, so this is vault confusion, not an authorization bypass.
 - [ ] **Audit log** — append-only, content-free events (who searched / fetched /
       wrote what, no note bodies) — the largest security follow-up, and still the
       one that most improves the posture; it now sits **second** because the
@@ -507,7 +534,8 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       speed; see the 2026-07-28 section above, which splits this into **2a**
       (dual-era transport / dependency bump), **2b** (per-request
       scope→tool-surface resolution — the boundary re-pin, and the only
-      security-relevant piece) and **2c** (stdio `serveStdio()` + adding the
+      security-relevant piece, and where `vault.read` finally gets enforced on
+      the read tools) and **2c** (stdio `serveStdio()` + adding the
       third "why connections drop" cause, process-memory MCP sessions →
       `404 unknown_session`, to [`operations.md §1`](./operations.md)). Land them
       as three PRs in that order; do not bundle the boundary re-pin with the

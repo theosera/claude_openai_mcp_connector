@@ -26,14 +26,31 @@ set -euo pipefail
 command -v jq >/dev/null 2>&1 || exit 0
 
 # --- locate the vault clone (env first, then marker-file scan) -------------
+# The scan decides where the FULL transcript is pushed, so it must never resolve
+# an ambiguous match: taking the first hit lets anyone who can drop a marked
+# clone under $HOME win the glob order and receive every future session. Env
+# still wins outright; the scan resolves only on exactly one candidate and
+# otherwise archives nothing -- the same no-op the "no vault found" case takes.
 VAULT_REPO="${SESSION_VAULT_REPO:-}"
 if [ -z "$VAULT_REPO" ]; then
+  scan_hit=""
+  scan_count=0
   for candidate in "$HOME"/*/; do
     if [ -f "${candidate}.claude-session-vault" ] && [ -d "${candidate}.git" ]; then
-      VAULT_REPO="${candidate%/}"
-      break
+      scan_hit="${candidate%/}"
+      scan_count=$((scan_count + 1))
     fi
   done
+  if [ "$scan_count" -eq 1 ]; then
+    VAULT_REPO="$scan_hit"
+  elif [ "$scan_count" -gt 1 ]; then
+    # Say that archiving stopped, but never name the candidates: this script
+    # ships in a public repo and those paths are the vault location. The count
+    # is what the operator acts on, and silence here would look like a working
+    # archive that quietly stopped writing.
+    printf 'session-archive: %s marked vault clones under $HOME; set SESSION_VAULT_REPO to choose one. Not archiving.\n' \
+      "$scan_count" >&2
+  fi
 fi
 { [ -n "$VAULT_REPO" ] && [ -d "$VAULT_REPO/.git" ]; } || exit 0
 

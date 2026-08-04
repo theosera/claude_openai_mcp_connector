@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
+import { loadConfig } from "../src/config.js";
 import { SkillStore, type PlanSkillCreateInput } from "../src/skillStore.js";
 
 const SKILL_MD = `---
@@ -167,5 +168,33 @@ describe("SkillStore", () => {
 
     await expect(store.planCreate(validInput())).rejects.toThrow(/escapes|changed after initialization/);
     await expect(fs.readdir(outside)).resolves.toEqual([]);
+  });
+});
+
+describe("loadConfig skills subtree disjointness (INV-8)", () => {
+  // The Skills subtree is reserved against the general write surface, and
+  // create_document always writes under "projects/". Overlapping them leaves the
+  // create root permanently rejecting, so this has to fail at boot rather than
+  // once per create — the audit subdir already gets the same treatment.
+  it("rejects a skills subdir nested under projects/", () => {
+    expect(() => loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault", MCP_SKILLS_SUBDIR: "projects/skills" })).toThrow(
+      /disjoint/
+    );
+  });
+
+  it("rejects a skills subdir equal to projects/", () => {
+    expect(() => loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault", MCP_SKILLS_SUBDIR: "projects" })).toThrow(/disjoint/);
+  });
+
+  it("rejects a skills subdir that contains projects/", () => {
+    // The reverse containment branch, which the equality case above does not
+    // reach. "./" is the one value that survives assertRelativePath while still
+    // being a parent of "projects" — it would reserve the entire vault against
+    // the general write surface, so the boot check has to catch it.
+    expect(() => loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault", MCP_SKILLS_SUBDIR: "./" })).toThrow(/disjoint/);
+  });
+
+  it("accepts a skills subdir outside projects/", () => {
+    expect(() => loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault", MCP_SKILLS_SUBDIR: "_skills" })).not.toThrow();
   });
 });

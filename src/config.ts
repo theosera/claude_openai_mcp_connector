@@ -1,4 +1,6 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import dotenv from "dotenv";
@@ -109,6 +111,70 @@ export interface StoreConfig {
 // results, so keep them short, lowercase, and unambiguous.
 const ROOT_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
+/**
+ * Where two-step plans live when the operator names no location.
+ *
+ * A plan holds vault plaintext, so this must never resolve against the working
+ * directory — for a client-spawned stdio server the client picks that. The home
+ * directory is the anchor, but it is not guaranteed to supply one: `os.homedir()`
+ * returns `""` when HOME is set to an empty value and cannot fall back to a
+ * passwd entry, it returns HOME verbatim when HOME is relative, and it throws
+ * outright when neither HOME nor a passwd entry resolves at all. In the first
+ * two cases `path.join` yields a relative string and `path.resolve` re-anchors
+ * it to the cwd — reinstating the exact placement this default exists to
+ * prevent, in the
+ * environments most likely to strip HOME (service accounts, and the `--clearenv`
+ * bwrap recipe in `docs/operations.md`). So refuse to guess and make the
+ * operator name it, rather than silently writing plaintext somewhere else.
+ */
+function defaultPatchStateDir(primaryRoot: string): string {
+  // os.homedir() does not always return a string. Node runs the libuv call
+  // through a checked wrapper that raises ERR_SYSTEM_ERROR when neither HOME nor
+  // a passwd entry resolves — the shape a container running as a numeric UID
+  // with no /etc/passwd row takes, which is the same class of environment as the
+  // empty and relative cases below. Failing closed is right either way, but a
+  // raw system error does not tell the operator which setting fixes it, so fold
+  // the throw into the one message that names MCP_PATCH_STATE_DIR.
+  let home: string;
+  try {
+    home = os.homedir();
+  } catch {
+    home = "";
+  }
+  if (!path.isAbsolute(home)) {
+    throw new Error(
+      "MCP_PATCH_STATE_DIR must be set to an absolute path: no home directory is available to derive the " +
+        "default from. Two-step plan state holds vault plaintext and must not fall back to the working directory."
+    );
+  }
+  // Per vault, so two servers started against different roots never share a plan
+  // directory by accident. `applyPlannedUpdate` looks a plan up by `patch_id`
+  // alone and resolves its target path against whichever root the running store
+  // has, so a shared directory lets a plan staged for one vault be applied to
+  // another. The stale check still has to pass — that needs byte-identical
+  // content at the same relative path in both — but nothing else stands in the
+  // way, and a single shared default would have made that the normal setup.
+  //
+  // Suffixed, not nested: `patches/<tag>` would put the state directory one
+  // level deeper, and `ensurePatchStateDir` only refuses a symlink at the leaf
+  // (`mkdir` with `recursive` follows symlinked parents), so nesting would add a
+  // parent that nothing checks. Same depth as before keeps that guard's reach
+  // unchanged.
+  //
+  // NFC first, for the reason `src/pathSafety.ts` normalises: macOS hands back
+  // NFD for non-ASCII components, so one vault reaches us spelled two ways
+  // depending on whether the value was typed, pasted from Finder, or completed
+  // by a shell. The tag only has to be stable for a given vault — a spelling
+  // that moved it would leave already-staged plans unreachable (`patch_id` not
+  // found) with their plaintext orphaned in the old directory. Case and symlinks
+  // are deliberately NOT folded: case-folding is wrong on a case-sensitive
+  // filesystem, and `realpath` needs the directory to exist, which `loadConfig`
+  // cannot assume. This widens what counts as the same path; it can never merge
+  // two different ones.
+  const tag = crypto.createHash("sha256").update(primaryRoot.normalize("NFC")).digest("hex").slice(0, 16);
+  return path.join(home, ".mcp-state", `patches-${tag}`);
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const knowledgeRoots = parseKnowledgeRoots(env);
 
@@ -119,6 +185,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   const rawSkillsSubdir = env.MCP_SKILLS_SUBDIR?.trim();
   const skillsSubdir = rawSkillsSubdir ? toPosixPath(assertRelativePath(rawSkillsSubdir)) : undefined;
+  if (skillsSubdir && (posixContains("projects", skillsSubdir) || posixContains(skillsSubdir, "projects"))) {
+    // The Skills subtree is reserved against the general write surface (INV-8),
+    // and create_document always writes under "projects/". Overlapping the two
+    // means the reservation fires on ordinary creates, so the create root is
+    // dead for as long as the misconfiguration stands. Fail at boot, where the
+    // cause is legible, rather than once per create — the same reason the audit
+    // subdir is checked against "projects/" just below.
+    throw new Error('MCP_SKILLS_SUBDIR must be disjoint from the "projects/" document-create root.');
+  }
 
   const rawAuditSubdir = env.MCP_AUDIT_SUBDIR?.trim();
   const auditSubdir = rawAuditSubdir ? toPosixPath(assertRelativePath(rawAuditSubdir)) : undefined;
@@ -153,7 +228,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   return {
     knowledgeRoots,
     writeMode,
-    patchStateDir: path.resolve(env.MCP_PATCH_STATE_DIR?.trim() || ".mcp-state/patches"),
+    // An unset MCP_PATCH_STATE_DIR used to default to ".mcp-state/patches",
+    // which path.resolve interprets against the process working directory. A
+    // two-step plan holds the full proposed document text, so that put vault
+    // plaintext wherever the process happened to start — and for a stdio server
+    // the client picks that directory. The default is now anchored to the home
+    // directory, or refuses to resolve at all if there is no usable one. An
+    // explicit relative value is still honoured (and still resolved against the
+    // cwd): overriding it is a deliberate act, unlike inheriting a default. The
+    // `||` short-circuit matters — an explicit setting must keep working on a
+    // host with no home directory, so the fallback is only evaluated when the
+    // operator named nothing.
+    patchStateDir: path.resolve(env.MCP_PATCH_STATE_DIR?.trim() || defaultPatchStateDir(knowledgeRoots[0].path)),
     skillsSubdir,
     auditSubdir,
     scanConcurrency,

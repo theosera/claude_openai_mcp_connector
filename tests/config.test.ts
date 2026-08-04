@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig, loadEnvFile, loadHttpConfig, selectedTransport } from "../src/config.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -198,4 +198,139 @@ describe("startup env boundary (spawned entrypoint)", () => {
     expect(absent.code).toBe(1);
     expect(absent.stderr).toMatch(/Cannot read MCP_ENV_FILE/);
   }, 30_000);
+});
+
+describe("patch state directory default", () => {
+  // A two-step plan holds the full proposed document text, so where the default
+  // lands decides where vault plaintext lands. Resolved against the working
+  // directory it followed the caller, and for a client-spawned stdio server the
+  // caller chooses that directory.
+  it("derives a different default for each knowledge root", () => {
+    // applyPlannedUpdate finds a plan by patch_id alone and applies its target
+    // path against whichever root the running store has, so two servers sharing
+    // a plan directory can cross over. A single shared default would have made
+    // that the out-of-the-box arrangement; per-root keeps them apart.
+    const spy = vi.spyOn(os, "homedir").mockReturnValue("/fake/home");
+    try {
+      const a = loadConfig({ KNOWLEDGE_ROOT: "/vaults/alpha" }).patchStateDir;
+      const b = loadConfig({ KNOWLEDGE_ROOT: "/vaults/beta" }).patchStateDir;
+      expect(a).not.toBe(b);
+      // Stable for a given root, so plans survive a restart.
+      expect(loadConfig({ KNOWLEDGE_ROOT: "/vaults/alpha" }).patchStateDir).toBe(a);
+      // One level under ~/.mcp-state, not nested deeper: ensurePatchStateDir
+      // only refuses a symlink at the leaf, so an extra level would add an
+      // unchecked parent.
+      expect(path.dirname(a)).toBe(path.join("/fake", "home", ".mcp-state"));
+      // The leaf shape itself. Everything above still passes if the prefix or
+      // the tag length changes, so pin them: the depth argument rests on this
+      // staying one directory, and the documented shape is what the operator
+      // matches against when they go looking for a staged plan.
+      expect(path.basename(a)).toMatch(/^patches-[0-9a-f]{16}$/);
+      // In multi-root setups the PRIMARY root selects it — that is the only
+      // writable one, so it is the only one plans can target.
+      expect(loadConfig({ KNOWLEDGE_ROOTS: "alpha=/vaults/alpha,other=/vaults/beta" }).patchStateDir).toBe(a);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("names the setting even when os.homedir() throws instead of returning ''", () => {
+    // Node routes the libuv call through a checked wrapper, so a host where
+    // neither HOME nor a passwd entry resolves raises ERR_SYSTEM_ERROR rather
+    // than handing back "". The start-up still has to fail — but with the
+    // message that says which setting to add, not with a bare system error.
+    const spy = vi.spyOn(os, "homedir").mockImplementation(() => {
+      throw new Error("ERR_SYSTEM_ERROR: uv_os_homedir returned ENOENT");
+    });
+    try {
+      expect(() => loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault" })).toThrow(/MCP_PATCH_STATE_DIR/);
+      // And an explicit setting still starts on such a host: the fallback is
+      // only consulted when the operator named nothing.
+      expect(loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault", MCP_PATCH_STATE_DIR: "/srv/state" }).patchStateDir).toBe(
+        path.resolve("/srv/state")
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("keys the tag on the NFC form, so one vault does not get two directories", () => {
+    // macOS hands back NFD for non-ASCII path components, so the same vault
+    // arrives spelled two ways depending on how the value was produced. path.resolve
+    // normalises separators and . segments but not Unicode, so without folding
+    // here the tag moves with the spelling and already-staged plans become
+    // unreachable, their plaintext left behind in the previous directory.
+    const nfc = "/vaults/ログ".normalize("NFC");
+    const nfd = "/vaults/ログ".normalize("NFD");
+    // Guard the fixture: a character that does not decompose would make the
+    // assertion below vacuous.
+    expect(nfd).not.toBe(nfc);
+
+    const spy = vi.spyOn(os, "homedir").mockReturnValue("/fake/home");
+    try {
+      const fromNfc = loadConfig({ KNOWLEDGE_ROOT: nfc }).patchStateDir;
+      expect(loadConfig({ KNOWLEDGE_ROOT: nfd }).patchStateDir).toBe(fromNfc);
+      // Widening what counts as the same path must not merge different ones.
+      expect(loadConfig({ KNOWLEDGE_ROOT: "/vaults/ロク" }).patchStateDir).not.toBe(fromNfc);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("resolves the default independently of the working directory", async () => {
+    // The home directory is pinned to a known value rather than read back from
+    // os.homedir(): deriving the expectation from the same call the code makes
+    // would assert only that two identical expressions agree, and would still
+    // pass if the derivation were wrong in the same way on both sides.
+    const spy = vi.spyOn(os, "homedir").mockReturnValue("/fake/home");
+    const elsewhere = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-cwd-"));
+    const original = process.cwd();
+    try {
+      const before = loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault" }).patchStateDir;
+      process.chdir(elsewhere);
+      const after = loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault" }).patchStateDir;
+      expect(path.dirname(before)).toBe(path.join("/fake", "home", ".mcp-state"));
+      expect(after).toBe(before);
+      expect(after.startsWith(elsewhere)).toBe(false);
+    } finally {
+      process.chdir(original);
+      spy.mockRestore();
+      await fs.rm(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to guess when no home directory is available", () => {
+    // os.homedir() returns "" when HOME is empty with no passwd fallback, and
+    // returns HOME verbatim when HOME is relative. Both make path.join produce a
+    // relative string that path.resolve re-anchors to the cwd — the placement
+    // this default exists to prevent, in exactly the environments that strip
+    // HOME (service accounts, the --clearenv bwrap recipe in operations.md).
+    for (const home of ["", "relative-home"]) {
+      const spy = vi.spyOn(os, "homedir").mockReturnValue(home);
+      try {
+        expect(() => loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault" })).toThrow(/MCP_PATCH_STATE_DIR/);
+        // An explicit setting must still work on such a host: the fallback is
+        // only consulted when the operator named nothing.
+        expect(loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault", MCP_PATCH_STATE_DIR: "/srv/state" }).patchStateDir).toBe(
+          path.resolve("/srv/state")
+        );
+      } finally {
+        spy.mockRestore();
+      }
+    }
+  });
+
+  it("still honours an explicit MCP_PATCH_STATE_DIR", () => {
+    const dir = loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault", MCP_PATCH_STATE_DIR: "/srv/state" }).patchStateDir;
+    expect(dir).toBe(path.resolve("/srv/state"));
+  });
+
+  it("still resolves an explicit relative MCP_PATCH_STATE_DIR against the cwd", () => {
+    // Documented compatibility: only the *default* stopped following the caller.
+    // Naming a relative directory stays a deliberate choice that keeps working,
+    // so a future tightening of the default cannot silently take it with it.
+    const dir = loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault", MCP_PATCH_STATE_DIR: "relative/state" }).patchStateDir;
+    expect(dir).toBe(path.resolve("relative/state"));
+    expect(dir.startsWith(process.cwd())).toBe(true);
+  });
 });

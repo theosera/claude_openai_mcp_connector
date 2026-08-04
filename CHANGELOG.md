@@ -8,6 +8,112 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **A registered `redirect_uri` can no longer name one host and resolve to
+  another, and the consent page now says where approving sends the code.** The
+  page asked for a password while naming neither the client nor the destination,
+  so the only thing an operator could act on was that a page had appeared. Two
+  separate problems had to be fixed together for a destination line to be worth
+  adding.
+
+  First, the WHATWG URL parser *removes* tab, CR and LF from anywhere in its
+  input instead of failing, so `https://claude.ai<TAB>.evil.example/cb`
+  registers as a string that reads as `claude.ai` and resolves to
+  `claude.ai.evil.example`. `isAllowedRedirectUri` now refuses control
+  characters before parsing. Second — and this is why the fix is not "reject
+  anything that is not already normalized" — userinfo round-trips byte for byte:
+  `new URL("https://claude.ai@evil.example/cb").href` equals its input while the
+  host is `evil.example`, so a normalization check passes it. Userinfo is now
+  refused outright; it has no legitimate use in a redirect target. Registrations
+  that are merely un-normalized (an explicit `:443`, a mixed-case host) are still
+  accepted, because neither moves the host, and a rule that rejected them would
+  reject ordinary client registrations for no security gain.
+
+  The consent page states the destination as an **origin derived from the same
+  `new URL(...)` that `authorizePost` builds its 302 from**, so the sentence and
+  the navigation are one fact rather than two kept in step by hand. The client
+  name is shown when the client supplied one, labelled as self-asserted and
+  unverified — it comes from the registration request, so it is a recognition
+  aid, never an authorization input (see the `client_id` appendix in
+  [`docs/ROADMAP.md`](./docs/ROADMAP.md)). Granted scope is deliberately still
+  not shown: `vault.read` is not enforced on the read tools today, so a scope
+  line would state a restriction the server does not apply. That line lands with
+  the per-request scope resolution (ROADMAP item 2b), which is what makes it
+  true. Pinned by `tests/oauth.test.ts`, including a non-regression case holding
+  the callback shapes real connectors register.
+
+- **`MCP_SKILLS_SUBDIR` overlapping `projects/` is refused at boot.** The Skills
+  subtree is reserved against the general write surface, and `create_document`
+  always writes under `projects/`, so an overlap left every create failing the
+  reservation — the create root dead for as long as the setting stood, and
+  failing per-call in a place that does not explain why. `loadConfig` now
+  rejects it at startup, matching the check `MCP_AUDIT_SUBDIR` already gets
+  (INV-8 / INV-9 have the same disjointness requirement). Pinned by
+  `tests/skillStore.test.ts`.
+
+- **The default two-step plan-state directory no longer follows the caller's
+  working directory.** A plan holds vault plaintext — the pre-edit text and the
+  full proposed text — until it is applied. Unset, `MCP_PATCH_STATE_DIR`
+  defaulted to `.mcp-state/patches`, which `path.resolve` interprets against the
+  process working directory; for a client-spawned stdio server the client
+  chooses that directory, so the plaintext landed wherever the caller pointed.
+  The previous release closed the matching hole for env files (the server stopped
+  reading `.env` from its working directory) and named this as the remaining
+  follow-up. The default is now `~/.mcp-state/patches-<hash>`, where the hash
+  derives from the vault's own path.
+
+  The home directory is an anchor, not a guarantee: `os.homedir()` returns `""`
+  when HOME is empty with no passwd entry to fall back on, returns HOME verbatim
+  when HOME is relative, and throws outright when neither resolves at all (a
+  container running as a numeric UID with no `/etc/passwd` row). The first two
+  would make `path.join` produce a relative string that `path.resolve` re-anchors
+  to the working directory —
+  reinstating the very placement this default exists to prevent, and doing so
+  precisely in the environments that strip HOME (service accounts, and the
+  `--clearenv` bwrap recipe in [`operations.md`](./docs/operations.md#6-sandboxing-the-local-stdio-server-bwrap-optional)).
+  When no absolute home is available the server therefore **refuses to start**
+  and names the setting to configure, instead of quietly writing plaintext
+  somewhere else. An explicit `MCP_PATCH_STATE_DIR` is still honoured exactly as
+  before, including a relative one and including on a host with no home
+  directory — overriding the setting is deliberate in a way that inheriting a
+  default is not. Pinned by `tests/config.test.ts`, which asserts the default is
+  unchanged across a `chdir` and that an unusable home fails closed.
+
+  **Migration.** Deployments that set `MCP_PATCH_STATE_DIR` are unaffected; the
+  documented systemd and launchd units already set it. If you relied on the
+  relative default, plans staged before the upgrade stay in the old location and
+  are not migrated — `apply_planned_update` will report an unknown `patch_id`
+  for them. Re-run the `plan_*` call, or set `MCP_PATCH_STATE_DIR` to the old
+  path. Nothing is deleted.
+
+- **The session-archive hook no longer resolves an ambiguous vault scan, so the
+  push target for a full transcript cannot be claimed by planting a directory.**
+  `archive-session.sh` locates the private vault clone from `$SESSION_VAULT_REPO`
+  or, failing that, by scanning `$HOME/*/` for a `.claude-session-vault` marker
+  next to a `.git`. It took the **first** hit, and that scan decides where the
+  entire session transcript — every user message, assistant reply, tool call and
+  tool result — is committed and pushed. Anyone able to drop a marked git clone
+  under `$HOME` therefore only had to win the lexical glob order to receive every
+  future session; a directory named ahead of the real vault, with `origin`
+  pointing anywhere, was the whole exploit. Measured against the unpatched
+  script: the planted remote received the transcript (canary included) and the
+  legitimate vault received nothing.
+
+  The scan now resolves **only when it finds exactly one candidate** and
+  otherwise archives nothing, which is the same no-op the "no vault found" case
+  already took. `$SESSION_VAULT_REPO` still wins outright, so a host that
+  genuinely holds two vault clones names the one it means — verified to still
+  archive correctly with two candidates present. Two or more candidates and no
+  env print a one-line count to stderr: silence here would be indistinguishable
+  from a working archive that quietly stopped writing, and the count is what the
+  operator acts on. The candidate paths are deliberately **not** printed — this
+  script ships byte-identical in this public repo, and those paths are the vault
+  location.
+
+  Rejected as too broad: refusing an `origin` that carries several push URLs
+  (breaks legitimate mirrors) and pinning one vault+origin pair per machine
+  (locks out a second legitimate vault until a pin file is removed). Neither is
+  needed to close the exploit.
+
 - **Front matter that expands exponentially when serialized is refused instead
   of materialized.** js-yaml resolves an alias (`*a`) as a *shared reference*,
   so a few hundred bytes of nested anchors parse in microseconds while
