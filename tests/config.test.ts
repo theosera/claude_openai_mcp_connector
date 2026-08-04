@@ -221,9 +221,37 @@ describe("patch state directory default", () => {
       // only refuses a symlink at the leaf, so an extra level would add an
       // unchecked parent.
       expect(path.dirname(a)).toBe(path.join("/fake", "home", ".mcp-state"));
+      // The leaf shape itself. Everything above still passes if the prefix or
+      // the tag length changes, so pin them: the depth argument rests on this
+      // staying one directory, and the documented shape is what the operator
+      // matches against when they go looking for a staged plan.
+      expect(path.basename(a)).toMatch(/^patches-[0-9a-f]{16}$/);
       // In multi-root setups the PRIMARY root selects it — that is the only
       // writable one, so it is the only one plans can target.
       expect(loadConfig({ KNOWLEDGE_ROOTS: "alpha=/vaults/alpha,other=/vaults/beta" }).patchStateDir).toBe(a);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("keys the tag on the NFC form, so one vault does not get two directories", () => {
+    // macOS hands back NFD for non-ASCII path components, so the same vault
+    // arrives spelled two ways depending on how the value was produced. path.resolve
+    // normalises separators and . segments but not Unicode, so without folding
+    // here the tag moves with the spelling and already-staged plans become
+    // unreachable, their plaintext left behind in the previous directory.
+    const nfc = "/vaults/ログ".normalize("NFC");
+    const nfd = "/vaults/ログ".normalize("NFD");
+    // Guard the fixture: a character that does not decompose would make the
+    // assertion below vacuous.
+    expect(nfd).not.toBe(nfc);
+
+    const spy = vi.spyOn(os, "homedir").mockReturnValue("/fake/home");
+    try {
+      const fromNfc = loadConfig({ KNOWLEDGE_ROOT: nfc }).patchStateDir;
+      expect(loadConfig({ KNOWLEDGE_ROOT: nfd }).patchStateDir).toBe(fromNfc);
+      // Widening what counts as the same path must not merge different ones.
+      expect(loadConfig({ KNOWLEDGE_ROOT: "/vaults/ロク" }).patchStateDir).not.toBe(fromNfc);
     } finally {
       spy.mockRestore();
     }

@@ -146,7 +146,18 @@ function defaultPatchStateDir(primaryRoot: string): string {
   // (`mkdir` with `recursive` follows symlinked parents), so nesting would add a
   // parent that nothing checks. Same depth as before keeps that guard's reach
   // unchanged.
-  const tag = crypto.createHash("sha256").update(primaryRoot).digest("hex").slice(0, 16);
+  //
+  // NFC first, for the reason `src/pathSafety.ts` normalises: macOS hands back
+  // NFD for non-ASCII components, so one vault reaches us spelled two ways
+  // depending on whether the value was typed, pasted from Finder, or completed
+  // by a shell. The tag only has to be stable for a given vault — a spelling
+  // that moved it would leave already-staged plans unreachable (`patch_id` not
+  // found) with their plaintext orphaned in the old directory. Case and symlinks
+  // are deliberately NOT folded: case-folding is wrong on a case-sensitive
+  // filesystem, and `realpath` needs the directory to exist, which `loadConfig`
+  // cannot assume. This widens what counts as the same path; it can never merge
+  // two different ones.
+  const tag = crypto.createHash("sha256").update(primaryRoot.normalize("NFC")).digest("hex").slice(0, 16);
   return path.join(home, ".mcp-state", `patches-${tag}`);
 }
 
