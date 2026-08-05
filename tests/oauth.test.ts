@@ -747,6 +747,7 @@ describe("OAuth end-to-end over HTTP", () => {
       authToken: "static-bearer-unused-here",
       allowWrite: false,
       allowSkillWrite: false,
+      allowAuditWrite: false,
       allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
       allowedOrigins: [],
       oauth: {
@@ -846,6 +847,7 @@ describe("OAuth end-to-end over HTTP", () => {
       authToken: "static-bearer-unused-here",
       allowWrite: false,
       allowSkillWrite: false,
+      allowAuditWrite: false,
       allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
       allowedOrigins: [],
       oauth: {
@@ -892,6 +894,7 @@ describe("OAuth end-to-end over HTTP", () => {
       authToken: "static-bearer-unused-here",
       allowWrite: true,
       allowSkillWrite: false,
+      allowAuditWrite: false,
       allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
       allowedOrigins: [],
       oauth: {
@@ -929,6 +932,7 @@ describe("OAuth end-to-end over HTTP", () => {
       authToken: "static-bearer-unused-here",
       allowWrite: true,
       allowSkillWrite: false,
+      allowAuditWrite: false,
       allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
       allowedOrigins: [],
       oauth: {
@@ -978,6 +982,7 @@ describe("OAuth end-to-end over HTTP", () => {
       authToken: "static-bearer-unused-here",
       allowWrite: false,
       allowSkillWrite: true,
+      allowAuditWrite: false,
       allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
       allowedOrigins: [],
       oauth: {
@@ -1011,6 +1016,7 @@ describe("OAuth end-to-end over HTTP", () => {
       authToken: "static-bearer-unused-here",
       allowWrite: false,
       allowSkillWrite: false,
+      allowAuditWrite: false,
       allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
       allowedOrigins: [],
       oauth: {

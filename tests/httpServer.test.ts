@@ -7,6 +7,7 @@ import {
   Client as ModernClient,
   StreamableHTTPClientTransport as ModernStreamableHTTPClientTransport
 } from "@modelcontextprotocol/client";
+import { createMcpHandler } from "@modelcontextprotocol/server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -422,6 +423,7 @@ describe("HTTP transport integration", () => {
       authToken: token,
       allowWrite: false,
       allowSkillWrite: false,
+      allowAuditWrite: false,
       allowedHosts: [],
       allowedOrigins: []
     };
@@ -594,6 +596,7 @@ describe("HTTP transport integration", () => {
         authToken: token,
         allowWrite: false,
         allowSkillWrite: false,
+        allowAuditWrite: false,
         allowedHosts: [],
         allowedOrigins: ["https://allowed.example"]
       };
@@ -749,6 +752,43 @@ describe("HTTP transport integration", () => {
       const forged = await rawModern(port, captured, "evil.example.com");
       expect(forged.status).toBe(403);
       expect(JSON.parse(forged.body)).toMatchObject({ error: "forbidden_host" });
+    });
+
+    it("hands the per-request factory the same Request instance it was given", async () => {
+      // The modern leg recovers the authenticated principal by looking the
+      // request up in a WeakMap keyed by the exact `Request` passed to `fetch`,
+      // which `McpRequestContext` documents as "the original HTTP request being
+      // served". That is a property of the dependency, not of this repo, and
+      // package.json floats on a caret range with weekly Dependabot bumps -- a
+      // minor release handing the factory a COPY would make every modern
+      // request fail closed with `unresolved_principal`. Pinning the version
+      // instead of the behaviour would freeze security patches to buy a
+      // guarantee a test gives for free (the same lesson the DNS-rebinding
+      // options taught). This is the tripwire, and it runs against REAL modern
+      // bytes captured off the wire rather than a hand-shaped envelope.
+      const captured = await captureModernRequest();
+      const store = await makeStore();
+      const seen: Array<Request | undefined> = [];
+      const handler = createMcpHandler(
+        (ctx) => {
+          seen.push(ctx.requestInfo);
+          return buildMcpServer(store, { allowWrite: false });
+        },
+        { legacy: "reject" }
+      );
+      const request = new Request(`${baseUrl}/mcp`, {
+        method: "POST",
+        headers: captured.headers,
+        body: captured.body
+      });
+
+      await (await handler.fetch(request)).text();
+      await handler.close();
+
+      expect(seen.length).toBeGreaterThan(0);
+      // Identity, not equality: `principals.get(ctx.requestInfo)` only resolves
+      // if this is the very same object.
+      expect(seen[0]).toBe(request);
     });
 
     /** Drive one modern exchange and keep the exact bytes of a `tools/list`. */

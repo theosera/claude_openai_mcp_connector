@@ -69,9 +69,14 @@ export async function sendWebResponse(res: http.ServerResponse, response: Respon
 
   const reader = response.body.getReader();
   let clientGone = false;
+  let wakeDrainWaiter: (() => void) | undefined;
   const onClose = () => {
     clientGone = true;
     void reader.cancel().catch(() => {});
+    // A disconnect must also release a pending backpressure wait: once the
+    // socket is gone `drain` will never fire, so waiting on it alone would
+    // hang this response forever.
+    wakeDrainWaiter?.();
   };
   res.on("close", onClose);
   try {
@@ -81,7 +86,24 @@ export async function sendWebResponse(res: http.ServerResponse, response: Respon
         break;
       }
       if (value) {
-        res.write(Buffer.from(value));
+        // Honour backpressure. `res.write` returning false means the socket
+        // buffer is full; pulling the next chunk regardless would queue it in
+        // memory, and a held-open SSE stream read slowly by an authenticated
+        // client would grow that queue for the lifetime of the stream.
+        if (!res.write(Buffer.from(value)) && !clientGone) {
+          await new Promise<void>((resolve) => {
+            const settle = (): void => {
+              res.off("drain", settle);
+              wakeDrainWaiter = undefined;
+              resolve();
+            };
+            wakeDrainWaiter = settle;
+            res.once("drain", settle);
+          });
+          if (clientGone) {
+            break;
+          }
+        }
       }
     }
   } finally {

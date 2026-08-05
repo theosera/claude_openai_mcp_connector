@@ -144,7 +144,9 @@ CAS は読んだ版一致時のみ更新、append/CAS は in-process mutex で�
 
 ## Quality gate (型優先 / セキュリティ挙動はテストで固定)
 
-- `pnpm typecheck` (tsc strict) → `pnpm build` → `pnpm test` (vitest)。CI と同一。
+- `pnpm typecheck` (tsc strict、`tsconfig.json` = src + `tsconfig.test.json` = src+tests。
+  **build config は src しか見ないので、tests を型検査する第 2 config が要る**) → `pnpm build` →
+  `pnpm test` (vitest)。CI と同一。
 - **セキュリティ挙動は規約でなくテストで pin** する: path traversal / symlink escape /
   frontmatter allowlist / stale patch / exact-path確認・patch完全性 / overwrite collision / Skill bundle containment・
   create-only・atomic publish (`tests/`)。挙動を変える
