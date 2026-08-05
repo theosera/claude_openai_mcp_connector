@@ -278,8 +278,11 @@ read-only-plus-audit "scan" endpoint whose write reach is one reserved subtree.
 
 By default OAuth state (registered clients and tokens) lives in process memory,
 so every server restart forces web clients to re-authorize. Set
-`MCP_OAUTH_STATE_FILE=/abs/path/to/oauth-state.json` to persist sessions across
-restarts: tokens are stored **as sha256 hashes** (the file contains nothing
+`MCP_OAUTH_STATE_FILE=/abs/path/to/oauth-state.json` to persist that state —
+registered clients and token records — across restarts. (Not to be confused with
+the MCP protocol sessions removed above: those are gone entirely, this is the
+OAuth authorization a web client already completed.) Tokens are stored
+**as sha256 hashes** (the file contains nothing
 recoverable), it is written `0600` with an integrity MAC keyed from
 `MCP_OAUTH_PASSWORD`, and any tampering — or a rotated password — fails closed
 by discarding the state (everyone simply re-authorizes).

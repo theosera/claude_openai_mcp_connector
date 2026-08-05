@@ -15,7 +15,7 @@ sandbox recipe for that locally-spawned stdio server.
 >    registered connector. → Use a **named tunnel with a fixed domain**.
 > 2. **OAuth state is in memory by default.** Tokens and dynamically-registered
 >    clients live in process memory and are dropped on restart, forcing a
->    re-auth. → **Persist sessions** with `MCP_OAUTH_STATE_FILE` and/or **keep
+>    re-auth. → **Persist that state** with `MCP_OAUTH_STATE_FILE` and/or **keep
 >    the process alive** under a supervisor (systemd/launchd) with auto-restart
 >    (§1.B).
 
@@ -78,7 +78,10 @@ and dynamically-registered clients are ephemeral process state**, which means:
   `MCP_OAUTH_REFRESH_TTL`), but the refresh token is also in memory, so a
   restart drops it too.
 
-**Fix 1: persist OAuth sessions.** Set
+**Fix 1: persist the OAuth state.** ("OAuth session" below means the
+authorization a web client already completed — its registration and tokens. The
+MCP **protocol** session is a different thing and no longer exists at all; the
+endpoint is stateless on both protocol eras.) Set
 `MCP_OAUTH_STATE_FILE=/abs/path/to/oauth-state.json` and registered clients and
 tokens survive restarts — ChatGPT and Claude.ai stay authorized (both share the
 same store, so one file covers every web client). Security properties:
@@ -123,7 +126,7 @@ Environment=MCP_HTTP_PUBLIC_URL=https://vault.example.com
 # --- OAuth (for ChatGPT / Claude.ai web) ---
 Environment=MCP_OAUTH_ENABLED=1
 Environment=MCP_OAUTH_PASSWORD=replace-with-a-strong-passphrase
-# Persist OAuth sessions across restarts (hashed tokens only; see §1.B):
+# Persist OAuth clients + tokens across restarts (hashed tokens only; see §1.B):
 # Environment=MCP_OAUTH_STATE_FILE=/abs/path/to/state/oauth-state.json
 # --- static bearer (for Claude Desktop / Code remote / API) ---
 Environment=MCP_AUTH_TOKEN=replace-with-openssl-rand-hex-32
