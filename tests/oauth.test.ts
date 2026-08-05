@@ -5,6 +5,10 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  Client as ModernClient,
+  StreamableHTTPClientTransport as ModernStreamableHTTPClientTransport
+} from "@modelcontextprotocol/client";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterEach, describe, expect, it } from "vitest";
@@ -98,6 +102,21 @@ async function listToolNamesOverHttp(issuer: string, token: string): Promise<str
     requestInit: { headers: { authorization: `Bearer ${token}`, connection: "close" } }
   });
   const client = new Client({ name: "scope-test", version: "0.0.0" });
+  await client.connect(transport);
+  const { tools } = await client.listTools();
+  await client.close();
+  return tools.map((t) => t.name);
+}
+
+/** The same listing, negotiated on the sessionless 2026-07-28 protocol era. */
+async function listToolNamesOverModernHttp(issuer: string, token: string): Promise<string[]> {
+  const transport = new ModernStreamableHTTPClientTransport(new URL(`${issuer}/mcp`), {
+    requestInit: { headers: { authorization: `Bearer ${token}`, connection: "close" } }
+  });
+  const client = new ModernClient(
+    { name: "scope-test-modern", version: "0.0.0" },
+    { versionNegotiation: { mode: { pin: "2026-07-28" } } }
+  );
   await client.connect(transport);
   const { tools } = await client.listTools();
   await client.close();
@@ -894,6 +913,49 @@ describe("OAuth end-to-end over HTTP", () => {
     // ...but a vault.write-scoped token does.
     const writeTools = await listToolNamesOverHttp(issuer, await oauthObtainToken(issuer, "vault.read vault.write"));
     expect(writeTools).toContain("create_document");
+  });
+
+  it("gates write tools by token scope on the 2026-07-28 era too (no session to bind to)", async () => {
+    // The legacy era binds the resolved surface to the session. The modern era
+    // has no sessions, so the same guarantee has to hold per request — two
+    // differently-scoped tokens against ONE endpoint, back to back, must see
+    // two different tool sets. (ROADMAP 2a; 2b generalizes this to both eras.)
+    const store = await makeStore();
+    const port = await freePort();
+    const issuer = `http://127.0.0.1:${port}`;
+    const config: HttpConfig = {
+      host: "127.0.0.1",
+      port,
+      authToken: "static-bearer-unused-here",
+      allowWrite: true,
+      allowSkillWrite: false,
+      allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
+      allowedOrigins: [],
+      oauth: {
+        issuer,
+        loginPassword: "hunter2",
+        accessTokenTtlSec: 3600,
+        refreshTokenTtlSec: 86_400,
+        codeTtlSec: 60,
+        allowWrite: true
+      }
+    };
+    server = await startHttpServer(store, config);
+
+    const readTools = await listToolNamesOverModernHttp(issuer, await oauthObtainToken(issuer, "vault.read"));
+    expect(readTools).toContain("search");
+    expect(readTools).not.toContain("create_document");
+
+    const writeTools = await listToolNamesOverModernHttp(
+      issuer,
+      await oauthObtainToken(issuer, "vault.read vault.write")
+    );
+    expect(writeTools).toContain("create_document");
+
+    // ...and the read-scoped token still sees no write tools afterwards, so the
+    // surface follows the presented token rather than the first one seen.
+    const readAgain = await listToolNamesOverModernHttp(issuer, await oauthObtainToken(issuer, "vault.read"));
+    expect(readAgain).not.toContain("create_document");
   });
 
   it("gates Skill writes separately from general document writes", async () => {

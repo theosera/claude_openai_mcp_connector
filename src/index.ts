@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { loadConfig, loadEnvFile, loadHttpConfig, selectedTransport } from "./config.js";
 import { startHttpServer } from "./httpServer.js";
 import { AuditStore } from "./auditStore.js";

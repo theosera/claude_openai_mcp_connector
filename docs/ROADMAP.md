@@ -216,16 +216,49 @@ The reasons to adopt it anyway, in cost/benefit order:
    a security-boundary change; bundling them would put a boundary re-pin in the
    same review as a dependency bump and a docs rewrite.
 
-   - **2a. Dual-era transport 🔭 — dependency + handler substrate.** Move the
-     HTTP path onto `@modelcontextprotocol/server` / `core` v2 and serve the 2025
-     era and 2026-07-28 side by side (`createMcpHandler`'s `legacy: 'stateless'`
-     default). Property guaranteed: _both protocol eras negotiate successfully
-     against one endpoint_. Touches `package.json` / the lockfile / the transport
-     construction in `src/httpServer.ts`, plus new negotiation tests. The
-     DNS-rebinding regression test is a **precondition** and is already in place
-     (see the section below) — it exists precisely so this bump cannot silently
-     drop the protection. Resolution stays per-session under 2a, so the
-     scope→tool-surface boundary is untouched and INV-6/INV-7 do not move.
+   - **2a. Dual-era transport ✅ — dependency + handler substrate.** The HTTP
+     path now runs on `@modelcontextprotocol/server` / `core` v2 and serves the
+     2025 era and 2026-07-28 side by side from one endpoint. Property
+     guaranteed and pinned by `tests/httpServer.test.ts`: _both protocol eras
+     negotiate successfully against one endpoint_, with the same tool surface
+     from the same factory. The DNS-rebinding regression test was the
+     **precondition** and did its job — it is unchanged across the move, which
+     is the evidence the protection survived it.
+
+     Three things landed differently from the sketch above, each deliberate:
+
+     - **The legacy leg is routed to explicitly, not served by
+       `createMcpHandler`'s `legacy: 'stateless'` default.** That default would
+       have moved 2025 traffic off the session model in the same PR as the
+       dependency bump — exactly the bundling this split exists to avoid. So
+       `src/httpServer.ts` classifies with `isLegacyRequest` (the entry's own
+       classification step, exported as a predicate, so the branch cannot
+       disagree with it) and hands 2025 traffic to the established sessionful
+       wiring, now `WebStandardStreamableHTTPServerTransport`. **Per-session
+       resolution is therefore intact for the 2025 era**, and every pre-existing
+       boundary test passes unmodified.
+     - **The modern leg resolves per request, because it has no sessions to
+       resolve against.** That is not 2b arriving early: 2b is the move of the
+       *whole* endpoint off sessions plus the re-pin of every boundary test
+       against per-request resolution, and it is where `vault.read` enforcement
+       lands. Here both eras call one `surfaceFor(principal, …)`, so there is a
+       single scope→surface function to re-pin rather than two. The modern
+       factory recovers its principal from the `Request` object the endpoint
+       authenticated (`McpRequestContext.requestInfo`, identity-stable) and
+       **throws if it cannot** — there is no default surface to fall back to,
+       because that default would be the full one.
+     - **DNS-rebinding enforcement moved to the endpoint boundary in this PR**
+       (it had to: `createMcpHandler` exposes no such option), which graduates
+       part 2 of the section below. See it for the two decisions that forced —
+       port-agnostic Host comparison, and *not* adopting the SDK's
+       hostname-only Origin validator.
+
+     Also in scope because the package line moved as a whole: `src/server.ts`
+     builds a v2 `McpServer` (single tool factory, unchanged registrations) and
+     `src/index.ts` uses the v2 `StdioServerTransport`. That is a package swap,
+     not the stdio migration — `serveStdio()` and dual-era **stdio** remain 2c.
+     `@modelcontextprotocol/sdk` v1 stays as a **devDependency** only, driving
+     the 2025-era half of the negotiation test from a real v1 client.
    - **2b. Per-request scope→tool-surface resolution 🔭 — the security-boundary
      node, and the one to schedule most carefully.** Today `src/httpServer.ts`
      authenticates, resolves scope, then builds an `McpServer` registering _only_
@@ -285,27 +318,27 @@ the v2 move ever happens. Do not assume the boundary survives because the option
 names still exist in v2; the check has to be re-established against whatever
 enforces it there.
 
-### DNS-rebinding protection is on a deprecated API — _pin it, then move it_ 🔭
+### DNS-rebinding protection is on a deprecated API — _pin it, then move it_ ✅
 
-INV-6 item 3 is currently enforced by three `StreamableHTTPServerTransport`
-options that `src/httpServer.ts` passes today —
-`enableDnsRebindingProtection` / `allowedHosts` / `allowedOrigins`. **All three
-are marked `@deprecated` in the SDK**, which points at the
-`server/middleware/hostHeaderValidation.js` middleware instead. The same options
-carry the same deprecation on the SSE transport.
+INV-6 item 3 used to be enforced by three `StreamableHTTPServerTransport`
+options that `src/httpServer.ts` passed —
+`enableDnsRebindingProtection` / `allowedHosts` / `allowedOrigins` — all three
+marked `@deprecated` in the SDK. Both halves are now done: the behaviour was
+pinned first (part 1), and the enforcement then moved to the endpoint boundary
+(part 2) with those tests unchanged.
 
-**This is not a live hole — say that plainly.** At the pinned
-`@modelcontextprotocol/sdk` 1.29.0 the options still fully enforce:
-`validateRequestHeaders` reads all three and returns a 403 on a bad `Host`.
-`loadHttpConfig` never leaves `allowedHosts` empty (it defaults to
-`<host>:<port>` + `localhost:<port>` and appends the public URL's host when
-`MCP_HTTP_PUBLIC_URL` is set), so the Host check really does run in every
-deployment. Deprecated is not removed. What follows is about keeping it that way.
+**It was never a live hole — say that plainly.** At `@modelcontextprotocol/sdk`
+1.29.0 the options still fully enforced: `validateRequestHeaders` read all three
+and returned a 403 on a bad `Host`. `loadHttpConfig` never leaves `allowedHosts`
+empty (it defaults to `<host>:<port>` + `localhost:<port>` and appends the public
+URL's host when `MCP_HTTP_PUBLIC_URL` is set), so the Host check really did run
+in every deployment. Deprecated is not removed. What follows is the record of
+how it was kept that way.
 
-Two real problems, in the order they should be fixed:
+Two real problems, in the order they were fixed:
 
-1. **Nothing pins the behaviour, so its removal would be silent 🔭 — do this
-   first, it is the cheap half.** There is no test anywhere that drives a hostile
+1. **Nothing pins the behaviour, so its removal would be silent ✅ — done
+   first, it was the cheap half.** There was no test anywhere driving a hostile
    `Host` or `Origin` header; worse, the HTTP integration suite constructs its
    config with `allowedHosts: []` / `allowedOrigins: []`
    (`tests/httpServer.test.ts`), so those tests run with host validation inert.
@@ -316,29 +349,47 @@ Two real problems, in the order they should be fixed:
    forged `Host` (and a listed vs. unlisted `Origin`), and asserts the 403 —
    independent of any migration. That single test converts an invisible
    dependency risk into a visible one.
-2. **Then migrate off the deprecated options — but it is not a drop-in swap 🔭.**
-   Two mismatches make a naive port wrong rather than merely tedious:
-   - **Port semantics differ.** The transport option compares the `Host` header
-     _exactly, including the port_ (`allowedHosts.includes(hostHeader)`, entries
-     like `127.0.0.1:8787`), while `hostHeaderValidation(allowedHostnames)`
-     validates the **hostname only, port-agnostic** and documents its input as
-     hostnames _without_ ports. `MCP_HTTP_ALLOWED_HOSTS` currently carries
-     `host:port` values, so handing the existing list straight to the middleware
-     matches nothing. The env contract has to be migrated deliberately, or the
-     values stripped at the boundary — and the operator-facing docs in
-     [`operations.md`](./operations.md) updated to match.
-   - **The middleware is Express-shaped.** It returns an Express
-     `RequestHandler`, and this server is plain `node:http` with no Express in
-     the dependency tree. So it cannot simply be `app.use()`-d; it needs a small
-     adapter, or an equivalent check written against `http.IncomingMessage` and
-     pinned by the test from (1).
+2. **Then migrate off the deprecated options — it was not a drop-in swap ✅.**
+   Landed with **2a**, which forced it: `createMcpHandler` has no
+   DNS-rebinding option at all, so the modern leg would otherwise have been
+   unprotected. Enforcement now sits in `rejectRebinding` in
+   `src/httpServer.ts`, ahead of era routing, so one check covers both eras.
+   The two mismatches, and how each was decided:
+   - **Port semantics differ → strip the port, keep the env contract.** The old
+     transport option compared the `Host` header _exactly, including the port_
+     (entries like `127.0.0.1:8787`); the SDK's `validateHostHeader` compares
+     the **hostname only, port-agnostic**. `MCP_HTTP_ALLOWED_HOSTS` carries
+     `host:port`, so the values are normalized to hostnames at the boundary
+     (`hostnameOf`) rather than the env contract being broken — existing
+     operator env files keep working, and a bare hostname now works too.
+     **D-M3A-HOST-PORT:** dropping the port from the comparison costs nothing,
+     because the server listens on exactly one port and that is therefore the
+     only port a browser could reach it on regardless of the allowlist. Pinned
+     by a test, and documented in
+     [`operations.md §2`](./operations.md#dns-rebinding-allowlist-mcp_http_allowed_hosts--mcp_http_allowed_origins).
+     `hostnameOf` also brackets a bare IPv6 literal instead of truncating it at
+     its first colon (which would have produced an empty, unmatchable entry);
+     `loadHttpConfig` brackets an IPv6 bind host in the default for the same
+     reason.
+   - **The middleware is Express-shaped → not used.** `hostHeaderValidation`
+     returns an Express `RequestHandler` and there is no Express here. The
+     Web-standard `validateHostHeader(hostHeader, hostnames)` is used directly
+     instead, against the `Request` built by `src/webBridge.ts`.
 
-   Note the current Origin posture while you are in there, and decide it
-   deliberately rather than inheriting it: `allowedOrigins` defaults to empty
-   (so the Origin check is skipped unless `MCP_HTTP_ALLOWED_ORIGINS` is set), and
-   even when populated the transport only rejects a **present but unlisted**
-   Origin — a request with no `Origin` header passes. That is defensible for a
-   bearer-authed, non-browser client, but it should be a recorded decision.
+   The Origin posture, now decided rather than inherited:
+   - **D-M3A-ORIGIN-EXACT — Origin keeps EXACT full-origin comparison.** The
+     SDK's `validateOriginHeader` is hostname-only like its Host counterpart,
+     which for origins would stop distinguishing `https://x` from `http://x`.
+     That is a real relaxation with no compensating benefit, so it was not
+     adopted; the existing exact comparison is kept in-house and pinned.
+   - **D-M1-ORIGIN-ABSENT stands unchanged** (already pinned as a named
+     compatibility baseline): `allowedOrigins` defaults to empty so the check is
+     skipped unless `MCP_HTTP_ALLOWED_ORIGINS` is set, and even when populated
+     only a **present but unlisted** Origin is refused — a request with no
+     `Origin` header passes. Defensible for a bearer-authed, non-browser client.
+   - **Scope is still `/mcp` only**, as before: the OAuth endpoints are not
+     behind the Host check. Unchanged by this move, and listed under continuity
+     below rather than changed silently here.
 
 **Doc coupling:** INV-6 item 3 in
 [`mcp-vault-security`](../.claude/skills/mcp-vault-security/SKILL.md) and the
@@ -487,11 +538,26 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       verified: disabling `enableDnsRebindingProtection` fails exactly the two
       boundary tests. A dependency bump that drops the deprecated transport
       options now fails loudly instead of silently removing the protection.
-- [ ] **Migrate off the deprecated DNS-rebinding transport options** — see the
-      section above; not a drop-in (middleware is port-agnostic and Express-shaped,
-      our config carries `host:port` and we run plain `node:http`). Update INV-6
-      item 3 in the `mcp-vault-security` skill, the `CLAUDE.md` firing row, and
-      the `MCP_HTTP_ALLOWED_HOSTS` docs in `operations.md` in the same PR.
+- [x] **Migrate off the deprecated DNS-rebinding transport options** — ✅ landed
+      with **2a**, which forced it (`createMcpHandler` has no such option, so the
+      modern leg would otherwise be unprotected). Enforcement is now
+      `rejectRebinding` in `src/httpServer.ts`, ahead of era routing, so one
+      check covers both eras: Host via the SDK's `validateHostHeader` with the
+      `:port` suffix stripped from allowlist entries (**D-M3A-HOST-PORT** — the
+      env contract is preserved, not broken), Origin kept as an **exact**
+      full-origin comparison in-house (**D-M3A-ORIGIN-EXACT** — the SDK's
+      hostname-only validator would stop distinguishing `https` from `http`).
+      The pinning tests from the item above are unchanged across the move, which
+      is the evidence. INV-6 item 3 in the `mcp-vault-security` skill, the
+      `CLAUDE.md` firing row, `threat-model.md` and the `MCP_HTTP_ALLOWED_HOSTS`
+      docs in `operations.md` were updated in the same PR.
+- [ ] **Decide whether the Host check should also cover the OAuth endpoints** —
+      it covers `/mcp` only, unchanged from the transport-option era and
+      deliberately left alone by the move above rather than widened silently.
+      Widening it is a behaviour change for anyone whose tunnel host is not in
+      the allowlist (`loadHttpConfig` adds `MCP_HTTP_PUBLIC_URL`'s host, so the
+      supported setups are covered — but an unsupported one would start failing
+      at `/authorize` instead of `/mcp`). Cheap; needs its own red-green test.
 - [x] **RFC 9207 `iss` in the authorization response** (`src/oauth/`) — ✅ the
       `authorizePost` success redirect (the only redirect the AS emits — error
       paths render a 400 page precisely so codes cannot leak via redirects, so
@@ -540,6 +606,16 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       `404 unknown_session`, to [`operations.md §1`](./operations.md)). Land them
       as three PRs in that order; do not bundle the boundary re-pin with the
       dependency bump.
+      - [x] **2a** ✅ — v2 packages, `isLegacyRequest` routing, sessionful 2025
+            leg unchanged, sessionless 2026-07-28 leg, DNS-rebinding moved to the
+            endpoint boundary, negotiation tests. Every pre-existing boundary
+            test passes unmodified, which is the claim that the boundary did not
+            move.
+      - [ ] **2b** — the boundary node. Drop the 2025 session leg, resolve the
+            surface per request for both eras (one `surfaceFor` already), enforce
+            `vault.read`, and re-pin `tests/httpServer.test.ts` +
+            `tests/oauth.test.ts` against per-request resolution.
+      - [ ] **2c** — `serveStdio()` (dual-era stdio) + `operations.md §1`.
 - [x] **Search P0 + P1 slices** — ✅ P0: NFKC search folding (query + text,
       snippets still sliced from the original), result timestamps/`size_bytes`,
       `total_count`/`offset` envelope, backlink relative-link resolution,

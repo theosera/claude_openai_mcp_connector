@@ -159,6 +159,31 @@ Prefer storing secrets in `EnvironmentFile=/etc/vault-mcp.env` (mode `600`)
 instead of inline `Environment=` lines, so they don't appear in
 `systemctl show`.
 
+#### DNS-rebinding allowlist (`MCP_HTTP_ALLOWED_HOSTS` / `MCP_HTTP_ALLOWED_ORIGINS`)
+
+Neither variable is needed for the unit above — `MCP_HTTP_PUBLIC_URL`'s host is
+added to the Host allowlist automatically, and unset defaults to the bind
+address plus `localhost`. Set them only to add a second entry (a LAN name, a
+second tunnel). What each one compares:
+
+| Variable                   | Compared as                                      | Unset means                                                               |
+| -------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------- |
+| `MCP_HTTP_ALLOWED_HOSTS`   | **hostname**, port ignored (`vault.example.com`) | `<bind host>:<port>` + `localhost:<port>` (+ the `MCP_HTTP_PUBLIC_URL` host) |
+| `MCP_HTTP_ALLOWED_ORIGINS` | **full origin**, exact, scheme included          | the Origin check is skipped entirely                                        |
+
+- A `:port` suffix on a Host entry is accepted and ignored, so entries written
+  for older releases keep working unchanged. The port was never a useful
+  discriminator: the server listens on exactly one port, which is therefore the
+  only port a browser could reach it on whatever the allowlist says. IPv6
+  literals work with or without brackets (`[::1]:8787`, `::1`).
+- Origins stay an **exact** comparison including the scheme, so
+  `http://x.example` is not accepted by an allowlist holding `https://x.example`.
+- A request carrying **no** `Origin` header passes even when the list is set:
+  non-browser MCP clients (CLI, SDKs) send none, and this check exists to
+  constrain browsers. Only a present-but-unlisted value is refused.
+- Both checks run at the endpoint boundary, before either protocol era is
+  dispatched, so they apply identically to 2025 and 2026-07-28 traffic.
+
 Install the tunnel as a service too:
 
 ```bash

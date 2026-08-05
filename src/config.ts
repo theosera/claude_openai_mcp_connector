@@ -369,9 +369,15 @@ export function loadHttpConfig(env: NodeJS.ProcessEnv = process.env): HttpConfig
       .map((item) => item.trim())
       .filter((item) => item.length > 0);
 
+  // DNS-rebinding allowlist. Entries are compared as HOSTNAMES (the port is
+  // stripped at the boundary in httpServer.ts), so `host:port` and a bare
+  // hostname are equally valid here; the port suffix is kept in the default for
+  // continuity with existing operator env files. A bare IPv6 literal is
+  // bracketed so the port suffix stays distinguishable from an address group.
   const allowedHosts = splitList(env.MCP_HTTP_ALLOWED_HOSTS);
   if (allowedHosts.length === 0) {
-    allowedHosts.push(`${host}:${port}`, `localhost:${port}`);
+    const bindHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+    allowedHosts.push(`${bindHost}:${port}`, `localhost:${port}`);
   }
 
   const allowWrite = isTruthy(env.MCP_HTTP_ALLOW_WRITE);
