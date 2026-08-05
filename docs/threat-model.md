@@ -88,7 +88,7 @@ repo/CI → public (secret hygiene).
 | Unauthenticated caller hits `/mcp`         | Bearer required; fail-closed if `MCP_AUTH_TOKEN` unset (`INV-6`, `httpAuth.ts`, `config.ts`). 401 + `WWW-Authenticate`. | Token strength is the operator's responsibility.                     |
 | Web client can't send a static bearer      | OAuth 2.1 + PKCE S256 + DCR; login gated by `MCP_OAUTH_PASSWORD` (scrypt) (`INV-7`, `oauth/`).                          | Shared single-user password (no per-user identity — see gaps: RBAC). |
 | Token/timing side-channel on compare       | Constant-time compare, length-normalized (`INV-6`, `httpAuth.ts`; `INV-7` PKCE/login).                                  | —                                                                    |
-| DNS-rebinding to reach the loopback server | `enableDnsRebindingProtection` + `allowedHosts`/`allowedOrigins` (`INV-6`, `httpServer.ts`).                            | Operator must add only the intended tunnel host.                     |
+| DNS-rebinding to reach the loopback server | `rejectRebinding` at the endpoint boundary, ahead of era routing, so both protocol eras are covered identically (`INV-6`, `httpServer.ts`): `Host` compared by hostname against `allowedHosts`, `Origin` compared as an exact full origin against `allowedOrigins`. | Operator must add only the intended tunnel host. Checked on `/mcp` only; an `Origin`-less request passes (D-M1-ORIGIN-ABSENT). |
 
 ### T — Tampering (integrity)
 

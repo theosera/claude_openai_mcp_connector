@@ -3,6 +3,11 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  Client as ModernClient,
+  StreamableHTTPClientTransport as ModernStreamableHTTPClientTransport
+} from "@modelcontextprotocol/client";
+import { createMcpHandler } from "@modelcontextprotocol/server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -10,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { chatgptFetch, chatgptSearch, documentUrl } from "../src/chatgpt.js";
 import type { HttpConfig } from "../src/config.js";
 import { isAuthorized, isAuthorizedHeader, parseBearer, verifyLoginPassword } from "../src/httpAuth.js";
-import { startHttpServer } from "../src/httpServer.js";
+import { hostnameOf, startHttpServer } from "../src/httpServer.js";
 import { KnowledgeStore } from "../src/knowledgeStore.js";
 import { AuditStore } from "../src/auditStore.js";
 import { buildMcpServer, SERVER_INSTRUCTIONS, type BuildServerOptions } from "../src/server.js";
@@ -418,6 +423,7 @@ describe("HTTP transport integration", () => {
       authToken: token,
       allowWrite: false,
       allowSkillWrite: false,
+      allowAuditWrite: false,
       allowedHosts: [],
       allowedOrigins: []
     };
@@ -486,10 +492,12 @@ describe("HTTP transport integration", () => {
   });
 
   // --- DNS-rebinding protection (INV-6 item 3) -------------------------------
-  // The three transport options enforcing this (enableDnsRebindingProtection /
-  // allowedHosts / allowedOrigins) are @deprecated upstream; these tests pin the
-  // *behavior* so a dependency bump that drops the deprecated path fails loudly
-  // instead of silently removing the boundary (ROADMAP: "pin it, then move it").
+  // These tests pinned the *behavior* while it was enforced by three
+  // @deprecated transport options (enableDnsRebindingProtection / allowedHosts /
+  // allowedOrigins) — which is what let the enforcement move to the endpoint
+  // boundary (src/httpServer.ts `rejectRebinding`) without silently dropping it.
+  // They are unchanged across that move, which is the point: same requests, same
+  // verdicts, different mechanism.
 
   const initializeBody = JSON.stringify({
     jsonrpc: "2.0",
@@ -550,9 +558,54 @@ describe("HTTP transport integration", () => {
     const forged = await rawInitialize({ port, hostHeader: "evil.example.com" });
     expect(forged.status).toBe(403);
 
-    // Same with a port suffix — exact-match semantics, not substring.
+    // Same with a port suffix — the hostname is what is compared, so appending
+    // the real port to a hostile name buys nothing.
     const forgedWithPort = await rawInitialize({ port, hostHeader: `evil.example.com:${port}` });
     expect(forgedWithPort.status).toBe(403);
+
+    // ...and a hostile name that merely CONTAINS an allow-listed one is still
+    // refused (no substring/suffix matching).
+    const lookalike = await rawInitialize({ port, hostHeader: `127.0.0.1.evil.example.com:${port}` });
+    expect(lookalike.status).toBe(403);
+  });
+
+  it("refuses a Host header carrying userinfo", async () => {
+    // RFC 9110 §7.2 is `Host = uri-host [ ":" port ]` — userinfo is not part of
+    // it, so an "@" can only be an attempt to make a parser read a different
+    // authority than a reader does. `new URL("http://evil.example@127.0.0.1")`
+    // has hostname "127.0.0.1", which the allowlist accepts, while the header as
+    // written names evil.example. The v1 transport compared the header verbatim
+    // and refused this shape; a hostname-only comparison on its own would not,
+    // and the raw header goes on to build this request's URL in toWebRequest.
+    const port = Number(new URL(baseUrl).port);
+
+    const smuggled = await rawInitialize({ port, hostHeader: `evil.example@127.0.0.1:${port}` });
+    expect(smuggled.status).toBe(403);
+    // Refused BY THE GATE, not merely unsuccessful. Without the check this was a
+    // 500: the request passed the allowlist and died on `new Request()` refusing
+    // a URL with credentials, which is the Fetch spec declining to build an
+    // object rather than this server declining to serve one.
+    expect(JSON.parse(smuggled.body)).toMatchObject({ error: "forbidden_host" });
+
+    // The mirror image parses to a hostile hostname and was already refused.
+    // Pinned so both directions stay closed together.
+    const reversed = await rawInitialize({ port, hostHeader: `127.0.0.1@evil.example:${port}` });
+    expect(reversed.status).toBe(403);
+  });
+
+  it("compares Host by hostname, ignoring the port (allowlist entries may omit it)", async () => {
+    // D-M3A-HOST-PORT — the env contract (`MCP_HTTP_ALLOWED_HOSTS`) historically
+    // carries `host:port`; the check is now hostname-only, so both spellings
+    // work and the port is not a discriminator. It never was a useful one: the
+    // server listens on exactly one port, so that is the only port a browser can
+    // reach it on regardless of what the allowlist says.
+    const port = Number(new URL(baseUrl).port);
+    config.allowedHosts.length = 0;
+    config.allowedHosts.push("127.0.0.1"); // bare hostname, no port
+
+    expect((await rawInitialize({ port })).status).toBe(200);
+    expect((await rawInitialize({ port, hostHeader: `127.0.0.1:${port}` })).status).toBe(200);
+    expect((await rawInitialize({ port, hostHeader: "evil.example.com" })).status).toBe(403);
   });
 
   describe("Origin validation (allowedOrigins configured)", () => {
@@ -567,6 +620,7 @@ describe("HTTP transport integration", () => {
         authToken: token,
         allowWrite: false,
         allowSkillWrite: false,
+        allowAuditWrite: false,
         allowedHosts: [],
         allowedOrigins: ["https://allowed.example"]
       };
@@ -591,6 +645,14 @@ describe("HTTP transport integration", () => {
       expect(unlisted.status).toBe(403);
     });
 
+    it("keeps exact full-origin comparison (scheme included)", async () => {
+      // D-M3A-ORIGIN-EXACT — the SDK's `validateOriginHeader` compares HOSTNAMES
+      // only, which would stop distinguishing https from http. The endpoint keeps
+      // the exact full-origin comparison instead, so this stays a rejection.
+      const wrongScheme = await rawInitialize({ port: originPort, origin: "http://allowed.example" });
+      expect(wrongScheme.status).toBe(403);
+    });
+
     it("compatibility baseline: a request without an Origin header is currently accepted", async () => {
       // D-M1-ORIGIN-ABSENT — this is a revisitable compatibility DECISION, not
       // a security invariant: non-browser MCP clients (CLI, SDKs) send no
@@ -600,5 +662,225 @@ describe("HTTP transport integration", () => {
       const absent = await rawInitialize({ port: originPort });
       expect(absent.status).toBe(200);
     });
+  });
+
+  // --- Dual-era serving (ROADMAP 2a) -----------------------------------------
+  // Property guaranteed by this node: BOTH protocol eras negotiate successfully
+  // against one endpoint. 2025-era traffic keeps the sessionful wiring; the
+  // 2026-07-28 era is sessionless, which is the point — it is the failure mode
+  // ("404 unknown_session" after every restart) that statelessness removes.
+  describe("dual-era negotiation", () => {
+    interface Exchange {
+      requestedMethod: string | null;
+      sessionIdIssued: string | null;
+    }
+
+    /** Wrap fetch so the test can see the wire, not just the SDK's view of it. */
+    function spyFetch(log: Exchange[]): typeof fetch {
+      return async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        const response = await fetch(input, init);
+        log.push({
+          requestedMethod: new Headers(init?.headers).get("mcp-method"),
+          sessionIdIssued: response.headers.get("mcp-session-id")
+        });
+        return response;
+      };
+    }
+
+    it("serves the 2025 era (sessionful) and 2026-07-28 (sessionless) from one endpoint", async () => {
+      const legacyLog: Exchange[] = [];
+      const legacyClient = new Client({ name: "legacy", version: "0.0.0" });
+      await legacyClient.connect(
+        new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`), {
+          requestInit: { headers: { authorization: `Bearer ${token}` } },
+          fetch: spyFetch(legacyLog)
+        })
+      );
+      const legacyTools = (await legacyClient.listTools()).tools.map((tool) => tool.name).sort();
+      await legacyClient.close();
+
+      const modernLog: Exchange[] = [];
+      const modernClient = new ModernClient(
+        { name: "modern", version: "0.0.0" },
+        { versionNegotiation: { mode: { pin: "2026-07-28" } } }
+      );
+      await modernClient.connect(
+        new ModernStreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`), {
+          requestInit: { headers: { authorization: `Bearer ${token}` } },
+          fetch: spyFetch(modernLog)
+        })
+      );
+      const modernTools = (await modernClient.listTools()).tools.map((tool) => tool.name).sort();
+      await modernClient.close();
+
+      // Both eras negotiated, and they see the SAME surface — one tool factory.
+      expect(legacyTools).toContain("search_documents");
+      expect(modernTools).toEqual(legacyTools);
+
+      // The 2025 handshake issued a session id; the modern exchanges carry the
+      // per-request `Mcp-Method` routing header and never receive one.
+      expect(legacyLog.some((exchange) => exchange.sessionIdIssued !== null)).toBe(true);
+      expect(modernLog.every((exchange) => exchange.sessionIdIssued === null)).toBe(true);
+      expect(modernLog.some((exchange) => exchange.requestedMethod === "server/discover")).toBe(true);
+      expect(modernLog.some((exchange) => exchange.requestedMethod === "tools/list")).toBe(true);
+    });
+
+    it("keeps the read-only default and the write gate on the modern era", async () => {
+      const modernClient = new ModernClient(
+        { name: "modern", version: "0.0.0" },
+        { versionNegotiation: { mode: { pin: "2026-07-28" } } }
+      );
+      await modernClient.connect(
+        new ModernStreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`), {
+          requestInit: { headers: { authorization: `Bearer ${token}` } }
+        })
+      );
+      const names = (await modernClient.listTools()).tools.map((tool) => tool.name);
+
+      // INV-6 item 4 holds per request, not per session: this endpoint is
+      // read-only (allowWrite false), so no write tool is registered for the
+      // instance serving any modern request either.
+      expect(names).toContain("search");
+      expect(names).not.toContain("create_document");
+      expect(names).not.toContain("plan_document_update");
+      expect(names).not.toContain("apply_planned_update");
+
+      const result = await modernClient.callTool({ name: "search", arguments: { query: "retrieval" } });
+      expect((result.structuredContent as { results?: unknown[] }).results).toBeDefined();
+      await modernClient.close();
+    });
+
+    it("refuses an unauthenticated modern request before it reaches the handler", async () => {
+      const captured = await captureModernRequest();
+      const res = await fetch(`${baseUrl}/mcp`, {
+        method: "POST",
+        headers: { ...captured.headers, authorization: "Bearer nope" },
+        body: captured.body
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it("applies DNS-rebinding protection to the modern era too", async () => {
+      // The guard sits at the endpoint boundary, ahead of era routing, so it is
+      // era-independent by construction. Pinned by replaying a REAL modern
+      // request (captured off the wire) rather than a hand-shaped approximation.
+      const captured = await captureModernRequest();
+      const port = Number(new URL(baseUrl).port);
+
+      // Control: replayed verbatim, the captured request really is served by the
+      // modern leg (so the 403 below is the guard firing, not a malformed replay).
+      const genuine = await rawModern(port, captured, undefined);
+      expect(genuine.status).toBe(200);
+      expect(genuine.body).toContain("search_documents");
+
+      const forged = await rawModern(port, captured, "evil.example.com");
+      expect(forged.status).toBe(403);
+      expect(JSON.parse(forged.body)).toMatchObject({ error: "forbidden_host" });
+    });
+
+    it("hands the per-request factory the same Request instance it was given", async () => {
+      // The modern leg recovers the authenticated principal by looking the
+      // request up in a WeakMap keyed by the exact `Request` passed to `fetch`,
+      // which `McpRequestContext` documents as "the original HTTP request being
+      // served". That is a property of the dependency, not of this repo, and
+      // package.json floats on a caret range with weekly Dependabot bumps -- a
+      // minor release handing the factory a COPY would make every modern
+      // request fail closed with `unresolved_principal`. Pinning the version
+      // instead of the behaviour would freeze security patches to buy a
+      // guarantee a test gives for free (the same lesson the DNS-rebinding
+      // options taught). This is the tripwire, and it runs against REAL modern
+      // bytes captured off the wire rather than a hand-shaped envelope.
+      const captured = await captureModernRequest();
+      const store = await makeStore();
+      const seen: Array<Request | undefined> = [];
+      const handler = createMcpHandler(
+        (ctx) => {
+          seen.push(ctx.requestInfo);
+          return buildMcpServer(store, { allowWrite: false });
+        },
+        { legacy: "reject" }
+      );
+      const request = new Request(`${baseUrl}/mcp`, {
+        method: "POST",
+        headers: captured.headers,
+        body: captured.body
+      });
+
+      await (await handler.fetch(request)).text();
+      await handler.close();
+
+      expect(seen.length).toBeGreaterThan(0);
+      // Identity, not equality: `principals.get(ctx.requestInfo)` only resolves
+      // if this is the very same object.
+      expect(seen[0]).toBe(request);
+    });
+
+    /** Drive one modern exchange and keep the exact bytes of a `tools/list`. */
+    async function captureModernRequest(): Promise<{ headers: Record<string, string>; body: string }> {
+      let captured: { headers: Record<string, string>; body: string } | undefined;
+      const client = new ModernClient(
+        { name: "capture", version: "0.0.0" },
+        { versionNegotiation: { mode: { pin: "2026-07-28" } } }
+      );
+      await client.connect(
+        new ModernStreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`), {
+          requestInit: { headers: { authorization: `Bearer ${token}` } },
+          fetch: async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+            const headers = new Headers(init?.headers);
+            if (headers.get("mcp-method") === "tools/list" && typeof init?.body === "string") {
+              captured = { headers: Object.fromEntries(headers.entries()), body: init.body };
+            }
+            return fetch(input, init);
+          }
+        })
+      );
+      await client.listTools();
+      await client.close();
+      if (!captured) {
+        throw new Error("no modern tools/list request was observed");
+      }
+      return captured;
+    }
+
+    /** Replay a captured request over node:http so the Host header is verbatim. */
+    function rawModern(
+      port: number,
+      captured: { headers: Record<string, string>; body: string },
+      hostHeader: string | undefined
+    ): Promise<{ status: number; body: string }> {
+      return new Promise((resolve, reject) => {
+        const headers: Record<string, string> = {
+          ...captured.headers,
+          "content-length": String(Buffer.byteLength(captured.body))
+        };
+        if (hostHeader) {
+          headers.host = hostHeader;
+        }
+        const req = http.request({ host: "127.0.0.1", port, path: "/mcp", method: "POST", headers }, (res) => {
+          let data = "";
+          res.on("data", (chunk: Buffer) => {
+            data += chunk.toString("utf8");
+          });
+          res.on("end", () => resolve({ status: res.statusCode ?? 0, body: data }));
+        });
+        req.on("error", reject);
+        req.end(captured.body);
+      });
+    }
+  });
+});
+
+describe("DNS-rebinding allowlist entries", () => {
+  it("compares the hostname, tolerating a port suffix and IPv6 brackets", () => {
+    expect(hostnameOf("127.0.0.1:8787")).toBe("127.0.0.1");
+    expect(hostnameOf("127.0.0.1")).toBe("127.0.0.1");
+    expect(hostnameOf("  localhost:8787  ")).toBe("localhost");
+    expect(hostnameOf("connector.example.ngrok.app")).toBe("connector.example.ngrok.app");
+    expect(hostnameOf("[::1]:8787")).toBe("[::1]");
+    expect(hostnameOf("[::1]")).toBe("[::1]");
+    // A bare IPv6 literal is bracketed rather than truncated at its first colon
+    // (truncating would silently turn `::1` into an empty, unmatchable entry).
+    expect(hostnameOf("::1")).toBe("[::1]");
+    expect(hostnameOf("fe80::1")).toBe("[fe80::1]");
   });
 });

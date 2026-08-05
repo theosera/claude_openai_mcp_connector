@@ -18,7 +18,7 @@
     "build": "tsc -p tsconfig.json",
     "check:http": "node scripts/check-http.mjs",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "lint:ox": "oxlint src tests scripts",
     "lint": "eslint src tests scripts",
     "format": "prettier --write src tests scripts",
@@ -29,7 +29,7 @@
     "node": ">=22.12.0"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/server": "^2.0.0",
     "diff": "^9.0.0",
     "dotenv": "^17.4.2",
     "gray-matter": "^4.0.3",
@@ -37,6 +37,8 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@types/diff": "^8.0.0",
     "@types/node": "^26.1.2",
     "eslint": "^10.8.0",

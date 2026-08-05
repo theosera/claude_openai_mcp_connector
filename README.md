@@ -261,11 +261,14 @@ the OAuth consent screen when a web client connects. It must be non-empty (the
 server refuses to start otherwise).
 
 `MCP_HTTP_PUBLIC_URL` is the OAuth issuer and is auto-added to the
-DNS-rebinding allowlist. The MCP endpoint to register is
-`https://<random>.trycloudflare.com/mcp`. Tokens are **audience-bound** to that
-`/mcp` resource and **scope-gated**: a connector only receives `vault.write`
-when at least one explicitly enabled write surface exists. The session then
-registers only that surface: `MCP_HTTP_ALLOW_WRITE=1` enables document writes,
+DNS-rebinding allowlist (which is compared by hostname — the `:port` suffix in
+`MCP_HTTP_ALLOWED_HOSTS` is optional and ignored). The MCP endpoint to register
+is `https://<random>.trycloudflare.com/mcp`. Tokens are **audience-bound** to
+that `/mcp` resource and **scope-gated**: a connector only receives
+`vault.write` when at least one explicitly enabled write surface exists. The
+server then registers only that surface — per session on the 2025 protocol era,
+per request on 2026-07-28, which has no sessions:
+`MCP_HTTP_ALLOW_WRITE=1` enables document writes,
 `MCP_HTTP_ALLOW_SKILL_WRITE=1` enables constrained Skill creation, and
 `MCP_HTTP_ALLOW_AUDIT_WRITE=1` (with `MCP_AUDIT_SUBDIR`) enables only the
 constrained audit tools — set it **without** `MCP_HTTP_ALLOW_WRITE` to run a

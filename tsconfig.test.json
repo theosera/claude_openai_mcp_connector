@@ -1,0 +1,17 @@
+{
+  // Typecheck-only config that adds `tests/` to the program.
+  //
+  // `tsconfig.json` is the BUILD config: its `rootDir` is `src` and it emits
+  // declarations, so it cannot also cover `tests/` without changing what ships
+  // in `dist/`. The consequence was that test files were never typechecked at
+  // all — `HttpConfig` literals in the suite had been missing a required field
+  // across seven call sites without any gate noticing. `pnpm typecheck` now
+  // runs both configs, so a type error in a test fails CI like one in `src`.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "rootDir": "."
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
+}

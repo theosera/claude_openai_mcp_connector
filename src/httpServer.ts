@@ -1,7 +1,13 @@
 import crypto from "node:crypto";
 import http from "node:http";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import {
+  WebStandardStreamableHTTPServerTransport,
+  createMcpHandler,
+  isInitializeRequest,
+  isLegacyRequest,
+  validateHostHeader,
+  type McpHttpHandler
+} from "@modelcontextprotocol/server";
 import type { HttpConfig } from "./config.js";
 import { isAuthorizedHeader, parseBearer } from "./httpAuth.js";
 import type { VaultStore } from "./types.js";
@@ -10,18 +16,47 @@ import type { SkillStore } from "./skillStore.js";
 import type { OAuthHttpResponse } from "./oauth/provider.js";
 import { OAuthProvider, SCOPE_READ, SCOPE_WRITE } from "./oauth/provider.js";
 import { RateLimiter } from "./oauth/rateLimiter.js";
-import { buildMcpServer } from "./server.js";
+import { buildMcpServer, type BuildServerOptions } from "./server.js";
+import { sendWebResponse, toWebRequest } from "./webBridge.js";
 
 const MCP_PATH = "/mcp";
 const MAX_BODY_BYTES = 4 * 1024 * 1024; // 4 MiB — bound request memory.
 
 interface Session {
-  transport: StreamableHTTPServerTransport;
+  transport: WebStandardStreamableHTTPServerTransport;
 }
 
 interface OAuthLimiters {
   authorize: RateLimiter;
   register: RateLimiter;
+}
+
+interface Principal {
+  scopes: string[];
+}
+
+/** Everything the two protocol eras share for one endpoint. */
+interface Endpoint {
+  store: VaultStore;
+  config: HttpConfig;
+  sessions: Map<string, Session>;
+  oauth: OAuthProvider | undefined;
+  limiters: OAuthLimiters | undefined;
+  skillStore: SkillStore | undefined;
+  auditStore: AuditStore | undefined;
+  /**
+   * The 2026-07-28 ("modern") leg. Sessionless by construction: the factory is
+   * invoked per request, so nothing survives a restart to be invalidated.
+   */
+  modern: McpHttpHandler;
+  /**
+   * The authenticated principal for one in-flight modern request, keyed by the
+   * exact `Request` object handed to `modern.fetch`. `McpRequestContext`
+   * carries that same object back as `requestInfo`, which is how the per-request
+   * factory recovers the scopes that decide its tool surface. Weak so a
+   * disconnected request is collected with its entry.
+   */
+  principals: WeakMap<Request, Principal>;
 }
 
 /**
@@ -30,8 +65,16 @@ interface OAuthLimiters {
  * path/frontmatter/two-step guards:
  *  - Bearer auth on every request (fail-closed; see httpAuth).
  *  - Bind to 127.0.0.1 by default (expose only via an explicit tunnel).
- *  - DNS-rebinding protection (allowedHosts / allowedOrigins).
+ *  - DNS-rebinding protection: Host (and, when configured, Origin) are
+ *    validated at this boundary, before either protocol era is dispatched.
  *  - Read-only tool surface unless MCP_HTTP_ALLOW_WRITE is set.
+ *
+ * Both protocol eras are served from one endpoint and one tool factory:
+ *  - 2025-era ("legacy") traffic keeps the established sessionful wiring, so
+ *    scope -> tool-surface resolution is bound to the session exactly as before.
+ *  - 2026-07-28 ("modern") traffic is served by `createMcpHandler`, which has no
+ *    sessions; its factory resolves the surface per request from the same
+ *    `surfaceFor` function the legacy leg uses.
  */
 export async function startHttpServer(
   store: VaultStore,
@@ -52,8 +95,36 @@ export async function startHttpServer(
       }
     : undefined;
 
+  const principals = new WeakMap<Request, Principal>();
+  const endpoint: Endpoint = {
+    store,
+    config,
+    sessions,
+    oauth,
+    limiters,
+    skillStore,
+    auditStore,
+    principals,
+    // `legacy: 'reject'` because the legacy era is served by the sessionful leg
+    // below, routed to explicitly via `isLegacyRequest`. Letting this handler
+    // also serve 2025 traffic statelessly would silently move that era off the
+    // session model this endpoint still guarantees.
+    modern: createMcpHandler(
+      (ctx) => {
+        const principal = ctx.requestInfo ? principals.get(ctx.requestInfo) : undefined;
+        if (!principal) {
+          // Fail closed. There is no safe default surface to fall back to: the
+          // default would be the full one.
+          throw new Error("unresolved_principal");
+        }
+        return buildMcpServer(store, surfaceFor(principal, config, skillStore, auditStore));
+      },
+      { legacy: "reject" }
+    )
+  };
+
   const httpServer = http.createServer((req, res) => {
-    handleRequest(req, res, store, config, sessions, oauth, limiters, skillStore, auditStore).catch((error) => {
+    handleRequest(req, res, endpoint).catch((error) => {
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json" });
       }
@@ -62,22 +133,42 @@ export async function startHttpServer(
       }
     });
   });
+  httpServer.on("close", () => {
+    void endpoint.modern.close().catch(() => {});
+  });
 
   await new Promise<void>((resolve) => httpServer.listen(config.port, config.host, resolve));
   return httpServer;
 }
 
-async function handleRequest(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  store: VaultStore,
+/**
+ * Derive the tool surface from the presented scopes and the server policy.
+ *
+ * Single point of truth for INV-6 item 4 / INV-7 item 5, shared by both eras:
+ * writes require BOTH the server policy (allow* flags) AND a token carrying
+ * `vault.write`. A read-scoped token never sees write tools because they are
+ * never registered for the instance serving it, so it cannot invoke them.
+ */
+function surfaceFor(
+  principal: Principal,
   config: HttpConfig,
-  sessions: Map<string, Session>,
-  oauth: OAuthProvider | undefined,
-  limiters: OAuthLimiters | undefined,
   skillStore: SkillStore | undefined,
   auditStore: AuditStore | undefined
-): Promise<void> {
+): BuildServerOptions {
+  const write = principal.scopes.includes(SCOPE_WRITE);
+  return {
+    allowWrite: config.allowWrite && write,
+    allowSkillWrite: config.allowSkillWrite && write,
+    skillStore,
+    allowAuditWrite: config.allowAuditWrite && write,
+    auditStore,
+    includeChatgptCompat: true,
+    chatgptUrlBase: config.chatgptUrlBase
+  };
+}
+
+async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse, endpoint: Endpoint): Promise<void> {
+  const { config, oauth, limiters, sessions } = endpoint;
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
   // Unauthenticated liveness probe — returns no vault information.
@@ -101,7 +192,7 @@ async function handleRequest(
 
   // Auth gate: accept either the static bearer (Desktop / Code / API) or a
   // valid OAuth access token (ChatGPT / Claude.ai web). The principal carries
-  // the effective scopes used to gate the write tool surface per session.
+  // the effective scopes used to gate the write tool surface.
   const principal = authenticate(req.headers.authorization, config, oauth);
   if (!principal) {
     const headers: Record<string, string> = {
@@ -113,6 +204,45 @@ async function handleRequest(
     return;
   }
 
+  // DNS-rebinding protection (INV-6 item 3). Enforced here rather than through
+  // the transport's deprecated `enableDnsRebindingProtection` options, so ONE
+  // check covers both protocol eras — the modern handler has no such option at
+  // all. `allowedHosts` is read per request (not snapshotted at listen time)
+  // because the ephemeral-port case fills it in after the server is bound.
+  const rebinding = rejectRebinding(req, config);
+  if (rebinding) {
+    res.writeHead(403, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: rebinding }));
+    return;
+  }
+
+  const raw = await readBody(req, res);
+  if (raw === BODY_ERROR) {
+    return;
+  }
+  let body: unknown;
+  if (raw.length > 0) {
+    try {
+      body = JSON.parse(raw.toString("utf8"));
+    } catch {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "invalid_json" }));
+      return;
+    }
+  }
+
+  const request = toWebRequest(req, raw);
+
+  // Era routing. `isLegacyRequest` is the entry's own classification step
+  // exported as a predicate, so this branch can never disagree with what
+  // `createMcpHandler` would have decided.
+  if (!(await isLegacyRequest(request, body))) {
+    endpoint.principals.set(request, principal);
+    await sendWebResponse(res, await endpoint.modern.fetch(request, { parsedBody: body }));
+    return;
+  }
+
+  // ---- 2025 era: sessionful, unchanged ---------------------------------------
   const sessionId = headerValue(req.headers["mcp-session-id"]);
 
   // Reuse an established session (GET stream, DELETE, or subsequent POST).
@@ -123,11 +253,7 @@ async function handleRequest(
       res.end(JSON.stringify({ error: "unknown_session" }));
       return;
     }
-    const body = req.method === "POST" ? await readJsonBody(req, res) : undefined;
-    if (req.method === "POST" && body === BODY_ERROR) {
-      return;
-    }
-    await session.transport.handleRequest(req, res, body === BODY_ERROR ? undefined : body);
+    await sendWebResponse(res, await session.transport.handleRequest(request));
     return;
   }
 
@@ -137,24 +263,19 @@ async function handleRequest(
     res.end(JSON.stringify({ error: "missing_session" }));
     return;
   }
-
-  const body = await readJsonBody(req, res);
-  if (body === BODY_ERROR) {
-    return;
-  }
   if (!isInitializeRequest(body)) {
     res.writeHead(400, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: "expected_initialize" }));
     return;
   }
 
-  const transport = new StreamableHTTPServerTransport({
+  const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: () => crypto.randomUUID(),
-    enableDnsRebindingProtection: true,
-    allowedHosts: config.allowedHosts,
-    allowedOrigins: config.allowedOrigins.length > 0 ? config.allowedOrigins : undefined,
     onsessioninitialized: (id) => {
       sessions.set(id, { transport });
+    },
+    onsessionclosed: (id) => {
+      sessions.delete(id);
     }
   });
 
@@ -164,27 +285,12 @@ async function handleRequest(
     }
   };
 
-  // Scope enforcement: writes require both the server policy (allowWrite) AND a
-  // token carrying vault.write. A read-scoped OAuth token never sees write tools
-  // (they aren't registered for its session), so it cannot invoke them.
-  const allowWrite = config.allowWrite && principal.scopes.includes(SCOPE_WRITE);
-  const allowSkillWrite = config.allowSkillWrite && principal.scopes.includes(SCOPE_WRITE);
-  const allowAuditWrite = config.allowAuditWrite && principal.scopes.includes(SCOPE_WRITE);
-  const server = buildMcpServer(store, {
-    allowWrite,
-    allowSkillWrite,
-    skillStore,
-    allowAuditWrite,
-    auditStore,
-    includeChatgptCompat: true,
-    chatgptUrlBase: config.chatgptUrlBase
-  });
+  const server = buildMcpServer(
+    endpoint.store,
+    surfaceFor(principal, config, endpoint.skillStore, endpoint.auditStore)
+  );
   await server.connect(transport);
-  await transport.handleRequest(req, res, body);
-}
-
-interface Principal {
-  scopes: string[];
+  await sendWebResponse(res, await transport.handleRequest(request));
 }
 
 /**
@@ -209,6 +315,74 @@ function authenticate(
     }
   }
   return null;
+}
+
+/**
+ * DNS-rebinding check. Returns an error code when the request must be refused,
+ * or undefined when it may proceed.
+ *
+ * Host: validated with the SDK's `validateHostHeader`, which compares HOSTNAMES
+ * and ignores the port (it also understands IPv6 brackets). `allowedHosts`
+ * entries historically carry `host:port`, so the port is stripped here — the
+ * env contract keeps working, and a bare hostname works too. Dropping the port
+ * from the comparison costs nothing: the server listens on exactly one port, so
+ * a browser can only ever reach it with that port in the Host header anyway.
+ *
+ * Origin: deliberately NOT delegated to the SDK's `validateOriginHeader`, which
+ * also compares hostnames only and would therefore stop distinguishing
+ * `https://x` from `http://x`. The existing exact full-origin comparison is
+ * kept instead, unchanged: unset `MCP_HTTP_ALLOWED_ORIGINS` skips the check, and
+ * a request with NO Origin header passes (D-M1-ORIGIN-ABSENT — non-browser MCP
+ * clients send none; only a present-but-unlisted value is refused).
+ */
+function rejectRebinding(req: http.IncomingMessage, config: HttpConfig): string | undefined {
+  const host = headerValue(req.headers.host);
+  // `Host = uri-host [ ":" port ]` (RFC 9110 §7.2) — userinfo is not part of this
+  // header, so an "@" can only be an attempt to make a parser read a different
+  // authority than a reader does. It has to be refused HERE because
+  // `validateHostHeader` compares the PARSED hostname: `evil.example@127.0.0.1`
+  // reads as `127.0.0.1` and passes the allowlist. The v1 transport compared the
+  // header verbatim and refused the shape; keep that.
+  //
+  // Nothing downstream should be relied on to catch it. Today it does not get
+  // far — `toWebRequest` builds this request's URL from the same raw header and
+  // `new Request()` throws on a URL carrying credentials — but that is the Fetch
+  // spec declining to construct an object, two steps past the gate that should
+  // have said no, surfacing as a 500 rather than a refusal. Same reasoning as
+  // D-SCAN1-NOT-VULN: an incidental guard is not the guard.
+  if (host !== undefined && host.includes("@")) {
+    return "forbidden_host";
+  }
+  const allowedHostnames = config.allowedHosts.map(hostnameOf).filter((item) => item.length > 0);
+  if (allowedHostnames.length > 0 && !validateHostHeader(host, allowedHostnames).ok) {
+    return "forbidden_host";
+  }
+  const origin = headerValue(req.headers.origin);
+  if (config.allowedOrigins.length > 0 && origin !== undefined && origin !== "") {
+    if (!config.allowedOrigins.includes(origin)) {
+      return "forbidden_origin";
+    }
+  }
+  return undefined;
+}
+
+/** Strip an optional `:port` from an allowlist entry, keeping IPv6 bracketed. */
+export function hostnameOf(entry: string): string {
+  const value = entry.trim();
+  if (value.startsWith("[")) {
+    const end = value.indexOf("]");
+    return end === -1 ? value : value.slice(0, end + 1);
+  }
+  const colon = value.indexOf(":");
+  if (colon === -1) {
+    return value;
+  }
+  // More than one colon and no brackets: a bare IPv6 literal, where a trailing
+  // group is indistinguishable from a port. Bracket it rather than truncate it.
+  if (value.indexOf(":", colon + 1) !== -1) {
+    return `[${value}]`;
+  }
+  return value.slice(0, colon);
 }
 
 /**
@@ -308,11 +482,10 @@ function headerValue(value: string | string[] | undefined): string | undefined {
 const BODY_ERROR = Symbol("body_error");
 
 /**
- * Read and JSON-parse the request body with a hard size cap. On malformed JSON
- * or oversize payloads it writes the error response and returns BODY_ERROR so
- * the caller stops processing.
+ * Read the request body with a hard size cap (INV-6 item 5). On an oversize
+ * payload it writes the 413 and returns BODY_ERROR so the caller stops.
  */
-async function readJsonBody(req: http.IncomingMessage, res: http.ServerResponse): Promise<unknown | typeof BODY_ERROR> {
+async function readBody(req: http.IncomingMessage, res: http.ServerResponse): Promise<Buffer | typeof BODY_ERROR> {
   const chunks: Buffer[] = [];
   let total = 0;
   for await (const chunk of req) {
@@ -324,11 +497,24 @@ async function readJsonBody(req: http.IncomingMessage, res: http.ServerResponse)
     }
     chunks.push(chunk as Buffer);
   }
-  if (total === 0) {
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Read and JSON-parse the request body with a hard size cap. On malformed JSON
+ * or oversize payloads it writes the error response and returns BODY_ERROR so
+ * the caller stops processing.
+ */
+async function readJsonBody(req: http.IncomingMessage, res: http.ServerResponse): Promise<unknown | typeof BODY_ERROR> {
+  const raw = await readBody(req, res);
+  if (raw === BODY_ERROR) {
+    return BODY_ERROR;
+  }
+  if (raw.length === 0) {
     return undefined;
   }
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    return JSON.parse(raw.toString("utf8"));
   } catch {
     res.writeHead(400, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: "invalid_json" }));
@@ -341,16 +527,9 @@ async function readFormBody(
   req: http.IncomingMessage,
   res: http.ServerResponse
 ): Promise<URLSearchParams | typeof BODY_ERROR> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of req) {
-    total += chunk.length;
-    if (total > MAX_BODY_BYTES) {
-      res.writeHead(413, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: "payload_too_large" }));
-      return BODY_ERROR;
-    }
-    chunks.push(chunk as Buffer);
+  const raw = await readBody(req, res);
+  if (raw === BODY_ERROR) {
+    return BODY_ERROR;
   }
-  return new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+  return new URLSearchParams(raw.toString("utf8"));
 }

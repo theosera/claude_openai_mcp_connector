@@ -381,6 +381,128 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   body instead of being absorbed into the front matter. Bodies that do not begin
   with `---` serialize byte-identically to before.
 
+### Added
+
+- **The HTTP endpoint now serves both MCP protocol eras at once** — the 2025
+  family and 2026-07-28 — on the new `@modelcontextprotocol/server` v2 package
+  line (which pins `@modelcontextprotocol/core` v2 exactly, so it is not
+  declared separately)
+  ([ROADMAP item 2a](./docs/ROADMAP.md)). Adopted for restart transparency, not
+  speed: the 2026-07-28 revision has no `initialize` handshake and no
+  `Mcp-Session-Id`, which removes the "connection dropped" cause that a named
+  tunnel and `MCP_OAUTH_STATE_FILE` do not address — MCP sessions live in
+  process memory, so every restart answers `404 unknown_session` until the
+  client re-initializes. Nothing else about that failure changes: a restart
+  still drops in-flight requests.
+
+  2025-era traffic keeps the **established sessionful wiring** rather than
+  moving to `createMcpHandler`'s stateless legacy default. That default would
+  have taken the session model out from under the existing era in the same
+  change as the dependency bump; instead `src/httpServer.ts` classifies with
+  `isLegacyRequest` — the entry's own classification step, exported as a
+  predicate, so the branch cannot disagree with what the handler would have
+  decided — and routes 2025 traffic to a sessionful transport as before. Every
+  pre-existing HTTP and OAuth boundary test passes **unmodified**, which is the
+  claim that the security boundary did not move here. Moving the whole endpoint
+  off sessions, and the accompanying re-pin, is ROADMAP item 2b.
+
+  The 2026-07-28 leg has no sessions to resolve scope against, so it resolves
+  per request. Both eras call one `surfaceFor(principal, …)`, so the
+  scope→tool-surface derivation (INV-6 item 4 / INV-7 item 5) stays a single
+  function rather than becoming two. The per-request factory recovers its
+  principal from the exact `Request` the endpoint authenticated and **throws if
+  it cannot**: there is no default surface to fall back to, because that default
+  would be the full one. Pinned by tests that drive a real 2025 client and a
+  real 2026-07-28 client against one endpoint and assert the same tool list, no
+  session id on the modern leg, and that read-only default, `401`, and the
+  DNS-rebinding `403` all still apply to modern requests. The scope gate has its
+  own pin in `tests/oauth.test.ts`: a `vault.read` token and a
+  `vault.read vault.write` token, back to back against one endpoint on the
+  modern era, see two different tool sets — and the read-scoped one still sees
+  no write tools afterwards, so the surface follows the presented token rather
+  than the first one seen.
+
+  `src/index.ts` (stdio) moves to the v2 `StdioServerTransport` as part of the
+  package swap; it still serves one 2025-era instance per connection. Dual-era
+  stdio via `serveStdio()` is ROADMAP item 2c.
+
+### Changed
+
+- **DNS-rebinding protection moved off the deprecated transport options to the
+  endpoint boundary**, ahead of protocol-era routing, so one check covers both
+  eras identically. It had to move: `createMcpHandler` exposes no equivalent
+  option, so the modern leg would otherwise have been unprotected. The
+  behaviour-pinning tests added earlier are unchanged across the move — same
+  requests, same verdicts, different mechanism.
+
+  Two decisions this forced, both recorded in
+  [`docs/ROADMAP.md`](./docs/ROADMAP.md):
+
+  - **`MCP_HTTP_ALLOWED_HOSTS` is now compared by hostname, ignoring any
+    `:port` suffix** (D-M3A-HOST-PORT). The SDK's `validateHostHeader` is
+    port-agnostic; rather than break the env contract, entries are normalized at
+    the boundary, so existing `host:port` values keep working and a bare
+    hostname now works too. The port was never a useful discriminator — the
+    server listens on exactly one port, which is therefore the only port a
+    browser could reach it on whatever the allowlist says. A bare IPv6 literal
+    is bracketed rather than truncated at its first colon, which would have
+    produced an empty, unmatchable entry (and `loadHttpConfig` now brackets an
+    IPv6 bind host when building the default for the same reason).
+  - **A `Host` header carrying userinfo is refused outright**
+    (D-M3A-HOST-USERINFO). Comparing hostnames would accept
+    `evil.example@127.0.0.1`, which parses to `127.0.0.1` while naming another
+    authority; `Host` has no userinfo field (RFC 9110 §7.2), so no client sends
+    one and refusing it costs nothing. Before the check such a request passed
+    the allowlist and returned **500** — `new Request()` refusing a URL that
+    carries credentials, which is the Fetch spec declining to build an object
+    rather than this server declining to serve a request.
+  - **`MCP_HTTP_ALLOWED_ORIGINS` keeps exact full-origin comparison, scheme
+    included** (D-M3A-ORIGIN-EXACT). The SDK's `validateOriginHeader` is
+    hostname-only like its Host counterpart, which for origins would stop
+    distinguishing `https://x` from `http://x` — a real relaxation with no
+    compensating benefit, so it was not adopted. The absent-`Origin`
+    pass-through (D-M1-ORIGIN-ABSENT) and the `/mcp`-only scope of both checks
+    are unchanged.
+
+- `@modelcontextprotocol/sdk` v1 is no longer a runtime dependency. It stays as
+  a **devDependency**, driving the 2025-era half of the negotiation test from a
+  real v1 client rather than a simulation of one.
+
+### Fixed
+
+- **`pnpm typecheck` now covers `tests/`, which it never had.** `tsconfig.json`
+  is the build config — its `rootDir` is `src` and it emits declarations — so
+  its `include` names `src/**/*.ts` only, and no gate ever type-checked a test
+  file. The suite had been constructing `HttpConfig` literals missing the
+  required `allowAuditWrite` field at **seven** call sites, invisibly, because
+  nothing looked. (They behaved correctly at runtime — a missing flag reads as
+  `undefined`, which is falsy, which is the intended "audit surface off" — so
+  only the type was wrong. That is exactly the class of error a type-checker is
+  for, and exactly the class that goes unnoticed when it is not run.) A new
+  `tsconfig.test.json` extends the build config with `noEmit` and adds
+  `tests/`, and `typecheck` runs both. `pnpm build` output is unchanged: the
+  build config is untouched.
+
+- **The Web-to-Node response bridge honours backpressure.** `res.write`
+  returning `false` means the socket buffer is full; the streaming loop read the
+  next chunk regardless, so Node queued the pending chunks in memory. A
+  held-open 2025-era SSE stream makes that reachable — an authenticated client
+  that reads slowly without disconnecting grows the queue for the lifetime of
+  the stream. The loop now awaits `drain` before the next read, and a
+  disconnect during that wait releases it (once the socket is gone `drain`
+  never fires, so waiting on it alone would hang the response instead).
+
+- **The `ctx.requestInfo` identity assumption is now pinned by a test.** The
+  modern leg recovers its principal by looking the request up in a `WeakMap`
+  keyed by the exact `Request` handed to `fetch`; `McpRequestContext` documents
+  that value as "the original HTTP request being served", but that is a
+  property of the dependency, and `package.json` floats on a caret range with
+  weekly Dependabot bumps. A minor release passing a copy would make every
+  modern request fail closed with `unresolved_principal`. Pinning the dependency
+  version instead would freeze security patches to buy a guarantee a test gives
+  for free — the same trade the DNS-rebinding options already taught. The test
+  drives real modern bytes captured off the wire, not a hand-shaped envelope.
+
 ## [0.7.0] — 2026-08-03
 
 ### Security
