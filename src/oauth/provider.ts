@@ -132,6 +132,20 @@ export class OAuthProvider {
     return `Bearer resource_metadata="${this.protectedResourceMetadataUrl}"`;
   }
 
+  /**
+   * RFC 6750 §3.1 challenge for a token that authenticates but does not carry
+   * the scope the request needs. Distinct from `wwwAuthenticate()` (401, "who
+   * are you"): this accompanies a 403 and names the missing scope, which is
+   * what lets a client re-authorize for it instead of treating the refusal as
+   * a dead end.
+   */
+  insufficientScope(required: string): string {
+    return (
+      `Bearer error="insufficient_scope", error_description="requires ${required}", ` +
+      `scope="${required}", resource_metadata="${this.protectedResourceMetadataUrl}"`
+    );
+  }
+
   /** RFC 7591 — Dynamic Client Registration (public client, PKCE). */
   register(body: unknown): OAuthHttpResponse {
     const record = (body ?? {}) as Record<string, unknown>;
@@ -332,14 +346,29 @@ export class OAuthProvider {
         `<small>Chosen by the client at registration and not verified — judge this ` +
         `request by the destination below.</small></p>`
       : "";
-    // Granted scope is deliberately not shown yet. `vault.read` is not enforced
-    // on the read tools today, so a scope line would state a restriction the
-    // server does not apply; it lands with the per-request scope resolution
-    // (ROADMAP item 2b), which is what makes such a line true.
+    // Granted scope, now that it is true. It was deliberately withheld until
+    // `vault.read` was enforced (ROADMAP 2b): while the read tools were
+    // registered unconditionally, a scope line would have stated a restriction
+    // the server did not apply, which is worse than no line at all.
+    //
+    // What is shown is the scope that will actually be GRANTED — requested ∩
+    // grantable — not what the client asked for, because the grant is what the
+    // token carries and what the endpoint then enforces per request. An empty
+    // grant is called out explicitly: such a token authenticates but is refused
+    // at `/mcp` with `insufficient_scope`, so approving it accomplishes nothing.
+    const granted = this.grantScope(params.scope);
+    const scopeRow = granted
+      ? `<p>This grants: <strong>${escapeHtml(granted)}</strong>` +
+        (granted.includes(SCOPE_WRITE)
+          ? ` — including <strong>writing to the vault</strong>.</p>`
+          : ` — read only.</p>`)
+      : `<p style="color:#b00">This client asked for no scope this server can grant, so approving ` +
+        `would issue a token that cannot read anything. Nothing is exposed either way.</p>`;
     const body = `
       <h1>Connect to private vault</h1>
       <p>Authorize this client to access your Markdown vault (read-only unless writes are enabled).</p>
       ${clientRow}
+      ${scopeRow}
       <p>On approval this browser is sent to <strong>${escapeHtml(redirectOrigin)}</strong>,
          which receives the authorization code. Stop if you do not recognise it.</p>
       ${errorHtml}

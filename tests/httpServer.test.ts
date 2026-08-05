@@ -664,11 +664,12 @@ describe("HTTP transport integration", () => {
     });
   });
 
-  // --- Dual-era serving (ROADMAP 2a) -----------------------------------------
-  // Property guaranteed by this node: BOTH protocol eras negotiate successfully
-  // against one endpoint. 2025-era traffic keeps the sessionful wiring; the
-  // 2026-07-28 era is sessionless, which is the point — it is the failure mode
-  // ("404 unknown_session" after every restart) that statelessness removes.
+  // --- Dual-era serving, sessionless (ROADMAP 2a, then 2b) -------------------
+  // 2a guaranteed: BOTH protocol eras negotiate successfully against one
+  // endpoint. 2b removed the last session: NEITHER era issues an
+  // `Mcp-Session-Id` now, which is what removes the `404 unknown_session`
+  // restart failure, and what forces the tool surface to be resolved from the
+  // presented token on every request instead of once per session.
   describe("dual-era negotiation", () => {
     interface Exchange {
       requestedMethod: string | null;
@@ -687,7 +688,7 @@ describe("HTTP transport integration", () => {
       };
     }
 
-    it("serves the 2025 era (sessionful) and 2026-07-28 (sessionless) from one endpoint", async () => {
+    it("serves the 2025 era and 2026-07-28 from one endpoint, neither with a session", async () => {
       const legacyLog: Exchange[] = [];
       const legacyClient = new Client({ name: "legacy", version: "0.0.0" });
       await legacyClient.connect(
@@ -717,9 +718,12 @@ describe("HTTP transport integration", () => {
       expect(legacyTools).toContain("search_documents");
       expect(modernTools).toEqual(legacyTools);
 
-      // The 2025 handshake issued a session id; the modern exchanges carry the
-      // per-request `Mcp-Method` routing header and never receive one.
-      expect(legacyLog.some((exchange) => exchange.sessionIdIssued !== null)).toBe(true);
+      // NEITHER era receives a session id. Before 2b the 2025 handshake issued
+      // one and this assertion was inverted; that inversion is the whole of the
+      // change, so it is asserted on the wire rather than inferred from the fact
+      // that the clients still work.
+      expect(legacyLog.length).toBeGreaterThan(0);
+      expect(legacyLog.every((exchange) => exchange.sessionIdIssued === null)).toBe(true);
       expect(modernLog.every((exchange) => exchange.sessionIdIssued === null)).toBe(true);
       expect(modernLog.some((exchange) => exchange.requestedMethod === "server/discover")).toBe(true);
       expect(modernLog.some((exchange) => exchange.requestedMethod === "tools/list")).toBe(true);

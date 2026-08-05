@@ -266,8 +266,10 @@ DNS-rebinding allowlist (which is compared by hostname — the `:port` suffix in
 is `https://<random>.trycloudflare.com/mcp`. Tokens are **audience-bound** to
 that `/mcp` resource and **scope-gated**: a connector only receives
 `vault.write` when at least one explicitly enabled write surface exists. The
-server then registers only that surface — per session on the 2025 protocol era,
-per request on 2026-07-28, which has no sessions:
+server then registers only that surface, **on every request** — the endpoint
+keeps no sessions on either protocol era, so the tool set always follows the
+token actually presented. A token carrying no `vault.read` is refused with
+`403 insufficient_scope` rather than served an empty tool list:
 `MCP_HTTP_ALLOW_WRITE=1` enables document writes,
 `MCP_HTTP_ALLOW_SKILL_WRITE=1` enables constrained Skill creation, and
 `MCP_HTTP_ALLOW_AUDIT_WRITE=1` (with `MCP_AUDIT_SUBDIR`) enables only the
