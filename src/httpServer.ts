@@ -336,8 +336,25 @@ function authenticate(
  * clients send none; only a present-but-unlisted value is refused).
  */
 function rejectRebinding(req: http.IncomingMessage, config: HttpConfig): string | undefined {
+  const host = headerValue(req.headers.host);
+  // `Host = uri-host [ ":" port ]` (RFC 9110 §7.2) — userinfo is not part of this
+  // header, so an "@" can only be an attempt to make a parser read a different
+  // authority than a reader does. It has to be refused HERE because
+  // `validateHostHeader` compares the PARSED hostname: `evil.example@127.0.0.1`
+  // reads as `127.0.0.1` and passes the allowlist. The v1 transport compared the
+  // header verbatim and refused the shape; keep that.
+  //
+  // Nothing downstream should be relied on to catch it. Today it does not get
+  // far — `toWebRequest` builds this request's URL from the same raw header and
+  // `new Request()` throws on a URL carrying credentials — but that is the Fetch
+  // spec declining to construct an object, two steps past the gate that should
+  // have said no, surfacing as a 500 rather than a refusal. Same reasoning as
+  // D-SCAN1-NOT-VULN: an incidental guard is not the guard.
+  if (host !== undefined && host.includes("@")) {
+    return "forbidden_host";
+  }
   const allowedHostnames = config.allowedHosts.map(hostnameOf).filter((item) => item.length > 0);
-  if (allowedHostnames.length > 0 && !validateHostHeader(headerValue(req.headers.host), allowedHostnames).ok) {
+  if (allowedHostnames.length > 0 && !validateHostHeader(host, allowedHostnames).ok) {
     return "forbidden_host";
   }
   const origin = headerValue(req.headers.origin);

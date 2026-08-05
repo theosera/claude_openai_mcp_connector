@@ -569,6 +569,30 @@ describe("HTTP transport integration", () => {
     expect(lookalike.status).toBe(403);
   });
 
+  it("refuses a Host header carrying userinfo", async () => {
+    // RFC 9110 §7.2 is `Host = uri-host [ ":" port ]` — userinfo is not part of
+    // it, so an "@" can only be an attempt to make a parser read a different
+    // authority than a reader does. `new URL("http://evil.example@127.0.0.1")`
+    // has hostname "127.0.0.1", which the allowlist accepts, while the header as
+    // written names evil.example. The v1 transport compared the header verbatim
+    // and refused this shape; a hostname-only comparison on its own would not,
+    // and the raw header goes on to build this request's URL in toWebRequest.
+    const port = Number(new URL(baseUrl).port);
+
+    const smuggled = await rawInitialize({ port, hostHeader: `evil.example@127.0.0.1:${port}` });
+    expect(smuggled.status).toBe(403);
+    // Refused BY THE GATE, not merely unsuccessful. Without the check this was a
+    // 500: the request passed the allowlist and died on `new Request()` refusing
+    // a URL with credentials, which is the Fetch spec declining to build an
+    // object rather than this server declining to serve one.
+    expect(JSON.parse(smuggled.body)).toMatchObject({ error: "forbidden_host" });
+
+    // The mirror image parses to a hostile hostname and was already refused.
+    // Pinned so both directions stay closed together.
+    const reversed = await rawInitialize({ port, hostHeader: `127.0.0.1@evil.example:${port}` });
+    expect(reversed.status).toBe(403);
+  });
+
   it("compares Host by hostname, ignoring the port (allowlist entries may omit it)", async () => {
     // D-M3A-HOST-PORT — the env contract (`MCP_HTTP_ALLOWED_HOSTS`) historically
     // carries `host:port`; the check is now hostname-only, so both spellings

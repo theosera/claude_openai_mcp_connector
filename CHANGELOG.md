@@ -448,6 +448,14 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     is bracketed rather than truncated at its first colon, which would have
     produced an empty, unmatchable entry (and `loadHttpConfig` now brackets an
     IPv6 bind host when building the default for the same reason).
+  - **A `Host` header carrying userinfo is refused outright**
+    (D-M3A-HOST-USERINFO). Comparing hostnames would accept
+    `evil.example@127.0.0.1`, which parses to `127.0.0.1` while naming another
+    authority; `Host` has no userinfo field (RFC 9110 §7.2), so no client sends
+    one and refusing it costs nothing. Before the check such a request passed
+    the allowlist and returned **500** — `new Request()` refusing a URL that
+    carries credentials, which is the Fetch spec declining to build an object
+    rather than this server declining to serve a request.
   - **`MCP_HTTP_ALLOWED_ORIGINS` keeps exact full-origin comparison, scheme
     included** (D-M3A-ORIGIN-EXACT). The SDK's `validateOriginHeader` is
     hostname-only like its Host counterpart, which for origins would stop

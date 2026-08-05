@@ -371,6 +371,21 @@ Two real problems, in the order they were fixed:
      its first colon (which would have produced an empty, unmatchable entry);
      `loadHttpConfig` brackets an IPv6 bind host in the default for the same
      reason.
+   - **D-M3A-HOST-USERINFO — a `Host` carrying userinfo is refused outright.**
+     Hostname comparison relaxes one thing the exact match did not mean to
+     allow: `Host: evil.example@127.0.0.1` parses to hostname `127.0.0.1` and
+     passes the allowlist, while the header as written names another authority.
+     RFC 9110 §7.2 is `Host = uri-host [ ":" port ]`, so an `@` is not legal
+     here at all and no client sends one — refusing it costs nothing and
+     restores what the v1 transport did by comparing verbatim. Measured before
+     the check was added: such a request **passed the gate and returned 500**,
+     because `toWebRequest` builds this request's URL from the same raw header
+     and `new Request()` throws on a URL carrying credentials. That is the Fetch
+     spec declining to construct an object two steps past the boundary, not this
+     server declining to serve a request — the same reasoning as
+     D-SCAN1-NOT-VULN, where an incidental guard was kept but not counted as the
+     guard. Pinned by a test asserting the 403 **and** the `forbidden_host`
+     code, so a downstream 500 cannot satisfy it.
    - **The middleware is Express-shaped → not used.** `hostHeaderValidation`
      returns an Express `RequestHandler` and there is no Express here. The
      Web-standard `validateHostHeader(hostHeader, hostnames)` is used directly
