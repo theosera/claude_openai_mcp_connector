@@ -151,7 +151,7 @@ tools scoped to one reserved subtree (`MCP_AUDIT_SUBDIR` +
   engine, full enumeration, and the out-of-vault git-SHA / signed-manifest trust
   anchor. Graduates to ✅ on merge.
 
-### MCP 2026-07-28 (stateless core) adoption — _reliability, not speed_ 🔭
+### MCP 2026-07-28 (stateless core) adoption — _reliability, not speed_ 🚧
 
 The 2026-07-28 revision makes the protocol stateless at its core: the
 `initialize` handshake and the `Mcp-Session-Id` header are gone (version /
@@ -193,15 +193,15 @@ The reasons to adopt it anyway, in cost/benefit order:
    stable identity". Under CIMD it becomes stable, so the appendix's reasoning
    about attribution / selective revocation must be revisited **before** any
    `client_id`-keyed feature (i.e. before the audit log) is built on it.
-2. **v2 packages + dual-era serving 🔭 — this is the one that pays.** It closes
-   the **third** cause of "the connection dropped", the one §1 of
-   [`operations.md`](./operations.md) does not yet list. Causes (A) ephemeral
-   tunnel URL and (B) in-memory OAuth state are addressed (named tunnel /
-   `MCP_OAUTH_STATE_FILE`); the MCP **session** itself is not. `sessions` in
-   `src/httpServer.ts` is a process-memory `Map`, so every supervisor restart,
-   redeploy, or OOM invalidates all session ids and the server answers
+2. **v2 packages + dual-era serving ✅ — this is the one that paid.** It closed
+   the **third** cause of "the connection dropped", now written up as resolved in
+   [`operations.md` §1.C](./operations.md). Causes (A) ephemeral tunnel URL and
+   (B) in-memory OAuth state were already addressed (named tunnel /
+   `MCP_OAUTH_STATE_FILE`); the MCP **session** itself was not. `sessions` in
+   `src/httpServer.ts` was a process-memory `Map`, so every supervisor restart,
+   redeploy, or OOM invalidated all session ids and the server answered
    `404 unknown_session`, forcing a client re-initialize. Removing the session id
-   removes exactly that failure mode — and no more. A restart still drops
+   removed exactly that failure mode — and no more. A restart still drops
    in-flight requests, and any continuation across a multi-round-trip request
    still needs an explicit, integrity-checked `requestState` (plus whatever
    application state that round depends on); statelessness does not carry either
@@ -299,12 +299,42 @@ The reasons to adopt it anyway, in cost/benefit order:
      Re-pinning cost, as predicted, was concentrated rather than large: exactly
      one pre-existing assertion had to invert (the 2025 handshake no longer
      issues a session id), and it is now asserted on the wire for both eras.
-   - **2c. stdio + operations migration 🔭.** `src/index.ts` moves to
-     `serveStdio()`, and [`operations.md §1`](./operations.md) gains the third
-     "why connections drop" cause plus any restart-procedure change. The stdio
-     side can lag the HTTP side indefinitely — it has no sessions to lose — so
-     this is deliberately last, and it requires 2b only so the documented
-     boundary is the final one rather than an intermediate state.
+   - **2c. stdio + operations migration ✅.** `src/index.ts` serves stdio through
+     `serveStdio()`, so a local client may open either era against the same tool
+     factory; before this, stdio answered the 2025 handshake only and did not
+     offer `server/discover` at all. Two measured details shaped the wiring:
+
+     - **`legacy: 'serve'` is passed explicitly, not defaulted.** Dual-era stdio
+       is the point of the change, so a library default that later moved would
+       silently turn 2025-era clients away. Flipping it to `'reject'` fails the
+       2025 leg with `-32022`, which is what makes the test meaningful.
+     - **`onerror` is passed to keep start-up failures visible.** `serveStdio`
+       starts the wire in the background and *drops* the rejection when no
+       handler is installed, where the previous `await server.connect(…)` would
+       have crashed the process. Without a handler, a transport that failed to
+       start would leave the "ready" line as the only output. It reports the
+       error class only — the same callback receives runtime errors whose
+       messages can quote inbound bytes — and is non-fatal, so malformed client
+       input cannot kill the server.
+
+     **One instance is pinned per stdio connection**, which is exactly what 2b
+     removed from HTTP. That asymmetry is deliberate and load-bearing: on HTTP
+     successive requests on one connection can present different bearer tokens,
+     so the surface must be re-derived per request; stdio carries no principal at
+     all (`serveStdio` never sets `ctx.authInfo`/`ctx.requestInfo`), the peer is
+     the process that spawned the server, and the surface is a constant — pinned
+     and per-request are observationally identical there. Neither side should be
+     changed to match the other.
+
+     [`operations.md §1`](./operations.md) gained the third "why connections
+     drop" cause, written as **resolved**: process-memory MCP sessions and the
+     `404 unknown_session` restart failure are gone with 2b, so a restart is now
+     transparent at the protocol layer and only §1.B (OAuth state) survives it.
+     The runbook's own 2b debt was paid at the same time — §9 Step 5 still told
+     operators to "reuse the returned `mcp-session-id`", a step that cannot work
+     against a sessionless endpoint. Both the replacement snippet and the
+     `405` on `GET`/`DELETE` are asserted against the live endpoint, so the
+     runbook cannot drift from the server it documents.
 
    The order is forced: 2a → 2b → 2c. Item 3 below depends on **2b**, not on 2c.
 3. **Cache hints (`ttlMs` / `cacheScope`) 🔭 — must be scope-private.** The tool
@@ -625,8 +655,8 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       is the scanner's own vault-side output; this is a server-side event log.)
 - [ ] **One-command install / npx packaging** — remove the `pnpm build` step so
       the 🟢 non-engineer path needs no toolchain (see Onboarding above).
-- [ ] **Migrate to `@modelcontextprotocol/server`/`core` v2 with dual-era
-      serving** — adopt for restart transparency (guiding priority #2), not for
+- [x] **Migrate to `@modelcontextprotocol/server`/`core` v2 with dual-era
+      serving ✅** — adopt for restart transparency (guiding priority #2), not for
       speed; see the 2026-07-28 section above, which splits this into **2a**
       (dual-era transport / dependency bump), **2b** (per-request
       scope→tool-surface resolution — the boundary re-pin, and the only
@@ -647,7 +677,11 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
             challenge, consent page states the granted scope, and the
             session-id assertion re-pinned. Pinned by a token-swap test that
             fails under per-session resolution.
-      - [ ] **2c** — `serveStdio()` (dual-era stdio) + `operations.md §1`.
+      - [x] **2c** ✅ — `serveStdio()` with an explicit `legacy: 'serve'` and an
+            `onerror` that keeps swallowed start-up failures visible; both eras
+            driven end-to-end against the spawned real entrypoint. `operations.md`
+            §1.C records the third cause as resolved, and §9 Step 5's stale
+            `mcp-session-id` step was replaced with a snippet the tests assert.
 - [x] **Search P0 + P1 slices** — ✅ P0: NFKC search folding (query + text,
       snippets still sliced from the original), result timestamps/`size_bytes`,
       `total_count`/`offset` envelope, backlink relative-link resolution,

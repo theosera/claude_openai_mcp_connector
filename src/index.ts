@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { loadConfig, loadEnvFile, loadHttpConfig, selectedTransport } from "./config.js";
 import { startHttpServer } from "./httpServer.js";
 import { AuditStore } from "./auditStore.js";
@@ -58,19 +58,66 @@ if (transport === "http") {
   );
 } else {
   // Local stdio transport for CLI clients (Claude Code, Codex, Claude Desktop).
-  const server = buildMcpServer(store, {
-    allowWrite: true,
-    allowSkillWrite: Boolean(skillStore),
-    skillStore,
-    allowAuditWrite: Boolean(auditStore),
-    auditStore,
-    includeChatgptCompat: true
-  });
-  await server.connect(new StdioServerTransport());
+  // serveStdio owns the era decision for this connection: the opening exchange
+  // selects 2025 or 2026-07-28, and ONE instance from this factory is pinned for
+  // the connection's lifetime. The same factory serves both eras, so the tool
+  // surface cannot drift between them.
+  //
+  // Pinning one instance per connection is what 2b deliberately removed from
+  // HTTP, and it is safe *here* for a reason that does not hold there: on HTTP
+  // successive requests on one connection can present different bearer tokens,
+  // so the surface has to be re-derived per request from the presented
+  // principal. stdio carries no principal at all — serveStdio never populates
+  // `ctx.authInfo`/`ctx.requestInfo`, the peer is the process that spawned us,
+  // and the surface below is a constant. Pinned and per-request are therefore
+  // observationally identical on stdio. Do not "fix" this for symmetry with
+  // HTTP, and do not reintroduce pinning on HTTP by analogy with this.
+  serveStdio(
+    () =>
+      buildMcpServer(store, {
+        allowWrite: true,
+        allowSkillWrite: Boolean(skillStore),
+        skillStore,
+        allowAuditWrite: Boolean(auditStore),
+        auditStore,
+        includeChatgptCompat: true
+      }),
+    {
+      // Explicit rather than defaulted: dual-era stdio is the point of this
+      // wiring, so a future change of the library default must not silently
+      // turn 2025-era clients away. Pinned by tests/stdio.test.ts.
+      legacy: "serve",
+      // serveStdio starts the wire in the background and drops the rejection
+      // when no handler is installed (`started.catch(() => {})`), so without
+      // this a transport that failed to start would leave the "ready" line
+      // below as the only output and look healthy. Non-fatal by design —
+      // malformed input from the client must not be able to kill the server.
+      //
+      // NEVER the message. This callback also receives runtime out-of-band
+      // errors, and those messages can quote inbound bytes — vault content and
+      // client input are untrusted (INV-5), and stderr goes to a client-owned
+      // debug log. `code` is exempt from that rule and is the reason this line
+      // is worth printing at all: Node's system errors carry the whole signal
+      // there (`EACCES`, `ENOTCONN`) while `name` flattens every one of them to
+      // "Error". It is a fixed token from the runtime, never client-supplied
+      // content, so it says what failed without echoing anything.
+      onerror: (error) => {
+        const code = (error as NodeJS.ErrnoException).code;
+        process.stderr.write(`MCP stdio transport error: ${error.name}${code ? ` (${code})` : ""}\n`);
+      }
+    }
+  );
   // stderr only — stdout is the JSON-RPC channel on stdio. Names the effective
   // write surface the way the HTTP branch above does, so an unset
   // MCP_AUDIT_SUBDIR (which leaves this write-capable process with the INV-9
   // audit-subtree reservation OFF) is visible instead of silent.
+  //
+  // This now precedes the wire being up, where it used to follow
+  // `await server.connect(...)`. `serveStdio` starts in the background and
+  // hands back only `close()`, so there is no started promise to await — the
+  // line states the surface this process WILL serve, not that the transport
+  // came up. A failure therefore reads "ready" and then the `onerror` line
+  // above; that line, not this one, is the one to trust about start-up.
   process.stderr.write(
     `MCP stdio transport ready (write=on, documents=on, ` +
       `skills=${skillStore ? "on" : "off"}, audit=${auditStore ? "on" : "off"})\n`

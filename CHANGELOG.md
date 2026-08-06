@@ -549,6 +549,59 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   for free — the same trade the DNS-rebinding options already taught. The test
   drives real modern bytes captured off the wire, not a hand-shaped envelope.
 
+### Changed
+
+- **stdio now serves both protocol eras (ROADMAP 2c).** `src/index.ts` hands the
+  connection to `serveStdio()` from `@modelcontextprotocol/server/stdio` instead
+  of connecting one pre-built server to a `StdioServerTransport`. Before this, a
+  local client could only open the 2025 handshake — the endpoint did not offer
+  `server/discover` at all — so Claude Code / Codex / Claude Desktop are now free
+  to negotiate 2026-07-28 against exactly the same tool factory. The surface is
+  unchanged (stdio stays full read + write) and `MCP_ENV_FILE`, transport
+  selection and the start-up stderr line are untouched.
+
+  Two options are passed rather than defaulted, each for a measured reason:
+
+  - `legacy: 'serve'` — dual-era serving is the point of the change, so a
+    library default that later moved would silently turn 2025-era clients away.
+    Flipping it to `'reject'` fails the 2025 leg with `-32022`, which is what
+    makes the regression test meaningful rather than merely green.
+  - `onerror` — `serveStdio` starts the wire in the background and **drops** the
+    rejection when no handler is installed, where the previous
+    `await server.connect(…)` would have crashed the process. Without a handler
+    a transport that failed to start would leave the "ready" line as the only
+    output. It reports the error **class only**: the same callback also receives
+    runtime out-of-band errors whose messages can quote inbound bytes, and
+    stderr is not a place to echo those. It is non-fatal by design, so malformed
+    client input cannot kill the server.
+
+  One instance is pinned per stdio connection, which is what the previous
+  release removed from HTTP. The asymmetry is deliberate: on HTTP successive
+  requests on one connection can present different bearer tokens, so the surface
+  must be re-derived per request; stdio carries no principal at all
+  (`serveStdio` never sets `ctx.authInfo`/`ctx.requestInfo`), the peer is the
+  process that spawned the server, and the surface is a constant — pinned and
+  per-request are observationally identical there. Both eras are driven
+  end-to-end by real v1 and v2 clients against the **spawned real entrypoint**,
+  so what is pinned is the shipped wiring; reverting the wiring fails both legs.
+
+### Fixed
+
+- **The operations runbook no longer tells operators to reuse a session id that
+  no longer exists.** `operations.md` §9 Step 5 documented a manual surface check
+  that captured `mcp-session-id` from the handshake and sent it back on the
+  `tools/list` call — a step the previous release's sessionless endpoint made
+  impossible, left behind in the same change that removed sessions. The
+  replacement sends `tools/list` as its own POST, and both it and the `405` on
+  `GET`/`DELETE` (the 2025 session operations) are now asserted against the live
+  endpoint, so the runbook cannot drift from the server it documents.
+- **`operations.md` §1 now lists the third cause of "the connection dropped"**,
+  written as resolved: process-memory MCP sessions returning `404
+  unknown_session` after a restart. A restart is transparent at the protocol
+  layer now, and only the OAuth state in §1.B survives it. `context-engineering.md`
+  likewise said the tool surface was built "per-session" and described the move
+  to per-request in the future tense.
+
 ## [0.7.0] — 2026-08-03
 
 ### Security

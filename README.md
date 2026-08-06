@@ -147,6 +147,11 @@ skip. Setting everything directly in the environment (systemd `Environment=`,
 a launchd `EnvironmentVariables` dict, an MCP client's `env` block) works
 exactly as before and needs no file at all.
 
+Because the file supplies whatever the environment left unset — `MCP_TRANSPORT`
+included — give each server its own: a file written for an HTTP endpoint makes
+a stdio registration serve HTTP instead
+([below](#the-env-file-the-stdio-registrations-name)).
+
 To allow a remote client to create instruction-only Skills without exposing
 general document writes, also set a vault-relative, pre-existing directory:
 
@@ -209,6 +214,14 @@ The same server speaks two transports, selected with `MCP_TRANSPORT`:
 | ----------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `stdio` (default) | Local CLI / desktop clients: **Claude Code**, **Codex CLI**, **Claude Desktop** | full (read + write)                                                                                                                        |
 | `http`            | Remote **Chat connectors**: **ChatGPT**, **Claude.ai**                          | read-only by default; document writes require `MCP_HTTP_ALLOW_WRITE=1`, constrained Skill creation requires `MCP_HTTP_ALLOW_SKILL_WRITE=1`, constrained audit writes require `MCP_HTTP_ALLOW_AUDIT_WRITE=1` (+ `MCP_AUDIT_SUBDIR`) |
+
+**Both transports serve both MCP protocol eras** — the 2025 family and
+2026-07-28 — from the same tool factory, so a client sees the same tools
+whichever revision it negotiates. Their connection state differs: the HTTP
+endpoint keeps **no session state** and re-derives the tool surface from the
+presented token on every request, since successive requests can carry
+different tokens; a stdio connection pins one instance, since its peer is the
+process that spawned the server and cannot present a different one.
 
 Chat connectors cannot launch a local process, so they require the HTTP
 transport reachable over HTTPS. Authentication differs by client:
@@ -303,16 +316,62 @@ by discarding the state (everyone simply re-authorizes).
 > the INV-9 audit-subtree reservation **off**. The startup line on stderr
 > (`… audit=off`) is how you see that; see
 > [`operations.md` §9](./docs/operations.md#9-two-endpoint-deployment-interactive--unattended-audit-scan).
+>
+> **Every example below therefore carries `MCP_ENV_FILE`**, and none of them can
+> be copied into a working registration without it. Leave it out only if this
+> vault uses neither reserved subtree — and then confirm that choice against the
+> startup line rather than assuming it.
+
+### The env file the stdio registrations name
+
+Give the stdio servers **their own** file — one that says nothing about a
+transport, a port, or a credential. Keep it outside the vault (anything under
+`KNOWLEDGE_ROOT` is vault content), mode `600`:
+
+```text
+# /abs/path/.mcp-state/vault-stdio.env  — stdio registrations only
+MCP_SKILLS_SUBDIR=_skills             # same subtree as the HTTP endpoints
+MCP_AUDIT_SUBDIR=90_Audit/vault-scan  # same subtree — reserves it here (INV-9)
+
+# Deliberately absent:
+#   MCP_TRANSPORT      — the default is stdio; see the warning below
+#   MCP_AUTH_TOKEN, MCP_OAUTH_*, MCP_HTTP_*  — HTTP-only, nothing reads them here
+#   MCP_PATCH_STATE_DIR — unset gives this process its own per-root default
+#                         (~/.mcp-state/patches-<hash>), which is what you want
+```
+
+> **Do not point a stdio registration at an HTTP endpoint's env file.** The
+> file fills in whatever the real environment left unset, so an `MCP_TRANSPORT=http`
+> line inside it wins: the process **starts an HTTP listener and never speaks
+> stdio**. It does not fail — the client just sees a server that never answers,
+> and the listener collides with the real endpoint's port. Observed, running the
+> registration command against `…/claude_openai_mcp_connector/.env` from
+> [`operations.md` §9 Step 2](./docs/operations.md#step-2--two-env-files-each-named-by-mcp_env_file):
+>
+> ```text
+> stderr: MCP HTTP transport listening on http://127.0.0.1:8799/mcp (write=off, …)
+> stdout: (empty)
+> exit:   never — killed at the timeout
+> ```
+>
+> The interactive and scan files also carry `MCP_AUTH_TOKEN` / `MCP_OAUTH_PASSWORD`,
+> which a local stdio process has no use for. Three endpoints, three files.
 
 ### Claude Code (CLI, stdio)
 
 ```bash
-claude mcp add vault -- node /abs/path/to/claude_openai_mcp_connector/dist/index.js
-# set KNOWLEDGE_ROOT in the spawned env, e.g. via a wrapper or:
-claude mcp add vault --env KNOWLEDGE_ROOT=/abs/path/to/vault -- node /abs/.../dist/index.js
-# or keep the whole configuration in one file:
-claude mcp add vault --env MCP_ENV_FILE=/abs/path/to/vault.env -- node /abs/.../dist/index.js
+# Roots in the registration, everything else in the stdio env file above.
+# MCP_ENV_FILE is what carries MCP_AUDIT_SUBDIR / MCP_SKILLS_SUBDIR into this
+# always-write-capable process; a registration without it starts normally with
+# the INV-9 reservation off.
+claude mcp add vault \
+  --env KNOWLEDGE_ROOT=/abs/path/to/private/vault \
+  --env MCP_ENV_FILE=/abs/path/.mcp-state/vault-stdio.env \
+  -- node /abs/path/to/claude_openai_mcp_connector/dist/index.js
 ```
+
+`KNOWLEDGE_ROOT` may appear in both places without conflict: the real
+environment wins and the file only fills what the environment left unset.
 
 ### Codex CLI (stdio)
 
@@ -321,7 +380,10 @@ claude mcp add vault --env MCP_ENV_FILE=/abs/path/to/vault.env -- node /abs/.../
 [mcp_servers.claude-openai-vault]
 command = "node"
 args = ["/abs/path/to/claude_openai_mcp_connector/dist/index.js"]
-env = { KNOWLEDGE_ROOT = "/abs/path/to/private/vault" }
+
+[mcp_servers.claude-openai-vault.env]
+KNOWLEDGE_ROOT = "/abs/path/to/private/vault"
+MCP_ENV_FILE = "/abs/path/.mcp-state/vault-stdio.env"
 ```
 
 ### Claude Desktop (stdio)
@@ -333,11 +395,39 @@ env = { KNOWLEDGE_ROOT = "/abs/path/to/private/vault" }
     "claude-openai-vault": {
       "command": "node",
       "args": ["/abs/path/to/claude_openai_mcp_connector/dist/index.js"],
-      "env": { "KNOWLEDGE_ROOT": "/abs/path/to/private/vault" }
+      "env": {
+        "KNOWLEDGE_ROOT": "/abs/path/to/private/vault",
+        "MCP_ENV_FILE": "/abs/path/.mcp-state/vault-stdio.env"
+      }
     }
   }
 }
 ```
+
+### Verify a stdio registration
+
+The reservation being off is silent by design (`MCP_AUDIT_SUBDIR` is optional,
+so its absence is not a startup error). Run the **same command and env the
+registration uses**, with stdin closed, and read the one line it writes to
+stderr:
+
+```bash
+MCP_ENV_FILE=/abs/path/.mcp-state/vault-stdio.env \
+KNOWLEDGE_ROOT=/abs/path/to/private/vault \
+  node /abs/path/to/claude_openai_mcp_connector/dist/index.js </dev/null 2>&1 >/dev/null | head -1
+```
+
+```text
+MCP stdio transport ready (write=on, documents=on, skills=on, audit=on)
+```
+
+`audit=on` means `MCP_AUDIT_SUBDIR` reached the process, so the INV-9
+audit-subtree reservation is in effect there. `audit=off` on a write-capable
+process means general writes can still reach the audit subtree — the
+registration is not finished. A line beginning `MCP HTTP transport listening`,
+or no line at all before the command hangs, means the env file belongs to an
+HTTP endpoint (warning above). This works for any client because it bypasses the
+client entirely; nothing here depends on where that client keeps its logs.
 
 ### ChatGPT (web, Developer mode — HTTP + OAuth)
 
