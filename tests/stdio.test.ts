@@ -50,6 +50,35 @@ describe("stdio dual-era serving", () => {
     };
   }
 
+  /**
+   * The same registration, plus the operator env file that every write-capable
+   * stdio process is supposed to carry (docs/operations.md, "INV-9 operating
+   * condition"). `KNOWLEDGE_ROOT` stays inline because that is the shape the
+   * README registration blocks use, and because the real environment wins over
+   * the file (tests/config.test.ts), so the two cannot fight.
+   */
+  async function operatorEnv(): Promise<Record<string, string>> {
+    await fs.mkdir(path.join(vault, "_skills"), { recursive: true });
+    await fs.mkdir(path.join(vault, "90_Audit", "vault-scan", "reports"), { recursive: true });
+    const envFile = path.join(stateDir, "vault.env");
+    await fs.writeFile(
+      envFile,
+      [
+        "MCP_SKILLS_SUBDIR=_skills",
+        "MCP_AUDIT_SUBDIR=90_Audit/vault-scan",
+        `MCP_PATCH_STATE_DIR=${path.join(stateDir, "patches")}`,
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    return {
+      PATH: process.env.PATH ?? "",
+      HOME: process.env.HOME ?? "",
+      KNOWLEDGE_ROOT: vault,
+      MCP_ENV_FILE: envFile
+    };
+  }
+
   const spawnArgs = { command: process.execPath, args: ["--import", tsxLoader, entry] };
 
   it("serves the 2025 era and 2026-07-28 from one factory, with the same tool surface", async () => {
@@ -107,6 +136,80 @@ describe("stdio dual-era serving", () => {
     const data = (result.structuredContent as { data?: { results?: unknown[]; total_count?: number } }).data;
     expect(Array.isArray(data?.results)).toBe(true);
     expect(data?.total_count).toBeGreaterThan(0);
+    await client.close();
+  }, 60_000);
+
+  it("keeps the two eras identical on the FULL surface, not just the audit-off one", async () => {
+    const env = await operatorEnv();
+
+    const legacyClient = new Client({ name: "legacy-full", version: "0.0.0" });
+    await legacyClient.connect(new StdioClientTransport({ ...spawnArgs, env }));
+    const legacyTools = (await legacyClient.listTools()).tools.map((tool) => tool.name).sort();
+    await legacyClient.close();
+
+    const modernClient = new ModernClient(
+      { name: "modern-full", version: "0.0.0" },
+      { versionNegotiation: { mode: { pin: "2026-07-28" } } }
+    );
+    await modernClient.connect(new ModernStdioClientTransport({ ...spawnArgs, env }));
+    const modernTools = (await modernClient.listTools()).tools.map((tool) => tool.name).sort();
+    await modernClient.close();
+
+    // These four exist only when the operator file reached the process. The
+    // era-equality assertion above runs solely on the surface a bare
+    // registration produces, so an era-conditional branch in buildMcpServer
+    // that dropped the audit or Skill tools from one leg would pass unnoticed.
+    expect(legacyTools).toEqual(
+      expect.arrayContaining([
+        "append_audit_report",
+        "compare_and_swap_audit_state",
+        "plan_skill_create",
+        "apply_planned_skill_create"
+      ])
+    );
+    expect(modernTools).toEqual(legacyTools);
+  }, 60_000);
+
+  it("refuses a general document write into the reserved audit subtree, on the wire", async () => {
+    const env = await operatorEnv();
+    const client = new ModernClient(
+      { name: "modern-reserved", version: "0.0.0" },
+      { versionNegotiation: { mode: { pin: "2026-07-28" } } }
+    );
+    await client.connect(new ModernStdioClientTransport({ ...spawnArgs, env }));
+
+    // INV-9 end to end. The reservation is a KnowledgeStore predicate and
+    // tests/knowledgeStore.test.ts covers the predicate directly, but nothing
+    // proved that the always-write-capable stdio surface inherits it. A forged
+    // scan report is precisely what an instruction injected into a vault
+    // document would aim to write, so this is the assertion that has to hold
+    // at the transport such an instruction would arrive on.
+    const refused = await client.callTool({
+      name: "plan_document_create",
+      arguments: {
+        relative_path: "90_Audit/vault-scan/reports/forged.md",
+        title: "forged",
+        body: "forged",
+        reason: "INV-9 regression probe"
+      }
+    });
+    expect(refused.isError).toBe(true);
+    expect(JSON.stringify(refused.content)).toMatch(/reserved/);
+
+    // Control: the same call one directory outside the reservation still
+    // plans, so the refusal above is the reservation and not a dead write
+    // surface. Without this the test would pass with writes broken entirely.
+    const allowed = await client.callTool({
+      name: "plan_document_create",
+      arguments: {
+        relative_path: "projects/inv9-control.md",
+        title: "control",
+        body: "control",
+        reason: "INV-9 regression probe control"
+      }
+    });
+    expect(allowed.isError).toBeFalsy();
+
     await client.close();
   }, 60_000);
 });
