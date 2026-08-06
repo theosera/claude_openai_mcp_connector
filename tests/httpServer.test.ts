@@ -824,10 +824,23 @@ describe("HTTP transport integration", () => {
       await client.listTools();
       await client.close();
 
-      // Both cacheable operations this endpoint serves must be present, so the
-      // assertion below cannot pass vacuously on an empty capture.
-      const cacheable = seen.filter((entry) => entry.method === "server/discover" || entry.method === "tools/list");
-      expect(cacheable.map((entry) => entry.method).sort()).toEqual(["server/discover", "tools/list"]);
+      // Selected by the SHAPE of the result, not by a list of method names: a
+      // result is cacheable exactly when it carries these fields, so an
+      // operation that becomes cacheable later — a `resources/list` once
+      // resources are registered, say — is held to the same values the day it
+      // appears rather than the day someone remembers to extend a list. Keying
+      // on `mcp-method` instead would silently drop it, because the filter would
+      // not recognise the name.
+      const cacheable = seen.filter(
+        (entry) => entry.result && ("ttlMs" in entry.result || "cacheScope" in entry.result)
+      );
+      // Vacuity guard: the two cacheable operations this flow performs must be
+      // among them, so the loop below cannot pass on an empty capture.
+      // `arrayContaining`, not equality — a third cacheable operation should
+      // extend the coverage above, not fail here.
+      expect(cacheable.map((entry) => entry.method).sort()).toEqual(
+        expect.arrayContaining(["server/discover", "tools/list"])
+      );
       for (const entry of cacheable) {
         expect(entry.result?.ttlMs).toBe(0);
         expect(entry.result?.cacheScope).toBe("private");
