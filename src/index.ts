@@ -88,19 +88,36 @@ if (transport === "http") {
       // turn 2025-era clients away. Pinned by tests/stdio.test.ts.
       legacy: "serve",
       // serveStdio starts the wire in the background and drops the rejection
-      // when no handler is installed, so without this a transport that failed
-      // to start would leave the "ready" line below as the only output and look
-      // healthy. Report the error class only: this callback also receives
-      // runtime out-of-band errors, whose messages can quote inbound bytes, and
-      // stderr is not a place to echo those. Non-fatal by design — malformed
-      // input from the client must not be able to kill the server.
-      onerror: (error) => process.stderr.write(`MCP stdio transport error: ${error.name}\n`)
+      // when no handler is installed (`started.catch(() => {})`), so without
+      // this a transport that failed to start would leave the "ready" line
+      // below as the only output and look healthy. Non-fatal by design —
+      // malformed input from the client must not be able to kill the server.
+      //
+      // NEVER the message. This callback also receives runtime out-of-band
+      // errors, and those messages can quote inbound bytes — vault content and
+      // client input are untrusted (INV-5), and stderr goes to a client-owned
+      // debug log. `code` is exempt from that rule and is the reason this line
+      // is worth printing at all: Node's system errors carry the whole signal
+      // there (`EACCES`, `ENOTCONN`) while `name` flattens every one of them to
+      // "Error". It is a fixed token from the runtime, never client-supplied
+      // content, so it says what failed without echoing anything.
+      onerror: (error) => {
+        const code = (error as NodeJS.ErrnoException).code;
+        process.stderr.write(`MCP stdio transport error: ${error.name}${code ? ` (${code})` : ""}\n`);
+      }
     }
   );
   // stderr only — stdout is the JSON-RPC channel on stdio. Names the effective
   // write surface the way the HTTP branch above does, so an unset
   // MCP_AUDIT_SUBDIR (which leaves this write-capable process with the INV-9
   // audit-subtree reservation OFF) is visible instead of silent.
+  //
+  // This now precedes the wire being up, where it used to follow
+  // `await server.connect(...)`. `serveStdio` starts in the background and
+  // hands back only `close()`, so there is no started promise to await — the
+  // line states the surface this process WILL serve, not that the transport
+  // came up. A failure therefore reads "ready" and then the `onerror` line
+  // above; that line, not this one, is the one to trust about start-up.
   process.stderr.write(
     `MCP stdio transport ready (write=on, documents=on, ` +
       `skills=${skillStore ? "on" : "off"}, audit=${auditStore ? "on" : "off"})\n`
