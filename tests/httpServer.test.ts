@@ -771,6 +771,69 @@ describe("HTTP transport integration", () => {
       expect(body.result?.tools?.map((tool) => tool.name)).toContain("search_documents");
     });
 
+    it("emits the conservative cache hints on every cacheable modern result", async () => {
+      // ROADMAP item 3. The 2026-07-28 revision requires `ttlMs`/`cacheScope` on
+      // cacheable results; the SDK fills them from its `cacheHints` option, which
+      // this server deliberately does not set, so the conservative defaults apply.
+      // Both values are load-bearing, and neither is safe to relax:
+      //
+      // - `cacheScope: 'public'` would let a shared cache serve one principal's
+      //   listing to another. The tool surface is per-scope (INV-6/INV-7), so that
+      //   is precisely the leak "not registered, so not discoverable" prevents.
+      // - A non-zero `ttlMs` is unsafe even at `private`, because 2b made the
+      //   surface follow the *token* while a private cache is keyed by the
+      //   *client*. One client swapping bearers — the case the token-swap test in
+      //   this file pins — would be served the previous token's tools.
+      //
+      // The SDK exposes no way to put the token in the cache key (`CacheHint` is
+      // `ttlMs` + `cacheScope` and nothing else), so `ttlMs: 0` is the only safe
+      // value here. This test is what makes adding `cacheHints` fail loudly.
+      interface Captured {
+        method: string | null;
+        result: { ttlMs?: unknown; cacheScope?: unknown } | undefined;
+      }
+      const seen: Captured[] = [];
+      const spy: typeof fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        const response = await fetch(input, init);
+        const raw = await response.clone().text();
+        // JSON or a single SSE frame, depending on Accept negotiation.
+        const payload = raw.startsWith("{")
+          ? raw
+          : (raw
+              .split("\n")
+              .find((line) => line.startsWith("data:"))
+              ?.slice("data:".length)
+              .trim() ?? "");
+        seen.push({
+          method: new Headers(init?.headers).get("mcp-method"),
+          result: payload ? (JSON.parse(payload) as { result?: Captured["result"] }).result : undefined
+        });
+        return response;
+      };
+
+      const client = new ModernClient(
+        { name: "cache-hints", version: "0.0.0" },
+        { versionNegotiation: { mode: { pin: "2026-07-28" } } }
+      );
+      await client.connect(
+        new ModernStreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`), {
+          requestInit: { headers: { authorization: `Bearer ${token}` } },
+          fetch: spy
+        })
+      );
+      await client.listTools();
+      await client.close();
+
+      // Both cacheable operations this endpoint serves must be present, so the
+      // assertion below cannot pass vacuously on an empty capture.
+      const cacheable = seen.filter((entry) => entry.method === "server/discover" || entry.method === "tools/list");
+      expect(cacheable.map((entry) => entry.method).sort()).toEqual(["server/discover", "tools/list"]);
+      for (const entry of cacheable) {
+        expect(entry.result?.ttlMs).toBe(0);
+        expect(entry.result?.cacheScope).toBe("private");
+      }
+    });
+
     it("keeps the read-only default and the write gate on the modern era", async () => {
       const modernClient = new ModernClient(
         { name: "modern", version: "0.0.0" },

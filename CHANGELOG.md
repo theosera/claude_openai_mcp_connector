@@ -8,6 +8,27 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **The conservative cache hints on 2026-07-28 cacheable results are now pinned
+  by a test (ROADMAP item 3).** The revision requires `ttlMs`/`cacheScope` on
+  cacheable results, and the SDK fills them from a `cacheHints` option this
+  server does not set — so `server/discover` and `tools/list` already go out as
+  `ttlMs: 0` / `cacheScope: 'private'`. Nothing changed; what changed is that
+  relaxing either value now fails a test.
+
+  Both are load-bearing. `cacheScope: 'public'` would let a shared cache serve
+  one principal's listing to another, which is exactly the leak "not registered,
+  so not discoverable" exists to prevent — the tool surface is per-scope
+  (INV-6/INV-7). And a non-zero `ttlMs` is unsafe **even at `private`**: the
+  previous release made the surface follow the *token*, while a private cache is
+  keyed by the *client*, so one client swapping bearers would be served the
+  previous token's tool list. `CacheHint` carries `ttlMs` and `cacheScope` and
+  nothing else, so there is no way to put the token in the key — which leaves
+  `ttlMs: 0` as the only safe value rather than one option among several.
+
+  The roadmap item said to use "a private cache scope, or a key that includes the
+  effective scope and the enabled surfaces". The second option does not exist,
+  and the first is insufficient on its own; both corrections are recorded there.
+
 - **A registered `redirect_uri` can no longer name one host and resolve to
   another, and the consent page now says where approving sends the code.** The
   page asked for a password while naming neither the client nor the destination,
