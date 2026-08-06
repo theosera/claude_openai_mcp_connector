@@ -217,7 +217,11 @@ The same server speaks two transports, selected with `MCP_TRANSPORT`:
 
 **Both transports serve both MCP protocol eras** — the 2025 family and
 2026-07-28 — from the same tool factory, so a client sees the same tools
-whichever revision it negotiates, and neither transport keeps a session.
+whichever revision it negotiates. Their connection state differs: the HTTP
+endpoint keeps **no session state** and re-derives the tool surface from the
+presented token on every request, since successive requests can carry
+different tokens; a stdio connection pins one instance, since its peer is the
+process that spawned the server and cannot present a different one.
 
 Chat connectors cannot launch a local process, so they require the HTTP
 transport reachable over HTTPS. Authentication differs by client:
