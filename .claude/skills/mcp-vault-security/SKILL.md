@@ -121,13 +121,16 @@ private vault を HTTP で公開する経路は新しい攻撃面。以下を**�
    `MCP_HTTP_ALLOWED_ORIGINS` 未設定なら Origin 検査はスキップ、設定時も **Origin 無しは通す**
    (D-M1-ORIGIN-ABSENT)。トンネル公開時は公開ホストを allowlist に追加 (`MCP_HTTP_PUBLIC_URL`
    は `loadHttpConfig` が自動追加)。検査対象は `/mcp` のみ。
-4. **read-only 既定** — write tool は対応する許可がないとき **registerTool 自体を呼ばない**
-   (discover もさせない)。document write は `MCP_HTTP_ALLOW_WRITE`、constrained Skill create は
-   `MCP_HTTP_ALLOW_SKILL_WRITE` で独立して opt-in。後者だけでは一般 document write を出さない。
-   stdio は従来どおり full。scope→tool 面の導出は **`surfaceFor` 1 箇所**に集約し、2025 era
-   (session ごと) と 2026-07-28 era (request ごと) の**両方が同じ関数**を通る。modern の factory は
-   principal を復元できなければ **throw して fail-closed** (既定の tool 面を作らない — その既定は
-   full になってしまう)。
+4. **read-only 既定 + per-request 解決** — write tool は対応する許可がないとき
+   **registerTool 自体を呼ばない** (discover もさせない)。document write は `MCP_HTTP_ALLOW_WRITE`、
+   constrained Skill create は `MCP_HTTP_ALLOW_SKILL_WRITE` で独立して opt-in。後者だけでは一般
+   document write を出さない。stdio は従来どおり full。
+   **HTTP に session は無い** (`createMcpHandler` の `legacy: 'stateless'` で 2025 era も per-request)。
+   scope→tool 面の導出は **`surfaceFor` 1 箇所**で、**両 era・全リクエスト**がそこを通る。
+   principal を復元できなければ factory は **throw して fail-closed** (既定の tool 面を作らない —
+   その既定は full になってしまう)。**session を再導入しない** — session id だけで routing すると
+   提示 principal の再確認が消え、write scope で開いた接続が寿命の間 write 面を保持してしまう
+   (2b が閉じた穴そのもの)。
 5. **body サイズ上限** — `readBody` が `MAX_BODY_BYTES` を超えたら 413 (JSON / form 双方の入口)。
 6. token / vault 本文を**ログに出さない** (stderr の起動行は host:port と write 可否のみ)。
    secret は env のみ (INV-4 と同じ規律)。
@@ -154,8 +157,11 @@ DCR + metadata discovery 必須**。`src/oauth/` の最小単一ユーザ AS。*
    に audience-bound (RFC 8707)**。`/mcp` は static bearer **または** 「有効 access token かつ
    audience 一致」を受理 (`authenticate`)。401 時は `WWW-Authenticate: Bearer resource_metadata="…"`。
    **scope enforcement**: granted scope = 要求 ∩ サーバ許可 (`vault.write` は document/Skill の
-   いずれかの write surface が有効な時のみ)。session init では token scope と各 surface の
-   flag を両方照合し、許可された tool だけを登録する。
+   いずれかの write surface が有効な時のみ)。**`vault.read` を持たない token は `/mcp` で
+   `403` + RFC 6750 §3.1 `insufficient_scope` challenge で拒否**する (空の tool 一覧を 200 で
+   返さない — 空 vault と区別が付かず、challenge が無いとクライアントは再認可できない)。
+   **リクエストごとに** token scope と各 surface の flag を両方照合し、許可された tool だけを
+   登録する (session に固定しない)。consent ページは **granted scope** (要求 ∩ 許可) を表示する。
 6. **容量上限 + prune + DCR 入力上限 + consent hardening** — clients/codes/tokens を各上限で
    キャップし期限切れ掃除。DCR は redirect_uris 個数/長さ・client_name 長を制限。consent/login
    ページに `CSP frame-ancestors 'none'` + `X-Frame-Options: DENY` + `Referrer-Policy: no-referrer`。
@@ -221,7 +227,7 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
 | `src/frontmatter.ts`                                                                                                                                                                                             | INV-2         | `assertFrontmatterPatch` の allowlist を広げない (広げるなら脅威評価 + テスト追加)。                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `src/server.ts`                                                                                                                                                                                                  | INV-2,3,5,6,8 | tool 登録の単一 factory。新 tool は zod で入力 schema 化。各 write surface の独立 gate と two-step を崩さない。exact-path create の AskUserQuestion (`はい` + 自由記述) と confirmed path 規律、`SERVER_INSTRUCTIONS` の data 境界文を消さない。 **document を返す tool は必ず `toPublicDocument` を通す** — フィールドは明示 allowlist (delete でなく) で、`absolutePath` (ホスト FS レイアウト) をクライアントに出さない。`MarkdownDocument` に項目を足しても既定で公開されない性質を壊さない。 |
 | `src/index.ts`                                                                                                                                                                                                   | INV-6         | transport 選択のみ (`selectedTransport`)。stdio=full / http=`buildMcpServer` + `startHttpServer`。token/本文をログに出さない。                                                                                                                                                                                                                                                                                                                                                                                   |
-| `src/httpServer.ts`                                                                                                                                                                                              | INV-6         | **auth gate → DNS-rebinding (`rejectRebinding`) → body cap → era 分岐 (`isLegacyRequest`) → leg** の順を崩さない。2025 era は sessionful wiring を温存、2026-07-28 era は `createMcpHandler` (`legacy: 'reject'` — 既定の `'stateless'` にすると 2025 era が黙って session を失う)。tool 面は両 era とも `surfaceFor` 経由。modern factory の principal 復元は fail-closed。 |
+| `src/httpServer.ts`                                                                                                                                                                                              | INV-6,7         | **auth gate (401) → scope gate (`vault.read` 無しは 403 `insufficient_scope`) → DNS-rebinding (`rejectRebinding`) → body cap → 単一 handler** の順を崩さない。session は持たない (`createMcpHandler` + `legacy: 'stateless'` で両 era を per-request)。tool 面は全リクエストが `surfaceFor` 経由。principal 復元は fail-closed、`surfaceFor` も read 無しなら throw。 |
 | `src/webBridge.ts`                                                                                                                                                                                               | INV-6         | node:http ⇄ Web `Request`/`Response` の**形変換のみ**。ここに policy (auth / host / origin / era 分岐) を置かない — 判断は `httpServer.ts` に集約して順序を可読に保つ。body は読み済みバッファを渡す (size cap を読取時に効かせるため / `Request` body は 1 回しか消費できないため)。                                                                                                                                                                                                                       |
 | `src/httpAuth.ts`                                                                                                                                                                                                | INV-6         | constant-time 照合を `===`/早期 return に退行させない。                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `src/oauth/pkce.ts`                                                                                                                                                                                              | INV-7         | S256 のみ。`plain` を足さない。constant-time + 長さ/文字種検証を温存。                                                                                                                                                                                                                                                                                                                                                                                                                                           |
@@ -245,9 +251,12 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
   symlink escape・不正 frontmatter・許可以外の file を reject / Skill-only HTTP surface を確認
 - HTTP transport: token 欠落/不正 → 401 / 正トークン → handshake 成功 / read-only 時に
   write tool が tool 一覧に出ない / write 許可時に出る / chatgpt `search`・`fetch` の出力形状
+- per-request 解決 (2b): **1 クライアント・1 接続で bearer を差し替える**と tool 面が追従する
+  (「2 クライアント × 2 token で面が違う」は session 時代でも通るので**証拠にならない**) /
+  `vault.read` 無しの token は 403 + `insufficient_scope` challenge / consent ページが granted scope を表示
 - dual-era: 2025 era (sdk v1 client) と 2026-07-28 era (`@modelcontextprotocol/client` v2、
   `versionNegotiation: { mode: { pin: "2026-07-28" } }`) が**同一エンドポイントで両方 negotiate** し
-  **同じ tool 面**を見る / modern は `mcp-session-id` を発行しない / modern でも read-only 既定と
+  **同じ tool 面**を見る / **どちらの era も `mcp-session-id` を発行しない** / modern でも read-only 既定と
   401 と Host 403 が効く (実際の modern request を捕捉して verbatim replay する) /
   modern era でも **scope→tool 面が request ごと**に効く (`vault.read` と `vault.read vault.write`
   の 2 token を同一エンドポイントに連続投入し、read 側が後からでも write tool を見ないことを固定)

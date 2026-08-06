@@ -381,6 +381,52 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   body instead of being absorbed into the front matter. Bodies that do not begin
   with `---` serialize byte-identically to before.
 
+### Security
+
+- **`vault.read` is enforced, and the HTTP tool surface is now resolved from the
+  token presented on every single request.** Two changes that had to land
+  together ([ROADMAP item 2b](./docs/ROADMAP.md)).
+
+  Sessions are gone from the endpoint: one handler serves 2026-07-28 natively and
+  2025 through the stateless legacy fallback, so each request of either era gets
+  a fresh instance from the same factory. Under the session model, requests were
+  routed by `Mcp-Session-Id` **alone** and the presenting principal was never
+  re-checked — a connection opened with a write-scoped token kept the write
+  surface for its lifetime no matter what token later requests carried. The
+  regression test is written as exactly that scenario (one client, one
+  connection, the bearer swapped underneath it), because the obvious test — two
+  clients with two tokens see two surfaces — passed under the session model too
+  and would have proved nothing.
+
+  `vault.read` was not enforced at all. Only the write surfaces consulted the
+  token's scopes; the read tools were registered unconditionally and
+  `{scopes: []}` is non-null, so a token carrying **no** scope authenticated and
+  read the entire vault. That state is reachable without anything going wrong:
+  `grantScope` returns requested ∩ grantable and deliberately refuses to
+  substitute read for a scope never requested, so a client asking only for
+  `vault.write` while writes are off is granted nothing. It was never an
+  authentication hole — issuing that token still required the login password —
+  but it was the read half of INV-7 item 5 missing.
+
+  Such a request is now **refused** with `403` and the RFC 6750 §3.1
+  `insufficient_scope` challenge naming the missing scope, rather than served an
+  empty tool list: the challenge is what lets a client re-authorize for the scope
+  it lacks, while an empty `200` is indistinguishable from an empty vault and
+  sends the operator looking in the wrong place. `surfaceFor` independently
+  refuses to build a surface for a principal without read, so a future path that
+  bypasses the gate fails closed instead of quietly restoring the hole.
+
+  **The consent page now states the granted scope**, which the previous release
+  deliberately withheld — while `vault.read` was unenforced, a scope line would
+  have described a restriction the server did not apply. It shows the grant
+  (requested ∩ grantable) rather than the request, and says plainly when the
+  grant is empty that approving would issue a token which cannot read anything.
+
+  Operationally this also removes the last of the three "the connection dropped"
+  causes: there is no session id left to invalidate on restart, so a supervisor
+  restart no longer answers `404 unknown_session` until the client
+  re-initializes. A restart still drops in-flight requests.
+
 ### Added
 
 - **The HTTP endpoint now serves both MCP protocol eras at once** — the 2025

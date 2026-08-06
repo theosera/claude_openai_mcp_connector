@@ -259,31 +259,46 @@ The reasons to adopt it anyway, in cost/benefit order:
      not the stdio migration — `serveStdio()` and dual-era **stdio** remain 2c.
      `@modelcontextprotocol/sdk` v1 stays as a **devDependency** only, driving
      the 2025-era half of the negotiation test from a real v1 client.
-   - **2b. Per-request scope→tool-surface resolution 🔭 — the security-boundary
-     node, and the one to schedule most carefully.** Today `src/httpServer.ts`
-     authenticates, resolves scope, then builds an `McpServer` registering _only_
-     the tools that scope permits, and binds it to the session — INV-6/INV-7 ("a
-     read-scoped token never sees write tools because they were never
-     registered") currently **rests on the session model**. Without sessions that
-     resolution has to move to per-request, which v2's per-request server factory
-     models cleanly. Property guaranteed: _with no session at all, the visible
-     tool set is exactly what the presented token's scopes permit, on every
-     single request_. The cost is concentrated in re-pinning, not rewriting:
-     every boundary test in `tests/httpServer.test.ts` and `tests/oauth.test.ts`
-     has to be re-established against per-request resolution. Requires 2a.
+   - **2b. Per-request scope→tool-surface resolution ✅ — the security-boundary
+     node.** Sessions are gone from the HTTP endpoint entirely: one
+     `createMcpHandler` with `legacy: 'stateless'` serves 2026-07-28 natively and
+     2025 through the stateless legacy fallback, so every request of either era
+     gets a fresh instance from the same factory. Property guaranteed and pinned:
+     _with no session at all, the visible tool set is exactly what the presented
+     token's scopes permit, on every single request_.
 
-     **Carry one existing gap into this node: `vault.read` is not enforced.**
-     Only the write surfaces consult the token's scopes. `buildMcpServer`
-     registers the read tools unconditionally, and `authenticate` returns a
-     principal for a token whose grant is empty — `{scopes: []}` is non-null, so
-     it passes the gate — which means a token carrying no scope at all can read
-     the whole vault. It is not an authentication hole (issuing that token still
-     requires the login password) but the scope half of INV-7.5 is missing on the
-     read side, and the consent page cannot honestly state what a grant permits
-     while that is true. Enforcement belongs here, in the pass that decides the
-     visible surface from the presented scopes, rather than in a separate change
-     that 2b would immediately rewrite. Completion condition: an empty-scope
-     token sees no tools (or is refused), pinned by a test.
+     What that actually closed is sharper than "resolution moved": under
+     sessions, requests were routed by `mcp-session-id` **alone** and the
+     presenting principal was never re-checked, so a connection opened with a
+     write-scoped token kept the write surface for its lifetime regardless of
+     what token later requests carried. The regression test is written as that
+     scenario — one client, one connection, the bearer swapped underneath it —
+     because asserting "two clients with two tokens see two surfaces" would have
+     passed under the session model too.
+
+     **`vault.read` is now enforced**, closing the read half of INV-7 item 5. A
+     token whose grant is empty (a client asking only for `vault.write` while
+     writes are off — `grantScope` returns the intersection and refuses to
+     substitute read for a scope never requested) previously authenticated and
+     read the whole vault, because `{scopes: []}` is non-null and the read tools
+     were registered unconditionally. Completion condition met with the
+     **refuse** arm rather than the empty-tool-list arm: `403` carrying the
+     RFC 6750 §3.1 `insufficient_scope` challenge that names the missing scope,
+     because that is what lets a client re-authorize for it — an empty `200` is
+     indistinguishable from an empty vault and sends the operator looking in the
+     wrong place. `surfaceFor` additionally refuses to build a surface for a
+     principal without read, so the hole cannot be reopened by a future path that
+     bypasses the gate.
+
+     **The consent page now states the granted scope**, which the previous node
+     deliberately withheld: while `vault.read` was unenforced, a scope line would
+     have described a restriction the server did not apply. It shows the grant
+     (requested ∩ grantable), not the request, and says so explicitly when the
+     grant is empty.
+
+     Re-pinning cost, as predicted, was concentrated rather than large: exactly
+     one pre-existing assertion had to invert (the 2025 handshake no longer
+     issues a session id), and it is now asserted on the wire for both eras.
    - **2c. stdio + operations migration 🔭.** `src/index.ts` moves to
      `serveStdio()`, and [`operations.md §1`](./operations.md) gains the third
      "why connections drop" cause plus any restart-procedure change. The stdio
@@ -626,10 +641,12 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
             endpoint boundary, negotiation tests. Every pre-existing boundary
             test passes unmodified, which is the claim that the boundary did not
             move.
-      - [ ] **2b** — the boundary node. Drop the 2025 session leg, resolve the
-            surface per request for both eras (one `surfaceFor` already), enforce
-            `vault.read`, and re-pin `tests/httpServer.test.ts` +
-            `tests/oauth.test.ts` against per-request resolution.
+      - [x] **2b** ✅ — sessions removed from the endpoint (`legacy: 'stateless'`),
+            surface resolved per request for both eras through the one
+            `surfaceFor`, `vault.read` enforced with a `403 insufficient_scope`
+            challenge, consent page states the granted scope, and the
+            session-id assertion re-pinned. Pinned by a token-swap test that
+            fails under per-session resolution.
       - [ ] **2c** — `serveStdio()` (dual-era stdio) + `operations.md §1`.
 - [x] **Search P0 + P1 slices** — ✅ P0: NFKC search folding (query + text,
       snippets still sliced from the original), result timestamps/`size_bytes`,

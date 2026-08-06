@@ -664,11 +664,12 @@ describe("HTTP transport integration", () => {
     });
   });
 
-  // --- Dual-era serving (ROADMAP 2a) -----------------------------------------
-  // Property guaranteed by this node: BOTH protocol eras negotiate successfully
-  // against one endpoint. 2025-era traffic keeps the sessionful wiring; the
-  // 2026-07-28 era is sessionless, which is the point — it is the failure mode
-  // ("404 unknown_session" after every restart) that statelessness removes.
+  // --- Dual-era serving, sessionless (ROADMAP 2a, then 2b) -------------------
+  // 2a guaranteed: BOTH protocol eras negotiate successfully against one
+  // endpoint. 2b removed the last session: NEITHER era issues an
+  // `Mcp-Session-Id` now, which is what removes the `404 unknown_session`
+  // restart failure, and what forces the tool surface to be resolved from the
+  // presented token on every request instead of once per session.
   describe("dual-era negotiation", () => {
     interface Exchange {
       requestedMethod: string | null;
@@ -687,7 +688,7 @@ describe("HTTP transport integration", () => {
       };
     }
 
-    it("serves the 2025 era (sessionful) and 2026-07-28 (sessionless) from one endpoint", async () => {
+    it("serves the 2025 era and 2026-07-28 from one endpoint, neither with a session", async () => {
       const legacyLog: Exchange[] = [];
       const legacyClient = new Client({ name: "legacy", version: "0.0.0" });
       await legacyClient.connect(
@@ -717,9 +718,12 @@ describe("HTTP transport integration", () => {
       expect(legacyTools).toContain("search_documents");
       expect(modernTools).toEqual(legacyTools);
 
-      // The 2025 handshake issued a session id; the modern exchanges carry the
-      // per-request `Mcp-Method` routing header and never receive one.
-      expect(legacyLog.some((exchange) => exchange.sessionIdIssued !== null)).toBe(true);
+      // NEITHER era receives a session id. Before 2b the 2025 handshake issued
+      // one and this assertion was inverted; that inversion is the whole of the
+      // change, so it is asserted on the wire rather than inferred from the fact
+      // that the clients still work.
+      expect(legacyLog.length).toBeGreaterThan(0);
+      expect(legacyLog.every((exchange) => exchange.sessionIdIssued === null)).toBe(true);
       expect(modernLog.every((exchange) => exchange.sessionIdIssued === null)).toBe(true);
       expect(modernLog.some((exchange) => exchange.requestedMethod === "server/discover")).toBe(true);
       expect(modernLog.some((exchange) => exchange.requestedMethod === "tools/list")).toBe(true);
@@ -814,6 +818,73 @@ describe("HTTP transport integration", () => {
       // if this is the very same object.
       expect(seen[0]).toBe(request);
     });
+
+    it("hands the per-request factory the same Request instance on the 2025 leg too", async () => {
+      // The same tripwire on the other era, and now the one that most needs it.
+      // Per-request scope resolution routes BOTH eras through the WeakMap, so
+      // the 2025 leg depends on this identity exactly as much as the modern one
+      // — but the test above cannot observe it: it builds the handler with
+      // `legacy: "reject"`, which answers a 2025 request without ever invoking
+      // the factory. `legacy: "stateless"` is the production setting and the
+      // code path that actually has to preserve identity.
+      //
+      // `parsedBody` is passed because that is how `handleRequest` calls it, and
+      // on this leg it is LOAD-BEARING rather than an optimisation: measured,
+      // the same request without it reaches the factory as a different `Request`
+      // instance, equal field for field, which `principals.get` misses. The
+      // modern leg preserves identity either way, which is why the test above
+      // passes without it and cannot stand in for this one.
+      //
+      // Removing `parsedBody` from that call is not silent — it fails a dozen
+      // tests across both eras. It is silent about the CAUSE: this is the only
+      // one that says which property broke rather than reporting a symptom.
+      const captured = await captureLegacyRequest();
+      const store = await makeStore();
+      const seen: Array<Request | undefined> = [];
+      const handler = createMcpHandler(
+        (ctx) => {
+          seen.push(ctx.requestInfo);
+          return buildMcpServer(store, { allowWrite: false });
+        },
+        { legacy: "stateless" }
+      );
+      const request = new Request(`${baseUrl}/mcp`, {
+        method: "POST",
+        headers: captured.headers,
+        body: captured.body
+      });
+
+      await (await handler.fetch(request, { parsedBody: JSON.parse(captured.body) })).text();
+      await handler.close();
+
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen[0]).toBe(request);
+    });
+
+    /** Drive one 2025-era exchange and keep the exact bytes of a `tools/list`. */
+    async function captureLegacyRequest(): Promise<{ headers: Record<string, string>; body: string }> {
+      let captured: { headers: Record<string, string>; body: string } | undefined;
+      const client = new Client({ name: "capture-legacy", version: "0.0.0" });
+      await client.connect(
+        new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`), {
+          requestInit: { headers: { authorization: `Bearer ${token}` } },
+          fetch: async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+            // The 2025 transport sends no `mcp-method` header, so the method is
+            // read from the envelope itself.
+            if (typeof init?.body === "string" && init.body.includes('"tools/list"')) {
+              captured = { headers: Object.fromEntries(new Headers(init.headers).entries()), body: init.body };
+            }
+            return fetch(input, init);
+          }
+        })
+      );
+      await client.listTools();
+      await client.close();
+      if (!captured) {
+        throw new Error("no 2025-era tools/list request was observed");
+      }
+      return captured;
+    }
 
     /** Drive one modern exchange and keep the exact bytes of a `tools/list`. */
     async function captureModernRequest(): Promise<{ headers: Record<string, string>; body: string }> {

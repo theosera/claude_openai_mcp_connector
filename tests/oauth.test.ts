@@ -918,6 +918,218 @@ describe("OAuth end-to-end over HTTP", () => {
     expect(writeTools).toContain("create_document");
   });
 
+  it("states the scope the consent page is about to grant", () => {
+    // Withheld until 2b on purpose: while `vault.read` was unenforced, a scope
+    // line would have described a restriction the server did not apply. It is
+    // true now, so it is shown — and it shows the GRANT (requested ∩ grantable),
+    // not the request, because the grant is what the token carries.
+    const readOnly = new OAuthProvider({
+      issuer: "https://vault.example",
+      loginPassword: "hunter2",
+      accessTokenTtlSec: 3600,
+      refreshTokenTtlSec: 86_400,
+      codeTtlSec: 60,
+      allowWrite: false
+    });
+    const reg = JSON.parse(readOnly.register({ redirect_uris: ["https://chatgpt.com/cb"] }).body);
+    const page = (scope: string) =>
+      readOnly.authorizeGet(
+        new URLSearchParams({
+          response_type: "code",
+          client_id: reg.client_id,
+          redirect_uri: "https://chatgpt.com/cb",
+          code_challenge: computeS256Challenge(crypto.randomBytes(32).toString("base64url")),
+          code_challenge_method: "S256",
+          state: "s",
+          scope
+        })
+      ).body;
+
+    expect(page("vault.read")).toContain("<strong>vault.read</strong>");
+    expect(page("vault.read")).toContain("read only");
+
+    // A write request against a read-only server grants nothing. The page says
+    // so rather than implying the request will be honoured — such a token is
+    // refused at /mcp with insufficient_scope, so approving it accomplishes
+    // nothing and the operator should know that before typing the password.
+    expect(page("vault.write")).toContain("no scope this server can grant");
+    expect(page("vault.write")).not.toContain("<strong>vault.write</strong>");
+  });
+
+  it("issues exactly the scope the consent page displayed", () => {
+    // The displayed grant is `grantScope(params.scope)` computed in the GET
+    // handler; the code carries `grantScope(check.params.scope)` computed in the
+    // POST handler. Two independent evaluations that agree only because the
+    // value round-trips through a hidden field — which is the shape #86
+    // deliberately removed for the redirect destination, so that the sentence
+    // and the navigation were one fact rather than two kept in step by hand.
+    //
+    // The tests around this one pin each side separately: what the page renders,
+    // and what `grantScope` returns at issuance. Neither compares them. So a
+    // change that keeps both individually defensible while making them disagree
+    // — the display path normalising, deduping or reordering, say — passes
+    // everything else and is caught only here.
+    const provider = new OAuthProvider({
+      issuer: "https://vault.example",
+      loginPassword: "hunter2",
+      accessTokenTtlSec: 3600,
+      refreshTokenTtlSec: 86_400,
+      codeTtlSec: 60,
+      allowWrite: false
+    });
+    const clientId = JSON.parse(provider.register({ redirect_uris: ["https://chatgpt.com/cb"] }).body)
+      .client_id as string;
+    const verifier = crypto.randomBytes(32).toString("base64url");
+
+    // Asks for more than this server will grant, so a page that showed the
+    // REQUEST rather than the GRANT would diverge here rather than agree by
+    // accident.
+    const form = new URLSearchParams({
+      response_type: "code",
+      client_id: clientId,
+      redirect_uri: "https://chatgpt.com/cb",
+      code_challenge: computeS256Challenge(verifier),
+      code_challenge_method: "S256",
+      state: "s",
+      scope: "vault.read vault.write"
+    });
+
+    const displayed = /This grants: <strong>([^<]*)<\/strong>/.exec(provider.authorizeGet(form).body)?.[1];
+    expect(displayed).toBe("vault.read");
+
+    form.set("password", "hunter2");
+    const code = new URL(provider.authorizePost(form).headers.location).searchParams.get("code")!;
+    const issued = JSON.parse(
+      provider.token(
+        new URLSearchParams({
+          grant_type: "authorization_code",
+          code,
+          client_id: clientId,
+          redirect_uri: "https://chatgpt.com/cb",
+          code_verifier: verifier
+        })
+      ).body
+    ).scope as string;
+
+    expect(issued).toBe(displayed);
+  });
+
+  it("re-resolves the tool surface from the token presented on EACH request", async () => {
+    // The 2b property, stated as the hole it closes. With sessions, the surface
+    // was decided once at `initialize` and every later request was routed by
+    // `mcp-session-id` ALONE — the presenting principal was never re-checked, so
+    // a connection opened with a write-scoped token kept the write surface for
+    // its lifetime no matter what token later requests carried. With no session
+    // there is nothing to route by and nothing to remember: the surface is
+    // rebuilt per request from the token on that request.
+    const store = await makeStore();
+    const port = await freePort();
+    const issuer = `http://127.0.0.1:${port}`;
+    const config: HttpConfig = {
+      host: "127.0.0.1",
+      port,
+      authToken: "static-bearer-unused-here",
+      allowWrite: true,
+      allowSkillWrite: false,
+      allowAuditWrite: false,
+      allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
+      allowedOrigins: [],
+      oauth: {
+        issuer,
+        loginPassword: "hunter2",
+        accessTokenTtlSec: 3600,
+        refreshTokenTtlSec: 86_400,
+        codeTtlSec: 60,
+        allowWrite: true
+      }
+    };
+    server = await startHttpServer(store, config);
+
+    const writeToken = await oauthObtainToken(issuer, "vault.read vault.write");
+    const readToken = await oauthObtainToken(issuer, "vault.read");
+
+    // One client, one connection. The token it presents is swapped underneath it
+    // after the handshake, which is exactly what a session would have masked.
+    let presented = writeToken;
+    const transport = new StreamableHTTPClientTransport(new URL(`${issuer}/mcp`), {
+      requestInit: { headers: { connection: "close" } },
+      fetch: async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        const headers = new Headers(init?.headers);
+        headers.set("authorization", `Bearer ${presented}`);
+        return fetch(input, { ...init, headers });
+      }
+    });
+    const client = new Client({ name: "swap-test", version: "0.0.0" });
+    await client.connect(transport);
+
+    expect((await client.listTools()).tools.map((t) => t.name)).toContain("create_document");
+
+    presented = readToken;
+    expect((await client.listTools()).tools.map((t) => t.name)).not.toContain("create_document");
+
+    // ...and back, so the result tracks the token rather than being latched by
+    // the first downgrade.
+    presented = writeToken;
+    expect((await client.listTools()).tools.map((t) => t.name)).toContain("create_document");
+
+    await client.close();
+  });
+
+  it("refuses a token carrying no vault.read with 403 insufficient_scope", async () => {
+    // The read half of INV-7 item 5, previously missing: `{scopes: []}` is
+    // non-null, so an empty grant authenticated and then read the whole vault
+    // because the read tools were registered unconditionally. A client asking
+    // only for `vault.write` while writes are OFF is how an empty grant actually
+    // arises — `grantScope` returns the intersection, and refuses to substitute
+    // read for a scope that was never requested.
+    const store = await makeStore();
+    const port = await freePort();
+    const issuer = `http://127.0.0.1:${port}`;
+    const config: HttpConfig = {
+      host: "127.0.0.1",
+      port,
+      authToken: "static-bearer-unused-here",
+      allowWrite: false,
+      allowSkillWrite: false,
+      allowAuditWrite: false,
+      allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
+      allowedOrigins: [],
+      oauth: {
+        issuer,
+        loginPassword: "hunter2",
+        accessTokenTtlSec: 3600,
+        refreshTokenTtlSec: 86_400,
+        codeTtlSec: 60,
+        allowWrite: false
+      }
+    };
+    server = await startHttpServer(store, config);
+
+    const emptyScope = await oauthObtainToken(issuer, "vault.write");
+    const res = await fetch(`${issuer}/mcp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        authorization: `Bearer ${emptyScope}`
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} })
+    });
+
+    // Refused, not served an empty tool list: an empty 200 is indistinguishable
+    // from an empty vault, and the RFC 6750 challenge is what tells a client to
+    // re-authorize for the scope it is missing.
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error: "insufficient_scope", scope: "vault.read" });
+    const challenge = res.headers.get("www-authenticate") ?? "";
+    expect(challenge).toContain('error="insufficient_scope"');
+    expect(challenge).toContain('scope="vault.read"');
+
+    // A read-scoped token against the SAME endpoint is served, so the 403 is the
+    // scope gate and not the endpoint being broken.
+    expect(await listToolNamesOverHttp(issuer, await oauthObtainToken(issuer, "vault.read"))).toContain("search");
+  });
+
   it("gates write tools by token scope on the 2026-07-28 era too (no session to bind to)", async () => {
     // The legacy era binds the resolved surface to the session. The modern era
     // has no sessions, so the same guarantee has to hold per request — two

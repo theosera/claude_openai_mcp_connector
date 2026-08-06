@@ -1,13 +1,5 @@
-import crypto from "node:crypto";
 import http from "node:http";
-import {
-  WebStandardStreamableHTTPServerTransport,
-  createMcpHandler,
-  isInitializeRequest,
-  isLegacyRequest,
-  validateHostHeader,
-  type McpHttpHandler
-} from "@modelcontextprotocol/server";
+import { createMcpHandler, validateHostHeader, type McpHttpHandler } from "@modelcontextprotocol/server";
 import type { HttpConfig } from "./config.js";
 import { isAuthorizedHeader, parseBearer } from "./httpAuth.js";
 import type { VaultStore } from "./types.js";
@@ -22,10 +14,6 @@ import { sendWebResponse, toWebRequest } from "./webBridge.js";
 const MCP_PATH = "/mcp";
 const MAX_BODY_BYTES = 4 * 1024 * 1024; // 4 MiB — bound request memory.
 
-interface Session {
-  transport: WebStandardStreamableHTTPServerTransport;
-}
-
 interface OAuthLimiters {
   authorize: RateLimiter;
   register: RateLimiter;
@@ -39,22 +27,23 @@ interface Principal {
 interface Endpoint {
   store: VaultStore;
   config: HttpConfig;
-  sessions: Map<string, Session>;
   oauth: OAuthProvider | undefined;
   limiters: OAuthLimiters | undefined;
   skillStore: SkillStore | undefined;
   auditStore: AuditStore | undefined;
   /**
-   * The 2026-07-28 ("modern") leg. Sessionless by construction: the factory is
-   * invoked per request, so nothing survives a restart to be invalidated.
+   * The single MCP handler, serving BOTH protocol eras with no sessions at all:
+   * 2026-07-28 natively, and 2025 through the stateless legacy fallback. Every
+   * request gets a fresh instance from the factory, so there is no session id to
+   * invalidate on restart and nothing to reap when a client vanishes.
    */
-  modern: McpHttpHandler;
+  handler: McpHttpHandler;
   /**
-   * The authenticated principal for one in-flight modern request, keyed by the
-   * exact `Request` object handed to `modern.fetch`. `McpRequestContext`
-   * carries that same object back as `requestInfo`, which is how the per-request
-   * factory recovers the scopes that decide its tool surface. Weak so a
-   * disconnected request is collected with its entry.
+   * The authenticated principal for one in-flight request, keyed by the exact
+   * `Request` object handed to `handler.fetch`. `McpRequestContext` carries that
+   * same object back as `requestInfo` — on both legs — which is how the
+   * per-request factory recovers the scopes that decide its tool surface. Weak
+   * so a disconnected request is collected with its entry.
    */
   principals: WeakMap<Request, Principal>;
 }
@@ -69,12 +58,12 @@ interface Endpoint {
  *    validated at this boundary, before either protocol era is dispatched.
  *  - Read-only tool surface unless MCP_HTTP_ALLOW_WRITE is set.
  *
- * Both protocol eras are served from one endpoint and one tool factory:
- *  - 2025-era ("legacy") traffic keeps the established sessionful wiring, so
- *    scope -> tool-surface resolution is bound to the session exactly as before.
- *  - 2026-07-28 ("modern") traffic is served by `createMcpHandler`, which has no
- *    sessions; its factory resolves the surface per request from the same
- *    `surfaceFor` function the legacy leg uses.
+ * Both protocol eras are served from one endpoint, one tool factory, and NO
+ * sessions: 2026-07-28 natively, 2025 through `createMcpHandler`'s stateless
+ * legacy fallback. The tool surface is therefore resolved from the presented
+ * token on every single request rather than fixed once per session — which is
+ * both what removes the `404 unknown_session` restart failure and what keeps
+ * INV-6/INV-7 true without a session to hang them on.
  */
 export async function startHttpServer(
   store: VaultStore,
@@ -82,7 +71,6 @@ export async function startHttpServer(
   skillStore?: SkillStore,
   auditStore?: AuditStore
 ): Promise<http.Server> {
-  const sessions = new Map<string, Session>();
   // OAuth 2.1 authorization server (only when configured). ChatGPT / Claude.ai
   // web require it; Desktop / Code / API keep using the static bearer.
   const oauth = config.oauth ? new OAuthProvider(config.oauth) : undefined;
@@ -99,17 +87,16 @@ export async function startHttpServer(
   const endpoint: Endpoint = {
     store,
     config,
-    sessions,
     oauth,
     limiters,
     skillStore,
     auditStore,
     principals,
-    // `legacy: 'reject'` because the legacy era is served by the sessionful leg
-    // below, routed to explicitly via `isLegacyRequest`. Letting this handler
-    // also serve 2025 traffic statelessly would silently move that era off the
-    // session model this endpoint still guarantees.
-    modern: createMcpHandler(
+    // `legacy: 'stateless'` — 2025-era requests are each answered by a fresh
+    // instance from this same factory. That is the whole of the session removal:
+    // there is no `Mcp-Session-Id` to issue, none to look up, and none to lose
+    // on restart. GET / DELETE (the 2025 session operations) answer 405.
+    handler: createMcpHandler(
       (ctx) => {
         const principal = ctx.requestInfo ? principals.get(ctx.requestInfo) : undefined;
         if (!principal) {
@@ -119,7 +106,7 @@ export async function startHttpServer(
         }
         return buildMcpServer(store, surfaceFor(principal, config, skillStore, auditStore));
       },
-      { legacy: "reject" }
+      { legacy: "stateless" }
     )
   };
 
@@ -134,7 +121,7 @@ export async function startHttpServer(
     });
   });
   httpServer.on("close", () => {
-    void endpoint.modern.close().catch(() => {});
+    void endpoint.handler.close().catch(() => {});
   });
 
   await new Promise<void>((resolve) => httpServer.listen(config.port, config.host, resolve));
@@ -144,10 +131,11 @@ export async function startHttpServer(
 /**
  * Derive the tool surface from the presented scopes and the server policy.
  *
- * Single point of truth for INV-6 item 4 / INV-7 item 5, shared by both eras:
- * writes require BOTH the server policy (allow* flags) AND a token carrying
- * `vault.write`. A read-scoped token never sees write tools because they are
- * never registered for the instance serving it, so it cannot invoke them.
+ * Single point of truth for INV-6 item 4 / INV-7 item 5, and now the ONLY point:
+ * with no sessions, this runs on every request for both eras. Writes require
+ * BOTH the server policy (allow* flags) AND a token carrying `vault.write`. A
+ * read-scoped token never sees write tools because they are never registered for
+ * the instance serving that request, so it cannot invoke them.
  */
 function surfaceFor(
   principal: Principal,
@@ -155,6 +143,13 @@ function surfaceFor(
   skillStore: SkillStore | undefined,
   auditStore: AuditStore | undefined
 ): BuildServerOptions {
+  // Defensive: `authorizeScope` refuses a principal without vault.read at the
+  // gate, so reaching here without it means the gate was bypassed. Registering
+  // the read tools regardless would silently restore the very hole this node
+  // closes, so fail closed instead of trusting the caller.
+  if (!principal.scopes.includes(SCOPE_READ)) {
+    throw new Error("insufficient_scope");
+  }
   const write = principal.scopes.includes(SCOPE_WRITE);
   return {
     allowWrite: config.allowWrite && write,
@@ -168,7 +163,7 @@ function surfaceFor(
 }
 
 async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse, endpoint: Endpoint): Promise<void> {
-  const { config, oauth, limiters, sessions } = endpoint;
+  const { config, oauth, limiters } = endpoint;
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
   // Unauthenticated liveness probe — returns no vault information.
@@ -192,7 +187,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
   // Auth gate: accept either the static bearer (Desktop / Code / API) or a
   // valid OAuth access token (ChatGPT / Claude.ai web). The principal carries
-  // the effective scopes used to gate the write tool surface.
+  // the effective scopes that decide the tool surface for THIS request.
   const principal = authenticate(req.headers.authorization, config, oauth);
   if (!principal) {
     const headers: Record<string, string> = {
@@ -201,6 +196,27 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     };
     res.writeHead(401, headers);
     res.end(JSON.stringify({ error: "unauthorized" }));
+    return;
+  }
+
+  // Scope gate. `vault.read` is now ENFORCED, closing the read half of
+  // INV-7 item 5: a token whose grant is empty (a client that requested only
+  // scopes this server will not grant, e.g. `vault.write` while writes are off)
+  // used to authenticate successfully and read the entire vault, because
+  // `{scopes: []}` is non-null and the read tools were registered
+  // unconditionally.
+  //
+  // Refused rather than served an empty tool list: 403 with the RFC 6750 §3.1
+  // `insufficient_scope` challenge naming the missing scope is what lets a
+  // client re-authorize for it. An empty 200 is indistinguishable from an empty
+  // vault, so it would send the operator looking in the wrong place.
+  if (!principal.scopes.includes(SCOPE_READ)) {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (oauth) {
+      headers["www-authenticate"] = oauth.insufficientScope(SCOPE_READ);
+    }
+    res.writeHead(403, headers);
+    res.end(JSON.stringify({ error: "insufficient_scope", scope: SCOPE_READ }));
     return;
   }
 
@@ -233,64 +249,19 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
   const request = toWebRequest(req, raw);
 
-  // Era routing. `isLegacyRequest` is the entry's own classification step
-  // exported as a predicate, so this branch can never disagree with what
-  // `createMcpHandler` would have decided.
-  if (!(await isLegacyRequest(request, body))) {
-    endpoint.principals.set(request, principal);
-    await sendWebResponse(res, await endpoint.modern.fetch(request, { parsedBody: body }));
-    return;
-  }
-
-  // ---- 2025 era: sessionful, unchanged ---------------------------------------
-  const sessionId = headerValue(req.headers["mcp-session-id"]);
-
-  // Reuse an established session (GET stream, DELETE, or subsequent POST).
-  if (sessionId) {
-    const session = sessions.get(sessionId);
-    if (!session) {
-      res.writeHead(404, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: "unknown_session" }));
-      return;
-    }
-    await sendWebResponse(res, await session.transport.handleRequest(request));
-    return;
-  }
-
-  // No session id: only an initialize POST may open a new session.
-  if (req.method !== "POST") {
-    res.writeHead(400, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error: "missing_session" }));
-    return;
-  }
-  if (!isInitializeRequest(body)) {
-    res.writeHead(400, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error: "expected_initialize" }));
-    return;
-  }
-
-  const transport = new WebStandardStreamableHTTPServerTransport({
-    sessionIdGenerator: () => crypto.randomUUID(),
-    onsessioninitialized: (id) => {
-      sessions.set(id, { transport });
-    },
-    onsessionclosed: (id) => {
-      sessions.delete(id);
-    }
-  });
-
-  transport.onclose = () => {
-    if (transport.sessionId) {
-      sessions.delete(transport.sessionId);
-    }
-  };
-
-  const server = buildMcpServer(
-    endpoint.store,
-    surfaceFor(principal, config, endpoint.skillStore, endpoint.auditStore)
-  );
-  await server.connect(transport);
-  await sendWebResponse(res, await transport.handleRequest(request));
+  // One handler, both eras, no sessions. The principal is bound to this exact
+  // Request; the factory reads it back through `ctx.requestInfo` and builds the
+  // tool surface from it. Nothing is carried between requests, so there is no
+  // session whose scopes could drift from the token now being presented.
+  //
+  // `parsedBody` is load-bearing on the 2025 leg, not an optimisation: measured,
+  // the same request WITHOUT it reaches the factory as a different `Request`
+  // instance — equal field for field — which this WeakMap lookup misses. The
+  // modern leg preserves identity either way. Removing it fails a dozen tests
+  // across both eras; the one that names the property rather than a symptom is
+  // "...the same Request instance on the 2025 leg" in tests/httpServer.test.ts.
+  endpoint.principals.set(request, principal);
+  await sendWebResponse(res, await endpoint.handler.fetch(request, { parsedBody: body }));
 }
 
 /**
