@@ -736,13 +736,14 @@ no hands). Run **two** connector processes:
 >
 > **Since the working-directory `.env` was removed, "sets it" means: in the
 > process's real environment, or in its own `MCP_ENV_FILE`** (Step 2). This
-> includes every **stdio client registration** — the `env` blocks in
-> [`README.md`](../README.md) carry only `KNOWLEDGE_ROOT`, and a stdio server is
-> always write-capable, so a registration that names neither
+> includes every **stdio client registration**. A stdio server is always
+> write-capable, so a registration that names neither
 > `MCP_AUDIT_SUBDIR`/`MCP_SKILLS_SUBDIR` nor an `MCP_ENV_FILE` that does starts
-> **normally, with writes on and the reservation off**. A missing
-> `MCP_AUDIT_SUBDIR` is deliberately *not* a startup error (it is optional), so
-> check the startup line the server now writes to **stderr**:
+> **normally, with writes on and the reservation off** — which is why the `env`
+> blocks in [`README.md`](../README.md#client-registration) all carry
+> `MCP_ENV_FILE`. A missing `MCP_AUDIT_SUBDIR` is deliberately *not* a startup
+> error (it is optional), so check the startup line the server writes to
+> **stderr**:
 >
 > ```text
 > MCP stdio transport ready (write=on, documents=on, skills=off, audit=off)
@@ -750,6 +751,28 @@ no hands). Run **two** connector processes:
 >
 > `audit=off` on a write-capable process means the reservation is not in effect
 > there. The HTTP branch prints the same four fields (plus `oauth=`).
+>
+> A client-spawned server writes that line into whatever debug log the client
+> keeps, so read it the client-independent way instead — run the registration's
+> own command and env with stdin closed, which prints the line and exits 0:
+>
+> ```bash
+> MCP_ENV_FILE=/abs/path/.mcp-state/vault-stdio.env KNOWLEDGE_ROOT=/abs/path/to/vault \
+>   node /abs/path/to/claude_openai_mcp_connector/dist/index.js \
+>   </dev/null 2>&1 >/dev/null | head -1
+> ```
+>
+> Name a **third** file there, not one of the two in Step 2: an
+> `MCP_TRANSPORT=http` line inside an endpoint's file fills exactly the gap the
+> stdio registration left, so the process serves HTTP instead of stdio — it
+> prints `MCP HTTP transport listening on …`, writes nothing to stdout, never
+> exits, and takes that endpoint's port.
+> [`README.md`](../README.md#the-env-file-the-stdio-registrations-name) has the
+> file's contents.
+>
+> Pinned by `tests/config.test.ts` (the line's two states) and
+> `tests/stdio.test.ts` (that `audit=on` is the reservation actually refusing a
+> general write into the subtree, on the wire).
 
 ### Step 1 — create the audit subtree
 
@@ -850,6 +873,14 @@ Each file must now be **complete on its own**: nothing is inherited from a
 working directory any more, so a setting missing from a file is simply unset for
 that process (the flip side is that the old "the scan process picks up the
 interactive `.env`" hazard is gone by construction). Keep the files mode `600`.
+
+Neither file is reusable by a **stdio** registration: both begin
+`MCP_TRANSPORT=http`, and because the file fills whatever the registration left
+unset, that line turns the stdio server into an HTTP listener on the endpoint's
+own port — it never speaks stdio and never exits. A local stdio server gets its
+own third file, carrying the same `MCP_AUDIT_SUBDIR` and nothing about a
+transport, port, or credential
+([`README.md`](../README.md#the-env-file-the-stdio-registrations-name)).
 
 ### Step 3 — two Tailscale Funnels
 
