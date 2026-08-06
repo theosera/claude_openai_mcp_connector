@@ -793,7 +793,25 @@ describe("HTTP transport integration", () => {
         result: { ttlMs?: unknown; cacheScope?: unknown } | undefined;
       }
       const seen: Captured[] = [];
+      /**
+       * `fetch(input, init)` and `fetch(new Request(...))` are both valid call
+       * forms, and which one the transport uses is an SDK implementation detail.
+       * Reading only `init` leaves every `method` `null` on the second form —
+       * which the vacuity guard below does NOT tolerate, so the test would go
+       * red with the hints untouched. `init` still wins where both carry the
+       * header, matching what fetch itself does with the two arguments.
+       */
+      const methodOf = (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        const headers = new Headers(init?.headers);
+        if (input instanceof Request) {
+          for (const [name, value] of input.headers) {
+            if (!headers.has(name)) headers.set(name, value);
+          }
+        }
+        return headers.get("mcp-method");
+      };
       const spy: typeof fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        const method = methodOf(input, init);
         const response = await fetch(input, init);
         const raw = await response.clone().text();
         // JSON or a single SSE frame, depending on Accept negotiation.
@@ -805,7 +823,7 @@ describe("HTTP transport integration", () => {
               ?.slice("data:".length)
               .trim() ?? "");
         seen.push({
-          method: new Headers(init?.headers).get("mcp-method"),
+          method,
           result: payload ? (JSON.parse(payload) as { result?: Captured["result"] }).result : undefined
         });
         return response;
