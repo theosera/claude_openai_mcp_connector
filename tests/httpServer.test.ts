@@ -729,6 +729,48 @@ describe("HTTP transport integration", () => {
       expect(modernLog.some((exchange) => exchange.requestedMethod === "tools/list")).toBe(true);
     });
 
+    it("answers the 2025 session operations (GET / DELETE) with 405", async () => {
+      // GET (server-initiated stream) and DELETE (session teardown) only mean
+      // something when there is a session. `operations.md` §1.C tells operators
+      // that a client treating `GET /mcp` as fatal is assuming a session model
+      // this endpoint no longer has; measure it here so the runbook cannot
+      // drift away from the server it documents.
+      const headers = { authorization: `Bearer ${token}` };
+      const get = await fetch(`${baseUrl}/mcp`, { method: "GET", headers });
+      const del = await fetch(`${baseUrl}/mcp`, { method: "DELETE", headers });
+      expect(get.status).toBe(405);
+      expect(del.status).toBe(405);
+    });
+
+    it("answers a bare tools/list POST, which is what the manual runbook check now does", async () => {
+      // `operations.md` §9 Step 5 used to say "reuse the returned
+      // mcp-session-id" — a step that cannot work against a sessionless
+      // endpoint. The replacement sends tools/list as its own POST, so pin that
+      // exact shape: an operator pasting the snippet must get a tool list.
+      const response = await fetch(`${baseUrl}/mcp`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream"
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} })
+      });
+      expect(response.status).toBe(200);
+      // The endpoint may answer as JSON or as a single SSE frame depending on
+      // Accept negotiation; the operator sees a tool list either way.
+      const raw = await response.text();
+      const payload = raw.startsWith("{")
+        ? raw
+        : (raw
+            .split("\n")
+            .find((line) => line.startsWith("data:"))
+            ?.slice("data:".length)
+            .trim() ?? "");
+      const body = JSON.parse(payload) as { result?: { tools?: { name: string }[] } };
+      expect(body.result?.tools?.map((tool) => tool.name)).toContain("search_documents");
+    });
+
     it("keeps the read-only default and the write gate on the modern era", async () => {
       const modernClient = new ModernClient(
         { name: "modern", version: "0.0.0" },

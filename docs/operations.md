@@ -7,7 +7,8 @@ only use those, you can skip this document, with one exception:
 [§6](#6-sandboxing-the-local-stdio-server-bwrap-optional) is an optional
 sandbox recipe for that locally-spawned stdio server.
 
-> TL;DR — two things cause "the connection dropped":
+> TL;DR — two things still cause "the connection dropped" (a third used to, and
+> no longer does — see [§1.C](#c-mcp-sessions-in-process-memory--removed-no-longer-a-cause)):
 >
 > 1. **The tunnel URL changes.** A Cloudflare _quick_ tunnel
 >    (`trycloudflare.com`) gets a new random hostname every restart, and that
@@ -100,6 +101,36 @@ same store, so one file covers every web client). Security properties:
 (below). Without the state file a restart costs a re-auth; with it, a restart
 costs nothing (the connector URL stays the same either way, so **no
 re-registration** is ever needed).
+
+### C. MCP sessions in process memory — removed, no longer a cause
+
+This one is listed because it **was** a real third cause and you may still see
+its symptom described elsewhere. It no longer applies to this server.
+
+The 2025-era Streamable HTTP transport keeps a per-connection **session** in
+process memory, keyed by the `Mcp-Session-Id` header the `initialize` handshake
+returns. That state is not persistable the way OAuth state is (A/B above): a
+restart, a redeploy, or an OOM kill invalidates every session id at once, and
+the server answers the client's next request with `404` `unknown_session`,
+forcing it to re-initialize. So a supervised process that restarted cleanly
+could still surface as "the connection dropped".
+
+**The HTTP endpoint no longer has sessions at all.** Both protocol eras are
+served without session state, so there is no session id to invalidate and no
+`404 unknown_session` to hit — a restart is transparent to the MCP layer, and
+only the OAuth state in §1.B is affected by it. Two consequences worth knowing:
+
+- **A restart now costs nothing at the protocol layer.** With
+  `MCP_OAUTH_STATE_FILE` set (§1.B), a restart costs nothing at all.
+- **`GET` and `DELETE` on `/mcp` return `405`.** Those are the 2025 session
+  operations (server-initiated stream, session teardown). Clients that need
+  neither are unaffected; a client that treats `405` on `GET /mcp` as fatal is
+  assuming a session model this server does not have.
+
+If you are reading a runbook (including older revisions of this one) that tells
+you to capture `mcp-session-id` from the handshake and send it back on
+subsequent calls, that step is obsolete — see the manual snippet in
+[§9 Step 5](#step-5--verify-each-endpoints-surface).
 
 ---
 
@@ -955,7 +986,14 @@ curl -s -X POST http://127.0.0.1:8788/mcp \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
-# then reuse the returned mcp-session-id header for a {"method":"tools/list"} call.
+
+# The endpoint is sessionless (§1.C), so there is no mcp-session-id to carry
+# over: send tools/list as its own POST with the same headers.
+curl -s -X POST http://127.0.0.1:8788/mcp \
+  -H "Authorization: Bearer $SCAN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
 ```
 
 </details>

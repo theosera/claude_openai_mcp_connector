@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { loadConfig, loadEnvFile, loadHttpConfig, selectedTransport } from "./config.js";
 import { startHttpServer } from "./httpServer.js";
 import { AuditStore } from "./auditStore.js";
@@ -58,15 +58,45 @@ if (transport === "http") {
   );
 } else {
   // Local stdio transport for CLI clients (Claude Code, Codex, Claude Desktop).
-  const server = buildMcpServer(store, {
-    allowWrite: true,
-    allowSkillWrite: Boolean(skillStore),
-    skillStore,
-    allowAuditWrite: Boolean(auditStore),
-    auditStore,
-    includeChatgptCompat: true
-  });
-  await server.connect(new StdioServerTransport());
+  // serveStdio owns the era decision for this connection: the opening exchange
+  // selects 2025 or 2026-07-28, and ONE instance from this factory is pinned for
+  // the connection's lifetime. The same factory serves both eras, so the tool
+  // surface cannot drift between them.
+  //
+  // Pinning one instance per connection is what 2b deliberately removed from
+  // HTTP, and it is safe *here* for a reason that does not hold there: on HTTP
+  // successive requests on one connection can present different bearer tokens,
+  // so the surface has to be re-derived per request from the presented
+  // principal. stdio carries no principal at all — serveStdio never populates
+  // `ctx.authInfo`/`ctx.requestInfo`, the peer is the process that spawned us,
+  // and the surface below is a constant. Pinned and per-request are therefore
+  // observationally identical on stdio. Do not "fix" this for symmetry with
+  // HTTP, and do not reintroduce pinning on HTTP by analogy with this.
+  serveStdio(
+    () =>
+      buildMcpServer(store, {
+        allowWrite: true,
+        allowSkillWrite: Boolean(skillStore),
+        skillStore,
+        allowAuditWrite: Boolean(auditStore),
+        auditStore,
+        includeChatgptCompat: true
+      }),
+    {
+      // Explicit rather than defaulted: dual-era stdio is the point of this
+      // wiring, so a future change of the library default must not silently
+      // turn 2025-era clients away. Pinned by tests/stdio.test.ts.
+      legacy: "serve",
+      // serveStdio starts the wire in the background and drops the rejection
+      // when no handler is installed, so without this a transport that failed
+      // to start would leave the "ready" line below as the only output and look
+      // healthy. Report the error class only: this callback also receives
+      // runtime out-of-band errors, whose messages can quote inbound bytes, and
+      // stderr is not a place to echo those. Non-fatal by design — malformed
+      // input from the client must not be able to kill the server.
+      onerror: (error) => process.stderr.write(`MCP stdio transport error: ${error.name}\n`)
+    }
+  );
   // stderr only — stdout is the JSON-RPC channel on stdio. Names the effective
   // write surface the way the HTTP branch above does, so an unset
   // MCP_AUDIT_SUBDIR (which leaves this write-capable process with the INV-9

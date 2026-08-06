@@ -210,6 +210,10 @@ The same server speaks two transports, selected with `MCP_TRANSPORT`:
 | `stdio` (default) | Local CLI / desktop clients: **Claude Code**, **Codex CLI**, **Claude Desktop** | full (read + write)                                                                                                                        |
 | `http`            | Remote **Chat connectors**: **ChatGPT**, **Claude.ai**                          | read-only by default; document writes require `MCP_HTTP_ALLOW_WRITE=1`, constrained Skill creation requires `MCP_HTTP_ALLOW_SKILL_WRITE=1`, constrained audit writes require `MCP_HTTP_ALLOW_AUDIT_WRITE=1` (+ `MCP_AUDIT_SUBDIR`) |
 
+**Both transports serve both MCP protocol eras** — the 2025 family and
+2026-07-28 — from the same tool factory, so a client sees the same tools
+whichever revision it negotiates, and neither transport keeps a session.
+
 Chat connectors cannot launch a local process, so they require the HTTP
 transport reachable over HTTPS. Authentication differs by client:
 

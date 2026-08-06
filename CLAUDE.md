@@ -30,7 +30,9 @@ HTTP is **read-only + bearer-authed by default** (document writes opt-in via
 `MCP_HTTP_ALLOW_SKILL_WRITE`)。HTTP は `@modelcontextprotocol/server` v2 上で
 **2 つの protocol era を 1 エンドポイントで同時に、session 無しで**提供し
 (`createMcpHandler` + `legacy: 'stateless'`)、**tool 面はリクエストごとに提示 token の scope から
-導出**する (`vault.read` 無しは `403 insufficient_scope`)。ChatGPT/Claude.ai web は static bearer 不可なので、
+導出**する (`vault.read` 無しは `403 insufficient_scope`)。stdio も `serveStdio` で**同一 factory
+から両 era**を提供する (接続ごとに 1 instance を pin するが、stdio は principal を運ばないので
+HTTP の per-request 解決とは要件が違う — 対称性を理由にどちらかへ寄せない)。ChatGPT/Claude.ai web は static bearer 不可なので、
 HTTP は **opt-in の OAuth 2.1 authorization server** (`src/oauth/`、PKCE S256) も内蔵する。
 
 ## スキル発火表 (★着手前に必ずロード)

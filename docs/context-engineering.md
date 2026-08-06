@@ -57,7 +57,7 @@ MCP resources / prompts は 0 (grep で確認)。
   `apply_planned_document_create`、two-step `plan_document_update` → `apply_planned_update`、
   Skill bundle `plan_skill_create` → `apply_planned_skill_create`、監査 surface
   `append_audit_report` / `compare_and_swap_audit_state`。HTTP は read-only 既定で、
-  許可がない write tool は **registerTool 自体が呼ばれない** (INV-6、per-session 構築)。
+  許可がない write tool は **registerTool 自体が呼ばれない** (INV-6、per-request 構築)。
 
 **データモデル** (`src/types.ts:14-47`): 文書ごとに `id` / `relativePath` / `frontmatter`
 (`client` / `project` / `title` / `tags` / `source_refs` / `updated_at` + open index
@@ -249,9 +249,10 @@ Orchestrator / Client (将来)          ← 本リポでは実装しない (消�
 > 出し分ける形を取らない (ROADMAP 番外編で実行時ルーターは明示的に却下済み)。profile は
 > **リクエストパラメータ** (`token_budget` / `recency_weight` / `types` / `graph_depth`)
 > として client 側が選ぶ。tool 面の決定軸は従来どおり transport + env flag + token scope のみ。
-> なおこの 3 軸は 2026-07-28 系 (stateless core) への移行後も変わらないが、scope の**解決点**が
-> per-session から **per-request** へ移る ([`ROADMAP.md`](./ROADMAP.md) の 2b)。軸が増えるのでは
-> なく、同じ軸を毎リクエスト評価するようになる — 本提案の新 tool も同じゲートに載る。
+> なおこの 3 軸は 2026-07-28 系 (stateless core) への移行後も変わらず、scope の**解決点**だけが
+> per-session から **per-request** へ移った ([`ROADMAP.md`](./ROADMAP.md) の 2b で完了。HTTP に
+> session は存在しない)。軸が増えたのではなく、同じ軸を毎リクエスト評価するようになった —
+> 本提案の新 tool も同じゲートに載る。
 
 ### D-2. 検索改善の仕様 (P0–P1)
 
