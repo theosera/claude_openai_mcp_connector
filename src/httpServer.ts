@@ -253,6 +253,13 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   // Request; the factory reads it back through `ctx.requestInfo` and builds the
   // tool surface from it. Nothing is carried between requests, so there is no
   // session whose scopes could drift from the token now being presented.
+  //
+  // `parsedBody` is load-bearing on the 2025 leg, not an optimisation: measured,
+  // the same request WITHOUT it reaches the factory as a different `Request`
+  // instance — equal field for field — which this WeakMap lookup misses. The
+  // modern leg preserves identity either way. Removing it fails a dozen tests
+  // across both eras; the one that names the property rather than a symptom is
+  // "...the same Request instance on the 2025 leg" in tests/httpServer.test.ts.
   endpoint.principals.set(request, principal);
   await sendWebResponse(res, await endpoint.handler.fetch(request, { parsedBody: body }));
 }

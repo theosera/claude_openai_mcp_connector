@@ -956,6 +956,64 @@ describe("OAuth end-to-end over HTTP", () => {
     expect(page("vault.write")).not.toContain("<strong>vault.write</strong>");
   });
 
+  it("issues exactly the scope the consent page displayed", () => {
+    // The displayed grant is `grantScope(params.scope)` computed in the GET
+    // handler; the code carries `grantScope(check.params.scope)` computed in the
+    // POST handler. Two independent evaluations that agree only because the
+    // value round-trips through a hidden field — which is the shape #86
+    // deliberately removed for the redirect destination, so that the sentence
+    // and the navigation were one fact rather than two kept in step by hand.
+    //
+    // The tests around this one pin each side separately: what the page renders,
+    // and what `grantScope` returns at issuance. Neither compares them. So a
+    // change that keeps both individually defensible while making them disagree
+    // — the display path normalising, deduping or reordering, say — passes
+    // everything else and is caught only here.
+    const provider = new OAuthProvider({
+      issuer: "https://vault.example",
+      loginPassword: "hunter2",
+      accessTokenTtlSec: 3600,
+      refreshTokenTtlSec: 86_400,
+      codeTtlSec: 60,
+      allowWrite: false
+    });
+    const clientId = JSON.parse(provider.register({ redirect_uris: ["https://chatgpt.com/cb"] }).body)
+      .client_id as string;
+    const verifier = crypto.randomBytes(32).toString("base64url");
+
+    // Asks for more than this server will grant, so a page that showed the
+    // REQUEST rather than the GRANT would diverge here rather than agree by
+    // accident.
+    const form = new URLSearchParams({
+      response_type: "code",
+      client_id: clientId,
+      redirect_uri: "https://chatgpt.com/cb",
+      code_challenge: computeS256Challenge(verifier),
+      code_challenge_method: "S256",
+      state: "s",
+      scope: "vault.read vault.write"
+    });
+
+    const displayed = /This grants: <strong>([^<]*)<\/strong>/.exec(provider.authorizeGet(form).body)?.[1];
+    expect(displayed).toBe("vault.read");
+
+    form.set("password", "hunter2");
+    const code = new URL(provider.authorizePost(form).headers.location).searchParams.get("code")!;
+    const issued = JSON.parse(
+      provider.token(
+        new URLSearchParams({
+          grant_type: "authorization_code",
+          code,
+          client_id: clientId,
+          redirect_uri: "https://chatgpt.com/cb",
+          code_verifier: verifier
+        })
+      ).body
+    ).scope as string;
+
+    expect(issued).toBe(displayed);
+  });
+
   it("re-resolves the tool surface from the token presented on EACH request", async () => {
     // The 2b property, stated as the hole it closes. With sessions, the surface
     // was decided once at `initialize` and every later request was routed by

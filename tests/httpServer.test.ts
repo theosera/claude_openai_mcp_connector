@@ -819,6 +819,73 @@ describe("HTTP transport integration", () => {
       expect(seen[0]).toBe(request);
     });
 
+    it("hands the per-request factory the same Request instance on the 2025 leg too", async () => {
+      // The same tripwire on the other era, and now the one that most needs it.
+      // Per-request scope resolution routes BOTH eras through the WeakMap, so
+      // the 2025 leg depends on this identity exactly as much as the modern one
+      // — but the test above cannot observe it: it builds the handler with
+      // `legacy: "reject"`, which answers a 2025 request without ever invoking
+      // the factory. `legacy: "stateless"` is the production setting and the
+      // code path that actually has to preserve identity.
+      //
+      // `parsedBody` is passed because that is how `handleRequest` calls it, and
+      // on this leg it is LOAD-BEARING rather than an optimisation: measured,
+      // the same request without it reaches the factory as a different `Request`
+      // instance, equal field for field, which `principals.get` misses. The
+      // modern leg preserves identity either way, which is why the test above
+      // passes without it and cannot stand in for this one.
+      //
+      // Removing `parsedBody` from that call is not silent — it fails a dozen
+      // tests across both eras. It is silent about the CAUSE: this is the only
+      // one that says which property broke rather than reporting a symptom.
+      const captured = await captureLegacyRequest();
+      const store = await makeStore();
+      const seen: Array<Request | undefined> = [];
+      const handler = createMcpHandler(
+        (ctx) => {
+          seen.push(ctx.requestInfo);
+          return buildMcpServer(store, { allowWrite: false });
+        },
+        { legacy: "stateless" }
+      );
+      const request = new Request(`${baseUrl}/mcp`, {
+        method: "POST",
+        headers: captured.headers,
+        body: captured.body
+      });
+
+      await (await handler.fetch(request, { parsedBody: JSON.parse(captured.body) })).text();
+      await handler.close();
+
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen[0]).toBe(request);
+    });
+
+    /** Drive one 2025-era exchange and keep the exact bytes of a `tools/list`. */
+    async function captureLegacyRequest(): Promise<{ headers: Record<string, string>; body: string }> {
+      let captured: { headers: Record<string, string>; body: string } | undefined;
+      const client = new Client({ name: "capture-legacy", version: "0.0.0" });
+      await client.connect(
+        new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`), {
+          requestInit: { headers: { authorization: `Bearer ${token}` } },
+          fetch: async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+            // The 2025 transport sends no `mcp-method` header, so the method is
+            // read from the envelope itself.
+            if (typeof init?.body === "string" && init.body.includes('"tools/list"')) {
+              captured = { headers: Object.fromEntries(new Headers(init.headers).entries()), body: init.body };
+            }
+            return fetch(input, init);
+          }
+        })
+      );
+      await client.listTools();
+      await client.close();
+      if (!captured) {
+        throw new Error("no 2025-era tools/list request was observed");
+      }
+      return captured;
+    }
+
     /** Drive one modern exchange and keep the exact bytes of a `tools/list`. */
     async function captureModernRequest(): Promise<{ headers: Record<string, string>; body: string }> {
       let captured: { headers: Record<string, string>; body: string } | undefined;
