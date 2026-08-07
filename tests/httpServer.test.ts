@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
@@ -769,6 +770,46 @@ describe("HTTP transport integration", () => {
             .trim() ?? "");
       const body = JSON.parse(payload) as { result?: { tools?: { name: string }[] } };
       expect(body.result?.tools?.map((tool) => tool.name)).toContain("search_documents");
+    });
+
+    it("passes scripts/check-http.mjs, the scripted twin of that runbook check", async () => {
+      // The two tests above pin the runbook's *pasted* form. Its *scripted*
+      // form was not pinned, and it drifted the same way `operations.md` §9
+      // had: `scripts/check-http.mjs` demanded an `mcp-session-id` header that
+      // 2b removed, so it threw on every run against a healthy server.
+      //
+      // A check that always FAILs is not fail-safe here. That script is the
+      // operator-side guard for "the live surface is not WIDER than the flags
+      // declare", and the throw happened *before* the comparison — so the
+      // security check never ran, and a genuine widening would have been
+      // reported with the same red FAIL line operators had learned to expect.
+      // Spawn the real script against the real endpoint so the two cannot
+      // diverge again.
+      const port = new URL(baseUrl).port;
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-check-http-"));
+      const envFile = path.join(dir, ".env");
+      await fs.writeFile(envFile, `MCP_HTTP_PORT=${port}\nMCP_AUTH_TOKEN=${token}\n`, "utf8");
+
+      const { code, output } = await new Promise<{ code: number | null; output: string }>((resolve) => {
+        const child = spawn(process.execPath, [path.join(repoRoot, "scripts", "check-http.mjs"), "--env", envFile], {
+          cwd: repoRoot,
+          stdio: ["ignore", "pipe", "pipe"]
+        });
+        let output = "";
+        child.stdout.on("data", (chunk) => (output += String(chunk)));
+        child.stderr.on("data", (chunk) => (output += String(chunk)));
+        child.on("close", (closeCode) => resolve({ code: closeCode, output }));
+      });
+
+      expect(output).toContain("RESULT:");
+      expect(output).not.toContain("mcp-session-id");
+      expect(output).not.toContain("FAIL:");
+      expect(code).toBe(0);
+      // The surface comparison actually ran — this endpoint declares no write
+      // flags, so the script must have seen and classified a read-only surface
+      // rather than bailing out before it got there.
+      expect(output).toContain("write=off");
+      expect(output).toMatch(/tools:\s+\d+ \(\d+ read-only, 0 write-capable\)/);
     });
 
     it("emits the conservative cache hints on every cacheable modern result", async () => {
