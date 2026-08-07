@@ -129,8 +129,13 @@ async function checkEndpoint(envPath) {
     const initPayload = parseRpcPayload(init.text);
     if (initPayload.error) throw new Error(`initialize failed: ${JSON.stringify(initPayload.error)}`);
 
-    sessionId = init.response.headers.get("mcp-session-id");
-    if (!sessionId) throw new Error("initialize response had no mcp-session-id header.");
+    // The /mcp endpoint is sessionless: `createMcpHandler` with
+    // `legacy: 'stateless'` serves both protocol eras per request, so NEITHER
+    // era issues an `mcp-session-id` and `tools/list` works as a standalone
+    // POST. Requiring the header here turned a healthy server into a hard FAIL
+    // — the same runbook-vs-server drift that operations.md §9 already fixed.
+    // Read it so a peer that still sets one keeps working, but never demand it.
+    sessionId = init.response.headers.get("mcp-session-id") ?? undefined;
 
     await post(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }), sessionId);
 

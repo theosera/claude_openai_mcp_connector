@@ -8,6 +8,25 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **`pnpm run check:http` had verified nothing since the endpoint became
+  sessionless; it does again.** The script read the `mcp-session-id` response
+  header and threw when it was absent. Sessions were removed from `/mcp` in this
+  same unreleased line — `createMcpHandler` with `legacy: 'stateless'` serves
+  both protocol eras per request and neither issues that header — so the
+  operator health check failed against every healthy server.
+
+  That failure was not fail-safe. The script is the operator-side guard for "the
+  live tool surface is not WIDER than the `MCP_HTTP_ALLOW_*` flags declare", and
+  the throw happened _before_ that comparison, so the surface check never ran at
+  all. A genuine widening would have been reported with the same red FAIL line
+  operators had already learned to ignore. The header is now read so a peer that
+  still sets one keeps working, and never required.
+
+  `operations.md` §9 was corrected for exactly this drift when sessions were
+  removed; its scripted twin was missed. A test now spawns the real script
+  against the real endpoint and asserts that the surface comparison itself ran,
+  so the two cannot diverge again.
+
 - **The conservative cache hints on 2026-07-28 cacheable results are now pinned
   by a test (ROADMAP item 3).** The revision requires `ttlMs`/`cacheScope` on
   cacheable results, and the SDK fills them from a `cacheHints` option this
@@ -19,8 +38,8 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   one principal's listing to another, which is exactly the leak "not registered,
   so not discoverable" exists to prevent — the tool surface is per-scope
   (INV-6/INV-7). And a non-zero `ttlMs` is unsafe **even at `private`**: the
-  previous release made the surface follow the *token*, while a private cache is
-  keyed by the *client*, so one client swapping bearers would be served the
+  previous release made the surface follow the _token_, while a private cache is
+  keyed by the _client_, so one client swapping bearers would be served the
   previous token's tool list. `CacheHint` carries `ttlMs` and `cacheScope` and
   nothing else, so there is no way to put the token in the key — which leaves
   `ttlMs: 0` as the only safe value rather than one option among several.
@@ -36,7 +55,7 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   separate problems had to be fixed together for a destination line to be worth
   adding.
 
-  First, the WHATWG URL parser *removes* tab, CR and LF from anywhere in its
+  First, the WHATWG URL parser _removes_ tab, CR and LF from anywhere in its
   input instead of failing, so `https://claude.ai<TAB>.evil.example/cb`
   registers as a string that reads as `claude.ai` and resolves to
   `claude.ai.evil.example`. `isAllowedRedirectUri` now refuses control
@@ -136,7 +155,7 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   needed to close the exploit.
 
 - **Front matter that expands exponentially when serialized is refused instead
-  of materialized.** js-yaml resolves an alias (`*a`) as a *shared reference*,
+  of materialized.** js-yaml resolves an alias (`*a`) as a _shared reference_,
   so a few hundred bytes of nested anchors parse in microseconds while
   describing a tree with millions of leaves. Nothing pays for that until
   something walks the value as a tree — `String()` in `toStringArray`, or
@@ -155,7 +174,7 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   general writes off.
 
   `parseMarkdown` now walks the parsed value the way a stringifier does —
-  revisiting a shared node once per reference, which *is* the expansion — with
+  revisiting a shared node once per reference, which _is_ the expansion — with
   an explicit stack, and throws once the accumulated size passes a budget of
   `max(64 KiB, frontmatter source length × 16)`. Work is bounded by the budget,
   never by the expansion, and a cycle terminates because every visit adds at
@@ -249,7 +268,7 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   behaviour, including the `MCP_AUDIT_SUBDIR` matching invariant between the two
   endpoints.
 
-  **A second thing to check, which does *not* fail loudly.** A write-capable
+  **A second thing to check, which does _not_ fail loudly.** A write-capable
   process that receives `KNOWLEDGE_ROOT` from its MCP client registration but
   took `MCP_AUDIT_SUBDIR` / `MCP_SKILLS_SUBDIR` from the working-directory `.env`
   will now start **normally with writes on and those subtree reservations off** —
@@ -310,7 +329,7 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   checked `MCP_AUDIT_SUBDIR`; `StoreConfig` never received `skillsSubdir` at
   all. A `SKILL.md` under `MCP_SKILLS_SUBDIR` was therefore an ordinary indexed
   document that `plan_document_update` → `apply_planned_update` could rewrite
-  wholesale — and Skills are loaded as *instructions* by later agent sessions,
+  wholesale — and Skills are loaded as _instructions_ by later agent sessions,
   so "edit a note" was a route to persistent agent-instruction injection. The
   same gap let exact-path create plant a new Skill bundle bypassing
   `SkillStore`'s name pattern, file allowlist and size caps. Notably
@@ -323,7 +342,7 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `resolveForWrite`, and `validateCreateTarget` — using the same lexical plus
   `realpath` comparison, so symlink, NFD and case-variant spellings are covered
   rather than only the client's literal string. `validateCreateTarget` checks the
-  *resolved* target, since its parent walk has already replaced every existing
+  _resolved_ target, since its parent walk has already replaced every existing
   parent with its realpath; that also closes the same gap on the **audit** side,
   where a create aimed at a symlink alias of the reserved subtree used to plan
   successfully and only fail at apply, persisting a patch that could never be
@@ -334,7 +353,7 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
   **Operating condition, same as INV-9's:** the reservation only holds in a
   process that actually sets `MCP_SKILLS_SUBDIR`. Every process that can write
-  the vault — the interactive HTTP endpoint *and* any local stdio server — must
+  the vault — the interactive HTTP endpoint _and_ any local stdio server — must
   set the same value, or a Skill remains editable through the one that does not.
 
   The gate is inert when `MCP_SKILLS_SUBDIR` is unset, so nothing changes for
@@ -380,7 +399,7 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   options object that replaces the `javascript` and `js` engines with a thrower.
   Note that `engines` is **merged** over gray-matter's defaults rather than
   replacing them, so an allowlist of `{ yaml, json }` would leave the dangerous
-  engine in place; and `matter.stringify` runs the payload *before* it throws
+  engine in place; and `matter.stringify` runs the payload _before_ it throws
   "stringifying JavaScript is not supported", so asserting that an error was
   raised does not prove non-execution. The tests assert non-execution directly,
   via a `globalThis` marker that must stay undefined.
@@ -618,7 +637,7 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   endpoint, so the runbook cannot drift from the server it documents.
 - **`operations.md` §1 now lists the third cause of "the connection dropped"**,
   written as resolved: process-memory MCP sessions returning `404
-  unknown_session` after a restart. A restart is transparent at the protocol
+unknown_session` after a restart. A restart is transparent at the protocol
   layer now, and only the OAuth state in §1.B survives it. `context-engineering.md`
   likewise said the tool surface was built "per-session" and described the move
   to per-request in the future tense.
@@ -690,7 +709,7 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - **`order`** — `relevance` / `recent` / `path`. Defaults preserve today's
     behavior: `relevance` with a query, `path` without one.
   - **Two-window snippets.** Up to two passages, chosen to cover distinct query
-    terms and joined with ` … `; a single window often lands on a passing
+    terms and joined with `…`; a single window often lands on a passing
     mention while the passage that answers the query sits further down.
   - **`explain`** returns a per-signal `score_breakdown`
     (`title` / `path` / `tags` / `body` / `phrase` / `recency`) that sums to
