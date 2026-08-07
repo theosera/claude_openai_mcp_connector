@@ -337,18 +337,39 @@ The reasons to adopt it anyway, in cost/benefit order:
      runbook cannot drift from the server it documents.
 
    The order is forced: 2a → 2b → 2c. Item 3 below depends on **2b**, not on 2c.
-3. **Cache hints (`ttlMs` / `cacheScope`) 🔭 — must be scope-private.** The tool
-   surface is static only _per scope_, not globally: `src/httpServer.ts` derives
-   `allowWrite` / `allowSkillWrite` / `allowAuditWrite` from the principal's
-   scopes and registers a different tool set for each (that is INV-6/INV-7). A
-   `cacheScope: 'shared'` listing would therefore be servable across principals,
-   handing write-tool metadata to a read-scoped client — the exact leak
-   "not registered, so not discoverable" exists to prevent. Use a private cache
-   scope, or a key that includes the effective scope and the enabled surfaces.
-   Treat this as a security-boundary change and pin it with a test. **Requires
-   2b**, whose per-request resolution is what a correct cache key has to name;
-   caching a listing while the surface is still resolved per session would key it
-   on the wrong thing.
+3. **Cache hints (`ttlMs` / `cacheScope`) ✅ — the safe values are the defaults,
+   and they are now pinned.** The tool surface is static only _per scope_, not
+   globally: `src/httpServer.ts` derives `allowWrite` / `allowSkillWrite` /
+   `allowAuditWrite` from the principal's scopes and registers a different tool
+   set for each (that is INV-6/INV-7). A `cacheScope: 'public'` listing would
+   therefore be servable across principals, handing write-tool metadata to a
+   read-scoped client — the exact leak "not registered, so not discoverable"
+   exists to prevent.
+
+   **Measuring the package first changed what this item is.** There was never a
+   hole to close: the SDK fills the required 2026-07-28 fields from its
+   `cacheHints` option, which this server does not set, so cacheable results
+   already go out as `ttlMs: 0` / `cacheScope: 'private'` (measured on the wire
+   for both `server/discover` and `tools/list`). The work is not *fixing* a leak
+   but *not opening* one — so it lands as a test, not a change.
+
+   **Two corrections to what this item used to say:**
+
+   - "Use a private cache scope, **or a key that includes the effective scope and
+     the enabled surfaces**" — the second option does not exist. `CacheHint` is
+     `ttlMs` + `cacheScope` and nothing else; cache keying belongs to the client
+     and no server-side lever reaches it.
+   - **`private` alone is not sufficient either.** 2b made the surface follow the
+     *token*, while a private cache is keyed by the *client*. One client swapping
+     bearers — the case the token-swap test already pins — would be served the
+     previous token's tool list. With no way to put the token in the key,
+     **`ttlMs: 0` is the only safe value**, and "private" is the weaker half of
+     the guarantee rather than the point of it.
+
+   Pinned by `tests/httpServer.test.ts`: both cacheable operations are asserted
+   on the wire, and the capture itself is asserted so the test cannot pass
+   vacuously. Red/green measured — `cacheScope: 'public'` and `ttlMs: 60000` each
+   fail it. Adding `cacheHints` for any reason now has to argue with a test.
 4. **Stateless scale-out / header routing — deliberately not pursued.** Gated on
    multi-user graduating from 💭. Adopting it now buys nothing and widens surface.
 
