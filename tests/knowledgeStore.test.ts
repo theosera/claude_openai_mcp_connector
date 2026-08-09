@@ -4,7 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { isTransientFsError, KnowledgeStore, mapWithConcurrency } from "../src/knowledgeStore.js";
+import {
+  isTransientFsError,
+  KnowledgeStore,
+  mapWithConcurrency,
+  resolveUniqueReference
+} from "../src/knowledgeStore.js";
+import { MultiRootStore } from "../src/multiRootStore.js";
 import { toPublicDocument } from "../src/server.js";
 import { SkillStore } from "../src/skillStore.js";
 
@@ -980,5 +986,185 @@ Created by the constrained Skill surface.
     });
     const applied = await unreserved.applyPlannedUpdate(plan.patch_id);
     expect(applied.document.body).toContain("rewritten body");
+  });
+});
+
+describe("frontmatter id squatting (INV-2)", () => {
+  // `readDocument` takes `document.id` verbatim from a file's own frontmatter,
+  // and frontmatter is untrusted vault content (INV-5). One note can therefore
+  // declare another note's server-generated uuid, or another note's
+  // vault-relative path, and win an id-first lookup. Both fetch sites must
+  // refuse to resolve a reference that names more than one document.
+  //
+  // The multi-root scenarios put the squatter in a DIFFERENT root from its
+  // victim on purpose: that collision is invisible to the per-root guard
+  // (MultiRootStore never delegates once its own id scan hits), so a fix
+  // applied to KnowledgeStore alone would leave it wide open.
+  const VICTIM_PATH = "projects/acme/contract.md";
+  const VICTIM_UUID = "11111111-2222-3333-4444-555555555555";
+  const CROSS_ROOT_PATH = "notes/policy.md";
+
+  const note = (frontmatter: string, body: string) => `---\n${frontmatter}\n---\n\n${body}\n`;
+
+  let vaultRoot: string;
+  let opsRoot: string;
+  let patchStateDir: string;
+  let single: KnowledgeStore;
+  let multi: MultiRootStore;
+
+  const write = async (rootDir: string, relativePath: string, contents: string) => {
+    const absolute = path.join(rootDir, relativePath);
+    await fs.mkdir(path.dirname(absolute), { recursive: true });
+    await fs.writeFile(absolute, contents, "utf8");
+  };
+
+  beforeEach(async () => {
+    vaultRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-id-vault-"));
+    opsRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-id-ops-"));
+    patchStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-id-patches-"));
+
+    // The victim carries a server-generated uuid, so its own path is never
+    // claimed by its own id — which is what makes it hijackable at all.
+    await write(vaultRoot, VICTIM_PATH, note(`id: ${VICTIM_UUID}\ntitle: Acme Contract`, "GENUINE CONTRACT BODY"));
+    // A read-only root's document with no frontmatter id: its id falls back to
+    // its path, so the composite prefixes it and the bare path stays free.
+    await write(opsRoot, CROSS_ROOT_PATH, note("title: Ops Policy", "GENUINE POLICY BODY"));
+
+    single = new KnowledgeStore({ knowledgeRoot: vaultRoot, writeMode: "two_step", patchStateDir });
+    await single.init();
+    multi = new MultiRootStore({
+      knowledgeRoots: [
+        { name: "vault", path: vaultRoot },
+        { name: "ops", path: opsRoot }
+      ],
+      writeMode: "two_step",
+      patchStateDir
+    });
+    await multi.init();
+  });
+
+  it("resolves unique uuid and path references (no squatter present)", async () => {
+    // The non-regression baseline: without a collision nothing changes, so a
+    // later "it still passes" cannot be mistaken for evidence that the guard works.
+    expect((await single.fetch(VICTIM_PATH)).body).toContain("GENUINE CONTRACT BODY");
+    expect((await single.fetch(VICTIM_UUID)).body).toContain("GENUINE CONTRACT BODY");
+    expect((await multi.fetch(`vault:${VICTIM_PATH}`)).body).toContain("GENUINE CONTRACT BODY");
+    expect((await multi.fetch(CROSS_ROOT_PATH)).body).toContain("GENUINE POLICY BODY");
+    // A path-derived id round-trips through the composite unchanged.
+    expect((await multi.fetch(`ops:${CROSS_ROOT_PATH}`)).id).toBe(`ops:${CROSS_ROOT_PATH}`);
+  });
+
+  it("fails closed at BOTH fetch sites — fixing one is not evidence for the other", async () => {
+    // Single root: a clipping claims the victim's path as its own id.
+    await write(vaultRoot, "clips/evil.md", note(`id: ${VICTIM_PATH}\ntitle: Acme Contract`, "SQUATTER BODY"));
+    // Composite: the squatter sits in the PRIMARY root and claims a path that
+    // only exists in the read-only root, so only the composite scan can see it.
+    await write(vaultRoot, "clips/cross.md", note(`id: ${CROSS_ROOT_PATH}\ntitle: Ops Policy`, "SQUATTER BODY"));
+
+    await expect(single.fetch(VICTIM_PATH)).rejects.toThrow(/Ambiguous document reference/);
+    await expect(multi.fetch(CROSS_ROOT_PATH)).rejects.toThrow(/Ambiguous document reference/);
+  });
+
+  it("names the colliding documents so a genuine duplicate is fixable", async () => {
+    await write(vaultRoot, "clips/evil.md", note(`id: ${VICTIM_PATH}\ntitle: Acme Contract`, "SQUATTER BODY"));
+
+    await expect(single.fetch(VICTIM_PATH)).rejects.toThrow(/clips\/evil\.md/);
+    await expect(single.fetch(VICTIM_PATH)).rejects.toThrow(/projects\/acme\/contract\.md/);
+    // Relative paths only — a document response never carries absolutePath, and
+    // neither may the error that names it. Match the literal string rather than
+    // building a RegExp from it: a temp root containing a regex metacharacter
+    // would change what the pattern means and could pass without checking.
+    await expect(single.fetch(VICTIM_PATH)).rejects.not.toThrow(vaultRoot);
+  });
+
+  it("leaves each colliding document reachable by a reference the other cannot claim", async () => {
+    // The error must not tell the caller to "retry with the exact vault-relative
+    // path": in the path-squat shape that path IS the colliding reference, so the
+    // retry lands on the same branch and raises the same error. Pin what actually
+    // still works instead of trusting the wording.
+    await write(vaultRoot, "clips/evil.md", note(`id: ${VICTIM_PATH}\ntitle: Acme Contract`, "SQUATTER BODY"));
+
+    // The advertised-but-unusable recovery, asserted as unusable.
+    await expect(single.fetch(VICTIM_PATH)).rejects.toThrow(/Ambiguous document reference/);
+    await expect(single.fetch(VICTIM_PATH)).rejects.not.toThrow(/exact vault-relative path/);
+
+    // What does work: the victim by the uuid the squatter did not claim, and the
+    // squatter by its own path, which nothing else claims.
+    expect((await single.fetch(VICTIM_UUID)).body).toContain("GENUINE CONTRACT BODY");
+    expect((await single.fetch("clips/evil.md")).body).toContain("SQUATTER BODY");
+  });
+
+  it("refuses a squatted uuid at both sites (the path-shaped check alone misses this)", async () => {
+    // The scan's suggested "reject a frontmatter id that looks like a path"
+    // would pass this straight through: nothing here is path-shaped.
+    await write(vaultRoot, "clips/uuid.md", note(`id: ${VICTIM_UUID}\ntitle: Acme Contract`, "SQUATTER BODY"));
+
+    await expect(single.fetch(VICTIM_UUID)).rejects.toThrow(/Ambiguous document reference/);
+    await expect(multi.fetch(VICTIM_UUID)).rejects.toThrow(/Ambiguous document reference/);
+  });
+
+  it("does not let a squatter retarget plan_document_update", async () => {
+    // The heaviest consequence: two-step approval protects the approved CONTENT,
+    // never the approved TARGET, so before the guard an approved edit landed on
+    // the impostor. planUpdate resolves through fetch, so it fails closed too.
+    await write(vaultRoot, "clips/evil.md", note(`id: ${VICTIM_PATH}\ntitle: Acme Contract`, "SQUATTER BODY"));
+
+    await expect(
+      single.planUpdate({ id_or_path: VICTIM_PATH, new_body: "rewritten", reason: "retarget attempt" })
+    ).rejects.toThrow(/Ambiguous document reference/);
+    // Nothing was staged and nothing was written.
+    expect(await fs.readdir(patchStateDir)).toEqual([]);
+    expect(await fs.readFile(path.join(vaultRoot, "clips/evil.md"), "utf8")).toContain("SQUATTER BODY");
+  });
+
+  it("costs reachability when the victim has no frontmatter id of its own", async () => {
+    // The sharp edge of failing closed, pinned so nobody restores the claim that
+    // refusing costs no reachability. A note that carries no frontmatter id has
+    // exactly one handle — its path — because its id IS its path. A squatter that
+    // claims that path leaves it with no reference at all, unlike the uuid case
+    // above where the uuid still resolves.
+    await write(vaultRoot, "notes/plain.md", note("title: Plain", "PLAIN BODY"));
+    expect((await single.fetch("notes/plain.md")).body).toContain("PLAIN BODY");
+
+    await write(vaultRoot, "clips/squat.md", note("id: notes/plain.md\ntitle: Plain", "SQUATTER BODY"));
+
+    // Both its id and its path are the same string, and both now collide.
+    await expect(single.fetch("notes/plain.md")).rejects.toThrow(/Ambiguous document reference/);
+    // Only the squatter keeps a private handle. The victim has none.
+    expect((await single.fetch("clips/squat.md")).body).toContain("SQUATTER BODY");
+  });
+
+  it("does not count one file reached through an in-root symlink as two documents", async () => {
+    // `walkMarkdownFiles` resolves an in-root symlink to its target, so the note
+    // is listed under BOTH names and `readDocument` canonicalizes both entries to
+    // the same relativePath. Counting them as two candidates would refuse a
+    // reference that is not ambiguous at all — a self-inflicted denial of service
+    // on a legitimate vault layout, and a regression the id-first `find` hid.
+    await fs.symlink(path.join(vaultRoot, VICTIM_PATH), path.join(vaultRoot, "alias.md"));
+
+    // Assert the duplicate is really there, so this cannot pass vacuously if the
+    // walk ever starts de-duplicating on its own.
+    const listed = (await single.listDocuments()).filter((document) => document.relativePath === VICTIM_PATH);
+    expect(listed).toHaveLength(2);
+
+    expect((await single.fetch(VICTIM_UUID)).body).toContain("GENUINE CONTRACT BODY");
+    expect((await single.fetch(VICTIM_PATH)).body).toContain("GENUINE CONTRACT BODY");
+  });
+
+  it("fails closed when a call site passes no candidates at all", () => {
+    // The contract belongs to this function, not to caller discipline. Both
+    // current callers only reach it with at least one id match, but it is
+    // exported and the security skill's rule is that new read paths route
+    // through the same guard. Returning the first element of an empty list would
+    // hand back `undefined` AS a document, and the type would not catch it
+    // (`noUncheckedIndexedAccess` is off).
+    expect(() => resolveUniqueReference("anything.md", [], undefined)).toThrow(/not found/i);
+  });
+
+  it("keeps traversal and not-found references failing as before", async () => {
+    // The lenient path lookup added for the ambiguity check must not swallow a
+    // containment error on the branch that still resolves references strictly.
+    await expect(single.fetch("../outside.md")).rejects.toThrow(/escapes|Relative/);
+    await expect(single.fetch("missing/note.md")).rejects.toThrow(/not found/i);
   });
 });

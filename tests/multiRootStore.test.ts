@@ -132,11 +132,18 @@ describe("MultiRootStore", () => {
     await store.init();
   });
 
-  it("resolves a frontmatter id that collides with a root name to the note that carries it", async () => {
+  it("fails closed when a frontmatter id collides with another root's document", async () => {
     // Root names are short words ("vault", "ops"), and Obsidian notes carry
-    // custom frontmatter ids. A vault note with `id: "ops:secret"` must fetch to
-    // THAT note — not be mis-routed into the "ops" root and return a different
-    // document (a silently-wrong RAG citation / source-integrity bug).
+    // custom frontmatter ids, so a vault note with `id: "ops:secret"` and an
+    // `ops` root holding `secret.md` are two live readings of one reference.
+    //
+    // This used to resolve id-first, deliberately: preferring the PATH would
+    // return the ops document for a citation that carried the vault note's id —
+    // a silently-wrong RAG citation. That reasoning still holds, which is why
+    // the INV-2 fix is NOT path-first (the scan's recommendation (a), rejected).
+    // But the id half is untrusted vault content, so preferring it silently is
+    // equally a guess. Both readings are refused instead: the loud failure is
+    // the point, and the unambiguous handle below still works.
     await fs.writeFile(
       path.join(vaultRoot, "collide.md"),
       '---\nid: "ops:secret"\ntitle: Vault Collide\n---\n\nVAULTCOLLIDEBODY\n',
@@ -144,18 +151,20 @@ describe("MultiRootStore", () => {
     );
     await fs.writeFile(path.join(opsRoot, "secret.md"), "---\ntitle: Ops Secret\n---\n\nOPSSECRETBODY\n", "utf8");
 
-    // search emits the colliding id for the vault note...
+    // search still emits the colliding id for the vault note...
     const hit = (await store.search({ query: "VAULTCOLLIDEBODY" })).results.find((r) => r.id === "ops:secret");
     expect(hit?.title).toBe("Vault Collide");
 
-    // ...and fetch returns exactly that note, not the ops root's secret.md.
-    const fetched = await store.fetch("ops:secret");
-    expect(fetched.title).toBe("Vault Collide");
-    expect(fetched.body).toContain("VAULTCOLLIDEBODY");
+    // ...but fetching it names both readings rather than picking one.
+    await expect(store.fetch("ops:secret")).rejects.toThrow(/Ambiguous document reference/);
+    await expect(store.fetch("ops:secret")).rejects.toThrow(/vault:collide\.md.*ops:secret\.md/);
 
-    // The genuine ops document is still reachable via its own prefixed path id.
-    const ops = await store.fetch("ops:secret.md");
-    expect(ops.title).toBe("Ops Secret");
+    // Here both exact paths happen to be unclaimed, so both documents stay
+    // reachable. That is a property of THIS collision, not a general guarantee —
+    // a frontmatter id can be a path, and knowledgeStore.test.ts pins the case
+    // where a squatted path leaves its victim with no handle at all.
+    expect((await store.fetch("vault:collide.md")).body).toContain("VAULTCOLLIDEBODY");
+    expect((await store.fetch("ops:secret.md")).title).toBe("Ops Secret");
   });
 
   it("createStore picks the plain single-root store for one root", () => {
@@ -298,6 +307,30 @@ describe("MultiRootStore", () => {
         reason: "write via bare id of a read-only document"
       })
     ).rejects.toThrow(/not found/i);
+  });
+
+  it("does not let a primary-root squatter capture an update aimed at a read-only root", async () => {
+    // fetch() refuses this collision at the composite level, but planUpdate
+    // delegates straight to the primary store, which sees only its own root and
+    // therefore cannot see a cross-root collision at all. Without routing
+    // planUpdate through the composite resolver, an update aimed at the ops
+    // document silently stages against the primary-root file that claimed its path.
+    await fs.mkdir(path.join(opsRoot, "notes"), { recursive: true });
+    await fs.writeFile(
+      path.join(opsRoot, "notes", "policy.md"),
+      "---\ntitle: Ops Policy\n---\n\nGENUINEPOLICYBODY\n",
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(vaultRoot, "squat.md"),
+      "---\nid: notes/policy.md\ntitle: Ops Policy\n---\n\nSQUATTERBODY\n",
+      "utf8"
+    );
+
+    await expect(store.fetch("notes/policy.md")).rejects.toThrow(/Ambiguous document reference/);
+    await expect(
+      store.planUpdate({ id_or_path: "notes/policy.md", new_body: "captured", reason: "cross-root capture" })
+    ).rejects.toThrow(/Ambiguous document reference/);
   });
 
   it("reserves the primary root's Skills subtree against general writes (INV-8)", async () => {

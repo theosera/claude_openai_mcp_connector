@@ -8,6 +8,55 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **A note's frontmatter `id` could impersonate any other document, and no
+  longer can.** `readDocument` takes `document.id` verbatim from the file's own
+  frontmatter — untrusted vault content — and `fetch()` matched that id *before*
+  the vault-relative path, with no uniqueness check. A single note declaring
+  another note's server-generated uuid, or another note's path, therefore
+  answered every lookup aimed at that other note: `fetch_document`, the ChatGPT
+  `fetch` alias, `trace_sources`, and the target `plan_document_update` resolves
+  before staging its edit.
+
+  That last one is the sharp end: **two-step approval protects the approved
+  content, never the approved target**, so a diff the user reviewed and approved
+  landed on the impostor file. Documents this server created are the most
+  hijackable, because `create_document` / `plan_document_create` stamp a
+  `crypto.randomUUID()` — their own path is never claimed by their own id, so a
+  squatter is the *only* id match and wins regardless of scan order.
+
+  `fetch` now resolves a reference only when it names exactly one document
+  across the id and path namespaces, at **both** `KnowledgeStore.fetch` and
+  `MultiRootStore.fetch`; an ambiguous reference fails closed.
+
+  **Not path-first.** Resolving the path first would silently return a different
+  document than the citation carrying that id pointed at — the mis-routing the
+  composite's id-first match exists to prevent (a vault note with
+  `id: "ops:secret"`, where `ops` also names a root). The error names the
+  colliding documents by relative path so a genuine duplicate is fixable.
+
+  **Refusing does cost reachability, and the error says so.** An earlier draft of
+  this entry claimed "the exact vault-relative path is the one handle no file's
+  content can claim". That is false, and the test suite proves it: a frontmatter
+  `id` CAN be a vault-relative path, and claiming one is the primary attack
+  shape. A victim that carries its own uuid stays reachable by that uuid, but a
+  note carrying **no** frontmatter `id` has exactly one handle — its path, since
+  its id *is* its path — and a squatter claiming that path leaves it with no
+  reference at all. Both cases are pinned. The error therefore does not tell the
+  caller to retry with the exact path (that retry lands on the same collision);
+  it says the reference cannot be disambiguated and the duplicate `id` has to go.
+
+  **Two guards, because one is not evidence for the other.** A squatter in the
+  primary root shadows documents in the read-only roots, and that collision is
+  visible only to the composite. One test drives both stores; removing either
+  call site alone was measured to turn its own scenarios red while the other
+  store stays green.
+
+  **Behaviour change, stated plainly:** one planted file now makes its victim
+  unfetchable as well, so this converts a silent content swap into a loud denial
+  of service. `fetch("ops:secret")` in a multi-root vault where a note carries
+  that id and an `ops` root holds `secret.md` used to return the note; it now
+  refuses and names both. Both remain reachable by exact path.
+
 - **`pnpm run check:http` had verified nothing since the endpoint became
   sessionless; it does again.** The script read the `mcp-session-id` response
   header and threw when it was absent. Sessions were removed from `/mcp` in this

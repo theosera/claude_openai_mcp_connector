@@ -65,6 +65,30 @@ injection」「③ 既存ノートの破壊的/stale 上書き」「④ public r
 (`validatePatchValue`: `client`/`project`/`title` = string、`tags`/`source_refs` = string[])
 — キー allowlist だけでは nested object / 型不一致を YAML に注入できてしまうため。
 
+**★ 読む側も同じ不変条件に属する: `id` は同一性ではない。** `readDocument` は
+`document.id` を**ファイル自身の frontmatter から verbatim**に取る。frontmatter は untrusted
+vault content (INV-5) なので、1 枚のノートが**他文書の uuid や他文書の path** を `id` として
+宣言でき、id-first の lookup を無条件に奪える (`fetch_document` / ChatGPT `fetch` /
+`trace_sources` / **`plan_document_update` の対象解決**)。二段階書き込みは「承認した**内容**」を
+守るが「承認した**対象**」は守らない。したがって **`fetch` は参照が文書を 1 つだけ指すときにのみ
+解決する** (`resolveUniqueReference`) — id 名前空間と path 名前空間をまたいで 2 つ以上が
+名乗ったら **fail closed** (先頭一致を返さない)。
+
+- **path 優先にしない。** path を先に解決すると、その id を運んできた citation が指すのとは
+  **別の文書**を黙って返す (= `MultiRootStore.fetch` の id-first が防いでいた mis-route)。
+- **★ 到達性は失う。それを認めた上で refuse を採る。** 「exact な vault-relative path なら
+  content が名乗れない」は**偽** — frontmatter `id` は path を名乗れるし、それが主要な攻撃形。
+  自前の uuid を持つ文書は uuid で引けるが、**frontmatter `id` を持たない文書は handle が path
+  1 本だけ** (id = path) なので、その path を squat されると**引く手段が無くなる**。
+  両方テストで pin 済み。**エラーは「exact path で引き直せ」と言わない** (同じ衝突に着地するため) —
+  言うのは「重複 `id` を消せ」。
+- **ガードは 2 箇所ある**: `KnowledgeStore.fetch` と `MultiRootStore.fetch`。**片方が正しいことは
+  他方の証拠にならない** — primary root の squatter は read-only root の文書を奪えるが、その衝突は
+  **composite からしか見えない**。両方を踏むテストで pin する (`tests/knowledgeStore.test.ts`)。
+- **代償を隠さない**: 偽装ファイル 1 枚で、被害文書も**曖昧として引けなくなる** (loud な DoS)。
+  黙って攻撃者の本文を返すより良い、という判断。エラーは衝突相手を `relativePath` で名指しする
+  (`absolutePath` は出さない)。
+
 ### INV-3 Two-step stale-safe write
 
 既存ファイル編集は必ず 2 段階:
@@ -264,6 +288,10 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
 - path traversal (`../`, encoded `%2e%2e`, malformed escape `%ZZ`, 絶対, `~`, NUL/制御文字, 超過長) → reject
 - symlink escape (root 外を指す symlink) → reject / symlink cycle (`loop → root`) → 無限再帰せず完了
 - frontmatter allowlist (未知キー patch) → reject / 値型違反 (非 string / 非 string[]) → reject
+- **id squatting (INV-2 読む側)**: 他文書の path / uuid を `id` に宣言したノートを置くと
+  `fetch` が **両サイトで** fail closed (`KnowledgeStore` = 単一ルート / `MultiRootStore` =
+  squatter を primary、被害者を read-only root に置き **composite でしか見えない衝突**にする) /
+  `plan_document_update` が偽装先に staged されない / 衝突が無ければ uuid・path 参照は従来どおり
 - two-step: plan→apply 成功 / 外部編集後 apply → stale reject
 - exact-path create: plan は対象側無変更 / `はい` + 自由記述の確認payload / confirmed path不一致・
   staged content改ざん・非primary root・traversal・symlink parentをreject / MCP E2Eでapply→read-back
