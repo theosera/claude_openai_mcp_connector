@@ -262,7 +262,23 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
 
 ## テストで固定する (規約でなく実行可能な保証)
 
-セキュリティ挙動は `pnpm test` (vitest) で pin する。最低限カバー:
+セキュリティ挙動は `pnpm test` (vitest) で pin する。
+
+> **★ 逆検証を先に済ませる。** 下の一覧を満たすテストを書いたら、**そのガードを外して赤くなる
+> ことを実測してから** merge する。**触ったガードごとに 1 回ずつ** — 1 PR で複数の INV に
+> またがったなら、その数だけ実施する (1 つ測って全体の代表としない)。
+> 緑は「壊れていない」であって「守っている」ではなく、
+> **その分岐を踏む入力を作らない限り、そのテストは何も証明していない**。
+> 赤の理由が**そのガードの不在**であることまで確認する (別の理由で落ちても意味がない)。
+> 実施済みの例: `enableDnsRebindingProtection` を落とすと境界テスト 2 本**だけ**が落ちる /
+> `legacy:'reject'` で 2025 leg が `-32022` / `cacheScope:'public'`・`ttlMs:60000` が**個別に**
+> 落ち、かつ**捕捉そのもの**を assert して vacuous な緑を塞ぐ / `MCP_HTTP_ALLOW_WRITE` を
+> 宣言だけ off にすると `check:http` が write tool 5 つを名指しする。
+> **チェックが FAIL したときも同じことを問う** — 検査した結果か、検査に**到達しなかった**結果か。
+> (#91: `check-http.mjs` は 2b 以降ずっと FAIL していたが、比較の手前で throw していたので
+> surface 検査は一度も走っていなかった。)
+
+最低限カバー:
 
 - path traversal (`../`, encoded `%2e%2e`, malformed escape `%ZZ`, 絶対, `~`, NUL/制御文字, 超過長) → reject
 - symlink escape (root 外を指す symlink) → reject / symlink cycle (`loop → root`) → 無限再帰せず完了
