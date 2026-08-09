@@ -89,6 +89,23 @@ vault content (INV-5) なので、1 枚のノートが**他文書の uuid や他
   黙って攻撃者の本文を返すより良い、という判断。エラーは衝突相手を `relativePath` で名指しする
   (`absolutePath` は出さない)。
 
+**★ frontmatter は parse する前に長さで縛る (`MAX_FRONTMATTER_BLOCK_BYTES` = 8 KiB)。**
+`matter()` の実行中に**二次の CPU 経路が 2 つ**走る — ① gray-matter の comment stripper
+(`/^\s*#[^\n]+/gm`。`m` なので**行頭の数**が効き、LF だけでなく U+2028/U+2029 も行頭を作る)
+② js-yaml の `!!omap` (**GHSA-5p4m-2wfm-xmqj** / `gray-matter > js-yaml` = **本番依存**)。
+実測 (gray-matter 4.0.3 / js-yaml 3.15.0): **終端なし 391 KB で 101.8 秒**、`!!omap` 1,228 KB で 3.5 秒。
+**終端 `---` が無いと gray-matter はファイル全体をブロック扱いする**のが最悪ケース。
+
+- **結果を見るガードでは間に合わない。** `assertBoundedFrontmatterExpansion` は `matter()` が
+  返った後に走るので、この経路を一度も止めていない。**両者は補完関係**であり、片方を理由に
+  もう片方を消さない — ブロック長上限は展開爆弾に対しては**正しく却下**された (爆弾は数百バイト)。
+- **依存の更新では直らない。** gray-matter が js-yaml `^3.13.1` を要求し、修正は 5.x のみで
+  API 非互換。**この上限が緩和策そのもの**。
+- **上限は実データで決める** (実 vault 2,381 ノート / median 225 B / max 1,042 B → 8 KiB で 7.9 倍の余裕)。
+  **文字種を列挙しない** — 何で埋められても長さで止まる (`D-G2-REDOS` の一般化)。
+- **超過は必ず出力する。** read 経路は `parseError` → ファイル名付きで stderr、本文のみ index。
+  write 経路は throw (frontmatter を黙って落とすとデータ損失)。
+
 ### INV-3 Two-step stale-safe write
 
 既存ファイル編集は必ず 2 段階:
@@ -288,6 +305,10 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
 - path traversal (`../`, encoded `%2e%2e`, malformed escape `%ZZ`, 絶対, `~`, NUL/制御文字, 超過長) → reject
 - symlink escape (root 外を指す symlink) → reject / symlink cycle (`loop → root`) → 無限再帰せず完了
 - frontmatter allowlist (未知キー patch) → reject / 値型違反 (非 string / 非 string[]) → reject
+- **frontmatter block 長 (INV-2 / 二次 CPU)**: 上限超過は reject / **終端 `---` 無し**も reject
+  (ファイル全体がブロック扱いになる最悪ケース) / **frontmatter が無い巨大ノートは通る** (誤検知の逆)。
+  ★ **時間も assert する** — ガードを外すと終端なしのテストが **177 秒**かかる (1 秒の assertion に対し 177 倍)。
+  「throw する」だけでは、その throw が parse の前か後かを区別できない
 - **id squatting (INV-2 読む側)**: 他文書の path / uuid を `id` に宣言したノートを置くと
   `fetch` が **両サイトで** fail closed (`KnowledgeStore` = 単一ルート / `MultiRootStore` =
   squatter を primary、被害者を read-only root に置き **composite でしか見えない衝突**にする) /

@@ -8,6 +8,60 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **Frontmatter is now bounded before it is parsed, closing two quadratic paths
+  — one of them a CVE in a production dependency.** Both are driven by the size
+  of the frontmatter block and both are reachable from untrusted vault content on
+  the always-on read path:
+
+  1. gray-matter's comment stripper, `file.matter.replace(/^\s*#[^\n]+/gm, '')`.
+     The `m` flag makes every line start a match position, so the cost is
+     quadratic in the number of line starts.
+  2. js-yaml's `!!omap` resolution — **GHSA-5p4m-2wfm-xmqj**, js-yaml `<3.15.1`,
+     reached as `gray-matter > js-yaml`. `!!omap` is in the default schema, so a
+     plain load hits it.
+
+  Measured on this repo's pinned versions (Node 22, gray-matter 4.0.3 / js-yaml
+  3.15.0), quadrupling per doubling in both — the signature of O(n²):
+
+  | path | input | blocked for |
+  | --- | --- | --- |
+  | comment stripper, no closing delimiter | 391 KB | **101.8 s** |
+  | comment stripper, closing delimiter | 156 KB | 9.1 s |
+  | `!!omap` | 1,228 KB | 3.5 s |
+
+  The worst case is a file whose frontmatter never closes, because gray-matter
+  then treats the **whole file** as the block. All of it sits far inside
+  `append_audit_report`'s 512 KB ceiling.
+
+  `parseMarkdown` now refuses a block over **8 KiB** before calling `matter()`.
+  Nothing that inspects the parsed *result* can help here — the CPU is spent
+  during the parse — which is why the existing anchor/alias expansion guard,
+  which runs after `matter()` returns, never covered this. The two guards are
+  complementary: a block-size cap was correctly **rejected** for the expansion
+  bomb (that bomb is a few hundred bytes) and is the right bound here, because
+  size is exactly what drives these two.
+
+  **The cap is not an upgrade away.** gray-matter requires js-yaml `^3.13.1`; the
+  `!!omap` fix exists only in 5.x, whose API is incompatible. The bound *is* the
+  mitigation.
+
+  Sized against the real vault this server was built for — 2,381 notes,
+  frontmatter median 225 B, p99 501 B, max 1,042 B — so 8 KiB keeps ~7.9x
+  headroom over the largest note that exists while holding the attack to ~23 ms.
+  Over-cap frontmatter fails **loudly**: the read path logs it and indexes the
+  note body-only (exactly like any other malformed frontmatter), and the write
+  paths refuse rather than dropping metadata.
+
+  **Behaviour change:** a note carrying kilobytes of `source_refs` in its
+  frontmatter is now refused. The test suite previously pinned a session-archive
+  index with 900 `source_refs` — 66.2 KiB of frontmatter — as legitimate. No such
+  note exists in the vault, and a hostile block that size costs ~3 s, so the cap
+  is kept and that shape is now pinned as refused. Frontmatter carrying kilobytes
+  of references is the design to revisit, not the limit.
+
+  Reverse-verified: with the cap removed, the unterminated-block test takes
+  **177 seconds** instead of failing under its 1-second assertion.
+
 - **A note's frontmatter `id` could impersonate any other document, and no
   longer can.** `readDocument` takes `document.id` verbatim from the file's own
   frontmatter — untrusted vault content — and `fetch()` matched that id *before*

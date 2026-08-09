@@ -68,6 +68,10 @@ function validatePatchValue(key: string, value: unknown): unknown {
 }
 
 export function parseMarkdown(raw: string): { frontmatter: DocumentMetadata; body: string } {
+  // Bound the block BEFORE matter() runs: both quadratic paths below are paid
+  // during the parse itself, so any guard that inspects the RESULT is too late.
+  // See assertBoundedFrontmatterBlock.
+  assertBoundedFrontmatterBlock(raw);
   const parsed = matter(raw, SAFE_MATTER_OPTIONS);
   // Reject anchor/alias expansion bombs BEFORE anything materializes the parsed
   // frontmatter as text (normalizeMetadata's String(), JSON.stringify on the
@@ -77,6 +81,88 @@ export function parseMarkdown(raw: string): { frontmatter: DocumentMetadata; bod
     frontmatter: normalizeMetadata(parsed.data as DocumentMetadata),
     body: parsed.content
   };
+}
+
+// --- Frontmatter block size bound (quadratic parse-time CPU) ----------------
+// TWO independent quadratic paths run while gray-matter parses, both driven by
+// the SIZE of the frontmatter block and both reachable from untrusted vault
+// content on the always-on read path:
+//
+//   1. gray-matter's own comment stripper, `file.matter.replace(/^\s*#[^\n]+/gm, '')`.
+//      The `m` flag makes every LINE START a match position, so cost is quadratic
+//      in the number of line starts — not in whitespace, and not only in `\n`:
+//      U+2028 and U+2029 start lines too, so counting newline characters is the
+//      wrong shape of fix.
+//   2. js-yaml's `!!omap` resolution (GHSA-5p4m-2wfm-xmqj, js-yaml <3.15.1).
+//      `!!omap` is in the DEFAULT schema, so a plain load hits it. gray-matter
+//      requires `^3.13.1` and the fix exists only in 5.x, whose API is
+//      incompatible — so an override cannot resolve this and the size bound below
+//      IS the mitigation.
+//
+// Measured (Node 22, gray-matter 4.0.3 / js-yaml 3.15.0), quadrupling per
+// doubling in both — the signature of O(n^2):
+//
+//   path 1, no closing delimiter   391 KB -> 101.8 s
+//   path 1, closing delimiter      156 KB ->   9.1 s
+//   path 2, !!omap               1,228 KB ->   3.5 s
+//
+// A file whose frontmatter never closes is the worst case, because gray-matter
+// falls back to treating the WHOLE file as the block (`if (closeIndex === -1)
+// closeIndex = len`). All of this sits far inside append_audit_report's 512 KB
+// ceiling.
+//
+// ⚠️ The block-size cap was REJECTED for the expansion bomb above, correctly:
+// that bomb is a few hundred bytes, so size tells you nothing about it. It is
+// the right bound HERE because size is exactly what drives these two. The guards
+// are complementary, not redundant — do not delete one on the strength of the
+// other.
+//
+// Rejected alternative: stripping or counting the characters that start a line.
+// That enumerates today's line terminators, and the next person to touch it will
+// count `\n` alone and silently reopen path 1. Bounding the block bounds both
+// paths whatever it is filled with, and needs no knowledge of either regex.
+
+/**
+ * Largest frontmatter block accepted, in characters.
+ *
+ * Measured against the real vault this server was built for: 2,381 notes,
+ * frontmatter median 225 B, p99 501 B, p99.9 and max 1,042 B. A 2 KiB cap would
+ * already reject nothing; 8 KiB keeps ~7.9x headroom over the largest note that
+ * exists while holding the attack to ~23 ms (path 1) and ~0.3 ms (path 2).
+ *
+ * If a legitimate note ever needs more than this, raise the DESIGN rather than
+ * the number: frontmatter carrying kilobytes of `source_refs` is the smell, and
+ * the failure here is loud (below) rather than silent, so it will be noticed.
+ */
+export const MAX_FRONTMATTER_BLOCK_BYTES = 8 * 1024;
+
+/**
+ * Refuse a frontmatter block larger than the cap, before gray-matter sees it.
+ *
+ * Mirrors gray-matter's own block detection (`lib/engine`/`index.js`): a block
+ * exists only when the input opens with the delimiter, and it runs to the first
+ * `\n---` — or to the END of the input when there is none. A file that does not
+ * open with the delimiter has no block at all and is never measured here, so a
+ * megabyte-long note with no frontmatter stays perfectly legal.
+ *
+ * Throwing (rather than degrading quietly) is what makes the cap observable:
+ * `parseMarkdownSafe` turns it into a `parseError`, which the store logs with
+ * the file path before indexing the note body-only, and the write paths fail
+ * outright instead of dropping metadata on the floor.
+ */
+function assertBoundedFrontmatterBlock(raw: string): void {
+  if (!raw.startsWith(FRONTMATTER_DELIMITER)) {
+    return;
+  }
+  const close = raw.indexOf("\n" + FRONTMATTER_DELIMITER, FRONTMATTER_DELIMITER.length);
+  const blockLength = close === -1 ? raw.length : close;
+  if (blockLength > MAX_FRONTMATTER_BLOCK_BYTES) {
+    throw new Error(
+      `Frontmatter block is ${blockLength} bytes, over the ${MAX_FRONTMATTER_BLOCK_BYTES}-byte limit` +
+        `${close === -1 ? " (no closing delimiter, so the whole file would be parsed as frontmatter)" : ""}; ` +
+        "refusing to parse it."
+    );
+  }
 }
 
 // --- YAML anchor/alias expansion guard --------------------------------------
@@ -114,6 +200,12 @@ const EXPANSION_BUDGET_FLOOR_BYTES = 64 * 1024;
  * 2.0x for the worst legitimate shape (flow-style one-character tags), and
  * 4.3x for an all-`!!timestamp` block (Dates are charged OPAQUE_LEAF_BYTES).
  * 16x keeps at least 3.7x headroom over every one of those.
+ *
+ * NOTE: the first two of those shapes can no longer reach this guard — both are
+ * larger than MAX_FRONTMATTER_BLOCK_BYTES and are refused earlier. The ratios
+ * are kept because a ratio does not depend on size, so they still bound what
+ * legitimate frontmatter amplifies to; the tests now measure the same shapes at
+ * sizes that fit under the cap.
  *
  * Those figures survived the switch to JSON-escaped string accounting
  * (jsonStringCost) unchanged: every string in every one of those shapes is
@@ -189,7 +281,7 @@ function jsonStringCost(value: string, remaining: number): number {
  * properties. It is therefore `undefined` for every repeat parse of content the
  * process has already seen — a budget read from it would silently collapse to
  * the floor on the second read of a note and strip the metadata off large but
- * perfectly legitimate frontmatter (a session-archive index with hundreds of
+ * perfectly legitimate frontmatter (a session-archive index with dozens of
  * `source_refs`). Reading `raw` keeps the budget identical on the first parse
  * and every repeat parse of identical content.
  *

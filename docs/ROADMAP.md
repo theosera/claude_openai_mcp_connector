@@ -478,6 +478,46 @@ skill-firing row in [`CLAUDE.md`](../CLAUDE.md) both name the transport options
 by name. Whichever PR moves the mechanism must update both in the same change,
 or the canon will describe an API the code no longer uses.
 
+### Frontmatter is bounded before it is parsed — _second security scan, root C_ ✅
+
+Two independent quadratic paths run **while gray-matter parses**, both driven by
+the size of the frontmatter block and both reachable from untrusted vault content
+on the always-on read path: gray-matter's own comment stripper (`m`-flagged, so
+every line start is a match position), and js-yaml's `!!omap` resolution —
+**GHSA-5p4m-2wfm-xmqj**, a CVE in a **production** dependency reached as
+`gray-matter > js-yaml`.
+
+Measured, quadrupling per doubling in both: 391 KB of unterminated frontmatter
+blocked for **101.8 s**; `!!omap` at 1,228 KB for 3.5 s. The unterminated case is
+worst because gray-matter then treats the whole file as the block.
+
+`parseMarkdown` refuses a block over **8 KiB** before `matter()` runs.
+
+- **Nothing that inspects the parsed result can help** — the CPU is spent during
+  the parse. The existing anchor/alias expansion guard runs after `matter()`
+  returns and therefore never covered this. A block-size cap was correctly
+  *rejected* for that expansion bomb (a few hundred bytes tells you nothing about
+  size) and is the right bound here. The two are complementary; neither replaces
+  the other.
+- **Not an upgrade away.** gray-matter requires js-yaml `^3.13.1`; the fix is
+  5.x-only with an incompatible API, so the bound *is* the mitigation. The two
+  remaining advisories are dev-only and left to Dependabot.
+- **Sized from real data**, not from the attack: 2,381 notes, frontmatter median
+  225 B, max 1,042 B. 8 KiB keeps ~7.9x headroom while holding the attack to
+  ~23 ms. Over-cap frontmatter fails loudly — logged and indexed body-only on the
+  read path, refused outright on the write paths.
+- **Behaviour change:** kilobytes of `source_refs` in frontmatter are now
+  refused, including the 900-ref session-archive index the tests used to pin as
+  legitimate (66.2 KiB). No such note exists in the vault, and a hostile block
+  that size costs ~3 s. Frontmatter carrying kilobytes of references is the
+  design to revisit, not the limit.
+
+**This is what the dependency audit was for.** Both full-tree scans dropped
+`package.json` / `pnpm-lock.yaml` into `skipped_components`, and the scan that
+did report the comment stripper wrote honestly that it could not confirm the
+bound without executing the regex. The CVE was published the day before that scan
+ran — and `pnpm audit` had been printing it in CI on every run.
+
 ### Document identity is not a frontmatter field — _second security scan, root A_ ✅
 
 A second full-tree security scan (2026-08-07, against `85dc2c0`) reported nine
@@ -713,6 +753,21 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       the mis-routing the composite's id-first match prevents); the exact
       vault-relative path stays the unambiguous handle. Reverse-verified per
       guard. See the root-A section above.
+- [x] **Bound the frontmatter block before parsing it (root C)** — ✅ 8 KiB cap
+      in `parseMarkdown`, ahead of `matter()`. Closes both the `m`-flagged comment
+      stripper and **GHSA-5p4m-2wfm-xmqj** (`gray-matter > js-yaml`, a production
+      dependency the 5.x fix cannot reach). Sized from the real vault, not the
+      attack. See the root-C section above.
+- [ ] **Revisit frontmatter that carries kilobytes of references** — the
+      session-archive index shape (900 `source_refs`) no longer parses. Nothing in
+      the vault produces one today, so this is a design question rather than a
+      regression: an index note should point at a list, not inline it. Belongs
+      with the `session-archive` work, not with the parser.
+- [ ] **Dependency audit as a standing habit, not a scan deliverable** — both
+      full-tree scans dropped the manifests, and the one CVE that mattered was
+      already in `pnpm audit`'s CI output being read as noise. Decide what makes
+      an advisory step actually get read (fail the build on production-path
+      advisories only, or route them somewhere with a reader).
 - [ ] **Constrain what the audit / Skill-reference write surfaces may author** —
       the write-side half of the same root cause: `append_audit_report`,
       `compare_and_swap_audit_state` and Skill `references/*.md` write client
