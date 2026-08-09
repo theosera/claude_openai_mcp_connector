@@ -8,6 +8,46 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **A note's frontmatter `id` could impersonate any other document, and no
+  longer can.** `readDocument` takes `document.id` verbatim from the file's own
+  frontmatter — untrusted vault content — and `fetch()` matched that id *before*
+  the vault-relative path, with no uniqueness check. A single note declaring
+  another note's server-generated uuid, or another note's path, therefore
+  answered every lookup aimed at that other note: `fetch_document`, the ChatGPT
+  `fetch` alias, `trace_sources`, and the target `plan_document_update` resolves
+  before staging its edit.
+
+  That last one is the sharp end: **two-step approval protects the approved
+  content, never the approved target**, so a diff the user reviewed and approved
+  landed on the impostor file. Documents this server created are the most
+  hijackable, because `create_document` / `plan_document_create` stamp a
+  `crypto.randomUUID()` — their own path is never claimed by their own id, so a
+  squatter is the *only* id match and wins regardless of scan order.
+
+  `fetch` now resolves a reference only when it names exactly one document
+  across the id and path namespaces, at **both** `KnowledgeStore.fetch` and
+  `MultiRootStore.fetch`; an ambiguous reference fails closed.
+
+  **Not path-first.** Resolving the path first would silently return a different
+  document than the citation carrying that id pointed at — the mis-routing the
+  composite's id-first match exists to prevent (a vault note with
+  `id: "ops:secret"`, where `ops` also names a root). Refusing costs no
+  reachability: the exact vault-relative path is the one handle no file's content
+  can claim, and the error names the colliding documents by relative path so a
+  genuine duplicate is fixable.
+
+  **Two guards, because one is not evidence for the other.** A squatter in the
+  primary root shadows documents in the read-only roots, and that collision is
+  visible only to the composite. One test drives both stores; removing either
+  call site alone was measured to turn its own scenarios red while the other
+  store stays green.
+
+  **Behaviour change, stated plainly:** one planted file now makes its victim
+  unfetchable as well, so this converts a silent content swap into a loud denial
+  of service. `fetch("ops:secret")` in a multi-root vault where a note carries
+  that id and an `ops` root holds `secret.md` used to return the note; it now
+  refuses and names both. Both remain reachable by exact path.
+
 - **`pnpm run check:http` had verified nothing since the endpoint became
   sessionless; it does again.** The script read the `mcp-session-id` response
   header and threw when it was absent. Sessions were removed from `/mcp` in this

@@ -478,6 +478,43 @@ skill-firing row in [`CLAUDE.md`](../CLAUDE.md) both name the transport options
 by name. Whichever PR moves the mechanism must update both in the same change,
 or the canon will describe an API the code no longer uses.
 
+### Document identity is not a frontmatter field — _second security scan, root A_ ✅
+
+A second full-tree security scan (2026-08-07, against `85dc2c0`) reported nine
+findings; two of them (its only `confidence: high` one among them) name the same
+root cause, and this closes it. `readDocument` took `document.id` verbatim from a
+file's own frontmatter — untrusted vault content per INV-5 — and `fetch()`
+matched that id **before** the vault-relative path. One note declaring another
+note's uuid, or another note's path, therefore answered every lookup aimed at
+that other note: `fetch_document`, the ChatGPT `fetch` alias, `trace_sources`,
+and the target `plan_document_update` stages its edit against. The last one is
+the sharp end — two-step approval protects the approved **content**, never the
+approved **target**, so an approved edit landed on the impostor.
+
+Resolution now fails closed: a reference resolves only when it names exactly one
+document across the id and path namespaces (`resolveUniqueReference`).
+
+- **Not path-first**, which the scan recommended. Preferring the path would
+  silently return a different document than the citation carrying that id
+  pointed at — the mis-routing `MultiRootStore.fetch`'s id-first match was
+  written to prevent, with the reasoning in a comment since multi-root landed.
+  Refusing costs no reachability: the exact vault-relative path is the one handle
+  no file's content can claim.
+- **Two sites, not one.** `KnowledgeStore.fetch` and `MultiRootStore.fetch` both
+  match id-first, and a squatter in the primary root shadows documents in the
+  read-only roots — a collision only the composite can see. Pinned by one test
+  driving both stores, and reverse-verified per guard: removing either call site
+  alone turns its own scenarios red while the other store stays green.
+- **The cost is stated, not hidden.** One planted file makes its victim
+  unfetchable too, so this is a loud denial of service where it used to be a
+  silent content swap. Loud and broken beats silent and wrong, and the error
+  names the colliding documents by relative path (never `absolutePath`) so the
+  duplicate is fixable.
+
+The remaining scan findings are tracked outside this repo and land as their own
+nodes; the write-side half (constrained surfaces must not be able to author an
+`id` at all) is deliberately a separate change — it moves INV-8/INV-9, not INV-2.
+
 ### Exact-path document creation — _safe write-back_ ✅
 
 The original `create_document` intentionally routes new notes to
@@ -664,6 +701,21 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       the second vault with byte-identical pre-edit content. Raised by CodeRabbit
       on #86, which withdrew its CWE-639 classification — both instances run as
       the same user, so this is vault confusion, not an authorization bypass.
+- [x] **Frontmatter `id` can no longer impersonate another document (INV-2)** —
+      ✅ `fetch` fails closed when a reference names more than one document
+      across the id and path namespaces, at **both** `KnowledgeStore.fetch` and
+      `MultiRootStore.fetch`. Path-first resolution was rejected (it re-creates
+      the mis-routing the composite's id-first match prevents); the exact
+      vault-relative path stays the unambiguous handle. Reverse-verified per
+      guard. See the root-A section above.
+- [ ] **Constrain what the audit / Skill-reference write surfaces may author** —
+      the write-side half of the same root cause: `append_audit_report`,
+      `compare_and_swap_audit_state` and Skill `references/*.md` write client
+      bytes verbatim, so a subtree-confined writer can still author a
+      frontmatter `id`. INV-2 now refuses to *honour* a colliding one, which
+      closes the read-side consequence, but the server-owned keys should be
+      rejected at the point of writing too. Treat as an **INV-8/INV-9** change
+      and land it on its own — one shared helper, not three copies.
 - [ ] **Audit log** — append-only, content-free events (who searched / fetched /
       wrote what, no note bodies) — the largest security follow-up, and still the
       one that most improves the posture; it now sits **second** because the

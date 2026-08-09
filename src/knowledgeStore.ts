@@ -108,9 +108,15 @@ export class KnowledgeStore implements VaultStore {
 
   async fetch(idOrPath: string): Promise<MarkdownDocument> {
     const documents = await this.listDocuments();
-    const byId = documents.find((document) => document.id === idOrPath);
-    if (byId) {
-      return byId;
+    const byId = documents.filter((document) => document.id === idOrPath);
+    if (byId.length > 0) {
+      // INV-2: that id came out of a file's own frontmatter, which is untrusted
+      // vault content — so resolve it only when nothing else claims the same
+      // reference (see resolveUniqueReference). The path candidate is resolved
+      // leniently here: a reference that is not a usable vault-relative path has
+      // no path interpretation to collide with, and the strict resolution below
+      // still runs whenever nothing matched by id.
+      return resolveUniqueReference(idOrPath, byId, this.pathMatch(documents, idOrPath));
     }
 
     const normalized = toPosixPath(assertRelativePath(ensureMarkdownExtension(idOrPath)));
@@ -119,6 +125,21 @@ export class KnowledgeStore implements VaultStore {
       throw new Error(`Document not found: ${idOrPath}`);
     }
     return byPath;
+  }
+
+  /** The document a path-shaped reference names, or undefined when the reference
+   *  is not a usable vault-relative path (traversal, absolute, over-long, …). */
+  private pathMatch(
+    documents: readonly MarkdownDocument[],
+    reference: string
+  ): MarkdownDocument | undefined {
+    let normalized: string;
+    try {
+      normalized = toPosixPath(assertRelativePath(ensureMarkdownExtension(reference)));
+    } catch {
+      return undefined;
+    }
+    return documents.find((document) => document.relativePath === normalized);
   }
 
   async listProjects(client?: string, tags?: string[]): Promise<ProjectSummary[]> {
@@ -718,8 +739,54 @@ function slugSegment(value: string): string {
   return slug || `untitled-${sha256(value).slice(0, 8)}`;
 }
 
-function ensureMarkdownExtension(value: string): string {
+export function ensureMarkdownExtension(value: string): string {
   return value.endsWith(".md") ? value : `${value}.md`;
+}
+
+/** How many colliding documents an ambiguity error names before it summarizes. */
+const AMBIGUOUS_REFERENCE_MAX_LISTED = 3;
+
+/**
+ * INV-2 — a reference must name exactly ONE document, or resolution fails closed.
+ *
+ * `readDocument` takes `document.id` verbatim from a file's own frontmatter, and
+ * frontmatter is untrusted vault content (INV-5): a web clip, a note synced in
+ * from elsewhere, or a file written through a constrained write surface can
+ * declare another document's server-generated uuid, or another document's
+ * vault-relative path. An id-first lookup then hands every caller the impostor —
+ * `fetch_document`, the ChatGPT `fetch` alias, `trace_sources`, and, worst, the
+ * target `plan_document_update` stages its edit against. Two-step approval
+ * protects the approved CONTENT; it never protected the approved TARGET.
+ *
+ * Fail closed rather than prefer the path. Paths cannot be claimed by content,
+ * but resolving them first would silently return a DIFFERENT document than the
+ * citation carrying that id pointed at — the mis-routing that
+ * `MultiRootStore.fetch`'s id-first match exists to prevent. Refusing costs no
+ * reachability: the exact vault-relative path is always an unambiguous handle.
+ */
+export function resolveUniqueReference(
+  reference: string,
+  idMatches: readonly MarkdownDocument[],
+  pathMatch: MarkdownDocument | undefined
+): MarkdownDocument {
+  const candidates = [...idMatches];
+  if (pathMatch && !candidates.some((candidate) => candidate.relativePath === pathMatch.relativePath)) {
+    candidates.push(pathMatch);
+  }
+  if (candidates.length > 1) {
+    // Name the colliding documents so a genuine duplicate is fixable instead of
+    // failing unexplained — relative paths only, never absolutePath, which
+    // document responses deliberately omit.
+    const listed = candidates.slice(0, AMBIGUOUS_REFERENCE_MAX_LISTED).map((candidate) => candidate.relativePath);
+    const remaining = candidates.length - listed.length;
+    throw new Error(
+      `Ambiguous document reference: "${reference}" matches ${candidates.length} documents ` +
+        `(${listed.join(", ")}${remaining > 0 ? `, +${remaining} more` : ""}). ` +
+        "A frontmatter id is untrusted vault content, so a colliding reference is not resolved. " +
+        "Fetch by exact vault-relative path, or remove the duplicate id."
+    );
+  }
+  return candidates[0];
 }
 
 function sha256(value: string): string {

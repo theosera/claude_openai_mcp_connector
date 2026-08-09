@@ -1,7 +1,8 @@
 import path from "node:path";
 import { createTwoFilesPatch } from "diff";
-import { KnowledgeStore } from "./knowledgeStore.js";
+import { KnowledgeStore, ensureMarkdownExtension, resolveUniqueReference } from "./knowledgeStore.js";
 import { extractAllLocalLinks, extractMarkdownLinks, resolveRelativeLink } from "./markdownLinks.js";
+import { assertRelativePath, toPosixPath } from "./pathSafety.js";
 import { searchDocuments, type SearchFilters } from "./search.js";
 import type { AppConfig } from "./config.js";
 import type {
@@ -98,10 +99,15 @@ export class MultiRootStore implements VaultStore {
     // names a root) is left un-prefixed by wrap(), so without this check
     // resolveRef would mis-route it into the "ops" root and return a DIFFERENT
     // document (or nothing) than the one the citation points at.
+    // INV-2: ...and because that id is untrusted vault content, resolve it only
+    // when nothing else in the composite claims the same reference. This check
+    // has to exist here as well as in KnowledgeStore.fetch: a squatter in the
+    // primary root shadows documents in the read-only roots, and that collision
+    // is visible only across roots — the per-root guard never sees it.
     const documents = await this.listDocuments();
-    const byId = documents.find((document) => document.id === idOrPath);
-    if (byId) {
-      return byId;
+    const byId = documents.filter((document) => document.id === idOrPath);
+    if (byId.length > 0) {
+      return resolveUniqueReference(idOrPath, byId, this.pathCandidate(documents, idOrPath));
     }
 
     const { entry, rest } = this.resolveRef(idOrPath);
@@ -236,6 +242,32 @@ export class MultiRootStore implements VaultStore {
       outgoing_links: extractAllLocalLinks(document.body),
       backlinks
     };
+  }
+
+  /** The document a path-shaped reference names, mirroring the resolution order
+   *  below (an explicit `<root>:` prefix, otherwise primary root first) without
+   *  touching the filesystem — so fetch can tell whether an id match is
+   *  shadowing a real path. Undefined when the reference is not a usable
+   *  vault-relative path. */
+  private pathCandidate(
+    documents: readonly MarkdownDocument[],
+    reference: string
+  ): MarkdownDocument | undefined {
+    const { entry, rest } = this.resolveRef(reference);
+    let normalized: string;
+    try {
+      normalized = toPosixPath(assertRelativePath(ensureMarkdownExtension(rest)));
+    } catch {
+      return undefined;
+    }
+    if (entry) {
+      return documents.find((document) => document.relativePath === `${entry.name}:${normalized}`);
+    }
+    // Unprefixed: listDocuments() returns roots in entry order, so the first
+    // match is the one the primary-first loop below would return.
+    return documents.find(
+      (document) => document.relativePath.slice(document.relativePath.indexOf(":") + 1) === normalized
+    );
   }
 
   /** Split a `<rootName>:` prefix off a reference when it names a known root. */
