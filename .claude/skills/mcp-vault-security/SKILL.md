@@ -76,7 +76,12 @@ vault content (INV-5) なので、1 枚のノートが**他文書の uuid や他
 
 - **path 優先にしない。** path を先に解決すると、その id を運んできた citation が指すのとは
   **別の文書**を黙って返す (= `MultiRootStore.fetch` の id-first が防いでいた mis-route)。
-  refuse なら到達性も失わない — **exact な vault-relative path は content が名乗れない handle**。
+- **★ 到達性は失う。それを認めた上で refuse を採る。** 「exact な vault-relative path なら
+  content が名乗れない」は**偽** — frontmatter `id` は path を名乗れるし、それが主要な攻撃形。
+  自前の uuid を持つ文書は uuid で引けるが、**frontmatter `id` を持たない文書は handle が path
+  1 本だけ** (id = path) なので、その path を squat されると**引く手段が無くなる**。
+  両方テストで pin 済み。**エラーは「exact path で引き直せ」と言わない** (同じ衝突に着地するため) —
+  言うのは「重複 `id` を消せ」。
 - **ガードは 2 箇所ある**: `KnowledgeStore.fetch` と `MultiRootStore.fetch`。**片方が正しいことは
   他方の証拠にならない** — primary root の squatter は read-only root の文書を奪えるが、その衝突は
   **composite からしか見えない**。両方を踏むテストで pin する (`tests/knowledgeStore.test.ts`)。

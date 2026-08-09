@@ -785,13 +785,20 @@ export function resolveUniqueReference(
     // Name the colliding documents so a genuine duplicate is fixable instead of
     // failing unexplained — relative paths only, never absolutePath, which
     // document responses deliberately omit.
+    //
+    // Do NOT advise "retry with the exact vault-relative path". When the
+    // duplicate id IS a path — the primary attack shape — that path lands on
+    // this same branch and raises this same error, so the advice would name a
+    // recovery that cannot work in exactly the case that most needs one.
     const listed = candidates.slice(0, AMBIGUOUS_REFERENCE_MAX_LISTED).map((candidate) => candidate.relativePath);
     const remaining = candidates.length - listed.length;
     throw new Error(
       `Ambiguous document reference: "${reference}" matches ${candidates.length} documents ` +
         `(${listed.join(", ")}${remaining > 0 ? `, +${remaining} more` : ""}). ` +
         "A frontmatter id is untrusted vault content, so a colliding reference is not resolved. " +
-        "Fetch by exact vault-relative path, or remove the duplicate id."
+        "Retrying the same reference cannot disambiguate it — a duplicate id that is itself a " +
+        "vault-relative path claims that path too. Use a reference no other document claims, or " +
+        "remove the duplicate id."
     );
   }
   return candidates[0];

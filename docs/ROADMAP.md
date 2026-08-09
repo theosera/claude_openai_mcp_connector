@@ -498,8 +498,13 @@ document across the id and path namespaces (`resolveUniqueReference`).
   silently return a different document than the citation carrying that id
   pointed at — the mis-routing `MultiRootStore.fetch`'s id-first match was
   written to prevent, with the reasoning in a comment since multi-root landed.
-  Refusing costs no reachability: the exact vault-relative path is the one handle
-  no file's content can claim.
+- **Refusing costs reachability, which is accepted rather than denied.** A
+  frontmatter `id` can be a vault-relative path — claiming one is the primary
+  attack shape — so "just use the exact path" is not a recovery. A victim with
+  its own uuid stays reachable by it; a note with **no** frontmatter `id` has
+  only its path, and a squatter claiming that path leaves it unreachable. Both
+  are pinned by tests, and the ambiguity error states the real remedy (remove the
+  duplicate `id`) instead of naming a retry that lands on the same collision.
 - **Two sites, not one.** `KnowledgeStore.fetch` and `MultiRootStore.fetch` both
   match id-first, and a squatter in the primary root shadows documents in the
   read-only roots — a collision only the composite can see. Pinned by one test

@@ -181,6 +181,17 @@ export class MultiRootStore implements VaultStore {
 
   async planUpdate(input: PlanUpdateInput): Promise<PlannedPatch> {
     const reference = this.resolveWritableRef(input.id_or_path);
+    // INV-2: run the reference past the COMPOSITE resolver before delegating.
+    // The primary store sees only its own root, so a cross-root collision is
+    // invisible to it: a primary-root note claiming a read-only root document's
+    // path is the single id match inside the primary root, and the update would
+    // silently stage against the squatter. fetch() is the one place that sees
+    // every root, so its ambiguity check is the one that can refuse this.
+    // The resolved document is deliberately discarded — resolution itself stays
+    // with the primary store, so which document a writable reference names is
+    // unchanged (a reference that only resolves in a read-only root is still
+    // "not found" for writes, not "read-only").
+    await this.fetch(input.id_or_path);
     return this.primary.store.planUpdate({ ...input, id_or_path: reference });
   }
 

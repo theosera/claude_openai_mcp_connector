@@ -1066,8 +1066,27 @@ describe("frontmatter id squatting (INV-2)", () => {
     await expect(single.fetch(VICTIM_PATH)).rejects.toThrow(/clips\/evil\.md/);
     await expect(single.fetch(VICTIM_PATH)).rejects.toThrow(/projects\/acme\/contract\.md/);
     // Relative paths only — a document response never carries absolutePath, and
-    // neither may the error that names it.
-    await expect(single.fetch(VICTIM_PATH)).rejects.not.toThrow(new RegExp(vaultRoot));
+    // neither may the error that names it. Match the literal string rather than
+    // building a RegExp from it: a temp root containing a regex metacharacter
+    // would change what the pattern means and could pass without checking.
+    await expect(single.fetch(VICTIM_PATH)).rejects.not.toThrow(vaultRoot);
+  });
+
+  it("leaves each colliding document reachable by a reference the other cannot claim", async () => {
+    // The error must not tell the caller to "retry with the exact vault-relative
+    // path": in the path-squat shape that path IS the colliding reference, so the
+    // retry lands on the same branch and raises the same error. Pin what actually
+    // still works instead of trusting the wording.
+    await write(vaultRoot, "clips/evil.md", note(`id: ${VICTIM_PATH}\ntitle: Acme Contract`, "SQUATTER BODY"));
+
+    // The advertised-but-unusable recovery, asserted as unusable.
+    await expect(single.fetch(VICTIM_PATH)).rejects.toThrow(/Ambiguous document reference/);
+    await expect(single.fetch(VICTIM_PATH)).rejects.not.toThrow(/exact vault-relative path/);
+
+    // What does work: the victim by the uuid the squatter did not claim, and the
+    // squatter by its own path, which nothing else claims.
+    expect((await single.fetch(VICTIM_UUID)).body).toContain("GENUINE CONTRACT BODY");
+    expect((await single.fetch("clips/evil.md")).body).toContain("SQUATTER BODY");
   });
 
   it("refuses a squatted uuid at both sites (the path-shaped check alone misses this)", async () => {
@@ -1091,6 +1110,23 @@ describe("frontmatter id squatting (INV-2)", () => {
     // Nothing was staged and nothing was written.
     expect(await fs.readdir(patchStateDir)).toEqual([]);
     expect(await fs.readFile(path.join(vaultRoot, "clips/evil.md"), "utf8")).toContain("SQUATTER BODY");
+  });
+
+  it("costs reachability when the victim has no frontmatter id of its own", async () => {
+    // The sharp edge of failing closed, pinned so nobody restores the claim that
+    // refusing costs no reachability. A note that carries no frontmatter id has
+    // exactly one handle — its path — because its id IS its path. A squatter that
+    // claims that path leaves it with no reference at all, unlike the uuid case
+    // above where the uuid still resolves.
+    await write(vaultRoot, "notes/plain.md", note("title: Plain", "PLAIN BODY"));
+    expect((await single.fetch("notes/plain.md")).body).toContain("PLAIN BODY");
+
+    await write(vaultRoot, "clips/squat.md", note("id: notes/plain.md\ntitle: Plain", "SQUATTER BODY"));
+
+    // Both its id and its path are the same string, and both now collide.
+    await expect(single.fetch("notes/plain.md")).rejects.toThrow(/Ambiguous document reference/);
+    // Only the squatter keeps a private handle. The victim has none.
+    expect((await single.fetch("clips/squat.md")).body).toContain("SQUATTER BODY");
   });
 
   it("does not count one file reached through an in-root symlink as two documents", async () => {

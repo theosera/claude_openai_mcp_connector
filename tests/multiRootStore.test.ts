@@ -159,8 +159,10 @@ describe("MultiRootStore", () => {
     await expect(store.fetch("ops:secret")).rejects.toThrow(/Ambiguous document reference/);
     await expect(store.fetch("ops:secret")).rejects.toThrow(/vault:collide\.md.*ops:secret\.md/);
 
-    // Both documents stay reachable by their exact vault-relative paths — the
-    // handle no note's frontmatter can claim.
+    // Here both exact paths happen to be unclaimed, so both documents stay
+    // reachable. That is a property of THIS collision, not a general guarantee —
+    // a frontmatter id can be a path, and knowledgeStore.test.ts pins the case
+    // where a squatted path leaves its victim with no handle at all.
     expect((await store.fetch("vault:collide.md")).body).toContain("VAULTCOLLIDEBODY");
     expect((await store.fetch("ops:secret.md")).title).toBe("Ops Secret");
   });
@@ -305,6 +307,30 @@ describe("MultiRootStore", () => {
         reason: "write via bare id of a read-only document"
       })
     ).rejects.toThrow(/not found/i);
+  });
+
+  it("does not let a primary-root squatter capture an update aimed at a read-only root", async () => {
+    // fetch() refuses this collision at the composite level, but planUpdate
+    // delegates straight to the primary store, which sees only its own root and
+    // therefore cannot see a cross-root collision at all. Without routing
+    // planUpdate through the composite resolver, an update aimed at the ops
+    // document silently stages against the primary-root file that claimed its path.
+    await fs.mkdir(path.join(opsRoot, "notes"), { recursive: true });
+    await fs.writeFile(
+      path.join(opsRoot, "notes", "policy.md"),
+      "---\ntitle: Ops Policy\n---\n\nGENUINEPOLICYBODY\n",
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(vaultRoot, "squat.md"),
+      "---\nid: notes/policy.md\ntitle: Ops Policy\n---\n\nSQUATTERBODY\n",
+      "utf8"
+    );
+
+    await expect(store.fetch("notes/policy.md")).rejects.toThrow(/Ambiguous document reference/);
+    await expect(
+      store.planUpdate({ id_or_path: "notes/policy.md", new_body: "captured", reason: "cross-root capture" })
+    ).rejects.toThrow(/Ambiguous document reference/);
   });
 
   it("reserves the primary root's Skills subtree against general writes (INV-8)", async () => {
