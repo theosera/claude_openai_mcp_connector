@@ -781,6 +781,16 @@ export function resolveUniqueReference(
     byRelativePath.set(pathMatch.relativePath, pathMatch);
   }
   const candidates = [...byRelativePath.values()];
+  if (candidates.length === 0) {
+    // Keep the fail-closed contract inside this function rather than leaning on
+    // every call site to have checked first. Both current callers only get here
+    // with at least one id match, but this is exported and the skill's rule is
+    // that new read paths route through the same guard — a third call site that
+    // forgot the precondition would otherwise return `undefined` AS a document
+    // (`noUncheckedIndexedAccess` is off, so the type would not catch it), which
+    // is exactly the silent wrong answer this guard exists to prevent.
+    throw new Error(`Document not found: ${reference}`);
+  }
   if (candidates.length > 1) {
     // Name the colliding documents so a genuine duplicate is fixable instead of
     // failing unexplained — relative paths only, never absolutePath, which

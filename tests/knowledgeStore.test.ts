@@ -4,7 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { isTransientFsError, KnowledgeStore, mapWithConcurrency } from "../src/knowledgeStore.js";
+import {
+  isTransientFsError,
+  KnowledgeStore,
+  mapWithConcurrency,
+  resolveUniqueReference
+} from "../src/knowledgeStore.js";
 import { MultiRootStore } from "../src/multiRootStore.js";
 import { toPublicDocument } from "../src/server.js";
 import { SkillStore } from "../src/skillStore.js";
@@ -1144,6 +1149,16 @@ describe("frontmatter id squatting (INV-2)", () => {
 
     expect((await single.fetch(VICTIM_UUID)).body).toContain("GENUINE CONTRACT BODY");
     expect((await single.fetch(VICTIM_PATH)).body).toContain("GENUINE CONTRACT BODY");
+  });
+
+  it("fails closed when a call site passes no candidates at all", () => {
+    // The contract belongs to this function, not to caller discipline. Both
+    // current callers only reach it with at least one id match, but it is
+    // exported and the security skill's rule is that new read paths route
+    // through the same guard. Returning the first element of an empty list would
+    // hand back `undefined` AS a document, and the type would not catch it
+    // (`noUncheckedIndexedAccess` is off).
+    expect(() => resolveUniqueReference("anything.md", [], undefined)).toThrow(/not found/i);
   });
 
   it("keeps traversal and not-found references failing as before", async () => {
