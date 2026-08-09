@@ -1093,6 +1093,23 @@ describe("frontmatter id squatting (INV-2)", () => {
     expect(await fs.readFile(path.join(vaultRoot, "clips/evil.md"), "utf8")).toContain("SQUATTER BODY");
   });
 
+  it("does not count one file reached through an in-root symlink as two documents", async () => {
+    // `walkMarkdownFiles` resolves an in-root symlink to its target, so the note
+    // is listed under BOTH names and `readDocument` canonicalizes both entries to
+    // the same relativePath. Counting them as two candidates would refuse a
+    // reference that is not ambiguous at all — a self-inflicted denial of service
+    // on a legitimate vault layout, and a regression the id-first `find` hid.
+    await fs.symlink(path.join(vaultRoot, VICTIM_PATH), path.join(vaultRoot, "alias.md"));
+
+    // Assert the duplicate is really there, so this cannot pass vacuously if the
+    // walk ever starts de-duplicating on its own.
+    const listed = (await single.listDocuments()).filter((document) => document.relativePath === VICTIM_PATH);
+    expect(listed).toHaveLength(2);
+
+    expect((await single.fetch(VICTIM_UUID)).body).toContain("GENUINE CONTRACT BODY");
+    expect((await single.fetch(VICTIM_PATH)).body).toContain("GENUINE CONTRACT BODY");
+  });
+
   it("keeps traversal and not-found references failing as before", async () => {
     // The lenient path lookup added for the ambiguity check must not swallow a
     // containment error on the branch that still resolves references strictly.

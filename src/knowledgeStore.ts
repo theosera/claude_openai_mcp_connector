@@ -766,10 +766,21 @@ export function resolveUniqueReference(
   idMatches: readonly MarkdownDocument[],
   pathMatch: MarkdownDocument | undefined
 ): MarkdownDocument {
-  const candidates = [...idMatches];
-  if (pathMatch && !candidates.some((candidate) => candidate.relativePath === pathMatch.relativePath)) {
-    candidates.push(pathMatch);
+  // Count DOCUMENTS, not list entries. `relativePath` is derived from the file's
+  // real path, so entries sharing one are the same file reached twice — an
+  // in-root symlink to an in-root note makes `walkMarkdownFiles` yield the target
+  // under both names. Counting those as two would refuse a reference that is not
+  // ambiguous at all, turning a legitimate vault layout into a self-inflicted
+  // denial of service. Two genuinely different documents cannot share a relative
+  // path, so this never merges a real collision.
+  const byRelativePath = new Map<string, MarkdownDocument>();
+  for (const match of idMatches) {
+    byRelativePath.set(match.relativePath, match);
   }
+  if (pathMatch) {
+    byRelativePath.set(pathMatch.relativePath, pathMatch);
+  }
+  const candidates = [...byRelativePath.values()];
   if (candidates.length > 1) {
     // Name the colliding documents so a genuine duplicate is fixable instead of
     // failing unexplained — relative paths only, never absolutePath, which
