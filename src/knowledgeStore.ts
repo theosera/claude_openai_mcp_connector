@@ -129,10 +129,7 @@ export class KnowledgeStore implements VaultStore {
 
   /** The document a path-shaped reference names, or undefined when the reference
    *  is not a usable vault-relative path (traversal, absolute, over-long, …). */
-  private pathMatch(
-    documents: readonly MarkdownDocument[],
-    reference: string
-  ): MarkdownDocument | undefined {
+  private pathMatch(documents: readonly MarkdownDocument[], reference: string): MarkdownDocument | undefined {
     let normalized: string;
     try {
       normalized = toPosixPath(assertRelativePath(ensureMarkdownExtension(reference)));

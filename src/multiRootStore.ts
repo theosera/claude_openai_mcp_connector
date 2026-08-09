@@ -249,10 +249,7 @@ export class MultiRootStore implements VaultStore {
    *  touching the filesystem — so fetch can tell whether an id match is
    *  shadowing a real path. Undefined when the reference is not a usable
    *  vault-relative path. */
-  private pathCandidate(
-    documents: readonly MarkdownDocument[],
-    reference: string
-  ): MarkdownDocument | undefined {
+  private pathCandidate(documents: readonly MarkdownDocument[], reference: string): MarkdownDocument | undefined {
     const { entry, rest } = this.resolveRef(reference);
     let normalized: string;
     try {
