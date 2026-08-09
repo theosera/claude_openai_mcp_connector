@@ -154,6 +154,23 @@ CAS は読んだ版一致時のみ更新、append/CAS は in-process mutex で�
   frontmatter allowlist / stale patch / exact-path確認・patch完全性 / overwrite collision / Skill bundle containment・
   create-only・atomic publish (`tests/`)。挙動を変える
   変更はテストも更新する (回帰でガードを緩めない)。
+- **★ 逆検証 — ガードを pin するテストは、そのガードを外して赤くなることを実測してから merge する。**
+  緑は「壊れていない」であって「守っている」ではない。**その分岐を踏む入力を作らない限り、
+  そのテストは何も証明していない**。**変更したガードごとに 1 回ずつ**、merge 前に次のどれかで
+  赤を見る (1 PR で複数のガードを触ったなら、その数だけ実施する):
+  ガード条件の反転 / 保護対象の env フラグを偽る / 検査対象を意図的に壊す。
+  **赤の理由がそのガードの不在であることまで確認する** (別の理由で落ちても意味がない)。
+  実施済みの例 (いずれも「pin したつもりが pin できていない」を実際に検出した):
+  - **INV-6 item 3** — `enableDnsRebindingProtection` を落とすと**境界テスト 2 本だけ**が落ちる
+  - **2c** — `legacy:'reject'` にすると 2025 era leg が `-32022` で落ちる
+  - **item 3 (cache hints)** — `cacheScope:'public'` / `ttlMs:60000` が**それぞれ**落ちる。
+    加えて**捕捉そのもの**を assert し、vacuous に緑になる形を塞ぐ
+  - **#91** — `MCP_HTTP_ALLOW_WRITE` を宣言だけ off にすると `WIDER than declared` が
+    write tool 5 つを名指しで検出する。**この検査は 2b 以降ずっと到達していなかった**
+  > **⚠️ 「テストが 311 件緑」は逆検証の代わりにならない。** 新しく足した分岐を踏んでいなければ、
+  > 件数がいくつでも同じである。**チェックが FAIL したときも同じことを問う** — それは検査した
+  > 結果か、検査に到達しなかった結果か (#91 は毎回きちんと FAIL しながら、比較の手前で
+  > throw していた)。
 
 ## CI / supply-chain (本リポの posture)
 
