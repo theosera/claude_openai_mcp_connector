@@ -4,7 +4,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { createTwoFilesPatch } from "diff";
 import { replaceFileAtomically } from "./atomicWrite.js";
-import { assertFrontmatterPatch, parseMarkdownSafe, serializeMarkdown, titleFromMarkdown } from "./frontmatter.js";
+import {
+  assertFrontmatterPatch,
+  parseMarkdown,
+  parseMarkdownSafe,
+  serializeMarkdown,
+  titleFromMarkdown
+} from "./frontmatter.js";
 import { extractAllLocalLinks, extractMarkdownLinks, resolveRelativeLink } from "./markdownLinks.js";
 import { ensurePatchStateDir, PATCH_STATE_FILE_MODE } from "./patchState.js";
 import { compactWhitespace, searchDocuments, type SearchFilters } from "./search.js";
@@ -349,7 +355,15 @@ export class KnowledgeStore implements VaultStore {
     // external editor had already changed, i.e. revert it. The diff below is
     // computed against the fresh bytes, so such a revert did show up for the
     // approver; a two-step write must not depend on the reviewer catching it.
-    const currentMetadata = parseMarkdownSafe(currentRaw).frontmatter;
+    //
+    // `parseMarkdown`, NOT `parseMarkdownSafe` (INV-2: the write path throws
+    // where the read path degrades). The safe variant falls back to EMPTY
+    // frontmatter when a note's YAML is malformed, over the block-size cap, or
+    // an expansion bomb — so planning an update against such a note would stage
+    // a diff that silently deletes every field it could not parse. Read has an
+    // obligation to keep returning the note; a writer has no such obligation,
+    // and refusing is the only answer that cannot lose data.
+    const currentMetadata = parseMarkdown(currentRaw).frontmatter;
     const newMetadata: DocumentMetadata = {
       ...currentMetadata,
       ...frontmatterPatch,

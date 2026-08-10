@@ -38,14 +38,17 @@ import path from "node:path";
  *    rather than surfacing a bare EACCES. Falling back to an in-place write
  *    there is not on offer: that is the torn-write this exists to prevent, and
  *    a silent fallback is the worst version of it.
- *  - **Ownership is re-applied, and other inode metadata is not carried.** The
- *    replacement is a new inode owned by this process, so a connector running as
- *    root or a service account would otherwise quietly take a user's note away
- *    from them. uid/gid are restored best-effort (an unprivileged process cannot
- *    chown to another owner, and does not need to — it did not create the file
- *    as one). ACLs and extended attributes are NOT preserved; Node cannot read
- *    them portably, so a vault that relies on either should stay on a
- *    single-owner layout.
+ *  - **Ownership must be restored, and failing to restore it is fatal.** The
+ *    replacement is a new inode owned by whoever runs this process, so replacing
+ *    a note owned by someone else silently transfers it. That is not a
+ *    privileged-process-only concern: `rename` needs write permission on the
+ *    DIRECTORY, not ownership of the target, so an ordinary account with access
+ *    to a shared vault folder can replace another user's note and then find it
+ *    cannot `chown` the replacement back. The `chown` is therefore skipped only
+ *    when the temp already carries the target's ids, and a failure aborts before
+ *    the rename — the note keeps its old contents AND its old owner.
+ *    ACLs and extended attributes are NOT preserved; Node cannot read them
+ *    portably, so a vault relying on either should stay single-owner.
  *  - **Atomic is not durable.** The bytes are not `fsync`'d before the rename,
  *    so a power loss can still lose the update; what is excluded is a torn file.
  *    The vault's other tmp+rename writers (auditStore / skillStore / oauth
@@ -76,15 +79,29 @@ export async function replaceFileAtomically(
     throw error;
   }
   try {
-    // Best effort. Restoring the same owner always succeeds; restoring a
-    // different one needs privilege, and a process without it could not have
-    // changed the owner in the first place, so EPERM here is not a failure.
-    await fs.chown(temp, original.uid, original.gid).catch((error) => {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "EPERM" || code === "EINVAL" || code === "ENOSYS") return;
-      throw error;
-    });
-    await fs.chmod(temp, original.mode);
+    // Everything below runs on the handle, not the path: the ids that decide
+    // whether a chown is needed and the file that receives it are then the same
+    // object by construction, with no window between the check and the use.
+    const handle = await fs.open(temp, "r");
+    try {
+      const temporary = await handle.stat();
+      if (temporary.uid !== original.uid || temporary.gid !== original.gid) {
+        // The temp belongs to this process; the target belongs to someone else.
+        // Publishing it as-is would hand them a note they no longer own, so a
+        // chown that cannot restore the original ids has to stop the operation.
+        try {
+          await handle.chown(original.uid, original.gid);
+        } catch (error) {
+          throw new Error(
+            "Cannot apply the update: the note belongs to a different user or group, and this process cannot restore that ownership on the replacement. Applying anyway would silently transfer the note to this process's owner.",
+            { cause: error }
+          );
+        }
+      }
+      await handle.chmod(original.mode);
+    } finally {
+      await handle.close();
+    }
     await fs.rename(temp, targetPath);
   } catch (error) {
     await fs.rm(temp, { force: true }).catch(() => undefined);
