@@ -8,6 +8,81 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **Setting `MCP_AUDIT_SUBDIR` on a stdio server also handed that session the
+  audit write tools; it now only reserves the subtree.** Registering
+  `append_audit_report` and `compare_and_swap_audit_state` takes its own opt-in,
+  **`MCP_STDIO_ALLOW_AUDIT_WRITE`** (default off), mirroring the
+  `MCP_HTTP_ALLOW_AUDIT_WRITE` that HTTP always required.
+
+  The documentation is what made conflating the two expensive rather than
+  theoretical: operators are told to set the **same** `MCP_AUDIT_SUBDIR` on every
+  write-capable process, precisely so the INV-9 reservation holds everywhere.
+  Following that advice armed every interactive local session with the two writes
+  the reservation exists to protect against — both single-call, with no
+  plan/apply step and no user confirmation, on a transport whose input is
+  untrusted vault content (INV-5). A note steered into
+  `compare_and_swap_audit_state` could rewrite an unattended scanner's `state.md`
+  wholesale; `append_audit_report` could plant a clean-looking run.
+
+  **Withholding the tools does not weaken the reservation.** It rides on
+  `config.auditSubdir` through `createStore`, not on the audit store instance, so
+  a process with the subdir and no flag gets exactly what the guidance promised —
+  general writes still refused from that subtree. Two adjacent tests drive the
+  same environment: one asserts the tools are absent, the next asserts a general
+  write into the subtree is still rejected on the wire.
+
+  Asking for the tools without a subtree for them to write into now fails at
+  boot, the shape `MCP_HTTP_ALLOW_AUDIT_WRITE` already had. The stdio startup
+  line reports three states — `audit=off` (no subdir, so no reservation),
+  `audit=reserved-only` (the new default), `audit=on` — because one on/off could
+  only ever describe one of two decisions, and reading `off` for a reserved
+  subtree would wrongly suggest the reservation had lapsed.
+
+  Reverse-verified per guard: dropping the flag from the registration makes the
+  withholding test report `to not include 'append_audit_report'`; removing the
+  boot check makes the server start instead of refusing.
+
+- **Server state files may no longer be placed inside the vault.** A knowledge
+  root is a read surface — everything under it is walked, indexed, and reachable
+  through `search` / `fetch`. Two settings could put server state there and
+  nothing said no: `MCP_OAUTH_STATE_FILE`, which holds the registered-client
+  list, the per-file salt and the HMAC tag, and an explicit
+  `MCP_PATCH_STATE_DIR`, whose staged plans hold the full proposed text of a
+  document. Both are now checked at boot against every configured root.
+
+  Containment compares **filesystem identity**, not spelling: it walks the
+  target's existing ancestors and matches `(dev, ino)` against the root. macOS
+  (APFS) and Windows resolve `/vault` and `/Vault` to the same directory while
+  `path.relative` compares bytes, so a case variant of the root would otherwise
+  be called "outside" and the file would land in the indexed vault anyway. When
+  the root does not exist yet there is no identity to compare and the check falls
+  back to spelling.
+
+  Canonicalization walks the path component by component and follows symlinks by
+  hand, rather than resolving the existing prefix with `realpath`. `realpath` reports ENOENT for a **dangling** symlink, so a
+  prefix-based check reads `outside/link -> vault/not-yet` as an ordinary missing
+  component and calls the target outside; creating that destination afterwards
+  would put every save inside the vault with the boot check already passed.
+  Containment then tests for exactly `..` or a `../` prefix — a sibling directory
+  merely NAMED `..state` yields the relative path `..state/oauth.json`, which a
+  `startsWith("..")` test reads as an escape.
+
+  The **default** patch directory is checked too, not only an explicit value: it
+  derives from the home directory, which is not automatically outside the vault.
+  A root of `$HOME`, or a secondary root containing it, puts the default inside,
+  and that configuration now fails at boot with a message naming
+  `MCP_PATCH_STATE_DIR`.
+
+  **Migration:** opting into `MCP_OAUTH_STATE_FILE` now requires
+  `KNOWLEDGE_ROOT` (or `KNOWLEDGE_ROOTS`) to be set, because without the roots
+  there is nothing to verify the location against. A deployment that already
+  keeps its state outside the vault needs no change.
+
+  `MCP_ENV_FILE` is deliberately **not** covered: it is read before the roots are
+  known — it is one of the things that can supply them — so the same check
+  cannot run there without a different mechanism. Left open rather than
+  half-applied.
+
 - **Tool errors no longer describe the host filesystem.** Documents were already
   projected through an allowlist that withholds `absolutePath`, on the ground
   that the host's directory layout is not a client's business. The error channel

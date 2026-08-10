@@ -1033,6 +1033,8 @@ describe("frontmatter id squatting (INV-2)", () => {
     single = new KnowledgeStore({ knowledgeRoot: vaultRoot, writeMode: "two_step", patchStateDir });
     await single.init();
     multi = new MultiRootStore({
+      // Transport-level flag; the store never reads it.
+      stdioAllowAuditWrite: false,
       knowledgeRoots: [
         { name: "vault", path: vaultRoot },
         { name: "ops", path: opsRoot }

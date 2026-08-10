@@ -209,4 +209,5 @@ CAS は読んだ版一致時のみ更新、append/CAS は in-process mutex で�
 - `.claude/skills/session-archive/SKILL.md` — セッション履歴 → vault アーカイブ hook (public-safe copy / 正典は terminal-ops-logs 側)
 - `.claude/settings.json` — secret 読取 deny rules (Read + Bash) + 自己改変 deny (Edit) + ops-logging hooks
 - `SECURITY.md` — 脅威モデルと Reusable Security Baseline 対応表
+- `docs/dependency-policy.md` — **依存 advisory / 更新 PR の判定木** (グローバル層が「あれば必ず従う」と定める文書)。`patched_versions` を散文より優先する / `pnpm update` は transitive を動かさない / `ignoreGhsas` は修正版が本当に無い時だけ
 - `README.md` — high-level setup / tools
