@@ -49,6 +49,57 @@ export function assertFrontmatterPatch(patch: Record<string, unknown>): Record<s
   return validated;
 }
 
+// The two keys the server owns on every document it stores: `id` IS the
+// document's identity and `updated_at` is the server's stamp. The allowlist
+// above keeps a client from patching them through plan_document_update. This
+// keeps a client from planting them through the surfaces that write a file's
+// bytes VERBATIM: audit reports and audit state, and a Skill bundle's reference
+// files. Those surfaces were made narrow about WHERE they may write and said
+// nothing about WHAT -- so "confined to the audit subtree" was true of where the
+// bytes land and false of whose identity the read side then answers with.
+export const SERVER_OWNED_FRONTMATTER_KEYS = ["id", "updated_at"] as const;
+
+const SERVER_OWNED_FRONTMATTER_KEY_SET = new Set<string>(SERVER_OWNED_FRONTMATTER_KEYS);
+
+/**
+ * Refuse verbatim content that declares a server-owned frontmatter key.
+ *
+ * One helper, called from every verbatim writer, rather than the same test
+ * repeated at each: three copies of a rule is three chances for one to drift,
+ * and the read side has exactly one place that honours these keys.
+ *
+ * Parses through `parseMarkdown`, which bounds the block at
+ * MAX_FRONTMATTER_BLOCK_BYTES BEFORE gray-matter runs. That ordering is
+ * load-bearing here, not incidental: these callers accept payloads far larger
+ * than the cap (an audit report may be 512 KiB), so inspecting their frontmatter
+ * with an unbounded parse would re-open the quadratic parse-time path on a write
+ * surface that had never been exposed to it.
+ *
+ * Unparseable frontmatter is refused rather than waved through. The read path
+ * degrades (logs, indexes body-only) because it has an existing note it must
+ * still serve; a writer has no such obligation, and silently storing metadata
+ * the server could not read is how a file ends up meaning one thing on write and
+ * another on read.
+ */
+export function assertNoServerOwnedFrontmatter(raw: string, label: string): void {
+  let frontmatter: DocumentMetadata;
+  try {
+    ({ frontmatter } = parseMarkdown(raw));
+  } catch (error) {
+    throw new Error(`The ${label} has frontmatter the server cannot parse: ${(error as Error).message}`, {
+      cause: error
+    });
+  }
+
+  const declared = Object.keys(frontmatter).filter((key) => SERVER_OWNED_FRONTMATTER_KEY_SET.has(key));
+  if (declared.length > 0) {
+    throw new Error(
+      `The ${label} declares server-owned frontmatter (${declared.join(", ")}). ` +
+        `${SERVER_OWNED_FRONTMATTER_KEYS.join(" and ")} identify a document to the server and cannot be supplied by a client.`
+    );
+  }
+}
+
 function validatePatchValue(key: string, value: unknown): unknown {
   if (key === "client" || key === "project" || key === "title") {
     if (typeof value !== "string") {

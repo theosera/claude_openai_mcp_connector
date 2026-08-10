@@ -169,6 +169,46 @@ describe("SkillStore", () => {
     await expect(store.planCreate(validInput())).rejects.toThrow(/escapes|changed after initialization/);
     await expect(fs.readdir(outside)).resolves.toEqual([]);
   });
+
+  // INV-2 (write side) / INV-8. SKILL.md's frontmatter was already pinned to
+  // name/description. Reference files were not: their bytes land in the vault
+  // verbatim and are indexed as documents, so one could declare another note's
+  // `id` and answer lookups aimed at it. Constraining WHERE a bundle writes said
+  // nothing about WHAT it may claim once written.
+  describe("server-owned frontmatter in reference files (INV-2 write side)", () => {
+    const withReference = (content: string): PlanSkillCreateInput => ({
+      ...validInput(),
+      references: [{ filename: "evaluation-template.md", content }]
+    });
+
+    it("refuses a reference claiming another note's identity, at PLAN time", async () => {
+      await expect(
+        store.planCreate(withReference("---\nid: projects/roadmap.md\n---\n\n# Evaluation\n"))
+      ).rejects.toThrow(/server-owned frontmatter \(id\)/);
+
+      // Plan already refuses, so the squat never reaches a diff a user could
+      // approve. Checking apply alone would pass while leaving the operator one
+      // "yes" away from writing it.
+      await expect(fs.readdir(skillsRoot)).resolves.toEqual([]);
+    });
+
+    it("refuses a reference stamping updated_at", async () => {
+      await expect(
+        store.planCreate(withReference("---\nupdated_at: '2001-01-01T00:00:00.000Z'\n---\n\n# Evaluation\n"))
+      ).rejects.toThrow(/server-owned frontmatter \(updated_at\)/);
+    });
+
+    it("still accepts a reference whose frontmatter claims nothing the server owns", async () => {
+      const plan = await store.planCreate(withReference("---\ntitle: Evaluation\ntags:\n  - harness\n---\n\n# E\n"));
+      const applied = await store.applyPlannedCreate(plan.patch_id);
+      expect(applied.files).toContain("knowledge/skills/improve-ai-harness/references/evaluation-template.md");
+    });
+
+    it("still accepts a reference with no frontmatter at all", async () => {
+      const plan = await store.planCreate(withReference("# Evaluation\n\nRecord evidence.\n"));
+      await expect(store.applyPlannedCreate(plan.patch_id)).resolves.toBeTruthy();
+    });
+  });
 });
 
 describe("loadConfig skills subtree disjointness (INV-8)", () => {
