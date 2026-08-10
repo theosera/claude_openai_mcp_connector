@@ -14,10 +14,23 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   nothing said no: `MCP_OAUTH_STATE_FILE`, which holds the registered-client
   list, the per-file salt and the HMAC tag, and an explicit
   `MCP_PATCH_STATE_DIR`, whose staged plans hold the full proposed text of a
-  document. Both are now checked at boot against every configured root, with
-  symlinked parents resolved so a path that shares no prefix with the root is
-  still caught. The default patch directory was already anchored to the home
-  directory and is unaffected.
+  document. Both are now checked at boot against every configured root.
+
+  The comparison canonicalizes by walking the path component by component and
+  following symlinks by hand, rather than resolving the existing prefix with
+  `realpath`. `realpath` reports ENOENT for a **dangling** symlink, so a
+  prefix-based check reads `outside/link -> vault/not-yet` as an ordinary missing
+  component and calls the target outside; creating that destination afterwards
+  would put every save inside the vault with the boot check already passed.
+  Containment then tests for exactly `..` or a `../` prefix — a sibling directory
+  merely NAMED `..state` yields the relative path `..state/oauth.json`, which a
+  `startsWith("..")` test reads as an escape.
+
+  The **default** patch directory is checked too, not only an explicit value: it
+  derives from the home directory, which is not automatically outside the vault.
+  A root of `$HOME`, or a secondary root containing it, puts the default inside,
+  and that configuration now fails at boot with a message naming
+  `MCP_PATCH_STATE_DIR`.
 
   **Migration:** opting into `MCP_OAUTH_STATE_FILE` now requires
   `KNOWLEDGE_ROOT` (or `KNOWLEDGE_ROOTS`) to be set, because without the roots

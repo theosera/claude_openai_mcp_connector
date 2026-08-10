@@ -391,6 +391,34 @@ describe("server state must live outside the knowledge root", () => {
     expect(() => loadHttpConfig(env)).toThrow(/KNOWLEDGE_ROOT/);
   });
 
+  // path.relative() returns "..state/oauth.json" for a sibling directory that is
+  // merely NAMED with two leading dots, so a startsWith("..") test reads it as an
+  // escape and lets a state file inside the vault through.
+  it("rejects a directory whose name begins with two dots", () => {
+    const inside = path.join(root, "..state", "oauth.json");
+    expect(path.relative(root, inside).startsWith("..")).toBe(true);
+    expect(() => loadHttpConfig(oauthEnv(root, inside))).toThrow(/knowledge root "vault"/);
+  });
+
+  // realpath() reports ENOENT for a DANGLING symlink, so resolving only the
+  // existing prefix treats the link as a plain missing component and calls the
+  // target outside. Creating the destination later would put every save inside
+  // the vault with the boot check already passed.
+  it("rejects a state file behind a symlink whose destination does not exist yet", async () => {
+    const link = path.join(outside, "link-to-future");
+    await fs.symlink(path.join(root, "not-created-yet"), link);
+    await expect(fs.realpath(link)).rejects.toThrow();
+
+    expect(() => loadHttpConfig(oauthEnv(root, path.join(link, "oauth.json")))).toThrow(/knowledge root "vault"/);
+  });
+
+  // The default is derived from the home directory, which is not automatically
+  // outside the vault.
+  it("rejects the DEFAULT patch-state directory when a root contains the home directory", () => {
+    expect(() => loadConfig({ KNOWLEDGE_ROOT: os.homedir() })).toThrow(/default patch-state directory/);
+    expect(() => loadConfig({ KNOWLEDGE_ROOT: os.homedir() })).toThrow(/set MCP_PATCH_STATE_DIR explicitly/);
+  });
+
   it("rejects an explicit patch-state directory inside the vault", () => {
     expect(() => loadConfig({ KNOWLEDGE_ROOT: root, MCP_PATCH_STATE_DIR: path.join(root, ".patches") })).toThrow(
       /MCP_PATCH_STATE_DIR/

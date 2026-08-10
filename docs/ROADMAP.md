@@ -56,13 +56,15 @@ Persist OAuth tokens / registered clients (previously in-memory only,
   registered-client list, the per-file salt and the HMAC tag. A knowledge root is
   a read surface (walked, indexed, reachable through search / fetch), so a state
   file placed inside one publishes all three to every client that can read.
-  `loadOAuthConfig` now refuses that, resolving symlinked parents so a path that
-  shares no prefix with the root is still caught. The same guard covers an
-  explicit `MCP_PATCH_STATE_DIR`, whose staged plans hold the full proposed text
-  of a document; the default patch directory was already anchored to the home
-  directory. Opting into persistence therefore requires `KNOWLEDGE_ROOT(S)` to be
-  configured — without the roots there is nothing to check against, and the
-  fail-closed half of this is refusing to guess.
+  `loadOAuthConfig` now refuses that. The same guard covers `MCP_PATCH_STATE_DIR`,
+  whose staged plans hold the full proposed text of a document — including its
+  **default**, which derives from the home directory and is therefore inside the
+  vault whenever a root contains `$HOME`. Canonicalization follows symlinks
+  component by component instead of resolving the existing prefix with
+  `realpath`, so a **dangling** link into the vault is caught before its
+  destination exists. Opting into persistence therefore requires
+  `KNOWLEDGE_ROOT(S)` to be configured — without the roots there is nothing to
+  check against, and the fail-closed half of this is refusing to guess.
 - Kept the existing security properties (opaque 256-bit tokens, single-use
   short-lived codes that are **never persisted**, refresh rotation invalidated
   on disk immediately, capped/pruned collections) and single-user simplicity.
