@@ -6,6 +6,8 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-08-10
+
 ### Security
 
 - **Setting `MCP_AUDIT_SUBDIR` on a stdio server also handed that session the
@@ -716,9 +718,6 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   A body that begins with a `---` YAML block is now preserved verbatim in the
   body instead of being absorbed into the front matter. Bodies that do not begin
   with `---` serialize byte-identically to before.
-
-### Security
-
 - **`vault.read` is enforced, and the HTTP tool surface is now resolved from the
   token presented on every single request.** Two changes that had to land
   together ([ROADMAP item 2b](./docs/ROADMAP.md)).
@@ -849,44 +848,6 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `@modelcontextprotocol/sdk` v1 is no longer a runtime dependency. It stays as
   a **devDependency**, driving the 2025-era half of the negotiation test from a
   real v1 client rather than a simulation of one.
-
-### Fixed
-
-- **`pnpm typecheck` now covers `tests/`, which it never had.** `tsconfig.json`
-  is the build config — its `rootDir` is `src` and it emits declarations — so
-  its `include` names `src/**/*.ts` only, and no gate ever type-checked a test
-  file. The suite had been constructing `HttpConfig` literals missing the
-  required `allowAuditWrite` field at **seven** call sites, invisibly, because
-  nothing looked. (They behaved correctly at runtime — a missing flag reads as
-  `undefined`, which is falsy, which is the intended "audit surface off" — so
-  only the type was wrong. That is exactly the class of error a type-checker is
-  for, and exactly the class that goes unnoticed when it is not run.) A new
-  `tsconfig.test.json` extends the build config with `noEmit` and adds
-  `tests/`, and `typecheck` runs both. `pnpm build` output is unchanged: the
-  build config is untouched.
-
-- **The Web-to-Node response bridge honours backpressure.** `res.write`
-  returning `false` means the socket buffer is full; the streaming loop read the
-  next chunk regardless, so Node queued the pending chunks in memory. A
-  held-open 2025-era SSE stream makes that reachable — an authenticated client
-  that reads slowly without disconnecting grows the queue for the lifetime of
-  the stream. The loop now awaits `drain` before the next read, and a
-  disconnect during that wait releases it (once the socket is gone `drain`
-  never fires, so waiting on it alone would hang the response instead).
-
-- **The `ctx.requestInfo` identity assumption is now pinned by a test.** The
-  modern leg recovers its principal by looking the request up in a `WeakMap`
-  keyed by the exact `Request` handed to `fetch`; `McpRequestContext` documents
-  that value as "the original HTTP request being served", but that is a
-  property of the dependency, and `package.json` floats on a caret range with
-  weekly Dependabot bumps. A minor release passing a copy would make every
-  modern request fail closed with `unresolved_principal`. Pinning the dependency
-  version instead would freeze security patches to buy a guarantee a test gives
-  for free — the same trade the DNS-rebinding options already taught. The test
-  drives real modern bytes captured off the wire, not a hand-shaped envelope.
-
-### Changed
-
 - **stdio now serves both protocol eras (ROADMAP 2c).** `src/index.ts` hands the
   connection to `serveStdio()` from `@modelcontextprotocol/server/stdio` instead
   of connecting one pre-built server to a `StdioServerTransport`. Before this, a
@@ -923,6 +884,38 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`pnpm typecheck` now covers `tests/`, which it never had.** `tsconfig.json`
+  is the build config — its `rootDir` is `src` and it emits declarations — so
+  its `include` names `src/**/*.ts` only, and no gate ever type-checked a test
+  file. The suite had been constructing `HttpConfig` literals missing the
+  required `allowAuditWrite` field at **seven** call sites, invisibly, because
+  nothing looked. (They behaved correctly at runtime — a missing flag reads as
+  `undefined`, which is falsy, which is the intended "audit surface off" — so
+  only the type was wrong. That is exactly the class of error a type-checker is
+  for, and exactly the class that goes unnoticed when it is not run.) A new
+  `tsconfig.test.json` extends the build config with `noEmit` and adds
+  `tests/`, and `typecheck` runs both. `pnpm build` output is unchanged: the
+  build config is untouched.
+
+- **The Web-to-Node response bridge honours backpressure.** `res.write`
+  returning `false` means the socket buffer is full; the streaming loop read the
+  next chunk regardless, so Node queued the pending chunks in memory. A
+  held-open 2025-era SSE stream makes that reachable — an authenticated client
+  that reads slowly without disconnecting grows the queue for the lifetime of
+  the stream. The loop now awaits `drain` before the next read, and a
+  disconnect during that wait releases it (once the socket is gone `drain`
+  never fires, so waiting on it alone would hang the response instead).
+
+- **The `ctx.requestInfo` identity assumption is now pinned by a test.** The
+  modern leg recovers its principal by looking the request up in a `WeakMap`
+  keyed by the exact `Request` handed to `fetch`; `McpRequestContext` documents
+  that value as "the original HTTP request being served", but that is a
+  property of the dependency, and `package.json` floats on a caret range with
+  weekly Dependabot bumps. A minor release passing a copy would make every
+  modern request fail closed with `unresolved_principal`. Pinning the dependency
+  version instead would freeze security patches to buy a guarantee a test gives
+  for free — the same trade the DNS-rebinding options already taught. The test
+  drives real modern bytes captured off the wire, not a hand-shaped envelope.
 - **The operations runbook no longer tells operators to reuse a session id that
   no longer exists.** `operations.md` §9 Step 5 documented a manual surface check
   that captured `mcp-session-id` from the handshake and sent it back on the
@@ -1432,7 +1425,8 @@ First tagged release. MCP server exposing a private Markdown vault
   frontmatter allowlist, two-step stale-safe writes, HTTP auth + read-only
   surface, and the full OAuth flow.
 
-[Unreleased]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.4.0...v0.5.0

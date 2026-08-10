@@ -39,11 +39,13 @@ non-engineers. Goal: a copy-paste path that does **not** require a manual build.
 - _Why:_ the target audience skews technical but the build step is the main
   drop-off point; the web/OAuth path stays "advanced".
 
-### OAuth token persistence — _survive restarts_ 🚧
+### OAuth token persistence — _survive restarts_ ✅
 
 Persist OAuth tokens / registered clients (previously in-memory only,
-`src/oauth/store.ts`) so a restart does **not** force a re-auth. **Implemented
-(PR pending)** as an opt-in `MCP_OAUTH_STATE_FILE`:
+`src/oauth/store.ts`) so a restart does **not** force a re-auth. **Shipped in
+0.5.0** as an opt-in `MCP_OAUTH_STATE_FILE`. This entry sat at 🚧 / "PR pending"
+for three releases after the PR merged — the graduation, not the work, is what
+was outstanding:
 
 - **Hash-at-rest** — tokens are keyed by `sha256(token)` in memory _and_ on
   disk, so the state file holds no recoverable credential (no encryption key to
@@ -141,7 +143,7 @@ client detection, per the [appendix's anti-router ruling](#appendix--future-uses
   (trigger: >10k notes or search p95 > 200 ms); embeddings/vector search
   (trigger: documented recall failures after P1–P3 land).
 
-### Constrained audit write surface — _persist unattended vault-scan output_ 🚧
+### Constrained audit write surface — _persist unattended vault-scan output_ ✅
 
 An unattended, recurring vault security scan needs to persist its reports + scan
 state **into the vault** without the scanner holding the general document-write
@@ -176,9 +178,18 @@ tools scoped to one reserved subtree (`MCP_AUDIT_SUBDIR` +
   `client_id`); this is the _scanner's own_ audit output written into the vault.
 - Out of scope here (scanner-side, lives in a local Skill): the byte-level scan
   engine, full enumeration, and the out-of-vault git-SHA / signed-manifest trust
-  anchor. Graduates to ✅ on merge.
+  anchor.
+- **Graduated in 0.8.0**, once the stdio half landed. The scanner-side counterpart
+  is pinned too: the runner assembles each report and `state.md` in a temp file,
+  checks it, and only then renames — so a frontmatter `id` / `updated_at` is
+  unwritable rather than written-then-removed, and a failed check cannot destroy
+  the previous `state.md` it would have overwritten. That runner writes to the
+  filesystem directly, so neither INV-2 guard in this repo (the read side in
+  `fetch`, the write side in `assertNoServerOwnedFrontmatter`) is on its path —
+  **"does not write an `id`" and "cannot write an `id`" are different claims**,
+  and only the second one survives an edit to the runner.
 
-### MCP 2026-07-28 (stateless core) adoption — _reliability, not speed_ 🚧
+### MCP 2026-07-28 (stateless core) adoption — _reliability, not speed_ ✅
 
 The 2026-07-28 revision makes the protocol stateless at its core: the
 `initialize` handshake and the `Mcp-Session-Id` header are gone (version /
@@ -399,6 +410,11 @@ The reasons to adopt it anyway, in cost/benefit order:
    fail it. Adding `cacheHints` for any reason now has to argue with a test.
 4. **Stateless scale-out / header routing — deliberately not pursued.** Gated on
    multi-user graduating from 💭. Adopting it now buys nothing and widens surface.
+
+**Graduated to ✅ in 0.8.0 with item 4 open by decision, not by omission.** Items
+1–3 all landed; item 4 is the one piece this deployment should _not_ take, and a
+section left at 🚧 because of a deliberate non-goal reads as unfinished work and
+invites someone to "complete" it.
 
 **No deadline pressure, so sequence this behind the security follow-ups.** v2's
 `createMcpHandler` serves the 2025 era and 2026-07-28 simultaneously by default
@@ -644,6 +660,29 @@ content.
   such obligation, and storing metadata the server cannot read is how a file
   comes to mean one thing on write and another on read.
 
+### The error channel is a response surface — _second security scan, root E_ ✅
+
+Document responses have always been built from an explicit allowlist
+(`toPublicDocument`), so a field added to the internal shape is not published
+until someone publishes it. **Errors had no such boundary.** A Node
+`ErrnoException` carries `path`, `dest` and `syscall`, and throwing one out of a
+tool handler serialized the host's absolute filesystem layout to the client —
+the same layout `absolutePath` was removed from document responses to hide.
+
+Fixed by extending the allowlist principle to the error channel rather than by
+catching at each known leak site. `withClientSafeErrors` wraps each store once,
+at the single place the server builds them, and replaces **any** system error
+with one naming only its `code`; the original is kept as `cause` for the server's
+own logs. The scan proposed per-site catches and had itself counted only two of
+the four sites that leak — which is the argument against enumerating the bad
+rather than constraining the subject: a denylist is only ever as complete as the
+survey behind it, and the survey was already wrong.
+
+The one place that still reads a raw errno is `KnowledgeStore.readPatchFile`,
+which turns `ENOENT` into "no staged patch with that patch_id" — a distinction
+the client needs and which reveals nothing about layout. It reads the code
+before the wrapper sees the error, so the guarantee is unchanged.
+
 ### Exact-path document creation — _safe write-back_ ✅
 
 The original `create_document` intentionally routes new notes to
@@ -856,10 +895,14 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       transitive). CI now fails on a production high and keeps the full-tree scan
       advisory; the two known dev highs were fixed so the next line printed there
       is news. See the root-C section above.
-      Still open, tracked separately: `docs/dependency-policy.md` — when
-      `pnpm.auditConfig.ignoreGhsas` is legitimate (only when no patched version
-      exists, established from `patched_versions` and not from an advisory's
-      prose).
+      ✅ `docs/dependency-policy.md` has since landed with the decision tree —
+      including when `pnpm.auditConfig.ignoreGhsas` is legitimate (only when no
+      patched version exists, established from `patched_versions` and not from an
+      advisory's prose). **First applied in 0.8.0**, and the first application is
+      what showed the tree had a hole: it sorted on production-vs-dev, but two of
+      the four dev bumps were `oxlint` and `typescript-eslint` — the CI checks
+      themselves. A bump to a checker has to be run, not reasoned about, or the
+      update is a change nothing checked.
 - [x] **Constrain what the audit / Skill-reference write surfaces may author** —
       ✅ `assertNoServerOwnedFrontmatter` refuses `id` and `updated_at` in
       client-chosen content, from one choke point per store
@@ -867,6 +910,24 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       on its own as an **INV-8/INV-9** change. The Skill check sits where plan
       and apply both end, so a squat is unrepresentable rather than merely
       unapplied. See the write-side root-A section above.
+- [x] **Keep host filesystem layout out of client-visible errors (root E)** — ✅
+      `withClientSafeErrors` wraps each store at the single point the server
+      builds them, so a system error reaches the client as its `code` alone.
+      Chosen over the scan's per-site catches because the scan had found two of
+      the four leak sites. See the root-E section above.
+- [x] **Server state may not be written inside a knowledge root** — ✅
+      `MCP_OAUTH_STATE_FILE` and `MCP_PATCH_STATE_DIR` (**including the derived
+      default**) are checked at boot by `(dev, ino)` identity, with symlinks
+      followed component by component so a dangling link into the vault is caught
+      before its destination exists. `MCP_ENV_FILE` is deliberately **not**
+      covered: it is read before the roots are known, so the same mechanism
+      cannot reach it. Recorded as unhandled rather than half-handled. See the
+      OAuth-persistence section above.
+- [ ] **Bring `MCP_ENV_FILE` under the same containment rule** — needs a
+      different mechanism than the other two, since the roots it would be checked
+      against come from the file itself. A second pass after the env file is
+      loaded is the obvious shape; the open question is what to do when the file
+      that configured the roots turns out to sit inside them.
 - [ ] **Audit log** — append-only, content-free events (who searched / fetched /
       wrote what, no note bodies) — the largest security follow-up, and still the
       one that most improves the posture; it now sits **second** because the
