@@ -232,14 +232,21 @@ body_jq='
   # bound, only a longer guess than the content usually makes.
   #
   # Size the fence to the content instead: longer than any tilde run the content
-  # starts a line with, so no line in it can close the block whatever it holds.
-  # Tool results are the reachable source (fetched pages, file reads, vault
-  # bodies); thinking / Bash / tool-input blocks share this helper and are
-  # covered by the same change. Runs NOT at a line start need no widening --
-  # they cannot close a fence -- so ordinary prose still renders at six.
+  # could close the block with, so no line in it can end the block whatever it
+  # holds. Tool results are the reachable source (fetched pages, file reads,
+  # vault bodies); thinking / Bash / tool-input blocks share this helper and are
+  # covered by the same change.
+  #
+  # Only runs that could ACTUALLY close count: at a line start, indented at most
+  # three, and followed by nothing but whitespace. A run mid-line, or one trailed
+  # by text (`~~~~~~ label`), closes nothing, so widening for it would rewrite
+  # notes that were never at risk -- ordinary prose still renders at six.
   def fence($lang; $text):
     ($text // "") as $t
-    | ([ $t | split("\n")[] | capture("^ {0,3}(?<r>~*)") | .r | length ] | max // 0) as $longest
+    | ([ $t
+         | split("\n")[]
+         | capture("^ {0,3}(?<run>~*)(?<rest>.*)$")
+         | if (.rest | test("^[[:space:]]*$")) then (.run | length) else 0 end ] | max // 0) as $longest
     | (if $longest >= 6 then $longest + 1 else 6 end) as $n
     | ("~" * $n) as $f
     | $f + $lang + "\n" + $t + "\n" + $f;

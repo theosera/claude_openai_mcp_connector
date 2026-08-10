@@ -169,15 +169,22 @@ describe("session-archive tool-result fencing", () => {
   });
 
   it("leaves ordinary content at six tildes", () => {
-    // Runs that are shorter, or not at the start of a line, cannot close a
-    // fence — widening for them would churn every note in the vault.
+    // Only a run that could actually close the block counts. A shorter run, a
+    // run mid-line, and a run trailed by text all close nothing, so widening for
+    // them would rewrite notes that were never at risk.
     const note = render(
       renderer,
-      transcriptWithToolResult("log:\n~~~ three is fine\n``` so are backticks\ninline ~~~~~~ too\n")
+      transcriptWithToolResult(
+        "log:\n~~~ three is fine\n``` so are backticks\ninline ~~~~~~ too\n~~~~~~ trailed by a label\n"
+      )
     );
 
     expect(openingFenceLength(note)).toBe(6);
     expect(note).toContain("inline ~~~~~~ too");
+    expect(note).toContain("~~~~~~ trailed by a label");
+    // The trailing-label line is still not a closing fence, so it does not let
+    // the rest of the content out.
+    expect(topLevelLines(note).some((line) => line.includes("trailed by a label"))).toBe(false);
   });
 
   it("renders a real conversation turn at top level, so the check is not vacuous", () => {
