@@ -925,9 +925,32 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       OAuth-persistence section above.
 - [ ] **Bring `MCP_ENV_FILE` under the same containment rule** — needs a
       different mechanism than the other two, since the roots it would be checked
-      against come from the file itself. A second pass after the env file is
-      loaded is the obvious shape; the open question is what to do when the file
-      that configured the roots turns out to sit inside them.
+      against come from the file itself.
+
+      **What is settled:** a boot-time check cannot reach it. `loadEnvFile()`
+      runs before `KNOWLEDGE_ROOT` exists, so there is nothing to compare
+      against at the moment the file is read. That is an ordering fact, not a
+      design preference.
+
+      **What was NOT considered when this entry was first written** (v0.8.0):
+      a check *after* the roots are known. Once `loadConfig()` has resolved
+      them, `MCP_ENV_FILE` can be tested with the same `(dev, ino)` walk and the
+      server refused if it lands inside a root. This does not undo the exposure
+      — the secrets are already in `process.env` by then, and a state file in an
+      indexed root may already have been read by anything with vault access.
+      What it does buy is refusing to keep serving on credentials that a vault
+      reader may already know. `MCP_OAUTH_STATE_FILE` fails *before the write*;
+      this would fail *after the read*, which is a materially weaker guarantee
+      and belongs to a separate decision rather than the same mechanism.
+      Recorded here so the next person does not re-derive it: this option is
+      **unevaluated, not rejected**.
+
+      **Priority input:** no deployment sets `MCP_ENV_FILE` today. The scan
+      host's launchd plist carries an empty `EnvironmentVariables`, `launchctl
+      getenv` reports every relevant name unset, and the cwd-relative `.env`
+      path that used to supply them has been retired. Nobody is standing on this
+      question yet — the migration that starts using `MCP_ENV_FILE` is the
+      deadline for answering it.
 - [ ] **Audit log** — append-only, content-free events (who searched / fetched /
       wrote what, no note bodies) — the largest security follow-up, and still the
       one that most improves the posture; it now sits **second** because the
