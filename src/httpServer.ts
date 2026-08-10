@@ -153,6 +153,7 @@ function surfaceFor(
   const write = principal.scopes.includes(SCOPE_WRITE);
   return {
     allowWrite: config.allowWrite && write,
+    allowLegacyCreateDocument: config.allowLegacyCreateDocument && write,
     allowSkillWrite: config.allowSkillWrite && write,
     skillStore,
     allowAuditWrite: config.allowAuditWrite && write,

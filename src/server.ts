@@ -22,6 +22,20 @@ export interface BuildServerOptions {
    * HTTP defaults to false unless MCP_HTTP_ALLOW_WRITE is set (see config).
    */
   allowWrite: boolean;
+  /**
+   * Additionally register the legacy one-step `create_document`. Off unless set,
+   * on every transport, and meaningless without `allowWrite`.
+   *
+   * Splitting it out of `allowWrite` is the point: every other write here is
+   * plan → user approval → apply, so "the current user approved this exact
+   * target and content" is enforced by the server. `create_document` is a single
+   * call, so that sentence was enforced only by the server instructions asking
+   * the model to obtain approval — and an injected instruction in vault content
+   * (INV-5) is read by the same model. It cannot escape the vault or overwrite
+   * anything, but it can persist attacker-chosen text into `projects/` that
+   * later sessions read back as trusted-looking notes.
+   */
+  allowLegacyCreateDocument?: boolean;
   /** Register constrained, create-only Skill tools independently of document writes. */
   allowSkillWrite?: boolean;
   skillStore?: SkillStore;
@@ -205,7 +219,7 @@ export function buildMcpServer(vaultStore: VaultStore, options: BuildServerOptio
     );
   }
 
-  if (options.allowWrite) {
+  if (options.allowWrite && options.allowLegacyCreateDocument) {
     server.registerTool(
       "create_document",
       {
@@ -224,7 +238,9 @@ export function buildMcpServer(vaultStore: VaultStore, options: BuildServerOptio
       },
       async (input) => jsonResult(toPublicDocument(await store.createDocument(input)))
     );
+  }
 
+  if (options.allowWrite) {
     server.registerTool(
       "plan_document_create",
       {

@@ -114,7 +114,8 @@ describe("MultiRootStore", () => {
     patchStateDir,
     // Transport-level flag; the store never reads it. Set explicitly rather
     // than made optional so a future surface flag cannot be forgotten here.
-    stdioAllowAuditWrite: false
+    stdioAllowAuditWrite: false,
+    allowLegacyCreateDocument: false
   });
 
   beforeEach(async () => {

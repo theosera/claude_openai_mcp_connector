@@ -571,6 +571,11 @@ ls ~/.ssh   # → same: nothing to steal
 Use this flow when the note must land in an existing vault folder. The legacy
 `create_document` tool deliberately maps `client`, `project`, and `title` into
 `projects/<client>/<project>/<slug>.md`; it does not preserve an arbitrary path.
+It is also **off by default now, on every transport** — it is the only document
+write with no plan/apply pair, so the vault changed on the tool call itself,
+before any diff existed to approve. Re-enable it with
+`MCP_ALLOW_LEGACY_CREATE_DOCUMENT=1` only if you still depend on that capture
+route; the flow below replaces it.
 
 The exact-path tools share the normal document-write boundary. For HTTP, enable
 `MCP_HTTP_ALLOW_WRITE=1`, restart the service, and authorize a `vault.write`
