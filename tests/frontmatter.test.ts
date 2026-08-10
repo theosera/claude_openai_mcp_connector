@@ -262,23 +262,126 @@ describe("frontmatter YAML anchor/alias expansion guard", () => {
     expect((parsed.frontmatter as Record<string, unknown>).nested).toEqual({ a: 1 });
   });
 
-  it("accepts realistic machine-generated frontmatter (session-archive index, 900 source_refs)", () => {
-    const parsed = parseMarkdownSafe(sessionArchiveNote(900));
+  it("accepts realistic machine-generated frontmatter (session-archive index, 90 source_refs)", () => {
+    // Was 900 refs (66.2 KiB of frontmatter) until the block-size cap landed.
+    // 900 is now refused — see "refuses a frontmatter block over the cap" below,
+    // which pins that as the intended outcome rather than a regression.
+    const parsed = parseMarkdownSafe(sessionArchiveNote(90));
 
     expect(parsed.parseError).toBeUndefined();
-    expect(parsed.frontmatter.source_refs).toHaveLength(900);
+    expect(parsed.frontmatter.source_refs).toHaveLength(90);
     expect(parsed.frontmatter.tags).toHaveLength(7);
     expect(parsed.frontmatter.id).toBe("cc-session-index-2026-08");
     expect(parsed.frontmatter.client).toBe("claude-code");
   });
 
+  it("refuses a frontmatter block over the cap, and says how big it was", () => {
+    // 900 refs is 66.2 KiB of frontmatter. It parses in ~14 ms because its line
+    // starts fail the comment regex immediately — but the cap cannot tell a
+    // benign 66 KiB block from a hostile one, and a hostile block that size costs
+    // ~3 s. The cap is the price of not having to make that distinction.
+    const parsed = parseMarkdownSafe(sessionArchiveNote(900));
+
+    expect(parsed.parseError).toMatch(/Frontmatter block is \d+ bytes, over the 8192-byte limit/);
+    expect(parsed.frontmatter.source_refs).toEqual([]);
+    // Degrades like any other malformed frontmatter: the body still indexes.
+    expect(parsed.body).toContain("ZZARCHIVEBODY");
+  });
+
+  it("refuses an unterminated frontmatter block — the worst case — without parsing it", () => {
+    // gray-matter falls back to treating the WHOLE file as the block when the
+    // closing delimiter is missing (`if (closeIndex === -1) closeIndex = len`),
+    // which is how 391 KB of line starts became a 102-second block. The guard has
+    // to catch this before matter() runs, so assert BOTH the refusal and that it
+    // returned fast: without the cap this call alone takes minutes.
+    const payload = `---\n${"\n".repeat(400_000)}`;
+
+    const started = Date.now();
+    const parsed = parseMarkdownSafe(payload);
+    const elapsed = Date.now() - started;
+
+    expect(parsed.parseError).toMatch(/no closing delimiter/);
+    expect(elapsed).toBeLessThan(1_000);
+  });
+
+  it("refuses the same block behind a UTF-8 BOM, which gray-matter strips before looking", () => {
+    // gray-matter normalizes with strip-bom-string BEFORE parseMatter tests for
+    // `---`, so a file opening U+FEFF `---` IS frontmatter to it. A guard on the RAW
+    // prefix skipped exactly that file and handed the whole quadratic path back:
+    // measured at 32 KiB, 0.3 ms refused without the BOM against 1,129.6 ms
+    // parsed with it. Time is the assertion again — a version that refused for
+    // some other reason, or refused only after parsing, would still "throw".
+    const payload = `\uFEFF---\n${"\n".repeat(400_000)}`;
+
+    const started = Date.now();
+    const parsed = parseMarkdownSafe(payload);
+    const elapsed = Date.now() - started;
+
+    expect(parsed.parseError).toMatch(/no closing delimiter/);
+    expect(elapsed).toBeLessThan(1_000);
+  });
+
+  it("measures the block in UTF-8 bytes, not UTF-16 code units", () => {
+    // The constant, the error and the docs all say bytes. Comparing
+    // `String.length` counted code units instead, so a CJK block passed at three
+    // times the stated limit. Bytes are not what drives the cost — 8,192 code
+    // units of newlines cost 76.11 ms against 0.88 ms for 8,192 CJK characters
+    // (24,568 bytes) — but a limit that does not mean what it says is a limit
+    // nobody can reason about.
+    const note = (chars: number): string => `---\ntitle: ${"あ".repeat(chars)}\n---\n\nbody\n`;
+
+    // 3,000 CJK characters: 3,011 code units — comfortably under the cap by the
+    // old comparison — but 9,011 bytes, over it. This pair is the whole test:
+    // any payload where both units agree cannot tell them apart.
+    const over = note(3_000);
+    expect(over.length).toBeLessThan(8_192);
+    expect(parseMarkdownSafe(over).parseError).toMatch(/over the 8192-byte limit/);
+
+    // 2,000 of the same characters: 6,011 bytes, still legal. Without this the
+    // test would also pass if the guard simply rejected all CJK.
+    expect(parseMarkdownSafe(note(2_000)).parseError).toBeUndefined();
+  });
+
+  it("still parses a legitimate BOM-prefixed note", () => {
+    // The fix must not turn every BOM-prefixed note into a parse error: editors
+    // on Windows write them, and gray-matter reads them fine.
+    const parsed = parseMarkdownSafe("\uFEFF---\ntitle: BOM note\n---\n\nbody\n");
+
+    expect(parsed.parseError).toBeUndefined();
+    expect(parsed.frontmatter.title).toBe("BOM note");
+    expect(parsed.body).toContain("body");
+  });
+
+  it("strips one BOM and no more, because gray-matter strips one", () => {
+    // strip-bom-string removes a single leading U+FEFF. A second one means
+    // gray-matter never sees a delimiter at all, so the file has no block —
+    // measuring it anyway would reject notes that were never a risk. Verified
+    // against gray-matter directly: a doubled BOM yields matter.length 0.
+    const parsed = parseMarkdownSafe(`\uFEFF\uFEFF---\n${"\n".repeat(400_000)}`);
+
+    expect(parsed.parseError).toBeUndefined();
+  });
+
+  it("does not measure a note that has no frontmatter at all", () => {
+    // The cap applies to the BLOCK, not to the file. A note that never opens with
+    // the delimiter has no block for gray-matter to scan, so it must stay legal at
+    // any size — otherwise the guard would reject ordinary long documents.
+    const parsed = parseMarkdownSafe(`# Long note\n\n${"lorem ipsum dolor sit amet\n".repeat(20_000)}`);
+
+    expect(parsed.parseError).toBeUndefined();
+    expect(parsed.body).toContain("lorem ipsum");
+  });
+
   it("accepts a large flow-style tag list (the worst-amplifying legitimate shape)", () => {
+    // 2,000 rather than 5,000 entries: what this pins is the AMPLIFICATION RATIO
+    // of the shape, which does not depend on how many entries there are, and
+    // 5,000 would now exceed the block-size cap for an unrelated reason.
     const parsed = parseMarkdownSafe(
-      `---\ntitle: Tagged\ntags: [${Array.from({ length: 5000 }, () => "a").join(",")}]\n---\n\nbody\n`
+      `---\ntitle: Tagged\ntags: [${Array.from({ length: 2000 }, () => "a").join(",")}]\n---\n\nbody\n`
     );
 
     expect(parsed.parseError).toBeUndefined();
-    expect(parsed.frontmatter.tags).toHaveLength(5000);
+    expect(parsed.frontmatter.tags).toHaveLength(2000);
   });
 
   // The budget must come from `raw` itself. gray-matter caches parses by content
@@ -287,14 +390,14 @@ describe("frontmatter YAML anchor/alias expansion guard", () => {
   // collapses to the floor on every repeat parse of identical content and
   // strips the metadata off large but legitimate notes.
   it("returns identical results when the same content is parsed twice (gray-matter content cache)", () => {
-    const raw = sessionArchiveNote(900);
+    const raw = sessionArchiveNote(90);
 
     const first = parseMarkdownSafe(raw);
     const second = parseMarkdownSafe(raw);
 
     expect(second).toEqual(first);
     expect(second.parseError).toBeUndefined();
-    expect(second.frontmatter.source_refs).toHaveLength(900);
+    expect(second.frontmatter.source_refs).toHaveLength(90);
     expect(second.frontmatter.title).toBe("Session archive index");
     expect(second.frontmatter.id).toBe("cc-session-index-2026-08");
   });
@@ -317,7 +420,12 @@ describe("frontmatter YAML anchor/alias expansion guard", () => {
   // bought with a larger file. Charging `length` here makes this test pass a
   // ~96x expansion.
   it("charges a scalar its JSON-escaped size, not its in-memory length", () => {
-    const scalar = '"' + "\\0".repeat(20_000) + '"';
+    // 2,000 rather than 20,000 repeats, to stay under the block-size cap while
+    // still separating the two accountings: 32 references x 6 chars per escaped
+    // control character is ~384 KB (over the 64 KiB floor, so the correct
+    // accounting throws), while charging in-memory length gives 32 x 2,000 =
+    // 64,000 — under the floor, so the wrong accounting would NOT throw.
+    const scalar = '"' + "\\0".repeat(2_000) + '"';
     const raw =
       "---\n" + `a: &a ${scalar}\n` + `b: [${Array.from({ length: 31 }, () => "*a").join(",")}]\n` + "---\n\nbody\n";
 
@@ -393,7 +501,7 @@ describe("KnowledgeStore with expansion-bomb and repeated content", () => {
   });
 
   it("keeps the metadata of two byte-identical notes, and on a re-read of the same note", async () => {
-    const note = sessionArchiveNote(900);
+    const note = sessionArchiveNote(90);
     const first = path.join(root, "archive-a.md");
     const second = path.join(root, "archive-b.md");
     await fs.writeFile(first, note, "utf8");
@@ -402,7 +510,7 @@ describe("KnowledgeStore with expansion-bomb and repeated content", () => {
     const a = await store.fetch("archive-a.md");
     const b = await store.fetch("archive-b.md");
     for (const document of [a, b]) {
-      expect(document.frontmatter.source_refs).toHaveLength(900);
+      expect(document.frontmatter.source_refs).toHaveLength(90);
       expect(document.frontmatter.client).toBe("claude-code");
       expect(document.title).toBe("Session archive index");
     }
@@ -412,7 +520,7 @@ describe("KnowledgeStore with expansion-bomb and repeated content", () => {
     const future = new Date(Date.now() + 60_000);
     await fs.utimes(first, future, future);
     const reread = await store.fetch("archive-a.md");
-    expect(reread.frontmatter.source_refs).toHaveLength(900);
+    expect(reread.frontmatter.source_refs).toHaveLength(90);
     expect(reread.frontmatter.id).toBe("cc-session-index-2026-08");
     expect(reread.title).toBe("Session archive index");
   });

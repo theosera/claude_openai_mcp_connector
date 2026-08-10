@@ -40,6 +40,91 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Reverse-verified: downgrading the fence to six turns the three containment
   cases red, each because the forged turn reached top level.
 
+- **Frontmatter is now bounded before it is parsed, closing two quadratic paths
+  — one of them a CVE in a production dependency.** Both are driven by the size
+  of the frontmatter block and both are reachable from untrusted vault content on
+  the always-on read path:
+
+  1. gray-matter's comment stripper, `file.matter.replace(/^\s*#[^\n]+/gm, '')`.
+     The `m` flag makes every line start a match position, so the cost is
+     quadratic in the number of line starts.
+  2. js-yaml's `!!omap` resolution — **GHSA-5p4m-2wfm-xmqj**, js-yaml `<3.15.1`,
+     reached as `gray-matter > js-yaml`. `!!omap` is in the default schema, so a
+     plain load hits it.
+
+  Measured on this repo's pinned versions (Node 22, gray-matter 4.0.3 / js-yaml
+  3.15.0), quadrupling per doubling in both — the signature of O(n²):
+
+  | path | input | blocked for |
+  | --- | --- | --- |
+  | comment stripper, no closing delimiter | 391 KB | **101.8 s** |
+  | comment stripper, closing delimiter | 156 KB | 9.1 s |
+  | `!!omap` | 1,228 KB | 3.5 s |
+
+  The worst case is a file whose frontmatter never closes, because gray-matter
+  then treats the **whole file** as the block. All of it sits far inside
+  `append_audit_report`'s 512 KB ceiling.
+
+  `parseMarkdown` now refuses a block over **8 KiB** before calling `matter()`.
+  Nothing that inspects the parsed *result* can help here — the CPU is spent
+  during the parse — which is why the existing anchor/alias expansion guard,
+  which runs after `matter()` returns, never covered this. The two guards are
+  complementary: a block-size cap was correctly **rejected** for the expansion
+  bomb (that bomb is a few hundred bytes) and is the right bound here, because
+  size is exactly what drives these two.
+
+  **The `!!omap` path is additionally fixed at the dependency.** js-yaml
+  **3.15.1** is patched and sits inside gray-matter's `^3.13.1` range, so
+  `pnpm.overrides` pins it — no major upgrade and no API break. Measured on the
+  resolved tree: 3.15.0 quadruples per doubling (74 / 173 / 670 / 3,068 ms at
+  n = 5k / 10k / 20k / 40k) while 3.15.1 is linear (83 / 82 / 112 / 171 ms). The
+  cap still bounds that path as defence in depth, but it is no longer the only
+  thing standing there.
+
+  Read the advisory's structured fields, not its title: the record is titled
+  "CVE-2026-59870 fix not backported" while its own `patched_versions` says
+  `>=3.15.1`. The title is why an earlier revision of this entry claimed the fix
+  existed only in 5.x. Note also that `pnpm update` will not move a transitive the
+  lockfile already considers satisfied — the override is what moves it.
+
+  The **comment-stripper** path is not an upgrade away: it is gray-matter's own
+  code, and the bound is the only mitigation for it.
+
+  Sized against the real vault this server was built for — 2,381 notes,
+  frontmatter median 225 B, p99 501 B, max 1,042 B — so 8 KiB keeps ~7.9x
+  headroom over the largest note that exists while holding the attack to ~41 ms —
+  measured on the *unterminated* shape, which is the worst case and ~1.8x costlier
+  than the terminated one at the same size.
+  Over-cap frontmatter fails **loudly**: the read path logs it and indexes the
+  note body-only (exactly like any other malformed frontmatter), and the write
+  paths refuse rather than dropping metadata.
+
+  **Behaviour change:** a note carrying kilobytes of `source_refs` in its
+  frontmatter is now refused. The test suite previously pinned a session-archive
+  index with 900 `source_refs` — 66.2 KiB of frontmatter — as legitimate. No such
+  note exists in the vault, and a hostile block that size costs ~3 s, so the cap
+  is kept and that shape is now pinned as refused. Frontmatter carrying kilobytes
+  of references is the design to revisit, not the limit.
+
+  Reverse-verified: with the cap removed, the unterminated-block test takes
+  **177 seconds** instead of failing under its 1-second assertion.
+
+- **A production advisory now fails CI.** The dependency audit was a single
+  non-blocking step, on the stated theory that "real triage happens in the
+  Dependabot PR". That theory did not survive contact with the js-yaml advisory
+  above: Dependabot alerts were enabled but reported **0 open alerts**, and
+  `dependabot.yml`'s `updates:` bumps *direct* dependencies while js-yaml is
+  transitive — so no PR was raised there either. `pnpm audit` was the only
+  detector, and it was configured to be invisible.
+
+  CI now runs `pnpm audit --prod --audit-level high` as a **blocking** step, with
+  the previous full-tree `--audit-level moderate` retained as the non-blocking
+  one. Scoping the blocking step to `--prod` keeps dev-only noise out of it, which
+  is how the single step stopped being read in the first place.
+
+  Reverse-verified: with js-yaml reverted to 3.15.0, the blocking step exits 1 and
+  names `.>gray-matter>js-yaml`; with 3.15.1 it reports no vulnerabilities.
+
 - **A note's frontmatter `id` could impersonate any other document, and no
   longer can.** `readDocument` takes `document.id` verbatim from the file's own
   frontmatter — untrusted vault content — and `fetch()` matched that id *before*

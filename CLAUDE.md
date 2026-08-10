@@ -149,7 +149,16 @@ CAS は読んだ版一致時のみ更新、append/CAS は in-process mutex で�
 
 - `pnpm typecheck` (tsc strict、`tsconfig.json` = src + `tsconfig.test.json` = src+tests。
   **build config は src しか見ないので、tests を型検査する第 2 config が要る**) → `pnpm build` →
-  `pnpm test` (vitest)。CI と同一。
+  `pnpm test` (vitest)。
+- **★ ただしこれは CI の全部ではない。** CI の検査 step は **8 つ、うち落ちうるのは 7 つ**:
+  `pnpm audit --prod --audit-level high` (**blocking**) → `pnpm audit --audit-level moderate`
+  (**advisory / `continue-on-error` なので絶対に落ちない**) → `lint:ox` → `format:check` →
+  `lint` → `typecheck` → `build` → `test`。
+  ⚠️ **advisory の方を「1 step 分の保証」と数えない** — 落ちない検査は何も証明しない
+  (これを数えていたことが本番 CVE を 1 件見逃した原因)。**上の 3 つだけ回して緑を確認したせいで、`format:check` で
+  CI を落としたことが実際にある**。ローカルで通すなら
+  `.github/workflows/node.js.yml` の step 列を正典として全部回す (ここの列挙は写しであり、
+  食い違ったら workflow が正しい)。
 - **セキュリティ挙動は規約でなくテストで pin** する: path traversal / symlink escape /
   frontmatter allowlist / stale patch / exact-path確認・patch完全性 / overwrite collision / Skill bundle containment・
   create-only・atomic publish (`tests/`)。挙動を変える
@@ -176,7 +185,14 @@ CAS は読んだ版一致時のみ更新、append/CAS は in-process mutex で�
 
 - `.github/workflows/*.yml`: third-party action は **40 桁 SHA pin + `# vX.Y.Z`**
   (tag 差し替え攻撃対策)。top-level `permissions: contents: read` (job 単位でのみ昇格)。
-  `concurrency` で古い run を cancel。`pnpm audit` を advisory step で実行。
+  `concurrency` で古い run を cancel。
+- **依存 advisory は 2 step。**本番経路の high (`pnpm audit --prod --audit-level high`) は
+  **build を落とす**。full tree の moderate は従来どおり advisory (`continue-on-error`)。
+  ⚠️ **blocking 側に dev のノイズを混ぜない** — 混ぜると「人が読むのをやめる step」に戻り、
+  それがまさに本番 CVE を 1 件見逃した原因 (`js-yaml` GHSA-5p4m-2wfm-xmqj)。
+  **`--audit-level high` なので moderate な本番 advisory は素通りする** (ノイズとの意図的なトレード)。
+  **Dependabot は代わりにならない** — alerts 有効でも transitive の新しい advisory は open 0 件で、
+  `dependabot.yml` の `updates:` は直接依存が対象。
 - `.github/CODEOWNERS` が `.github/` を所有 (workflow poisoning 対策 / branch protection
   で code-owner review 必須化)。`.github/dependabot.yml` が SHA pin を週次更新。
 - `.github/` を触る変更は CODEOWNERS review を要する。SHA pin を floating tag に戻さない。

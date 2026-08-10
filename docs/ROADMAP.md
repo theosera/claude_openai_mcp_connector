@@ -478,6 +478,69 @@ skill-firing row in [`CLAUDE.md`](../CLAUDE.md) both name the transport options
 by name. Whichever PR moves the mechanism must update both in the same change,
 or the canon will describe an API the code no longer uses.
 
+### Frontmatter is bounded before it is parsed — _second security scan, root C_ ✅
+
+Two independent quadratic paths run **while gray-matter parses**, both driven by
+the size of the frontmatter block and both reachable from untrusted vault content
+on the always-on read path: gray-matter's own comment stripper (`m`-flagged, so
+every line start is a match position), and js-yaml's `!!omap` resolution —
+**GHSA-5p4m-2wfm-xmqj**, a CVE in a **production** dependency reached as
+`gray-matter > js-yaml`.
+
+Measured, quadrupling per doubling in both: 391 KB of unterminated frontmatter
+blocked for **101.8 s**; `!!omap` at 1,228 KB for 3.5 s. The unterminated case is
+worst because gray-matter then treats the whole file as the block.
+
+`parseMarkdown` refuses a block over **8 KiB** before `matter()` runs.
+
+- **Nothing that inspects the parsed result can help** — the CPU is spent during
+  the parse. The existing anchor/alias expansion guard runs after `matter()`
+  returns and therefore never covered this. A block-size cap was correctly
+  *rejected* for that expansion bomb (a few hundred bytes tells you nothing about
+  size) and is the right bound here. The two are complementary; neither replaces
+  the other.
+- **The `!!omap` path is fixed at the dependency; the comment stripper is not.**
+  js-yaml **3.15.1** is patched and inside gray-matter's `^3.13.1` range, so
+  `pnpm.overrides` pins it — no major upgrade, no API break. Measured on the
+  resolved tree: 3.15.0 quadruples per doubling, 3.15.1 is linear. The bound
+  still covers that path as defence in depth, but calling it *the* mitigation
+  would make an out-of-date js-yaml look acceptable. The comment stripper is
+  gray-matter's own code and the bound is the only thing standing there. The two
+  remaining advisories are dev-only.
+  **Read an advisory's structured fields, not its title**: this record is titled
+  "CVE-2026-59870 fix not backported" while its own `patched_versions` says
+  `>=3.15.1`. The title is why an earlier revision of this entry said 5.x-only.
+- **Sized from real data**, not from the attack: 2,381 notes, frontmatter median
+  225 B, max 1,042 B. 8 KiB keeps ~7.9x headroom while holding the attack to
+  ~41 ms — the *unterminated* shape, which is the worst case and ~1.8x costlier
+  than the terminated one at the same size. Absolute milliseconds are
+  host-dependent (the same payloads run ~6x slower on a CI container); only the
+  exponent transfers. Over-cap frontmatter fails loudly — logged and body-only on the
+  read path, refused outright on the write paths.
+- **Behaviour change:** kilobytes of `source_refs` in frontmatter are now
+  refused, including the 900-ref session-archive index the tests used to pin as
+  legitimate (66.2 KiB). No such note exists in the vault, and a hostile block
+  that size costs ~3 s. Frontmatter carrying kilobytes of references is the
+  design to revisit, not the limit.
+
+**This is what the dependency audit was for.** Both full-tree scans dropped
+`package.json` / `pnpm-lock.yaml` into `skipped_components`, and the scan that
+did report the comment stripper wrote honestly that it could not confirm the
+bound without executing the regex. The CVE was published the day before that scan
+ran — and `pnpm audit` had been printing it in CI on every run.
+
+**Printing is not reporting.** That audit step was `continue-on-error: true`, so
+it was always green, and it mixed dev noise into the one signal that mattered.
+The comment justifying that said triage happens in the Dependabot PR; Dependabot
+alerts were enabled and showed **0 open alerts**, and `dependabot.yml`'s
+`updates:` bumps *direct* dependencies while js-yaml is transitive — so no PR
+could be raised there either. A single detector, configured to be invisible, is
+not a control. CI now fails on a **production** high (`pnpm audit --prod
+--audit-level high`) and keeps the full-tree moderate scan advisory. Scoping the
+blocking step to `--prod` is the point: dev noise is what turns a step into one
+people stop reading. The threshold is a deliberate trade — a *moderate*
+production advisory still passes.
+
 ### Document identity is not a frontmatter field — _second security scan, root A_ ✅
 
 A second full-tree security scan (2026-08-07, against `85dc2c0`) reported nine
@@ -713,6 +776,29 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       the mis-routing the composite's id-first match prevents); the exact
       vault-relative path stays the unambiguous handle. Reverse-verified per
       guard. See the root-A section above.
+- [x] **Bound the frontmatter block before parsing it (root C)** — ✅ 8 KiB cap
+      in `parseMarkdown`, ahead of `matter()`. Closes both the `m`-flagged comment
+      stripper and **GHSA-5p4m-2wfm-xmqj** (`gray-matter > js-yaml`, a production
+      dependency the 5.x fix cannot reach). Sized from the real vault, not the
+      attack. See the root-C section above.
+- [ ] **Revisit frontmatter that carries kilobytes of references** — the
+      session-archive index shape (900 `source_refs`) no longer parses. Nothing in
+      the vault produces one today, so this is a design question rather than a
+      regression: an index note should point at a list, not inline it. Belongs
+      with the `session-archive` work, not with the parser.
+- [x] **Dependency audit as a standing habit, not a scan deliverable** — ✅ both
+      full-tree scans dropped the manifests, and the one CVE that mattered was
+      printed by `pnpm audit` on every CI run. The framing "read as noise" was
+      wrong: the step was `continue-on-error`, so it was **always green**, and it
+      deferred to a Dependabot PR that could not exist (alerts enabled with zero
+      open; `dependabot.yml` bumps direct dependencies, the package was
+      transitive). CI now fails on a production high and keeps the full-tree scan
+      advisory; the two known dev highs were fixed so the next line printed there
+      is news. See the root-C section above.
+      Still open, tracked separately: `docs/dependency-policy.md` — when
+      `pnpm.auditConfig.ignoreGhsas` is legitimate (only when no patched version
+      exists, established from `patched_versions` and not from an advisory's
+      prose).
 - [ ] **Constrain what the audit / Skill-reference write surfaces may author** —
       the write-side half of the same root cause: `append_audit_report`,
       `compare_and_swap_audit_state` and Skill `references/*.md` write client
