@@ -8,6 +8,38 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **An archived session note could carry forged conversation turns, because a
+  tool result was able to close its own fence.** The session-archive hook wraps
+  untrusted tool output — fetched pages, file reads, vault bodies — in a fence of
+  exactly six tildes. Six was never a bound, only a longer guess than content
+  usually makes: CommonMark closes a fence on the same character, at least as
+  many, indented no more than three, so a tool result containing its own run of
+  tildes ended the block early and everything after it became **top-level
+  Markdown**. That let a page the agent merely read plant a
+  `## 👤 User — <timestamp>` heading carrying words the operator never said, in a
+  note that is committed, pushed, and later served back over MCP as a faithful
+  record of the session.
+
+  Fences are now sized to their own content: longer than the longest tilde run
+  the content starts a line with, floor six. Runs that are indented past three,
+  or that do not start a line, cannot close a fence and so do not widen it —
+  ordinary notes still render at six and are unchanged byte for byte. One helper
+  serves tool results, thinking blocks, Bash commands and tool inputs, so all
+  four are covered by the one change.
+
+  **The scan's remaining advice was not taken.** It also proposed fencing the
+  user and assistant text branches. Those carry the speakers' own words, and
+  fencing them would turn every conversation into a code block — the note exists
+  to be read. The reachable untrusted source is the tool result, and that is what
+  is now contained.
+
+  The regression test drives the jq program **extracted from the hook** rather
+  than a copy, so it cannot keep passing after the hook changes, and it asserts
+  that the containment check still detects an escape when handed a fixed-length
+  fence — a screen that never sees the failure it screens for proves nothing.
+  Reverse-verified: downgrading the fence to six turns the three containment
+  cases red, each because the forged turn reached top level.
+
 - **A note's frontmatter `id` could impersonate any other document, and no
   longer can.** `readDocument` takes `document.id` verbatim from the file's own
   frontmatter — untrusted vault content — and `fetch()` matched that id *before*

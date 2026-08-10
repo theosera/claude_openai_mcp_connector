@@ -220,11 +220,29 @@ mask() {
 
 # --- render the transcript to Markdown --------------------------------------
 # Full raw log: user/assistant text verbatim, thinking blocks, tool calls with
-# inputs, tool results with outputs. Fences use 6 tildes so embedded ``` / ~~~
-# in transcript content cannot break out of a block.
+# inputs, tool results with outputs. Fences are sized to their own content (see
+# fence below) so embedded ``` / ~~~ cannot break out of a block.
 body_jq='
   def ts: (.timestamp // "") | sub("T"; " ") | .[0:19];
-  def fence($lang; $text): "~~~~~~" + $lang + "\n" + ($text // "") + "\n~~~~~~";
+  # A tilde run inside the content CLOSES a fixed-length fence (CommonMark: a
+  # closing fence is the same character, at least as many, indented <= 3), so
+  # the untrusted text escapes the block and becomes top-level Markdown -- a
+  # forged "## User" turn in a note that is committed, pushed, and later served
+  # back over MCP as a faithful record of the session. Six tildes were not a
+  # bound, only a longer guess than the content usually makes.
+  #
+  # Size the fence to the content instead: longer than any tilde run the content
+  # starts a line with, so no line in it can close the block whatever it holds.
+  # Tool results are the reachable source (fetched pages, file reads, vault
+  # bodies); thinking / Bash / tool-input blocks share this helper and are
+  # covered by the same change. Runs NOT at a line start need no widening --
+  # they cannot close a fence -- so ordinary prose still renders at six.
+  def fence($lang; $text):
+    ($text // "") as $t
+    | ([ $t | split("\n")[] | capture("^ {0,3}(?<r>~*)") | .r | length ] | max // 0) as $longest
+    | (if $longest >= 6 then $longest + 1 else 6 end) as $n
+    | ("~" * $n) as $f
+    | $f + $lang + "\n" + $t + "\n" + $f;
   # Strip harness-injected wrapper tags from USER text only (command echoes,
   # system reminders, hook output). Actual user words stay verbatim.
   def clean_user:
