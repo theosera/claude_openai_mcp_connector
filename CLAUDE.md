@@ -45,7 +45,23 @@ HTTP は **opt-in の OAuth 2.1 authorization server** (`src/oauth/`、PKCE S256
 | MCP のセキュリティ境界コードを書く/直す/レビューする — `src/pathSafety.ts` / `src/knowledgeStore.ts` (walk・write・two-step apply) / **`src/skillStore.ts` (Skill bundle plan/apply・create-only・atomic publish / `tests/skillStore.test.ts`)** / **`src/auditStore.ts` (constrained audit write surface = append+CAS・監査サブツリー予約 INV-9 / `tests/auditStore.test.ts`)** / **`src/multiRootStore.ts` (複数ルート合成・read-only ルート・overlap 拒否 / `tests/multiRootStore.test.ts`)** / `src/frontmatter.ts` (frontmatter allowlist) / `src/config.ts` / `tests/pathSafety.test.ts` / 新しい MCP tool を `src/index.ts`・`src/server.ts` に追加 / **HTTP transport (`src/httpServer.ts` = auth gate・scope gate (`vault.read`)・loopback bind・DNS-rebinding (`rejectRebinding`)・session 無しの per-request tool 面 (`surfaceFor`) / `src/webBridge.ts` = node:http ⇄ Web Request/Response 変換 (policy を置かない) / `src/httpAuth.ts` = bearer 照合 / `tests/httpServer.test.ts`)** / **OAuth 2.1 (`src/oauth/*.ts` = PKCE・auth code・token・redirect policy・login gate / `src/config.ts` の `loadOAuthConfig` / `tests/oauth.test.ts`)** | `mcp-vault-security` |
 | コマンド学習ログ機能の hook 設定 (`.claude/settings.json`) を書く・直す / マスキング規則・ログ出力先を変える / `capture-command.sh`・`push-log.sh` を触る                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | `ops-logging`        |
 | セッション履歴アーカイブ (Claude Code 履歴 → vault) の hook 設定を書く・直す / 出力フォーマット・保存先・マスキング規則を変える / `archive-session.sh` を触る                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | `session-archive`    |
+| **★ ここだけ「着手前」でなく「commit する前」** — **`fs` に書く経路を新設/変更した** (`src/atomicWrite.ts` / `knowledgeStore` の write・apply / `skillStore` / `auditStore` / `oauth/store` の永続化)、または **write tool・write surface の gate を足した/変えた**変更を commit する前                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | `security-review`    |
 
+> **`security-review` の発火が「commit する前」なのは、探す対象が設計ではなく
+> 実装だから。** 着手前に回しても差分が無い。**実測 (2026-08-11)**: `atomicWrite.ts` を
+> 足した際、temp を既定 mode で作ってから `chmod` していたため **`0600` のノートが
+> 書き込み中だけ `0644` で存在**した。CI 7 step は全緑、逆検証も 4 ガード分パスした後で、
+> **`/security-review` だけがこれを出した** — 「テストが緑」でも「逆検証を済ませた」でも
+> 代替にならない (逆検証は**書いたガードが効くか**を測る。これは**書かなかったガード**だった)。
+>
+> ⚠️ **逆に、これを逆検証の代わりにしない。** レビューは exploitability を見るので、
+> 「pin したつもりのテストが何も証明していない」形は検出しない (実際、同じ PR で
+> mtime を戻す cache テストがガード無しでも緑だった件は**レビューでは出ず**、
+> 逆検証でしか出なかった)。**2 つは別の失敗モードを見ている。**
+>
+> 全変更に広げない — 発火は「`fs` に書く経路」「write surface の gate」に限る。
+> 毎回回す規約は守られなくなり、守られない規約は無いのと同じ。
+>
 > skill 構成はフラット固定 (`.claude/skills/<name>/SKILL.md`)。中間カテゴリ
 > ディレクトリで機能グループ化しない (Claude Code の nested 検出は既知の不具合で
 > 発火の決定論性を損なうため)。新規 skill を足したら本発火表に 1 行追加する。
