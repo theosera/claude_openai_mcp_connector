@@ -411,14 +411,15 @@ export class KnowledgeStore implements VaultStore {
     // loaded as agent INSTRUCTIONS, so the only overwriting write in the codebase
     // must never be able to replace a SKILL.md / references file.
     await this.assertNotSkillReserved(relativeToRoot(await this.root(), absolutePath), absolutePath);
-    // Read the bytes and their permission bits through ONE handle, so the mode
+    // Read the bytes and the inode metadata through ONE handle, so what gets
     // re-applied to the replacement describes exactly the file that was hashed.
     const handle = await fs.open(absolutePath, "r");
     let currentRaw: string;
-    let mode: number;
+    let original: { mode: number; uid: number; gid: number };
     try {
       currentRaw = await handle.readFile("utf8");
-      mode = (await handle.stat()).mode & 0o777;
+      const stats = await handle.stat();
+      original = { mode: stats.mode & 0o777, uid: stats.uid, gid: stats.gid };
     } finally {
       await handle.close();
     }
@@ -430,7 +431,7 @@ export class KnowledgeStore implements VaultStore {
 
     // Same-directory temp + rename: an interrupted apply must leave the note
     // whole (old or new), never truncated. See src/atomicWrite.ts.
-    await replaceFileAtomically(absolutePath, patch.new_content, mode);
+    await replaceFileAtomically(absolutePath, patch.new_content, original);
     await fs.unlink(this.patchPath(patchId));
     return {
       document: await this.readDocument(absolutePath),

@@ -28,17 +28,58 @@ import path from "node:path";
  *    a private 0600 note must not be briefly readable by other local accounts.
  *    So: create no wider than the target, then chmod to exactly the target.
  *
- * NOTE — atomic is not durable. The bytes are not `fsync`'d before the rename,
- * so a power loss can still lose the update; what is excluded is a torn file.
- * The vault's other tmp+rename writers (auditStore / skillStore / oauth state)
- * make the same trade, so adding fsync is a decision to take for all four at
- * once rather than here alone.
+ * Three things this costs, stated because replacing a file is not the same
+ * operation as writing one:
+ *
+ *  - **It needs write permission on the DIRECTORY, not just the note.** Writing
+ *    in place needed only the file. A vault where a user may edit selected notes
+ *    but not add entries to the folder — shared or administratively managed
+ *    trees — would now fail, so the failure says which permission is missing
+ *    rather than surfacing a bare EACCES. Falling back to an in-place write
+ *    there is not on offer: that is the torn-write this exists to prevent, and
+ *    a silent fallback is the worst version of it.
+ *  - **Ownership is re-applied, and other inode metadata is not carried.** The
+ *    replacement is a new inode owned by this process, so a connector running as
+ *    root or a service account would otherwise quietly take a user's note away
+ *    from them. uid/gid are restored best-effort (an unprivileged process cannot
+ *    chown to another owner, and does not need to — it did not create the file
+ *    as one). ACLs and extended attributes are NOT preserved; Node cannot read
+ *    them portably, so a vault that relies on either should stay on a
+ *    single-owner layout.
+ *  - **Atomic is not durable.** The bytes are not `fsync`'d before the rename,
+ *    so a power loss can still lose the update; what is excluded is a torn file.
+ *    The vault's other tmp+rename writers (auditStore / skillStore / oauth
+ *    state) make the same trade, so adding fsync is a decision for all four at
+ *    once rather than here alone.
  */
-export async function replaceFileAtomically(targetPath: string, content: string, mode: number): Promise<void> {
+export async function replaceFileAtomically(
+  targetPath: string,
+  content: string,
+  original: { mode: number; uid: number; gid: number }
+): Promise<void> {
   const temp = path.join(path.dirname(targetPath), `.${path.basename(targetPath)}.${crypto.randomUUID()}.tmp`);
-  await fs.writeFile(temp, content, { encoding: "utf8", flag: "wx", mode });
   try {
-    await fs.chmod(temp, mode);
+    await fs.writeFile(temp, content, { encoding: "utf8", flag: "wx", mode: original.mode });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "EPERM" || code === "EROFS") {
+      throw new Error(
+        "Cannot apply the update: replacing a note atomically requires write permission on the directory that contains it, not only on the note itself.",
+        { cause: error }
+      );
+    }
+    throw error;
+  }
+  try {
+    // Best effort. Restoring the same owner always succeeds; restoring a
+    // different one needs privilege, and a process without it could not have
+    // changed the owner in the first place, so EPERM here is not a failure.
+    await fs.chown(temp, original.uid, original.gid).catch((error) => {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "EPERM" || code === "EINVAL" || code === "ENOSYS") return;
+      throw error;
+    });
+    await fs.chmod(temp, original.mode);
     await fs.rename(temp, targetPath);
   } catch (error) {
     await fs.rm(temp, { force: true }).catch(() => undefined);

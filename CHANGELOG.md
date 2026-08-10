@@ -48,6 +48,15 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Atomic is not durable (no `fsync`, matching the other writers), and in-process
   is not cross-process — two connector processes on one vault still race.
 
+  **Replacing a file is not the same operation as writing one, so two things
+  changed for operators.** An apply now needs write permission on the directory
+  containing the note, not only on the note; a vault that grants file-level edit
+  rights inside a non-writable folder gets a message naming that requirement
+  instead of a bare `EACCES`. And because the replacement is a new inode, uid and
+  gid are restored best-effort (relevant when the connector runs as root or a
+  service account) — ACLs and extended attributes are **not** carried, so a vault
+  relying on either should stay on a single-owner layout.
+
 - **The parse cache could serve a stale note indefinitely.** Validity was
   `mtimeMs` + size, which cannot separate two writes inside one millisecond and
   is defeated by any editor or sync client (iCloud Drive, for one) that rewrites
