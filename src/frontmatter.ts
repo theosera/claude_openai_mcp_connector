@@ -163,12 +163,27 @@ export const MAX_FRONTMATTER_BLOCK_BYTES = 8 * 1024;
  * open with the delimiter has no block at all and is never measured here, so a
  * megabyte-long note with no frontmatter stays perfectly legal.
  *
+ * ⚠️ The mirror has to include gray-matter's NORMALIZATION, not only its
+ * delimiter scan. `lib/utils.js` runs the input through `strip-bom-string`
+ * before `parseMatter` looks for `---`, so a file beginning `﻿---` HAS
+ * frontmatter as far as gray-matter is concerned. Checking the raw prefix
+ * skipped exactly that file, and one BOM in front of an unterminated block
+ * bought back the whole quadratic path: measured on a 32 KiB payload, 0.3 ms
+ * refused without the BOM against 1,129.6 ms parsed with it. `strip-bom-string`
+ * removes a single leading U+FEFF and nothing else, so this does the same —
+ * a second BOM is not frontmatter to gray-matter either, and must not be to us.
+ *
+ * The general shape of the bug is worth more than the fix: a guard that decides
+ * whether a parser will do something has to model what the parser does to its
+ * input FIRST, not what the caller passed in.
+ *
  * Throwing (rather than degrading quietly) is what makes the cap observable:
  * `parseMarkdownSafe` turns it into a `parseError`, which the store logs with
  * the file path before indexing the note body-only, and the write paths fail
  * outright instead of dropping metadata on the floor.
  */
-function assertBoundedFrontmatterBlock(raw: string): void {
+function assertBoundedFrontmatterBlock(input: string): void {
+  const raw = input.charAt(0) === "﻿" ? input.slice(1) : input;
   if (!raw.startsWith(FRONTMATTER_DELIMITER)) {
     return;
   }

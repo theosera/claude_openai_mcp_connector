@@ -304,6 +304,43 @@ describe("frontmatter YAML anchor/alias expansion guard", () => {
     expect(elapsed).toBeLessThan(1_000);
   });
 
+  it("refuses the same block behind a UTF-8 BOM, which gray-matter strips before looking", () => {
+    // gray-matter normalizes with strip-bom-string BEFORE parseMatter tests for
+    // `---`, so `﻿---` IS frontmatter to it. A guard that checked the RAW
+    // prefix skipped exactly that file and handed the whole quadratic path back:
+    // measured at 32 KiB, 0.3 ms refused without the BOM against 1,129.6 ms
+    // parsed with it. Time is the assertion again — a version that refused for
+    // some other reason, or refused only after parsing, would still "throw".
+    const payload = `﻿---\n${"\n".repeat(400_000)}`;
+
+    const started = Date.now();
+    const parsed = parseMarkdownSafe(payload);
+    const elapsed = Date.now() - started;
+
+    expect(parsed.parseError).toMatch(/no closing delimiter/);
+    expect(elapsed).toBeLessThan(1_000);
+  });
+
+  it("still parses a legitimate BOM-prefixed note", () => {
+    // The fix must not turn every BOM-prefixed note into a parse error: editors
+    // on Windows write them, and gray-matter reads them fine.
+    const parsed = parseMarkdownSafe("﻿---\ntitle: BOM note\n---\n\nbody\n");
+
+    expect(parsed.parseError).toBeUndefined();
+    expect(parsed.frontmatter.title).toBe("BOM note");
+    expect(parsed.body).toContain("body");
+  });
+
+  it("strips one BOM and no more, because gray-matter strips one", () => {
+    // strip-bom-string removes a single leading U+FEFF. A second one means
+    // gray-matter never sees a delimiter at all, so the file has no block —
+    // measuring it anyway would reject notes that were never a risk. Verified
+    // against gray-matter directly: a doubled BOM yields matter.length 0.
+    const parsed = parseMarkdownSafe(`﻿﻿---\n${"\n".repeat(400_000)}`);
+
+    expect(parsed.parseError).toBeUndefined();
+  });
+
   it("does not measure a note that has no frontmatter at all", () => {
     // The cap applies to the BLOCK, not to the file. A note that never opens with
     // the delimiter has no block for gray-matter to scan, so it must stay legal at
