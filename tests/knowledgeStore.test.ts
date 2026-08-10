@@ -450,6 +450,93 @@ describe("KnowledgeStore", () => {
     await expect(store.applyPlannedUpdate(plan.patch_id)).rejects.toThrow(/stale/);
   });
 
+  // INV-3 durability: the only overwriting write must swap the file, not rewrite
+  // it in place, so an interrupted apply can never leave a truncated note. The
+  // inode is the observable difference — `writeFile` over the target keeps it,
+  // rename replaces it — and the mode has to survive that swap.
+  it("applies an update by replacing the file, preserving its permissions", async () => {
+    const target = path.join(root, "projects/chatgpt/research/shared-search.md");
+    await fs.chmod(target, 0o600);
+    const before = await fs.stat(target, { bigint: true });
+
+    const plan = await store.planUpdate({
+      id_or_path: "chatgpt-research-001",
+      new_body: "# Shared Search Framework\n\nAtomically replaced body.",
+      reason: "atomic replace"
+    });
+    await store.applyPlannedUpdate(plan.patch_id);
+
+    const after = await fs.stat(target, { bigint: true });
+    expect(after.ino).not.toBe(before.ino);
+    expect(after.mode & 0o777n).toBe(0o600n);
+    expect(await fs.readFile(target, "utf8")).toContain("Atomically replaced body");
+
+    // The temp file is created next to the target, so a successful apply must
+    // not leave one behind for the vault UI (or the next scan) to trip over.
+    const leftovers = (await fs.readdir(path.dirname(target))).filter((name) => name.endsWith(".tmp"));
+    expect(leftovers).toEqual([]);
+  });
+
+  // INV-3 lost update: two applies staged from the same base. Unserialized, both
+  // read the pre-write bytes, both match their expected_sha256, and the second
+  // write silently discards the first — the reviewer approved one diff and got
+  // the other. Serialized, the second re-reads what the first wrote and is
+  // rejected as stale, which is the outcome the two-step flow already promises.
+  it("serializes concurrent applies so the second cannot silently overwrite the first", async () => {
+    const first = await store.planUpdate({
+      id_or_path: "chatgpt-research-001",
+      new_body: "# Shared Search Framework\n\nFirst writer.",
+      reason: "race a"
+    });
+    const second = await store.planUpdate({
+      id_or_path: "chatgpt-research-001",
+      new_body: "# Shared Search Framework\n\nSecond writer.",
+      reason: "race b"
+    });
+
+    const results = await Promise.allSettled([
+      store.applyPlannedUpdate(first.patch_id),
+      store.applyPlannedUpdate(second.patch_id)
+    ]);
+
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+    expect(String(rejected.reason)).toMatch(/stale/);
+  });
+
+  // INV-3 freshness: the parse cache decides "unchanged" from a stat signature,
+  // so an external editor that rewrites a note to the same byte length and puts
+  // the mtime back (utimes lets anything do that) used to be invisible — the
+  // stale parse was served for the rest of the process's life. ctime moves on
+  // every write and cannot be set from userspace, which is what closes it.
+  it("re-reads a note edited to the same size with its mtime restored", async () => {
+    const target = path.join(root, "projects/chatgpt/research/shared-search.md");
+    const original = await fs.readFile(target, "utf8");
+
+    // A whole-second stamp, applied before AND after the edit. Restoring a
+    // previously-observed mtime is not good enough here: `utimes` truncates the
+    // nanoseconds the filesystem recorded, so "restoring" it actually changes
+    // mtimeNs and the read below would refresh for that reason instead of the
+    // one under test — the test would pass with the guard removed. Measured:
+    // that is exactly what happened before this was pinned to a fixed value.
+    const frozen = 1_700_000_000;
+    await fs.utimes(target, frozen, frozen);
+
+    // Populate the cache under the frozen signature.
+    expect((await store.fetch("chatgpt-research-001")).body).toContain("Shared");
+
+    // Same length, different bytes, identical mtime and size.
+    const marker = "ZZZZ";
+    const edited = original.slice(0, -marker.length) + marker;
+    expect(edited.length).toBe(original.length);
+    await fs.writeFile(target, edited, "utf8");
+    await fs.utimes(target, frozen, frozen);
+    const after = await fs.stat(target, { bigint: true });
+    expect(after.mtimeNs).toBe(BigInt(frozen) * 1_000_000_000n);
+
+    expect((await store.fetch("chatgpt-research-001")).body).toContain(marker);
+  });
+
   it("rejects a non-allowlisted frontmatter key in plan_document_update", async () => {
     await expect(
       store.planUpdate({
@@ -1035,6 +1122,7 @@ describe("frontmatter id squatting (INV-2)", () => {
     multi = new MultiRootStore({
       // Transport-level flag; the store never reads it.
       stdioAllowAuditWrite: false,
+      allowLegacyCreateDocument: false,
       knowledgeRoots: [
         { name: "vault", path: vaultRoot },
         { name: "ops", path: opsRoot }
