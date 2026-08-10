@@ -786,11 +786,19 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       the vault produces one today, so this is a design question rather than a
       regression: an index note should point at a list, not inline it. Belongs
       with the `session-archive` work, not with the parser.
-- [ ] **Dependency audit as a standing habit, not a scan deliverable** — both
+- [x] **Dependency audit as a standing habit, not a scan deliverable** — ✅ both
       full-tree scans dropped the manifests, and the one CVE that mattered was
-      already in `pnpm audit`'s CI output being read as noise. Decide what makes
-      an advisory step actually get read (fail the build on production-path
-      advisories only, or route them somewhere with a reader).
+      printed by `pnpm audit` on every CI run. The framing "read as noise" was
+      wrong: the step was `continue-on-error`, so it was **always green**, and it
+      deferred to a Dependabot PR that could not exist (alerts enabled with zero
+      open; `dependabot.yml` bumps direct dependencies, the package was
+      transitive). CI now fails on a production high and keeps the full-tree scan
+      advisory; the two known dev highs were fixed so the next line printed there
+      is news. See the root-C section above.
+      Still open, tracked separately: `docs/dependency-policy.md` — when
+      `pnpm.auditConfig.ignoreGhsas` is legitimate (only when no patched version
+      exists, established from `patched_versions` and not from an advisory's
+      prose).
 - [ ] **Constrain what the audit / Skill-reference write surfaces may author** —
       the write-side half of the same root cause: `append_audit_report`,
       `compare_and_swap_audit_state` and Skill `references/*.md` write client

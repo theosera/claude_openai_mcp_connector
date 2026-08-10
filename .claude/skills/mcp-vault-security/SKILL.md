@@ -99,8 +99,15 @@ vault content (INV-5) なので、1 枚のノートが**他文書の uuid や他
 - **結果を見るガードでは間に合わない。** `assertBoundedFrontmatterExpansion` は `matter()` が
   返った後に走るので、この経路を一度も止めていない。**両者は補完関係**であり、片方を理由に
   もう片方を消さない — ブロック長上限は展開爆弾に対しては**正しく却下**された (爆弾は数百バイト)。
-- **依存の更新では直らない。** gray-matter が js-yaml `^3.13.1` を要求し、修正は 5.x のみで
-  API 非互換。**この上限が緩和策そのもの**。
+- **経路①は依存更新で直らない (gray-matter 自身のコード)。経路②は直る。**
+  js-yaml **3.15.1** は patched で gray-matter の `^3.13.1` の**レンジ内**、`pnpm.overrides` で pin 済み。
+  → **経路②にとって上限は mitigation ではなく defence in depth**。mitigation と呼び続けると
+  **古い js-yaml が許容可能に見える**。
+  ⚠️ **advisory は構造化フィールドを読む** — このレコードはタイトルが
+  *"CVE-2026-59870 fix not backported"* なのに、同じレコードの `patched_versions` が `>=3.15.1`。
+  タイトルを読んで「5.x のみ」と 4 文書に書いた (本ファイル含む) のがこの誤り。
+  ⚠️ **`pnpm update` は transitive を動かさない** — lockfile がレンジを満たしていると見なすため。
+  override だけが動かす。
 - **上限は実データで決める** (実 vault 2,381 ノート / median 225 B / max 1,042 B → 8 KiB で 7.9 倍の余裕)。
   **文字種を列挙しない** — 何で埋められても長さで止まる (`D-G2-REDOS` の一般化)。
 - **超過は必ず出力する。** read 経路は `parseError` → ファイル名付きで stderr、本文のみ index。
