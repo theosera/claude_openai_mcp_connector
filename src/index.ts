@@ -53,7 +53,11 @@ if (transport === "http") {
     `MCP HTTP transport listening on http://${where}/mcp ` +
       `(write=${httpConfig.allowWrite || httpConfig.allowSkillWrite || httpConfig.allowAuditWrite ? "on" : "off"}, ` +
       `documents=${httpConfig.allowWrite ? "on" : "off"}, ` +
-      `legacy_create=${httpConfig.allowLegacyCreateDocument ? "on" : "off"}, ` +
+      // Both flags, because both are required to register the tool. Reporting
+      // the variable alone would print `documents=off, legacy_create=on` for an
+      // endpoint that exposes no create_document at all — a startup line exists
+      // to describe the surface, not to echo the environment back.
+      `legacy_create=${httpConfig.allowWrite && httpConfig.allowLegacyCreateDocument ? "on" : "off"}, ` +
       `skills=${httpConfig.allowSkillWrite ? "on" : "off"}, ` +
       `audit=${httpConfig.allowAuditWrite ? "on" : "off"}, ` +
       `oauth=${httpConfig.oauth ? "on" : "off"})\n`

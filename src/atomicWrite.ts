@@ -61,6 +61,11 @@ export async function replaceFileAtomically(
   try {
     await fs.writeFile(temp, content, { encoding: "utf8", flag: "wx", mode: original.mode });
   } catch (error) {
+    // A create that never happened leaves nothing behind, but a write that
+    // failed PART WAY (ENOSPC, EIO) does — and that debris sits in the user's
+    // vault directory. Clean up on every failure rather than only on the ones
+    // after this point.
+    await fs.rm(temp, { force: true }).catch(() => undefined);
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "EACCES" || code === "EPERM" || code === "EROFS") {
       throw new Error(
