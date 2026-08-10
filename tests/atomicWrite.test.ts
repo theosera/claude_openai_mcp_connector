@@ -19,20 +19,48 @@ describe("replaceFileAtomically", () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 
+  /**
+   * Everything the assertions need, taken from ONE open handle.
+   *
+   * `stat(path)` followed by `readFile(path)` would let "the inode changed" and
+   * "the content is the new one" describe two different files — the same
+   * check-then-use the code under test exists to remove, and CodeQL is right to
+   * flag it even in a test whose directory nothing else touches.
+   */
+  async function inspect(): Promise<{ ino: bigint; mode: bigint; uid: number; content: string }> {
+    const handle = await fs.open(target, "r");
+    try {
+      const stats = await handle.stat({ bigint: true });
+      return {
+        ino: stats.ino,
+        mode: stats.mode & 0o777n,
+        uid: Number(stats.uid),
+        content: await handle.readFile("utf8")
+      };
+    } finally {
+      await handle.close();
+    }
+  }
+
   async function currentOwner(): Promise<{ mode: number; uid: number; gid: number }> {
-    const stats = await fs.stat(target);
-    return { mode: stats.mode & 0o777, uid: stats.uid, gid: stats.gid };
+    const handle = await fs.open(target, "r");
+    try {
+      const stats = await handle.stat();
+      return { mode: stats.mode & 0o777, uid: stats.uid, gid: stats.gid };
+    } finally {
+      await handle.close();
+    }
   }
 
   it("replaces the file by rename, keeping its permission bits", async () => {
-    const before = await fs.stat(target, { bigint: true });
+    const before = await inspect();
 
     await replaceFileAtomically(target, "replaced\n", await currentOwner());
 
-    const after = await fs.stat(target, { bigint: true });
+    const after = await inspect();
     expect(after.ino).not.toBe(before.ino);
-    expect(after.mode & 0o777n).toBe(0o600n);
-    expect(await fs.readFile(target, "utf8")).toBe("replaced\n");
+    expect(after.mode).toBe(0o600n);
+    expect(after.content).toBe("replaced\n");
     expect((await fs.readdir(dir)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
 
@@ -58,8 +86,9 @@ describe("replaceFileAtomically", () => {
     );
 
     // The note keeps its old contents AND its old owner, and no debris is left.
-    expect(await fs.readFile(target, "utf8")).toBe("original\n");
-    expect((await fs.stat(target)).uid).toBe(owner.uid);
+    const after = await inspect();
+    expect(after.content).toBe("original\n");
+    expect(after.uid).toBe(owner.uid);
     expect((await fs.readdir(dir)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
 
@@ -76,6 +105,6 @@ describe("replaceFileAtomically", () => {
     await replaceFileAtomically(target, "replaced\n", owner);
 
     expect(chown).not.toHaveBeenCalled();
-    expect(await fs.readFile(target, "utf8")).toBe("replaced\n");
+    expect((await inspect()).content).toBe("replaced\n");
   });
 });
