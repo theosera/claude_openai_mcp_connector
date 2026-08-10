@@ -580,8 +580,42 @@ document across the id and path namespaces (`resolveUniqueReference`).
   duplicate is fixable.
 
 The remaining scan findings are tracked outside this repo and land as their own
-nodes; the write-side half (constrained surfaces must not be able to author an
-`id` at all) is deliberately a separate change — it moves INV-8/INV-9, not INV-2.
+nodes.
+
+### A constrained write surface cannot author an identity — _root A, write side_ ✅
+
+The half above stops the read side honouring a forged `id`. This stops the
+surfaces that choose a file's **bytes** from planting one, and it moves INV-8 /
+INV-9 rather than INV-2 — which is why it is a separate change.
+
+Three findings, two surfaces. `append_audit_report` and
+`compare_and_swap_audit_state` write their payload verbatim; a Skill bundle's
+reference files do the same. Both were designed narrow about **where** they may
+write and said nothing about **what**. So INV-9's guarantee that injection stays
+confined to the audit subtree held for where the bytes land and not for whose
+identity the read side then answers with: a principal holding audit-write alone
+could name any note in the vault. `SKILL.md` was already pinned to
+`name`/`description`; its reference files were the gap.
+
+`assertNoServerOwnedFrontmatter` refuses `id` and `updated_at` in client-chosen
+content.
+
+- **One helper at each store's choke point**, not the same test written three
+  times: `assertWritableText`, which both audit writers already pass through,
+  and `validateFileSet`, where the Skill plan and apply paths meet. A first
+  attempt sat in `validatePlannedFiles` — reached by apply, not by plan — and
+  the test asking for refusal at *plan* time is what caught it. Refusing only at
+  apply would still block the write, but only after showing an operator a diff
+  to approve; the squat has to be unrepresentable, not merely unapplied.
+- **Bounded parse on a write surface.** Knowing what content claims requires
+  parsing it, and these callers accept up to 512 KiB — so the check goes through
+  `parseMarkdown`, whose block cap runs before gray-matter. Without it the
+  test's own payload costs ~286 s (measured 469 / 1,847 / 7,336 ms at 16 / 32 /
+  64 KiB). The test therefore asserts elapsed time, not just the throw.
+- **Unparseable frontmatter is refused, not waved through.** The read path
+  degrades because it has an existing note it must still serve; a writer has no
+  such obligation, and storing metadata the server cannot read is how a file
+  comes to mean one thing on write and another on read.
 
 ### Exact-path document creation — _safe write-back_ ✅
 

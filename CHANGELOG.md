@@ -8,6 +8,41 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **A constrained write surface can no longer author a document's identity.**
+  Refusing to honour a forged `id` on the read side left the other half open:
+  the surfaces that let a client choose a vault file's **bytes** could still
+  plant the key identity is read from. `append_audit_report` and
+  `compare_and_swap_audit_state` write their payload verbatim, and those
+  payloads land as `.md` files the store indexes like any other document; a
+  Skill bundle's reference files do the same. `SKILL.md` was already pinned to
+  `name`/`description`, its references were not.
+
+  Both surfaces were built narrow about **where** they may write. The guarantee
+  that injection stays confined to the audit subtree was true of where the bytes
+  land and false of whose identity the read side then answers with — a principal
+  holding audit-write alone could name any note in the vault.
+
+  `assertNoServerOwnedFrontmatter` now refuses `id` and `updated_at` in
+  client-chosen content, from one place per store: `assertWritableText`, which
+  both audit writers already pass through, and `validateFileSet`, where the
+  Skill plan and apply paths meet. Checking at apply only would refuse the write
+  but only after presenting an operator a diff to approve; the squat has to be
+  unrepresentable, not merely unapplied.
+
+  Knowing what content claims means parsing it, and these callers accept up to
+  512 KiB — so the check runs through `parseMarkdown`, whose block cap precedes
+  gray-matter. Adding a frontmatter check to a write surface must not re-open
+  the quadratic parse path on it; without that cap the test's own payload costs
+  ~286 s (measured 469 / 1,847 / 7,336 ms at 16 / 32 / 64 KiB), so the test
+  asserts elapsed time rather than only the throw.
+
+  Unparseable frontmatter is refused rather than waved through: the read path
+  degrades because it has an existing note it must still serve, and a writer has
+  no such obligation.
+
+  Reverse-verified per guard: dropping the audit call fails four tests, dropping
+  the Skill call fails exactly the two reference squats.
+
 - **An archived session note could carry forged conversation turns, because a
   tool result was able to close its own fence.** The session-archive hook wraps
   untrusted tool output — fetched pages, file reads, vault bodies — in a fence of
