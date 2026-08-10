@@ -119,7 +119,20 @@ export class SkillStore {
     files: string[];
     diff: string;
   }> {
-    const raw = await fs.readFile(this.patchPath(patchId), "utf8");
+    let raw: string;
+    try {
+      raw = await fs.readFile(this.patchPath(patchId), "utf8");
+    } catch (error) {
+      // Same treatment as KnowledgeStore.readPatchFile: the raw ENOENT names the
+      // patch-state directory. Containment is the boundary in clientSafeError.ts;
+      // this is here so the caller gets a message it can act on.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new Error("No staged Skill plan with that patch_id: it may have already been applied.", {
+          cause: error
+        });
+      }
+      throw error;
+    }
     const plan = plannedSkillCreateSchema.parse(JSON.parse(raw)) as PlannedSkillCreate;
     if (plan.patch_id !== patchId) {
       throw new Error("Skill plan id does not match the requested patch_id.");
