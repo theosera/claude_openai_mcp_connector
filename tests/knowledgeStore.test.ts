@@ -455,9 +455,24 @@ describe("KnowledgeStore", () => {
   // inode is the observable difference — `writeFile` over the target keeps it,
   // rename replaces it — and the mode has to survive that swap.
   it("applies an update by replacing the file, preserving its permissions", async () => {
+    // Both observations come from an open handle rather than from the path, so
+    // the inode, the mode and the bytes are guaranteed to describe one file
+    // (`stat(path)` then `readFile(path)` is a check-then-use the assertions
+    // would silently span, and CodeQL is right to flag it).
     const target = path.join(root, "projects/chatgpt/research/shared-search.md");
+
+    async function inspect(): Promise<{ ino: bigint; mode: bigint; content: string }> {
+      const handle = await fs.open(target, "r");
+      try {
+        const stats = await handle.stat({ bigint: true });
+        return { ino: stats.ino, mode: stats.mode & 0o777n, content: await handle.readFile("utf8") };
+      } finally {
+        await handle.close();
+      }
+    }
+
     await fs.chmod(target, 0o600);
-    const before = await fs.stat(target, { bigint: true });
+    const before = await inspect();
 
     const plan = await store.planUpdate({
       id_or_path: "chatgpt-research-001",
@@ -466,10 +481,10 @@ describe("KnowledgeStore", () => {
     });
     await store.applyPlannedUpdate(plan.patch_id);
 
-    const after = await fs.stat(target, { bigint: true });
+    const after = await inspect();
     expect(after.ino).not.toBe(before.ino);
-    expect(after.mode & 0o777n).toBe(0o600n);
-    expect(await fs.readFile(target, "utf8")).toContain("Atomically replaced body");
+    expect(after.mode).toBe(0o600n);
+    expect(after.content).toContain("Atomically replaced body");
 
     // The temp file is created next to the target, so a successful apply must
     // not leave one behind for the vault UI (or the next scan) to trip over.
