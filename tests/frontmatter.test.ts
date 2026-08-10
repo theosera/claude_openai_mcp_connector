@@ -321,6 +321,27 @@ describe("frontmatter YAML anchor/alias expansion guard", () => {
     expect(elapsed).toBeLessThan(1_000);
   });
 
+  it("measures the block in UTF-8 bytes, not UTF-16 code units", () => {
+    // The constant, the error and the docs all say bytes. Comparing
+    // `String.length` counted code units instead, so a CJK block passed at three
+    // times the stated limit. Bytes are not what drives the cost — 8,192 code
+    // units of newlines cost 76.11 ms against 0.88 ms for 8,192 CJK characters
+    // (24,568 bytes) — but a limit that does not mean what it says is a limit
+    // nobody can reason about.
+    const note = (chars: number): string => `---\ntitle: ${"あ".repeat(chars)}\n---\n\nbody\n`;
+
+    // 3,000 CJK characters: 3,011 code units — comfortably under the cap by the
+    // old comparison — but 9,011 bytes, over it. This pair is the whole test:
+    // any payload where both units agree cannot tell them apart.
+    const over = note(3_000);
+    expect(over.length).toBeLessThan(8_192);
+    expect(parseMarkdownSafe(over).parseError).toMatch(/over the 8192-byte limit/);
+
+    // 2,000 of the same characters: 6,011 bytes, still legal. Without this the
+    // test would also pass if the guard simply rejected all CJK.
+    expect(parseMarkdownSafe(note(2_000)).parseError).toBeUndefined();
+  });
+
   it("still parses a legitimate BOM-prefixed note", () => {
     // The fix must not turn every BOM-prefixed note into a parse error: editors
     // on Windows write them, and gray-matter reads them fine.

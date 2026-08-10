@@ -188,7 +188,21 @@ function assertBoundedFrontmatterBlock(input: string): void {
     return;
   }
   const close = raw.indexOf("\n" + FRONTMATTER_DELIMITER, FRONTMATTER_DELIMITER.length);
-  const blockLength = close === -1 ? raw.length : close;
+  // UTF-8 bytes, because that is what the constant, the message and the docs all
+  // say. They said bytes while this compared `String.length`, which counts
+  // UTF-16 code units, so a CJK block passed at three times the stated limit.
+  //
+  // Bytes are not what drives the cost. Measured at the cap: 8,192 code units of
+  // newlines take 76.11 ms, while 8,192 code units of CJK — 24,568 bytes — take
+  // 0.88 ms, because the quadratic term counts LINE STARTS. Bytes are adopted
+  // anyway, on two grounds: a byte is never fewer than a code unit, so the byte
+  // bound is never the weaker of the two; and a limit whose name disagrees with
+  // its behaviour is one the next reader will trust and should not.
+  //
+  // Scanning the block to count its bytes is LINEAR, including the unterminated
+  // case where the block is the whole file — microseconds against the quadratic
+  // parse this exists to prevent.
+  const blockLength = Buffer.byteLength(close === -1 ? raw : raw.slice(0, close), "utf8");
   if (blockLength > MAX_FRONTMATTER_BLOCK_BYTES) {
     throw new Error(
       `Frontmatter block is ${blockLength} bytes, over the ${MAX_FRONTMATTER_BLOCK_BYTES}-byte limit` +
