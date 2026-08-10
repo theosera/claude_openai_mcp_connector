@@ -16,9 +16,16 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `MCP_PATCH_STATE_DIR`, whose staged plans hold the full proposed text of a
   document. Both are now checked at boot against every configured root.
 
-  The comparison canonicalizes by walking the path component by component and
-  following symlinks by hand, rather than resolving the existing prefix with
-  `realpath`. `realpath` reports ENOENT for a **dangling** symlink, so a
+  Containment compares **filesystem identity**, not spelling: it walks the
+  target's existing ancestors and matches `(dev, ino)` against the root. macOS
+  (APFS) and Windows resolve `/vault` and `/Vault` to the same directory while
+  `path.relative` compares bytes, so a case variant of the root would otherwise
+  be called "outside" and the file would land in the indexed vault anyway. When
+  the root does not exist yet there is no identity to compare and the check falls
+  back to spelling.
+
+  Canonicalization walks the path component by component and follows symlinks by
+  hand, rather than resolving the existing prefix with `realpath`. `realpath` reports ENOENT for a **dangling** symlink, so a
   prefix-based check reads `outside/link -> vault/not-yet` as an ordinary missing
   component and calls the target outside; creating that destination afterwards
   would put every save inside the vault with the boot check already passed.

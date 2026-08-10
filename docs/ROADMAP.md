@@ -62,7 +62,9 @@ Persist OAuth tokens / registered clients (previously in-memory only,
   vault whenever a root contains `$HOME`. Canonicalization follows symlinks
   component by component instead of resolving the existing prefix with
   `realpath`, so a **dangling** link into the vault is caught before its
-  destination exists. Opting into persistence therefore requires
+  destination exists, and containment compares `(dev, ino)` rather than spelling
+  so a case variant of the root on macOS / Windows cannot slip past.
+  Opting into persistence therefore requires
   `KNOWLEDGE_ROOT(S)` to be configured — without the roots there is nothing to
   check against, and the fail-closed half of this is refusing to guess.
 - Kept the existing security properties (opaque 256-bit tokens, single-use

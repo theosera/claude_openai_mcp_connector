@@ -235,22 +235,63 @@ function canonicalizeForRootComparison(target: string): string {
   return current.normalize("NFC");
 }
 
-/** Whether `target` is the root itself or lives underneath it. Both are already canonical. */
+/** Filesystem identity of a path, or undefined when it does not exist. */
+function identityOf(target: string): { dev: number; ino: number } | undefined {
+  try {
+    const stats = fs.statSync(target);
+    return { dev: stats.dev, ino: stats.ino };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Whether `target` is the root itself or lives underneath it. Both are canonical.
+ *
+ * Identity, not spelling. `path.relative` compares bytes, but macOS (APFS) and
+ * Windows resolve `/Users/me/vault` and `/Users/me/Vault` to the SAME directory,
+ * so a case variant of the root would be called "outside" and the state file
+ * would land in the indexed vault anyway. macOS is this project's primary
+ * deployment, so that is not a hypothetical host. Symlink-walking does not help:
+ * `lstat` succeeds on the case-variant name and the literal spelling survives.
+ *
+ * So walk the target's existing ancestors and compare `(dev, ino)` with the
+ * root's. That is spelling-independent by construction, and it also catches a
+ * bind mount or any other alias that shares an inode. Components that do not
+ * exist yet cannot be stat'd, so the walk simply steps over them — the first
+ * ancestor that DOES exist is what decides.
+ */
 function isInsideRoot(canonicalRoot: string, canonicalTarget: string): boolean {
-  const relative = path.relative(canonicalRoot, canonicalTarget);
-  if (relative === "") {
-    return true;
+  const rootIdentity = identityOf(canonicalRoot);
+  if (!rootIdentity) {
+    // The root does not exist yet, so there is no identity to compare against
+    // and the spelling is all there is. NOT `startsWith("..")`: a sibling
+    // directory legitimately named `..state` produces the relative path
+    // `..state/oauth.json`, which that test reads as an escape — so a state file
+    // at <root>/..state would be accepted as outside. `relativeToRoot` in
+    // pathSafety.ts uses the same predicate safely because its polarity is the
+    // opposite one: there a false "escape" refuses a legitimate read
+    // (fail-closed); here it would admit a real leak.
+    const relative = path.relative(canonicalRoot, canonicalTarget);
+    return (
+      relative === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`))
+    );
   }
-  if (path.isAbsolute(relative)) {
-    return false;
+
+  for (let current = canonicalTarget; ;) {
+    const identity = identityOf(current);
+    if (identity && identity.dev === rootIdentity.dev && identity.ino === rootIdentity.ino) {
+      return true;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return false;
+    }
+    current = parent;
   }
-  // NOT `startsWith("..")`: a sibling directory legitimately named `..state`
-  // produces the relative path `..state/oauth.json`, which that test reads as an
-  // escape — so a state file at <root>/..state would be accepted as outside the
-  // vault. `relativeToRoot` in pathSafety.ts uses the same predicate safely
-  // because its polarity is the opposite one: there, a false "escape" refuses a
-  // legitimate read (fail-closed); here it would admit a real leak.
-  return relative !== ".." && !relative.startsWith(`..${path.sep}`);
 }
 
 /**

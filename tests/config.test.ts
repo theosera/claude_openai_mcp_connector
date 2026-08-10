@@ -412,6 +412,31 @@ describe("server state must live outside the knowledge root", () => {
     expect(() => loadHttpConfig(oauthEnv(root, path.join(link, "oauth.json")))).toThrow(/knowledge root "vault"/);
   });
 
+  // MAX_SYMLINK_HOPS is a changed guard, so it needs an input that reaches it.
+  // A cycle must end in a bounded error rather than a boot that never returns.
+  it("fails instead of looping when the state path passes through a symlink cycle", async () => {
+    const a = path.join(outside, "loop-a");
+    const b = path.join(outside, "loop-b");
+    await fs.symlink(b, a);
+    await fs.symlink(a, b);
+
+    expect(() => loadHttpConfig(oauthEnv(root, path.join(a, "oauth.json")))).toThrow(/Too many symbolic links/);
+  });
+
+  // Containment compares filesystem identity when the root exists, and falls back
+  // to spelling when it does not. This case takes the fallback — the root is a
+  // path that was never created — so the `..`-prefix predicate stays pinned even
+  // though every other test in this block now goes through the identity walk.
+  it("rejects a two-dot-prefixed directory under a root that does not exist yet", () => {
+    const absentRoot = path.join(outside, "never-created");
+    expect(() => loadHttpConfig(oauthEnv(absentRoot, path.join(absentRoot, "..state", "oauth.json")))).toThrow(
+      /knowledge root "vault"/
+    );
+    expect(loadHttpConfig(oauthEnv(absentRoot, path.join(outside, "elsewhere.json"))).oauth?.stateFile).toBe(
+      path.join(outside, "elsewhere.json")
+    );
+  });
+
   // The default is derived from the home directory, which is not automatically
   // outside the vault.
   it("rejects the DEFAULT patch-state directory when a root contains the home directory", () => {
