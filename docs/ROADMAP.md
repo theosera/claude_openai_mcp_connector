@@ -833,14 +833,13 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       `pnpm.auditConfig.ignoreGhsas` is legitimate (only when no patched version
       exists, established from `patched_versions` and not from an advisory's
       prose).
-- [ ] **Constrain what the audit / Skill-reference write surfaces may author** —
-      the write-side half of the same root cause: `append_audit_report`,
-      `compare_and_swap_audit_state` and Skill `references/*.md` write client
-      bytes verbatim, so a subtree-confined writer can still author a
-      frontmatter `id`. INV-2 now refuses to *honour* a colliding one, which
-      closes the read-side consequence, but the server-owned keys should be
-      rejected at the point of writing too. Treat as an **INV-8/INV-9** change
-      and land it on its own — one shared helper, not three copies.
+- [x] **Constrain what the audit / Skill-reference write surfaces may author** —
+      ✅ `assertNoServerOwnedFrontmatter` refuses `id` and `updated_at` in
+      client-chosen content, from one choke point per store
+      (`assertWritableText`, `validateFileSet`) rather than three copies. Landed
+      on its own as an **INV-8/INV-9** change. The Skill check sits where plan
+      and apply both end, so a squat is unrepresentable rather than merely
+      unapplied. See the write-side root-A section above.
 - [ ] **Audit log** — append-only, content-free events (who searched / fetched /
       wrote what, no note bodies) — the largest security follow-up, and still the
       one that most improves the posture; it now sits **second** because the
