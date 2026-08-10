@@ -51,10 +51,11 @@ blockers — see [Dev-scope advisories](#dev-scope-advisories-are-outside-the-ga
 
 **Read the structured record, not the write-up.**
 
-```sh
-# pipefail matters: pnpm audit exits non-zero when it finds something, and a
-# pipeline otherwise reports only python3's status — so pasted into a script
-# this would look successful with advisories present.
+```bash
+# bash, not sh: `pipefail` is not in POSIX and a POSIX shell may reject the
+# script outright. It is worth the dependency here — pnpm audit exits non-zero
+# when it finds something, while a pipeline reports only python3's status, so
+# pasted into automation this would look clean with advisories present.
 set -o pipefail
 pnpm audit --prod --json | python3 -c "import json,sys; [print(a['module_name'], a['vulnerable_versions'], '->', a['patched_versions']) for a in json.load(sys.stdin)['advisories'].values()]"
 ```
