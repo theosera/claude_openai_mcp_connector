@@ -261,6 +261,18 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
    symlink escape を検査 (`resolveInsideRoot` + `realpath` + `relativeToRoot`)。
    `MCP_HTTP_ALLOW_AUDIT_WRITE=1` だけでは subdir 未設定なら**起動拒否**。`loadConfig` は監査
    subdir が `projects/` (create-root) と **disjoint** かを boot で assert。
+   **★ 予約と tool 登録は別の決定 — 全 transport で独立 opt-in が要る。** `MCP_AUDIT_SUBDIR` は
+   「このサブツリーを一般 write から予約する」だけ。audit tool を**登録**するのは HTTP =
+   `MCP_HTTP_ALLOW_AUDIT_WRITE` / stdio = **`MCP_STDIO_ALLOW_AUDIT_WRITE`** (既定 off、
+   `src/index.ts` / `AppConfig.stdioAllowAuditWrite`)。stdio は以前 subdir の存在だけで
+   登録していたため、**「write 可能な全 process に subdir を設定せよ」という運用指示に従うと、
+   untrusted vault content を読む interactive セッションに append/CAS が生えた** (2 つとも
+   plan/apply 無し・確認無しの single-call write なので、予約があっても直接 forge/clobber
+   できる)。予約は `config.auditSubdir` → `createStore` 経由なので、**tool を外しても INV-9 は
+   効き続ける** — テストで両方 pin (`tests/stdio.test.ts` の "withholds the audit write tools"
+   と直後の予約テストが同じ env を踏む)。stdio 起動行は 3 状態を出す:
+   `audit=off` (subdir 無し = 予約なし) / `audit=reserved-only` (既定) / `audit=on`。
+   `MCP_STDIO_ALLOW_AUDIT_WRITE=1` で subdir 未設定なら**起動拒否**。
 2. `append_audit_report` は `reports/<run_id>.md` に **create-only** (`flag:"wx"`, `0600`)。
    EEXIST は同一内容なら idempotent no-op、相違なら reject (**上書きしない**)。`run_id` は厳格
    パターン (先頭英数字・`/`/`..`/NUL 不可) で reports/ 外へ出られない。
@@ -305,7 +317,7 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
 | `src/oauth/pkce.ts`                                                                                                                                                                                              | INV-7         | S256 のみ。`plain` を足さない。constant-time + 長さ/文字種検証を温存。                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `src/oauth/store.ts`                                                                                                                                                                                             | INV-7         | code 単回・TTL・束縛、token opaque/rotation、容量キャップ + prune を消さない。永続化は hash-at-rest + HMAC + fail-closed load を弱めない (raw token を disk に書かない)。orphan client prune (live token 無し + grace 超過) で登録の無限増加を抑制 — grace は in-flight 登録 (未 token 交換) を保護するので**縮めすぎない**。                                                                                                                                                                                    |
 | `src/oauth/provider.ts`                                                                                                                                                                                          | INV-7         | PKCE 照合・redirect exact-match/scheme 制限・login gate・401 の `WWW-Authenticate` を温存。HTML はエスケープ (`escapeHtml`)。                                                                                                                                                                                                                                                                                                                                                                                    |
-| `src/config.ts`                                                                                                                                                                                                  | INV-1,4,6,7   | secret は env のみ。`loadHttpConfig`/`loadOAuthConfig` は token/issuer/password 未設定で fail-closed。bind 既定 loopback。                                                                                                                                                                                                                                                                                                                                                                                       |
+| `src/config.ts`                                                                                                                                                                                                  | INV-1,4,6,7   | secret は env のみ。`loadHttpConfig`/`loadOAuthConfig` は token/issuer/password 未設定で fail-closed。bind 既定 loopback。 **★ サーバ state を vault の中に置かせない** — `MCP_OAUTH_STATE_FILE` (registered client 一覧・salt・HMAC タグ) と `MCP_PATCH_STATE_DIR` (staged plan = 文書の全文。**明示指定と home 由来の既定の両方** — 既定は home 由来なので root が `$HOME` を含めば vault 内に落ちる) を全 knowledge root に対して boot で照合する (`assertOutsideKnowledgeRoots`)。**root は read surface** なので、中に置くと index されて `search`/`fetch` から読める。照合は 2 段で、**どちらも綴りの比較に退行させない**: (1) 正規化は component ごとに `lstat`/`readlink` で symlink を追う — **`realpath` に戻さない**。`realpath` は **dangling** symlink で ENOENT を返すので、vault を指す未作成リンクを見逃す。(2) 包含判定は root が存在するなら **`(dev, ino)` の同一性**で祖先を遡る — **`path.relative` の文字列比較に戻さない**。macOS (APFS) / Windows は `/vault` と `/Vault` を同じディレクトリに解決するが `path.relative` はバイト比較なので、**大文字小文字違いの root が「外」と判定される** (本プロジェクトの主デプロイは macOS)。root が未作成のときだけ綴り比較に落ちる。`MCP_ENV_FILE` は**対象外** (root より前に読まれるため / 別機構が要る) — 半端に当てず未処理として残す。                                                                                                                                                                                                                                                                                                                                                                                       |
 | `tests/pathSafety.test.ts` / `tests/knowledgeStore.test.ts` / `tests/skillStore.test.ts` / `tests/multiRootStore.test.ts` / `tests/httpServer.test.ts` / `tests/stdio.test.ts` / `tests/config.test.ts` / `tests/promptInjection.test.ts` / `tests/auditStore.test.ts` / `tests/oauth.test.ts` / `tests/clientSafeError.test.ts` | 全 INV を pin | 挙動を変えたらテストを足す/直す。回帰でガードを緩めない。HTTP は auth(401)・surface 別 tool 面・chatgpt 形状・write annotations・untrusted-data instructions、OAuth は PKCE・単回 code・redirect policy・full flow を pin。stdio は両 era・full surface・instructions をワイヤで pin (`stdio`)、起動 env 境界と stderr の surface 行は spawn した実 entrypoint で pin (`config`)。                                                                                                                                                                                                                                                                                      |
 
 ## テストで固定する (規約でなく実行可能な保証)
@@ -367,6 +379,18 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
 - OAuth 2.1: PKCE 一致/不一致, redirect policy (https/loopback のみ), code 単回・失効,
   refresh rotation, パスワード誤り → code 不発行, full flow (discovery→register→authorize→
   token→OAuth access token で `/mcp` 接続), 未認証 `/mcp` → 401 + `WWW-Authenticate`
+- **サーバ state の置き場所 (根 E の隣 / B-3)**: `MCP_OAUTH_STATE_FILE` が vault 内 → boot で reject し
+  **どのルートかを名指し** / **vault へ向く symlink 経由**も reject / **宛先が未作成の dangling symlink** も reject
+  (`realpath` 版が見逃す形) / **`..state` のようにドット 2 つで始まる名前**のディレクトリも reject
+  (`startsWith("..")` が誤って「外」と判定する形) / 二次 read-only root でも reject / vault 外は従来どおり通る /
+  root 未設定で state file を指定 → **fail closed** / **明示指定と既定の `MCP_PATCH_STATE_DIR` の両方** /
+  symlink cycle は**有界なエラー**で終わる (boot が返らないのを防ぐ)。
+  ★ 逆検証は**呼び出しサイトごと・ガードごとに 1 回ずつ**。実測: OAuth 側の呼び出しを外すと 4 本 /
+  patch-state 側を外すと 1 本 (**集合が交わらない**) / `(dev,ino)` 比較を壊すと 7 本 /
+  文字列 fallback を `startsWith("..")` に戻すと 1 本 / hop 上限を 0 にすると symlink 2 本。
+  ⚠️ **大文字小文字の同一性そのものは case-sensitive な FS 上のテストでは踏めない** — Linux CI では
+  `/x` と `/X` が別ディレクトリなので、その形のテストは vacuous になる。`(dev,ino)` 機構が生きていることは
+  上の 7 本で押さえ、**case 差そのものは未検証**として負債に数える
 - **エラー面のパス漏洩 (根 E / F9)**: 未知 `patch_id` で apply → patch-state dir も `$HOME` も出ない / **plan 後に対象を消して apply** → **vault root** が出ない (このケースだけ出どころが `resolveForExistingRead` の `realpath` で、patch 読取の catch では塞がらない = 境界でしか止まらない) / サーバ自作の文言 (`Patch is stale` / `Document not found: …`) は**そのまま届く** (誤検知の逆)。
   ★ 逆検証で **2 層が独立**であることを実測する — 境界だけ外すと vault root のテスト**だけ**が赤 (`ENOENT: … /tmp/mcp-errleak-vault-…`)、各サイトの catch だけ外すと**文言の assert だけ**が赤で 封じ込めの assert は通る。片方を「もう片方があるから要らない」と消さない
 - prompt injection fixture: 偽承認・tool-call風JSON・外部送信命令を忠実にdataとして返し、

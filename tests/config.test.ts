@@ -165,7 +165,7 @@ describe("startup env boundary (spawned entrypoint)", () => {
     expect(result.code).toBe(0);
   }, 30_000);
 
-  it("applies the operator's MCP_ENV_FILE, so the audit/skill surface comes back on", async () => {
+  it("applies the operator's MCP_ENV_FILE, so the skill surface and the audit reservation come back on", async () => {
     await fs.mkdir(path.join(vault, "_skills"), { recursive: true });
     await fs.mkdir(path.join(vault, "90_Audit", "vault-scan", "reports"), { recursive: true });
     const envFile = path.join(stateDir, "vault.env");
@@ -184,8 +184,41 @@ describe("startup env boundary (spawned entrypoint)", () => {
     // other setting in the operator's own file.
     const result = await runServer({ KNOWLEDGE_ROOT: vault, MCP_ENV_FILE: envFile });
 
-    expect(result.stderr).toContain("MCP stdio transport ready (write=on, documents=on, skills=on, audit=on)");
+    // `reserved-only`, not `on`: MCP_AUDIT_SUBDIR turns the INV-9 reservation on
+    // (which is what operators are told to set it for) WITHOUT registering the
+    // two single-call audit writes. Registering those needs its own opt-in — see
+    // the next two cases.
+    expect(result.stderr).toContain(
+      "MCP stdio transport ready (write=on, documents=on, skills=on, audit=reserved-only)"
+    );
     expect(result.code).toBe(0);
+  }, 30_000);
+
+  it("registers the stdio audit write tools only when their own flag is set", async () => {
+    await fs.mkdir(path.join(vault, "90_Audit", "vault-scan", "reports"), { recursive: true });
+    const result = await runServer({
+      KNOWLEDGE_ROOT: vault,
+      MCP_PATCH_STATE_DIR: path.join(stateDir, "patches"),
+      MCP_AUDIT_SUBDIR: "90_Audit/vault-scan",
+      MCP_STDIO_ALLOW_AUDIT_WRITE: "1"
+    });
+
+    expect(result.stderr).toContain("MCP stdio transport ready (write=on, documents=on, skills=off, audit=on)");
+    expect(result.code).toBe(0);
+  }, 30_000);
+
+  it("refuses to start when the audit write flag names no subtree to write into", async () => {
+    // The contradiction fails at boot rather than starting a server whose audit
+    // surface silently does not exist — the same shape MCP_HTTP_ALLOW_AUDIT_WRITE
+    // already had.
+    const result = await runServer({
+      KNOWLEDGE_ROOT: vault,
+      MCP_PATCH_STATE_DIR: path.join(stateDir, "patches"),
+      MCP_STDIO_ALLOW_AUDIT_WRITE: "1"
+    });
+
+    expect(result.stderr).toMatch(/MCP_STDIO_ALLOW_AUDIT_WRITE requires MCP_AUDIT_SUBDIR/);
+    expect(result.code).not.toBe(0);
   }, 30_000);
 
   it("refuses to start on a relative or unreadable MCP_ENV_FILE", async () => {
@@ -332,5 +365,124 @@ describe("patch state directory default", () => {
     const dir = loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault", MCP_PATCH_STATE_DIR: "relative/state" }).patchStateDir;
     expect(dir).toBe(path.resolve("relative/state"));
     expect(dir.startsWith(process.cwd())).toBe(true);
+  });
+});
+
+describe("server state must live outside the knowledge root", () => {
+  const oauthEnv = (root: string, stateFile: string): NodeJS.ProcessEnv => ({
+    KNOWLEDGE_ROOT: root,
+    MCP_AUTH_TOKEN: "token-for-tests",
+    MCP_OAUTH_ENABLED: "1",
+    MCP_HTTP_PUBLIC_URL: "https://vault.example",
+    MCP_OAUTH_PASSWORD: "correct horse battery staple",
+    MCP_OAUTH_STATE_FILE: stateFile
+  });
+
+  let root: string;
+  let outside: string;
+
+  beforeEach(async () => {
+    root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-state-vault-")));
+    outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-state-outside-")));
+  });
+
+  it("rejects an OAuth state file inside the vault and names the root", () => {
+    const inside = path.join(root, "notes", "oauth-state.json");
+    expect(() => loadHttpConfig(oauthEnv(root, inside))).toThrow(/MCP_OAUTH_STATE_FILE/);
+    expect(() => loadHttpConfig(oauthEnv(root, inside))).toThrow(/knowledge root "vault"/);
+  });
+
+  it("accepts an OAuth state file outside the vault", () => {
+    const target = path.join(outside, "oauth-state.json");
+    expect(loadHttpConfig(oauthEnv(root, target)).oauth?.stateFile).toBe(target);
+  });
+
+  // The case a string-prefix comparison misses: the configured path shares no
+  // prefix with the root, and only resolving the symlinked parent shows that the
+  // file would be written into the vault.
+  it("rejects a state file reached through a symlink into the vault", async () => {
+    await fs.mkdir(path.join(root, "inner"));
+    const link = path.join(outside, "link-into-vault");
+    await fs.symlink(path.join(root, "inner"), link);
+
+    const through = path.join(link, "oauth-state.json");
+    expect(through.startsWith(root)).toBe(false);
+    expect(() => loadHttpConfig(oauthEnv(root, through))).toThrow(/knowledge root "vault"/);
+  });
+
+  it("rejects a state file inside a read-only secondary root, naming that root", () => {
+    const inside = path.join(root, "oauth-state.json");
+    const env = oauthEnv(root, inside);
+    delete env.KNOWLEDGE_ROOT;
+    env.KNOWLEDGE_ROOTS = `primary=${outside},archive=${root}`;
+    expect(() => loadHttpConfig(env)).toThrow(/knowledge root "archive"/);
+  });
+
+  it("requires the roots to be configured before persistence can be verified", () => {
+    const env = oauthEnv(root, path.join(outside, "oauth-state.json"));
+    delete env.KNOWLEDGE_ROOT;
+    expect(() => loadHttpConfig(env)).toThrow(/KNOWLEDGE_ROOT/);
+  });
+
+  // path.relative() returns "..state/oauth.json" for a sibling directory that is
+  // merely NAMED with two leading dots, so a startsWith("..") test reads it as an
+  // escape and lets a state file inside the vault through.
+  it("rejects a directory whose name begins with two dots", () => {
+    const inside = path.join(root, "..state", "oauth.json");
+    expect(path.relative(root, inside).startsWith("..")).toBe(true);
+    expect(() => loadHttpConfig(oauthEnv(root, inside))).toThrow(/knowledge root "vault"/);
+  });
+
+  // realpath() reports ENOENT for a DANGLING symlink, so resolving only the
+  // existing prefix treats the link as a plain missing component and calls the
+  // target outside. Creating the destination later would put every save inside
+  // the vault with the boot check already passed.
+  it("rejects a state file behind a symlink whose destination does not exist yet", async () => {
+    const link = path.join(outside, "link-to-future");
+    await fs.symlink(path.join(root, "not-created-yet"), link);
+    await expect(fs.realpath(link)).rejects.toThrow();
+
+    expect(() => loadHttpConfig(oauthEnv(root, path.join(link, "oauth.json")))).toThrow(/knowledge root "vault"/);
+  });
+
+  // MAX_SYMLINK_HOPS is a changed guard, so it needs an input that reaches it.
+  // A cycle must end in a bounded error rather than a boot that never returns.
+  it("fails instead of looping when the state path passes through a symlink cycle", async () => {
+    const a = path.join(outside, "loop-a");
+    const b = path.join(outside, "loop-b");
+    await fs.symlink(b, a);
+    await fs.symlink(a, b);
+
+    expect(() => loadHttpConfig(oauthEnv(root, path.join(a, "oauth.json")))).toThrow(/Too many symbolic links/);
+  });
+
+  // Containment compares filesystem identity when the root exists, and falls back
+  // to spelling when it does not. This case takes the fallback — the root is a
+  // path that was never created — so the `..`-prefix predicate stays pinned even
+  // though every other test in this block now goes through the identity walk.
+  it("rejects a two-dot-prefixed directory under a root that does not exist yet", () => {
+    const absentRoot = path.join(outside, "never-created");
+    expect(() => loadHttpConfig(oauthEnv(absentRoot, path.join(absentRoot, "..state", "oauth.json")))).toThrow(
+      /knowledge root "vault"/
+    );
+    expect(loadHttpConfig(oauthEnv(absentRoot, path.join(outside, "elsewhere.json"))).oauth?.stateFile).toBe(
+      path.join(outside, "elsewhere.json")
+    );
+  });
+
+  // The default is derived from the home directory, which is not automatically
+  // outside the vault.
+  it("rejects the DEFAULT patch-state directory when a root contains the home directory", () => {
+    expect(() => loadConfig({ KNOWLEDGE_ROOT: os.homedir() })).toThrow(/default patch-state directory/);
+    expect(() => loadConfig({ KNOWLEDGE_ROOT: os.homedir() })).toThrow(/set MCP_PATCH_STATE_DIR explicitly/);
+  });
+
+  it("rejects an explicit patch-state directory inside the vault", () => {
+    expect(() => loadConfig({ KNOWLEDGE_ROOT: root, MCP_PATCH_STATE_DIR: path.join(root, ".patches") })).toThrow(
+      /MCP_PATCH_STATE_DIR/
+    );
+    expect(loadConfig({ KNOWLEDGE_ROOT: root, MCP_PATCH_STATE_DIR: path.join(outside, "patches") }).patchStateDir).toBe(
+      path.join(outside, "patches")
+    );
   });
 });

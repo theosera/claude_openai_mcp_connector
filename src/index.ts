@@ -78,7 +78,14 @@ if (transport === "http") {
         allowWrite: true,
         allowSkillWrite: Boolean(skillStore),
         skillStore,
-        allowAuditWrite: Boolean(auditStore),
+        // Registering the audit write tools is a SEPARATE decision from
+        // reserving the subtree (INV-9); see AppConfig.stdioAllowAuditWrite for
+        // why conflating them was a hole. The reservation itself rides on
+        // config.auditSubdir through createStore and is unaffected by this flag,
+        // so an operator who sets only MCP_AUDIT_SUBDIR still gets the
+        // protection they were told to set it for — without also handing this
+        // session two unconfirmed, single-call writes into the audit trail.
+        allowAuditWrite: appConfig.stdioAllowAuditWrite && Boolean(auditStore),
         auditStore,
         includeChatgptCompat: true
       }),
@@ -112,14 +119,29 @@ if (transport === "http") {
   // MCP_AUDIT_SUBDIR (which leaves this write-capable process with the INV-9
   // audit-subtree reservation OFF) is visible instead of silent.
   //
+  // `audit` reports THREE states, because reserving the subtree and registering
+  // the write tools are now separate decisions and a single on/off could only
+  // ever describe one of them:
+  //
+  //   off            no MCP_AUDIT_SUBDIR — the INV-9 reservation is NOT in effect
+  //   reserved-only  subtree reserved, audit write tools not registered (default)
+  //   on             reserved AND the write tools registered
+  //                  (MCP_STDIO_ALLOW_AUDIT_WRITE)
+  //
+  // The middle state is the one worth printing: it is what an operator who
+  // followed the "set MCP_AUDIT_SUBDIR on every write-capable process" guidance
+  // now gets, and reading "off" there would wrongly suggest the reservation
+  // lapsed.
+  //
   // This now precedes the wire being up, where it used to follow
   // `await server.connect(...)`. `serveStdio` starts in the background and
   // hands back only `close()`, so there is no started promise to await — the
   // line states the surface this process WILL serve, not that the transport
   // came up. A failure therefore reads "ready" and then the `onerror` line
   // above; that line, not this one, is the one to trust about start-up.
+  const auditState = !auditStore ? "off" : appConfig.stdioAllowAuditWrite ? "on" : "reserved-only";
   process.stderr.write(
     `MCP stdio transport ready (write=on, documents=on, ` +
-      `skills=${skillStore ? "on" : "off"}, audit=${auditStore ? "on" : "off"})\n`
+      `skills=${skillStore ? "on" : "off"}, audit=${auditState})\n`
   );
 }
