@@ -165,7 +165,7 @@ export const MAX_FRONTMATTER_BLOCK_BYTES = 8 * 1024;
  *
  * ⚠️ The mirror has to include gray-matter's NORMALIZATION, not only its
  * delimiter scan. `lib/utils.js` runs the input through `strip-bom-string`
- * before `parseMatter` looks for `---`, so a file beginning `﻿---` HAS
+ * before `parseMatter` looks for `---`, so a file opening U+FEFF `---` HAS
  * frontmatter as far as gray-matter is concerned. Checking the raw prefix
  * skipped exactly that file, and one BOM in front of an unterminated block
  * bought back the whole quadratic path: measured on a 32 KiB payload, 0.3 ms
@@ -183,7 +183,7 @@ export const MAX_FRONTMATTER_BLOCK_BYTES = 8 * 1024;
  * outright instead of dropping metadata on the floor.
  */
 function assertBoundedFrontmatterBlock(input: string): void {
-  const raw = input.charAt(0) === "﻿" ? input.slice(1) : input;
+  const raw = input.charAt(0) === "\uFEFF" ? input.slice(1) : input;
   if (!raw.startsWith(FRONTMATTER_DELIMITER)) {
     return;
   }
