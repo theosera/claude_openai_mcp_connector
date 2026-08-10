@@ -781,9 +781,11 @@ no hands). Run **two** connector processes:
 > [`README.md`](../README.md#the-env-file-the-stdio-registrations-name) has the
 > file's contents.
 >
-> Pinned by `tests/config.test.ts` (the line's two states) and
-> `tests/stdio.test.ts` (that `audit=on` is the reservation actually refusing a
-> general write into the subtree, on the wire).
+> Pinned by `tests/config.test.ts` (all three states of the line, plus the boot
+> refusal when the write flag names no subtree) and `tests/stdio.test.ts` (that a
+> `reserved-only` process withholds the audit write tools **and** still refuses a
+> general write into the subtree, on the wire — the two halves that could
+> otherwise diverge, driven by one environment).
 
 ### Step 1 — create the audit subtree
 

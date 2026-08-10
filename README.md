@@ -418,13 +418,24 @@ KNOWLEDGE_ROOT=/abs/path/to/private/vault \
 ```
 
 ```text
-MCP stdio transport ready (write=on, documents=on, skills=on, audit=on)
+MCP stdio transport ready (write=on, documents=on, skills=on, audit=reserved-only)
 ```
 
-`audit=on` means `MCP_AUDIT_SUBDIR` reached the process, so the INV-9
-audit-subtree reservation is in effect there. `audit=off` on a write-capable
-process means general writes can still reach the audit subtree — the
-registration is not finished. A line beginning `MCP HTTP transport listening`,
+`audit` has three states, and **`reserved-only` is the expected one** for the env
+file above — it is the recommended configuration, not a half-finished one:
+
+| value | meaning |
+| --- | --- |
+| `reserved-only` | `MCP_AUDIT_SUBDIR` reached the process, so the INV-9 audit-subtree reservation is in effect, and the audit **write tools are not registered**. This is what you want for an interactive session. |
+| `on` | the same, **plus** `append_audit_report` / `compare_and_swap_audit_state` registered, because `MCP_STDIO_ALLOW_AUDIT_WRITE` is set. Intended for an unattended scanner, not for a session you type into. |
+| `off` | no `MCP_AUDIT_SUBDIR` — on a write-capable process this means general writes can still reach the audit subtree, i.e. the registration is not finished. |
+
+Do **not** set `MCP_STDIO_ALLOW_AUDIT_WRITE` just to make this line read `on`.
+Those two tools are single-call writes into the audit trail with no plan/apply
+step and no confirmation; an interactive session, whose input includes untrusted
+vault content, is exactly who should not hold them.
+
+A line beginning `MCP HTTP transport listening`,
 or no line at all before the command hangs, means the env file belongs to an
 HTTP endpoint (warning above). This works for any client because it bypasses the
 client entirely; nothing here depends on where that client keeps its logs.
