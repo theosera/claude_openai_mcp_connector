@@ -499,12 +499,23 @@ worst because gray-matter then treats the whole file as the block.
   *rejected* for that expansion bomb (a few hundred bytes tells you nothing about
   size) and is the right bound here. The two are complementary; neither replaces
   the other.
-- **Not an upgrade away.** gray-matter requires js-yaml `^3.13.1`; the fix is
-  5.x-only with an incompatible API, so the bound *is* the mitigation. The two
-  remaining advisories are dev-only and left to Dependabot.
+- **The `!!omap` path is fixed at the dependency; the comment stripper is not.**
+  js-yaml **3.15.1** is patched and inside gray-matter's `^3.13.1` range, so
+  `pnpm.overrides` pins it — no major upgrade, no API break. Measured on the
+  resolved tree: 3.15.0 quadruples per doubling, 3.15.1 is linear. The bound
+  still covers that path as defence in depth, but calling it *the* mitigation
+  would make an out-of-date js-yaml look acceptable. The comment stripper is
+  gray-matter's own code and the bound is the only thing standing there. The two
+  remaining advisories are dev-only.
+  **Read an advisory's structured fields, not its title**: this record is titled
+  "CVE-2026-59870 fix not backported" while its own `patched_versions` says
+  `>=3.15.1`. The title is why an earlier revision of this entry said 5.x-only.
 - **Sized from real data**, not from the attack: 2,381 notes, frontmatter median
   225 B, max 1,042 B. 8 KiB keeps ~7.9x headroom while holding the attack to
-  ~23 ms. Over-cap frontmatter fails loudly — logged and indexed body-only on the
+  ~41 ms — the *unterminated* shape, which is the worst case and ~1.8x costlier
+  than the terminated one at the same size. Absolute milliseconds are
+  host-dependent (the same payloads run ~6x slower on a CI container); only the
+  exponent transfers. Over-cap frontmatter fails loudly — logged and body-only on the
   read path, refused outright on the write paths.
 - **Behaviour change:** kilobytes of `source_refs` in frontmatter are now
   refused, including the 900-ref session-archive index the tests used to pin as
@@ -517,6 +528,18 @@ worst because gray-matter then treats the whole file as the block.
 did report the comment stripper wrote honestly that it could not confirm the
 bound without executing the regex. The CVE was published the day before that scan
 ran — and `pnpm audit` had been printing it in CI on every run.
+
+**Printing is not reporting.** That audit step was `continue-on-error: true`, so
+it was always green, and it mixed dev noise into the one signal that mattered.
+The comment justifying that said triage happens in the Dependabot PR; Dependabot
+alerts were enabled and showed **0 open alerts**, and `dependabot.yml`'s
+`updates:` bumps *direct* dependencies while js-yaml is transitive — so no PR
+could be raised there either. A single detector, configured to be invisible, is
+not a control. CI now fails on a **production** high (`pnpm audit --prod
+--audit-level high`) and keeps the full-tree moderate scan advisory. Scoping the
+blocking step to `--prod` is the point: dev noise is what turns a step into one
+people stop reading. The threshold is a deliberate trade — a *moderate*
+production advisory still passes.
 
 ### Document identity is not a frontmatter field — _second security scan, root A_ ✅
 
