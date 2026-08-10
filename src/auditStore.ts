@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { assertNoServerOwnedFrontmatter } from "./frontmatter.js";
 import { relativeToRoot, resolveExistingRoot, resolveInsideRoot, toPosixPath } from "./pathSafety.js";
 
 // A `run_id` becomes a filename (`reports/<run_id>.md`), so constrain it to a
@@ -260,6 +261,13 @@ function isSameOrInside(parent: string, child: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+/**
+ * The single gate every byte written into the audit subtree passes through.
+ *
+ * Both writers call it, so a third one added later inherits the checks instead
+ * of having to remember them — the same reason `resolveForWrite` owns the audit
+ * reservation rather than each create path repeating it.
+ */
 function assertWritableText(value: string, maxBytes: number, label: string): string {
   if (typeof value !== "string" || value.includes("\0")) {
     throw new Error(`The ${label} must be text without NUL bytes.`);
@@ -267,6 +275,17 @@ function assertWritableText(value: string, maxBytes: number, label: string): str
   if (Buffer.byteLength(value, "utf8") > maxBytes) {
     throw new Error(`The ${label} is too large (max ${maxBytes} bytes).`);
   }
+  // Reports and state land in the vault as .md files and are indexed as
+  // documents like any other, so client-supplied frontmatter here is a claim
+  // about identity, not a note about a scan. INV-9 confined WHERE these bytes
+  // may be written; this confines WHAT they may claim once there.
+  //
+  // Order matters: the size check above runs first, so the parse inside is
+  // reached only for input already bounded, and the parse itself caps the
+  // frontmatter block before gray-matter runs. A report may be 512 KiB — far
+  // past the point where an unbounded frontmatter parse becomes the very
+  // quadratic path that cap exists to close.
+  assertNoServerOwnedFrontmatter(value, label);
   return value;
 }
 

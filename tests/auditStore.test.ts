@@ -179,6 +179,79 @@ describe("AuditStore", () => {
     await fresh.init();
     await expect(fs.stat(stale)).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  // INV-2 (write side) / INV-9. The audit surface is constrained about WHERE it
+  // writes. Its bytes still land as .md files that the read side indexes like
+  // any other document, so a report could declare another note's `id` and answer
+  // every lookup aimed at that note -- from a principal holding only audit-write.
+  describe("server-owned frontmatter (INV-2 write side)", () => {
+    const REPORT = (frontmatter: string): string => `---\n${frontmatter}\n---\n\n# scan\n\nclean\n`;
+
+    it("refuses a report that claims another note's identity, and writes nothing", async () => {
+      await expect(
+        store.appendAuditReport({
+          run_id: "20260718T010203Z--squat",
+          content: REPORT("id: projects/roadmap.md\ntitle: scan")
+        })
+      ).rejects.toThrow(/server-owned frontmatter \(id\)/);
+
+      // The refusal has to happen before the write, not after: a rejected report
+      // that still left a file would hand over the squat anyway.
+      await expect(fs.stat(path.join(auditRoot, "reports", "20260718T010203Z--squat.md"))).rejects.toMatchObject({
+        code: "ENOENT"
+      });
+    });
+
+    it("refuses a report that stamps updated_at", async () => {
+      await expect(
+        store.appendAuditReport({
+          run_id: "20260718T010203Z--stamp",
+          content: REPORT("updated_at: '2001-01-01T00:00:00.000Z'")
+        })
+      ).rejects.toThrow(/server-owned frontmatter \(updated_at\)/);
+    });
+
+    it("refuses audit state that claims an identity", async () => {
+      await expect(
+        store.compareAndSwapAuditState({
+          expected_sha256: EMPTY_SHA,
+          new_content: REPORT("id: CLAUDE.md")
+        })
+      ).rejects.toThrow(/server-owned frontmatter \(id\)/);
+    });
+
+    it("still accepts frontmatter that claims nothing the server owns", async () => {
+      const written = await store.appendAuditReport({
+        run_id: "20260718T010203Z--ok",
+        content: REPORT("title: 異常なし\ntags:\n  - audit")
+      });
+      expect(written.created).toBe(true);
+    });
+
+    it("still accepts a report with no frontmatter at all", async () => {
+      const written = await store.appendAuditReport({
+        run_id: "20260718T010203Z--plain",
+        content: "# scan\n\nno frontmatter here\n"
+      });
+      expect(written.created).toBe(true);
+    });
+
+    // The guard has to PARSE to know what a report claims, and a report may be
+    // 512 KiB -- far past where an unbounded frontmatter parse becomes the
+    // quadratic path the block cap exists to close. Reading a frontmatter check
+    // into this surface must not re-open it on the write side.
+    //
+    // Time is the assertion, not the throw: refusing for the RIGHT reason and
+    // refusing after burning three minutes of CPU both "throw".
+    it("bounds the parse it does, so a huge unterminated block cannot burn CPU here", async () => {
+      const payload = `---\n${"\n".repeat(400 * 1024)}`;
+      const started = Date.now();
+      await expect(store.appendAuditReport({ run_id: "20260718T010203Z--redos", content: payload })).rejects.toThrow(
+        /cannot parse/
+      );
+      expect(Date.now() - started).toBeLessThan(1_000);
+    });
+  });
 });
 
 describe("loadConfig audit subtree disjointness", () => {

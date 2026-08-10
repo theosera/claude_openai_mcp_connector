@@ -4,7 +4,7 @@ import path from "node:path";
 import { createTwoFilesPatch } from "diff";
 import matter from "gray-matter";
 import { z } from "zod";
-import { SAFE_MATTER_OPTIONS } from "./frontmatter.js";
+import { assertNoServerOwnedFrontmatter, SAFE_MATTER_OPTIONS } from "./frontmatter.js";
 import { ensurePatchStateDir } from "./patchState.js";
 import { relativeToRoot, resolveExistingRoot, resolveInsideRoot, toPosixPath } from "./pathSafety.js";
 
@@ -252,6 +252,22 @@ function validateFileSet(files: SkillBundleFile[]): SkillBundleFile[] {
     const bytes = Buffer.byteLength(file.content, "utf8");
     if (bytes > MAX_FILE_BYTES) {
       throw new Error(`Skill file is too large: ${file.path}.`);
+    }
+    // SKILL.md's frontmatter is already pinned to name/description by
+    // validateSkillMarkdown. Reference files had no such check: their bytes land
+    // in the vault verbatim and are indexed as documents like any other .md, so
+    // one could declare another note's `id` and answer every lookup aimed at it.
+    // INV-8 constrained WHERE a bundle may write and said nothing about WHAT it
+    // may claim once written.
+    //
+    // This lives in validateFileSet because it is the one function BOTH the plan
+    // and apply paths end at. Checking only at apply would still refuse the
+    // write, but it would refuse it after presenting the operator a diff to
+    // approve — the squat has to be unrepresentable, not merely unapplied. The
+    // size check above runs first, so the parse below only ever sees bounded
+    // input, and that parse caps the frontmatter block before gray-matter runs.
+    if (file.path.startsWith("references/")) {
+      assertNoServerOwnedFrontmatter(file.content, `Skill reference ${file.path}`);
     }
     total += bytes;
   }

@@ -240,6 +240,14 @@ Skill は将来の agent 指示として実行されるため、一般ノート�
 4. `SKILL.md` frontmatter は `name` と `description` だけを許可し、name は directory 名と一致。
 5. create-only: 既存 Skill は上書きしない。全ファイルを Skill root 内の一時 directory に
    exclusive create し、完成後に同一 filesystem の rename で atomic publish する。
+6. **★ reference files はサーバ所有 frontmatter を名乗れない** (`assertNoServerOwnedFrontmatter`)。
+   `SKILL.md` は 4 で `name`/`description` に固定済みだが、**`references/*.md` は素通りだった** —
+   bytes がそのまま vault に着地し、他の note と同じく document として index されるので、
+   他文書の `id` を宣言してその lookup を奪える。**INV-8 は「どこへ書けるか」を絞り、
+   「何を名乗れるか」を絞っていなかった。**
+   検査は **`validateFileSet`** に置く — **plan と apply の両方**が終端するのはここだけ。
+   apply だけで拒否すると、**承認用の diff をユーザーに見せた後**で止まることになる
+   (squat は「適用されない」ではなく「表現できない」でなければならない)。
 
 ### INV-9 Constrained audit write surface (監査証跡の完全性)
 
@@ -258,6 +266,16 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
    パターン (先頭英数字・`/`/`..`/NUL 不可) で reports/ 外へ出られない。
 3. `compare_and_swap_audit_state` は `state.md` を **sha256 CAS** (読んだ版と一致時のみ更新、
    不一致は stale reject)。初回は `sha256("")`。書込は tmp+rename + `0600`。
+   **★ 3b. report / state ともサーバ所有 frontmatter (`id` / `updated_at`) を名乗れない**
+   (`assertNoServerOwnedFrontmatter`、`assertWritableText` 内 = **両 writer の共通 choke**。
+   後から 3 本目の writer を足しても自動で通る)。監査ファイルは `.md` として index されるので、
+   **「監査サブツリーに閉じ込めた」はバイトの着地先については真、read 面が誰の同一性として
+   返すかについては偽**だった (audit-write だけを持つ principal が vault 内の任意の note を
+   名乗れた)。**parse は必ず `parseMarkdown` 経由** — report は 512 KiB まで来るので、
+   無界に parse すると N-C で塞いだ二次経路を**write 面に開け直す**。テストは throw だけでなく
+   **経過時間も assert** する (cap 無しだと同じ payload で ~286 秒)。
+   **parse 不能な frontmatter も reject** — read 側が degrade するのは既存 note を返す義務が
+   あるからで、writer にその義務は無い。
 4. append/CAS は **in-process mutex で直列化** — MCP はセッション内で並行 tool 呼び出しを
    pipeline するので、無人スキャナの read-hash-write がインターリーブして lost update するのを
    決定論的に防ぐ (`applyPlannedUpdate` の read→hash→write と同じ窓を閉じる)。
@@ -354,6 +372,12 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
   相違reject・既存を上書きしない) / CAS (初回sha256("")成功・誤expectedはstale・mutexで並行CAS直列化) /
   一般 document write が監査サブツリーを対象にすると reject (create=plan/apply, update=plan/apply権威) /
   scanエンドポイント (一般write off + audit on) は audit tool のみ露出し一般write toolは非登録
+- **サーバ所有 frontmatter を書く側で拒否 (INV-2 write側 / INV-8・INV-9)**: report / state /
+  Skill `references/*.md` が `id` や `updated_at` を宣言したら reject し、**ファイルは作られない** /
+  Skill は **plan の時点**で拒否 (apply だけだと承認用 diff を見せた後で止まる) /
+  サーバ所有でない frontmatter・frontmatter 無しは**従来どおり通る** (誤検知の逆) /
+  ★ **巨大な未終端ブロックを渡して経過時間を assert** — 書く側に frontmatter 検査を足したせいで
+  二次 parse 経路を開け直していないことは、**時間でしか区別できない**
 
 ## 参考
 
