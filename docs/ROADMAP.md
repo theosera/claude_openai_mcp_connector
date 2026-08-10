@@ -927,30 +927,40 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       different mechanism than the other two, since the roots it would be checked
       against come from the file itself.
 
-      **What is settled:** a boot-time check cannot reach it. `loadEnvFile()`
-      runs before `KNOWLEDGE_ROOT` exists, so there is nothing to compare
-      against at the moment the file is read. That is an ordering fact, not a
-      design preference.
+      **What is settled:** a check that runs **before the file is read** cannot
+      reach it. `loadEnvFile()` runs before `KNOWLEDGE_ROOT` exists, so at the
+      moment of the read there is nothing to compare against. That is an
+      ordering fact, not a design preference — and it is narrower than "no
+      startup check is possible", which would be false. Refusing to start is
+      still on the table; see below.
 
       **What was NOT considered when this entry was first written** (v0.8.0):
       a check *after* the roots are known. Once `loadConfig()` has resolved
-      them, `MCP_ENV_FILE` can be tested with the same `(dev, ino)` walk and the
-      server refused if it lands inside a root. This does not undo the exposure
-      — the secrets are already in `process.env` by then, and a state file in an
-      indexed root may already have been read by anything with vault access.
-      What it does buy is refusing to keep serving on credentials that a vault
+      them — still during startup, before the stores exist and before anything
+      is served — `MCP_ENV_FILE` can be tested with the same `(dev, ino)` walk
+      and the server refused if it lands inside a root. This does not undo the
+      exposure: the secrets are already in `process.env` by then, and a file in
+      an indexed root may already have been read by anything with vault access.
+      What it buys is refusing to keep serving on credentials that a vault
       reader may already know. `MCP_OAUTH_STATE_FILE` fails *before the write*;
       this would fail *after the read*, which is a materially weaker guarantee
       and belongs to a separate decision rather than the same mechanism.
       Recorded here so the next person does not re-derive it: this option is
       **unevaluated, not rejected**.
 
-      **Priority input:** no deployment sets `MCP_ENV_FILE` today. The scan
-      host's launchd plist carries an empty `EnvironmentVariables`, `launchctl
-      getenv` reports every relevant name unset, and the cwd-relative `.env`
-      path that used to supply them has been retired. Nobody is standing on this
-      question yet — the migration that starts using `MCP_ENV_FILE` is the
-      deadline for answering it.
+      **Priority input:** no deployment is *known* to set `MCP_ENV_FILE`, and
+      the evidence behind that covers **one host, as of 2026-08-10** — the
+      unattended scan endpoint, whose launchd plist carries an empty
+      `EnvironmentVariables`, whose `launchctl getenv` reports every relevant
+      name unset, and whose cwd-relative `.env` path has been retired.
+      [§9](./operations.md#9-two-endpoint-deployment-interactive--unattended-audit-scan)
+      describes a **two-endpoint** layout and tells operators to add
+      `MCP_ENV_FILE` to *both* plists; **the interactive endpoint's plist was
+      not inspected.** So this is one scope observed out of at least two, not an
+      inventory. On that evidence nobody is known to be standing on the
+      question yet, and the migration that starts using `MCP_ENV_FILE` is the
+      deadline for answering it — but the observation should be re-taken, and
+      widened to every endpoint, before it is leaned on again.
 - [ ] **Audit log** — append-only, content-free events (who searched / fetched /
       wrote what, no note bodies) — the largest security follow-up, and still the
       one that most improves the posture; it now sits **second** because the
