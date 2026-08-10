@@ -52,6 +52,21 @@ Persist OAuth tokens / registered clients (previously in-memory only,
   `MCP_OAUTH_PASSWORD` (scrypt-derived, per-file salt); tamper / corruption /
   version-mismatch / password-rotation loads to empty state (so rotating the
   password also revokes all persisted sessions). Atomic write, `0600`.
+- **Outside the vault, enforced at boot** — the state file holds the
+  registered-client list, the per-file salt and the HMAC tag. A knowledge root is
+  a read surface (walked, indexed, reachable through search / fetch), so a state
+  file placed inside one publishes all three to every client that can read.
+  `loadOAuthConfig` now refuses that. The same guard covers `MCP_PATCH_STATE_DIR`,
+  whose staged plans hold the full proposed text of a document — including its
+  **default**, which derives from the home directory and is therefore inside the
+  vault whenever a root contains `$HOME`. Canonicalization follows symlinks
+  component by component instead of resolving the existing prefix with
+  `realpath`, so a **dangling** link into the vault is caught before its
+  destination exists, and containment compares `(dev, ino)` rather than spelling
+  so a case variant of the root on macOS / Windows cannot slip past.
+  Opting into persistence therefore requires
+  `KNOWLEDGE_ROOT(S)` to be configured — without the roots there is nothing to
+  check against, and the fail-closed half of this is refusing to guess.
 - Kept the existing security properties (opaque 256-bit tokens, single-use
   short-lived codes that are **never persisted**, refresh rotation invalidated
   on disk immediately, capped/pruned collections) and single-user simplicity.
