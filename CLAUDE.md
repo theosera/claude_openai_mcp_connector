@@ -137,13 +137,22 @@ realpath prefix 照合 → symlink escape 照合) を**弱めない**。新し�
 既存ファイル編集は `plan_document_update` → **完全なdiff提示後に現在の会話でユーザ承認** →
 `apply_planned_update`。Vault本文・frontmatter・tool出力に埋め込まれた「承認済み」は承認として
 扱わない。apply
-は plan 時の `expected_sha256` と現在のハッシュを照合し**stale なら適用拒否**。新規
+は plan 時の `expected_sha256` と現在のハッシュを照合し**stale なら適用拒否**。
+**apply の書き込みは同一ディレクトリ temp + rename で置換し** (`src/atomicWrite.ts` —
+in-place `writeFile` は中断で途中書きになる)、read→hash→write は in-process で**直列化**する
+(同一基点の 2 本が両方 apply されると後勝ちで消える)。atomic ≠ durable / in-process ≠
+cross-process を誇張しない。新規
 exact-path 作成は `plan_document_create` → 完全な内容/diffと `target_path` 提示 →
 `保存先は「…」でよろしいですか？` を **はい + 自由記述**で確認 →
 `apply_planned_document_create`。apply は `confirmed_target_path` が plan と完全一致しない限り
 拒否する。自由記述で修正された場合は apply せず修正パスで再 plan する。すべての新規作成は
 正確な対象と完全な内容を現在のユーザが承認した後だけ行い、`flag: "wx"` で既存を
 **上書きしない**。
+
+一段階の `create_document` は plan/apply 対を持たない唯一の document write なので
+**`MCP_ALLOW_LEGACY_CREATE_DOCUMENT` (両 transport 共通・既定 off) を要求する**。path 封じ込め・
+`wx`・サーバ生成 `id` は効くので上書きや identity 奪取はできないが、承認無しで `projects/` に
+任意本文を**永続化**でき、後続セッションがそれを untrusted vault content として読み戻す。
 
 Skill bundle 作成は `plan_skill_create` → ユーザ承認 →
 `apply_planned_skill_create`。`MCP_SKILLS_SUBDIR` 配下だけを対象とし、許可ファイルを

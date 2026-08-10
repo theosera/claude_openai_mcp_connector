@@ -704,6 +704,67 @@ write back into an existing vault taxonomy. The exact-path flow is now complete:
 
 ---
 
+### The overwriting write is atomic, serialized, and the last one-step write is gated — _external review triage_ ✅
+
+An independent review of `main` at #105 (Codex, 2026-08-11) landed three code
+findings. All three were verified against the source before being accepted, and
+one of them was accepted with its severity **lowered**, not raised.
+
+**1. `applyPlannedUpdate` was neither atomic nor strictly compare-and-swap.** It
+read the target, hashed it, compared against the plan, then `writeFile`d over the
+target — truncate-then-write, with no second copy of the note to recover from.
+The repo was already inconsistent with itself here: `auditStore`, `skillStore`
+and the OAuth state file all wrote temp-then-rename; the only write that
+overwrites a *user's* note did not. `src/atomicWrite.ts` now performs a
+same-directory temp write, copies the target's permission bits, and renames over
+it. The read/hash/write window is closed by an in-process serializer of the same
+shape `AuditStore` already used — INV-9 had described that window as
+"`applyPlannedUpdate`'s", so the window was known and simply never closed for the
+general path. **Scope stated rather than overclaimed:** atomic ≠ durable (no
+`fsync`, matching the other three writers), and in-process ≠ cross-process (two
+connector processes on one vault still race and need an on-disk lock).
+
+**2. The parse cache could serve a stale note indefinitely.** Validity was
+`mtimeMs` + size, which cannot distinguish two writes inside one millisecond and
+is fully defeated by an editor or sync client that rewrites a note to the same
+length and restores its mtime (`utimes` lets anything do that). The signature is
+now `mtimeNs` + `ctimeNs` + `ino` + size; `ctimeNs` carries it, because userspace
+cannot set it. `planUpdate` additionally derives the planned frontmatter from the
+bytes `expected_sha256` covers instead of from the cached parse.
+
+> The review framed this second half as a plan that "may reuse old frontmatter".
+> Verified: the diff and `expected_sha256` were always computed from a fresh
+> read, so such a revert appeared **in the diff the approver saw**. Real bug,
+> visible rather than silent — and a two-step write must not rely on the reviewer
+> catching it. Recorded because the correction is the reason the fix is small.
+
+**3. `create_document` was the one document write with no plan/apply pair**, and
+on stdio it was always registered. Now behind `MCP_ALLOW_LEGACY_CREATE_DOCUMENT`,
+off by default on **both** transports (one variable, not the audit surface's
+per-transport pair: the replacement exists everywhere, so no deployment needs it
+on one transport only). `scripts/check-http.mjs` scores it as its own category,
+so an endpoint exposing it without the flag now **fails** the operator check
+instead of being silently permitted under general write.
+
+> **Severity lowered vs. the review.** The review left open what an unapproved
+> create could reach. Verified: `createDocument` builds the entire frontmatter
+> server-side, `id` included (`crypto.randomUUID()`), so it cannot squat another
+> document's identity (INV-2); `flag: "wx"` means no overwrite; the path is
+> routed, not caller-chosen. The residual is **persistence** — attacker-chosen
+> body text landing under `projects/` with no approval step, read back as
+> ordinary vault content (INV-5) by every later session. That is worth gating;
+> it is not identity capture.
+
+Reverse-verified per guard, one at a time: reverting the rename fails only the
+inode assertion; removing the serializer makes **both** concurrent applies
+succeed (the lost update); weakening the signature to `mtimeNs` + size serves the
+stale body; removing the gate puts `create_document` back on both stdio eras.
+The cache test needed a **second** attempt to be worth anything — the first
+restored a previously observed mtime, which `utimes` truncates, so it passed with
+the guard removed. It now freezes the mtime to a whole second on both sides.
+
+---
+
 ## Mid-term
 
 ### Hosting recipes 💭
@@ -744,6 +805,10 @@ _team / enterprise_ adoption rather than the core individual use case.
 | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Third-party penetration test**                             | Self-review + AI review have limits; an independent test is needed before security claims are load-bearing. | near-term 🔭                                                                                                                                                                                                                        |
 | **Audit log**                                                | No after-the-fact record of who searched / fetched / wrote what.                                            | near-term 🔭                                                                                                                                                                                                                        |
+| **macOS CI**                                                 | The primary deployment target is macOS, and CI runs only on Linux. Case-insensitive-filesystem behaviour is therefore **asserted nowhere**: the `(dev, ino)` root-containment comparison exists precisely because `/vault` and `/Vault` are one directory on APFS, and a test for that shape is vacuous on ext4. NFD normalisation (HFS+) is in the same position. | near-term 🔭 |
+| **Coverage thresholds**                                      | 374 tests is a count, not a floor. Nothing fails when a new branch arrives untested, which is the condition the reverse-verification rule exists to catch by hand — a threshold makes the cheap half automatic. | near-term 🔭 |
+| **Filesystem fault injection**                               | Write paths are now atomic, but no test exercises `ENOSPC`, `EIO`, or a kill between temp write and rename. The recovery behaviour is argued in comments and unverified in CI. | mid-term 💭 |
+| **Fuzz / property tests**                                    | `pathSafety` and the frontmatter parser take adversarial input and are pinned by enumerated cases only, so they are strong exactly where someone already thought to look. Property tests would search the space the enumeration misses. | mid-term 💭 |
 | **Multi-user RBAC**                                          | Currently single-user by design; teams need per-user roles & scoping.                                       | larger bet 💭                                                                                                                                                                                                                       |
 | **Hardened secret scanning / release-artifact verification** | Needed if OSS distribution (npx / prebuilt binaries) is pushed harder — provenance, signed artifacts, SBOM. | mid-term 💭                                                                                                                                                                                                                         |
 | **OpenTelemetry / structured audit events**                  | Required for enterprise observability and SIEM ingestion.                                                   | mid-term 💭                                                                                                                                                                                                                         |

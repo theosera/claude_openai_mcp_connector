@@ -129,6 +129,19 @@ vault content (INV-5) なので、1 枚のノートが**他文書の uuid や他
   の sha256 を検証する。自由記述でパス修正なら apply せず再 plan。plan は対象/親dirを作らない。
 - 全新規作成 (`createDocument` / exact-path apply) は `flag: "wx"` で**既存を上書きしない**
   (EEXIST → エラー)。親dirは component ごとに symlink/non-directory を検査してから作る。
+- **★ 上書きする唯一の write は atomic に置換し、直列化する** (`src/atomicWrite.ts` の
+  `replaceFileAtomically` = 同一ディレクトリ temp → 権限ビット複製 → rename)。in-place
+  `writeFile` は truncate してから書くので、中断でユーザのノートが**途中書き**になる
+  (vault に控えは無い)。read→hash→write は `serializeWrite` で直列化 — 同一 plan 基点の
+  apply が 2 本走ると**両方が非 stale と判定して後勝ちで消える** (承認した diff と違う結果)。
+  ⚠️ **範囲を誇張しない**: atomic ≠ durable (fsync していない — 他 3 writer と同条件)、
+  in-process ≠ cross-process (別プロセス同士は依然競合し、防ぐなら on-disk lock が要る)。
+- **★ 一段階 write は既定 off** — `create_document` だけは plan/apply 対を持たないので
+  `MCP_ALLOW_LEGACY_CREATE_DOCUMENT` (**両 transport 共通・既定 off**) を要求する。
+  path 封じ込め・`wx`・サーバ生成 `id` は効いているので **identity 奪取や上書きはできない**が、
+  承認無しで `projects/` に任意本文を**永続化**でき、それが後続セッションで untrusted
+  vault content として読み戻される。`scripts/check-http.mjs` では独立カテゴリとして採点する
+  (general write に混ぜると、その flag を検査しないのと同じになる)。
 
 ### INV-4 Public repo / private vault 分離
 
@@ -304,6 +317,7 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `src/pathSafety.ts`                                                                                                                                                                                              | INV-1         | ガード段を消さない/順序を変えない。返すのは raw を NFC 正規化したパス (decode 結果では操作しない)。                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `src/knowledgeStore.ts`                                                                                                                                                                                          | INV-1,2,3     | `walkMarkdownFiles`/`readDocument`/`resolveForWrite`/`resolveForExistingRead` は realpath 照合必須。`applyPlannedUpdate` の stale sha と `applyPlannedDocumentCreate` の content sha・confirmed path 照合を消さない。create parent は component ごとに symlink を拒否。scan は `mapWithConcurrency` で FD 上限を絞り、`readDocumentResilient` は **transient FS code (EAGAIN/EMFILE/ENFILE) だけ** retry。containment throw や読取不能は**握り潰さず skip (root 外を絶対に返さない)** — fail-closed を弱めない。**INV-9**: 監査サブツリー予約 (`assertNotAuditReserved`) を `resolveForWrite`(create の共通 choke)/`applyPlannedUpdate`(update・権威)/`planUpdate`・`validateCreateTarget`(早期) で通す (realpath 照合)。 |
+| `src/atomicWrite.ts` | INV-3 | 同一ディレクトリ temp (dot 始まり・`.md` で終わらない = walk に拾われない) → `chmod` で権限複製 (`mode` open flag は umask に削られる) → `rename`。**`os.tmpdir()` に置かない** (rename は同一 FS 内でしか atomic でない)。失敗時は temp を掃除して throw。fsync は**入っていない**ので durable と書かない。 |
 | `src/auditStore.ts` | INV-9 | append=create-only(`wx`)+EEXIST 同一 no-op/相違 reject、CAS=sha256 照合+tmp+rename `0600`、in-process mutex で直列化、subdir realpath を各操作で再解決。containment/mutex/create-only を弱めない。生の token/本文をログに出さない。 |
 | `src/skillStore.ts`                                                                                                                                                                                              | INV-1,3,8     | fixed file allowlist・frontmatter 検証・size cap・create-only・same-filesystem atomic publish を弱めない。                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `src/multiRootStore.ts`                                                                                                                                                                                          | INV-1,3       | fs 直接アクセス禁止 (子 `KnowledgeStore` 経由のみ)。write の primary 限定・overlap 拒否・プレフィックス処理を弱めない。                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -351,7 +365,14 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
   `fetch` が **両サイトで** fail closed (`KnowledgeStore` = 単一ルート / `MultiRootStore` =
   squatter を primary、被害者を read-only root に置き **composite でしか見えない衝突**にする) /
   `plan_document_update` が偽装先に staged されない / 衝突が無ければ uuid・path 参照は従来どおり
-- two-step: plan→apply 成功 / 外部編集後 apply → stale reject
+- two-step: plan→apply 成功 / 外部編集後 apply → stale reject / **apply は rename で置換**
+  (`ino` が変わる・権限保持・`.tmp` を残さない) / **同一基点の 2 本同時 apply は 1 本成功 + 1 本 stale**
+  (直列化が無いと**両方成功**する = lost update)
+- **parse cache の鮮度**: 同サイズ・**mtime を固定値に戻した**外部編集を read が拾う。
+  ★ **mtime は「観測した値を戻す」のでは駄目** — `utimes` が ns を切り捨てるので mtimeNs が
+  変わり、**ガードを外しても緑になる** (実測でこれを踏んだ)。秒単位の固定値を前後で入れる
+- 一段階 create の gate: 既定で `create_document` が**登録されない** (両 era・両 transport) /
+  `MCP_ALLOW_LEGACY_CREATE_DOCUMENT=1` で戻る (「消した」のではなく「gate した」ことの確認)
 - exact-path create: plan は対象側無変更 / `はい` + 自由記述の確認payload / confirmed path不一致・
   staged content改ざん・非primary root・traversal・symlink parentをreject / MCP E2Eでapply→read-back
 - overwrite: 同一 create 2 回目・plan後collision → already exists
