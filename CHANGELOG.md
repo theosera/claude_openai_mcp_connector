@@ -42,6 +42,26 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   withholding test report `to not include 'append_audit_report'`; removing the
   boot check makes the server start instead of refusing.
 
+- **Tool errors no longer describe the host filesystem.** Documents were already
+  projected through an allowlist that withholds `absolutePath`, on the ground
+  that the host's directory layout is not a client's business. The error channel
+  had no such boundary: the server sends a thrown error's `message` back as the
+  tool result, and a raw `fs` rejection carries the path it failed on. Applying
+  an unknown `patch_id` echoed the patch-state directory — OS username and home
+  layout included — and applying an update whose target had been deleted since
+  planning echoed the vault root, from a `realpath` call in a different function
+  than the patch reads.
+
+  The fix excludes the whole class rather than the known call sites. Enumerating
+  sites is what already failed here: the audit that reported this counted two of
+  the four, and the next `fs` call added would leak again. `withClientSafeErrors`
+  wraps the stores every tool handler goes through, so a system error never
+  reaches a client and a store method added later is covered by default; only
+  the errno code survives, since `ENOENT` versus `EACCES` is useful to a caller
+  and names nothing about the host. Errors the server writes itself pass through
+  unchanged, and the apply paths now say "no staged patch with that patch_id"
+  instead of leaving a caller to infer it.
+
 - **A constrained write surface can no longer author a document's identity.**
   Refusing to honour a forged `id` on the read side left the other half open:
   the surfaces that let a client choose a vault file's **bytes** could still
