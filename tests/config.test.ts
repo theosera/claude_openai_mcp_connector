@@ -334,3 +334,69 @@ describe("patch state directory default", () => {
     expect(dir.startsWith(process.cwd())).toBe(true);
   });
 });
+
+describe("server state must live outside the knowledge root", () => {
+  const oauthEnv = (root: string, stateFile: string): NodeJS.ProcessEnv => ({
+    KNOWLEDGE_ROOT: root,
+    MCP_AUTH_TOKEN: "token-for-tests",
+    MCP_OAUTH_ENABLED: "1",
+    MCP_HTTP_PUBLIC_URL: "https://vault.example",
+    MCP_OAUTH_PASSWORD: "correct horse battery staple",
+    MCP_OAUTH_STATE_FILE: stateFile
+  });
+
+  let root: string;
+  let outside: string;
+
+  beforeEach(async () => {
+    root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-state-vault-")));
+    outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-state-outside-")));
+  });
+
+  it("rejects an OAuth state file inside the vault and names the root", () => {
+    const inside = path.join(root, "notes", "oauth-state.json");
+    expect(() => loadHttpConfig(oauthEnv(root, inside))).toThrow(/MCP_OAUTH_STATE_FILE/);
+    expect(() => loadHttpConfig(oauthEnv(root, inside))).toThrow(/knowledge root "vault"/);
+  });
+
+  it("accepts an OAuth state file outside the vault", () => {
+    const target = path.join(outside, "oauth-state.json");
+    expect(loadHttpConfig(oauthEnv(root, target)).oauth?.stateFile).toBe(target);
+  });
+
+  // The case a string-prefix comparison misses: the configured path shares no
+  // prefix with the root, and only resolving the symlinked parent shows that the
+  // file would be written into the vault.
+  it("rejects a state file reached through a symlink into the vault", async () => {
+    await fs.mkdir(path.join(root, "inner"));
+    const link = path.join(outside, "link-into-vault");
+    await fs.symlink(path.join(root, "inner"), link);
+
+    const through = path.join(link, "oauth-state.json");
+    expect(through.startsWith(root)).toBe(false);
+    expect(() => loadHttpConfig(oauthEnv(root, through))).toThrow(/knowledge root "vault"/);
+  });
+
+  it("rejects a state file inside a read-only secondary root, naming that root", () => {
+    const inside = path.join(root, "oauth-state.json");
+    const env = oauthEnv(root, inside);
+    delete env.KNOWLEDGE_ROOT;
+    env.KNOWLEDGE_ROOTS = `primary=${outside},archive=${root}`;
+    expect(() => loadHttpConfig(env)).toThrow(/knowledge root "archive"/);
+  });
+
+  it("requires the roots to be configured before persistence can be verified", () => {
+    const env = oauthEnv(root, path.join(outside, "oauth-state.json"));
+    delete env.KNOWLEDGE_ROOT;
+    expect(() => loadHttpConfig(env)).toThrow(/KNOWLEDGE_ROOT/);
+  });
+
+  it("rejects an explicit patch-state directory inside the vault", () => {
+    expect(() => loadConfig({ KNOWLEDGE_ROOT: root, MCP_PATCH_STATE_DIR: path.join(root, ".patches") })).toThrow(
+      /MCP_PATCH_STATE_DIR/
+    );
+    expect(loadConfig({ KNOWLEDGE_ROOT: root, MCP_PATCH_STATE_DIR: path.join(outside, "patches") }).patchStateDir).toBe(
+      path.join(outside, "patches")
+    );
+  });
+});

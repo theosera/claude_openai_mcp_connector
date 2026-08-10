@@ -175,6 +175,71 @@ function defaultPatchStateDir(primaryRoot: string): string {
   return path.join(home, ".mcp-state", `patches-${tag}`);
 }
 
+/**
+ * Canonicalize a host path far enough to compare it against a vault root.
+ *
+ * Server state files are configured before they exist, so `realpath` on the
+ * target itself usually fails. Resolve the deepest ancestor that DOES exist and
+ * re-attach the missing tail: symlinked parents are followed (a state file under
+ * a symlink into the vault is still in the vault), while the not-yet-created
+ * components stay literal. NFC because macOS hands back decomposed names, and a
+ * decomposed path would compare unequal to the same name typed in an env file.
+ */
+function canonicalizeForRootComparison(target: string): string {
+  const resolved = path.resolve(target);
+  const missing: string[] = [];
+  let existing = resolved;
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(existing), ...missing.slice().reverse()).normalize("NFC");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+      const parent = path.dirname(existing);
+      if (parent === existing) {
+        return resolved.normalize("NFC");
+      }
+      missing.push(path.basename(existing));
+      existing = parent;
+    }
+  }
+}
+
+/**
+ * Refuse server state that would land inside a knowledge root.
+ *
+ * A knowledge root is a READ SURFACE: everything under it is walked, indexed,
+ * and reachable through search / fetch. Server state is the opposite kind of
+ * thing — the OAuth state file holds the registered-client list, the per-file
+ * salt and the HMAC tag; a staged patch holds the full proposed text of a
+ * document. Neither is a note, and putting either inside the vault publishes it
+ * to every client that can read.
+ *
+ * Checked here, at boot, for the same reason as the subtree-disjointness asserts
+ * above: a misconfiguration that only shows up as "these files are searchable"
+ * is one nobody notices.
+ */
+function assertOutsideKnowledgeRoots(
+  variable: string,
+  configuredValue: string,
+  target: string,
+  roots: readonly KnowledgeRoot[]
+): void {
+  const canonicalTarget = canonicalizeForRootComparison(target);
+  for (const root of roots) {
+    const canonicalRoot = canonicalizeForRootComparison(root.path);
+    const relative = path.relative(canonicalRoot, canonicalTarget);
+    if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+      throw new Error(
+        `${variable}="${configuredValue}" resolves inside the knowledge root "${root.name}". ` +
+          "Server state must live outside the vault: everything under a root is indexed and readable " +
+          "through search / fetch. Point it somewhere else (for example under the home directory)."
+      );
+    }
+  }
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const knowledgeRoots = parseKnowledgeRoots(env);
 
@@ -225,6 +290,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const searchRecencyWeight = parsePositiveNumber(env.MCP_SEARCH_RECENCY_WEIGHT);
   const searchRecencyHalfLifeDays = parsePositiveNumber(env.MCP_SEARCH_RECENCY_HALFLIFE_DAYS);
 
+  const rawPatchStateDir = env.MCP_PATCH_STATE_DIR?.trim();
+  const patchStateDir = path.resolve(rawPatchStateDir || defaultPatchStateDir(knowledgeRoots[0].path));
+  if (rawPatchStateDir) {
+    // Only an explicit setting can land in the vault — the default is anchored
+    // to the home directory. A staged patch is the full proposed text of a
+    // document, so a patch directory inside a root republishes every pending
+    // edit as vault content.
+    assertOutsideKnowledgeRoots("MCP_PATCH_STATE_DIR", rawPatchStateDir, patchStateDir, knowledgeRoots);
+  }
+
   return {
     knowledgeRoots,
     writeMode,
@@ -239,7 +314,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     // `||` short-circuit matters — an explicit setting must keep working on a
     // host with no home directory, so the fallback is only evaluated when the
     // operator named nothing.
-    patchStateDir: path.resolve(env.MCP_PATCH_STATE_DIR?.trim() || defaultPatchStateDir(knowledgeRoots[0].path)),
+    patchStateDir,
     skillsSubdir,
     auditSubdir,
     scanConcurrency,
@@ -443,6 +518,16 @@ function loadOAuthConfig(
   // Optional token persistence (opt-in, like every new capability). Resolved
   // to an absolute path so a supervisor's cwd cannot change where state lands.
   const stateFile = env.MCP_OAUTH_STATE_FILE?.trim();
+  let resolvedStateFile: string | undefined;
+  if (stateFile) {
+    resolvedStateFile = path.resolve(stateFile);
+    // The roots are parsed here rather than threaded in because this is the only
+    // place that needs them, and needing them is conditional: an operator who
+    // never opts into persistence should not have to satisfy this requirement.
+    // Failing when the roots cannot be read is the fail-closed half — without
+    // them there is no way to know whether the state file is inside the vault.
+    assertOutsideKnowledgeRoots("MCP_OAUTH_STATE_FILE", stateFile, resolvedStateFile, parseKnowledgeRoots(env));
+  }
   return {
     issuer: publicUrl,
     loginPassword,
@@ -450,6 +535,6 @@ function loadOAuthConfig(
     refreshTokenTtlSec: ttl(env.MCP_OAUTH_REFRESH_TTL, 2592000),
     codeTtlSec: ttl(env.MCP_OAUTH_CODE_TTL, 60),
     allowWrite: allowAnyWrite,
-    stateFile: stateFile ? path.resolve(stateFile) : undefined
+    stateFile: resolvedStateFile
   };
 }

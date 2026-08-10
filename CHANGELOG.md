@@ -8,6 +8,27 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **Server state files may no longer be placed inside the vault.** A knowledge
+  root is a read surface — everything under it is walked, indexed, and reachable
+  through `search` / `fetch`. Two settings could put server state there and
+  nothing said no: `MCP_OAUTH_STATE_FILE`, which holds the registered-client
+  list, the per-file salt and the HMAC tag, and an explicit
+  `MCP_PATCH_STATE_DIR`, whose staged plans hold the full proposed text of a
+  document. Both are now checked at boot against every configured root, with
+  symlinked parents resolved so a path that shares no prefix with the root is
+  still caught. The default patch directory was already anchored to the home
+  directory and is unaffected.
+
+  **Migration:** opting into `MCP_OAUTH_STATE_FILE` now requires
+  `KNOWLEDGE_ROOT` (or `KNOWLEDGE_ROOTS`) to be set, because without the roots
+  there is nothing to verify the location against. A deployment that already
+  keeps its state outside the vault needs no change.
+
+  `MCP_ENV_FILE` is deliberately **not** covered: it is read before the roots are
+  known — it is one of the things that can supply them — so the same check
+  cannot run there without a different mechanism. Left open rather than
+  half-applied.
+
 - **Tool errors no longer describe the host filesystem.** Documents were already
   projected through an allowlist that withholds `absolutePath`, on the ground
   that the host's directory layout is not a client's business. The error channel
