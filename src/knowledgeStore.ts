@@ -251,7 +251,7 @@ export class KnowledgeStore implements VaultStore {
     patchId: string,
     confirmedTargetPath: string
   ): Promise<{ document: MarkdownDocument; diff: string }> {
-    const patchRaw = await fs.readFile(this.patchPath(patchId), "utf8");
+    const patchRaw = await this.readPatchFile(patchId);
     const patch = JSON.parse(patchRaw) as Partial<PlannedDocumentCreate>;
     if (
       patch.operation !== "document_create" ||
@@ -336,7 +336,7 @@ export class KnowledgeStore implements VaultStore {
   }
 
   async applyPlannedUpdate(patchId: string): Promise<{ document: MarkdownDocument; diff: string }> {
-    const patchRaw = await fs.readFile(this.patchPath(patchId), "utf8");
+    const patchRaw = await this.readPatchFile(patchId);
     const patch = JSON.parse(patchRaw) as PlannedPatch & { operation?: string };
     if (patch.operation === "document_create") {
       throw new Error("Patch is not a planned document update.");
@@ -490,6 +490,24 @@ export class KnowledgeStore implements VaultStore {
       return document;
     } finally {
       await handle.close();
+    }
+  }
+
+  /**
+   * Read a staged patch, turning "no such patch" into a message a caller can act
+   * on. The raw ENOENT would name `<MCP_PATCH_STATE_DIR>/<uuid>.json`; the
+   * boundary in src/clientSafeError.ts already stops that from reaching a client,
+   * so this exists for the message, not for the containment. Both apply paths go
+   * through here so the wording cannot drift between them.
+   */
+  private async readPatchFile(patchId: string): Promise<string> {
+    try {
+      return await fs.readFile(this.patchPath(patchId), "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new Error("No staged patch with that patch_id: it may have already been applied.", { cause: error });
+      }
+      throw error;
     }
   }
 
