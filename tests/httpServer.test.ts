@@ -154,13 +154,51 @@ describe("buildMcpServer tool surface", () => {
     expect(names).not.toContain("apply_planned_update");
   });
 
-  it("includes write tools when allowWrite is true (stdio / opt-in)", async () => {
+  it("includes the two-step write tools when allowWrite is true (stdio / opt-in)", async () => {
     const names = await toolNames(true);
-    expect(names).toContain("create_document");
     expect(names).toContain("plan_document_create");
     expect(names).toContain("apply_planned_document_create");
     expect(names).toContain("plan_document_update");
     expect(names).toContain("apply_planned_update");
+  });
+
+  // The legacy one-step create is the only document write with no plan/apply
+  // pair, so "the current user approved this exact target and content" was
+  // enforced by the server instructions asking the model — and the model's other
+  // input is untrusted vault content (INV-5). allowWrite alone must therefore
+  // NOT bring it back; it needs its own opt-in, like the audit tools do.
+  it("withholds the legacy create_document unless its own flag is set", async () => {
+    expect(await toolNames(true)).not.toContain("create_document");
+  });
+
+  it("registers create_document when the legacy flag accompanies allowWrite", async () => {
+    const store = await makeStore();
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = buildMcpServer(store, {
+      allowWrite: true,
+      allowLegacyCreateDocument: true,
+      includeChatgptCompat: true
+    });
+    await server.connect(serverTransport);
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await client.connect(clientTransport);
+    const names = (await client.listTools()).tools.map((t) => t.name);
+    await client.close();
+    expect(names).toContain("create_document");
+  });
+
+  // The flag is a modifier on allowWrite, never a way around it: a read-only
+  // endpoint that somehow carried the legacy flag must still expose no writes.
+  it("keeps create_document off when the legacy flag is set without allowWrite", async () => {
+    const store = await makeStore();
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = buildMcpServer(store, { allowWrite: false, allowLegacyCreateDocument: true });
+    await server.connect(serverTransport);
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await client.connect(clientTransport);
+    const names = (await client.listTools()).tools.map((t) => t.name);
+    await client.close();
+    expect(names).not.toContain("create_document");
   });
 
   it("exposes only Skill writes when the dedicated flag and store are present", async () => {
@@ -268,7 +306,13 @@ describe("buildMcpServer tool surface", () => {
   it("advertises explicit read/write safety annotations", async () => {
     const store = await makeStore();
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    const server = buildMcpServer(store, { allowWrite: true, includeChatgptCompat: true });
+    // Legacy create included here on purpose: its annotations are part of the
+    // contract for as long as the tool can be enabled at all.
+    const server = buildMcpServer(store, {
+      allowWrite: true,
+      allowLegacyCreateDocument: true,
+      includeChatgptCompat: true
+    });
     await server.connect(serverTransport);
     const client = new Client({ name: "test", version: "0.0.0" });
     await client.connect(clientTransport);
@@ -423,6 +467,7 @@ describe("HTTP transport integration", () => {
       port: 0,
       authToken: token,
       allowWrite: false,
+      allowLegacyCreateDocument: false,
       allowSkillWrite: false,
       allowAuditWrite: false,
       allowedHosts: [],
@@ -620,6 +665,7 @@ describe("HTTP transport integration", () => {
         port: 0,
         authToken: token,
         allowWrite: false,
+        allowLegacyCreateDocument: false,
         allowSkillWrite: false,
         allowAuditWrite: false,
         allowedHosts: [],

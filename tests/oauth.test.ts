@@ -748,6 +748,7 @@ describe("OAuth end-to-end over HTTP", () => {
       allowWrite: false,
       allowSkillWrite: false,
       allowAuditWrite: false,
+      allowLegacyCreateDocument: false,
       allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
       allowedOrigins: [],
       oauth: {
@@ -848,6 +849,7 @@ describe("OAuth end-to-end over HTTP", () => {
       allowWrite: false,
       allowSkillWrite: false,
       allowAuditWrite: false,
+      allowLegacyCreateDocument: false,
       allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
       allowedOrigins: [],
       oauth: {
@@ -895,6 +897,7 @@ describe("OAuth end-to-end over HTTP", () => {
       allowWrite: true,
       allowSkillWrite: false,
       allowAuditWrite: false,
+      allowLegacyCreateDocument: false,
       allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
       allowedOrigins: [],
       oauth: {
@@ -911,11 +914,11 @@ describe("OAuth end-to-end over HTTP", () => {
     // A read-scoped token must not see write tools...
     const readTools = await listToolNamesOverHttp(issuer, await oauthObtainToken(issuer, "vault.read"));
     expect(readTools).toContain("search");
-    expect(readTools).not.toContain("create_document");
+    expect(readTools).not.toContain("plan_document_create");
 
     // ...but a vault.write-scoped token does.
     const writeTools = await listToolNamesOverHttp(issuer, await oauthObtainToken(issuer, "vault.read vault.write"));
-    expect(writeTools).toContain("create_document");
+    expect(writeTools).toContain("plan_document_create");
   });
 
   it("states the scope the consent page is about to grant", () => {
@@ -1032,6 +1035,7 @@ describe("OAuth end-to-end over HTTP", () => {
       allowWrite: true,
       allowSkillWrite: false,
       allowAuditWrite: false,
+      allowLegacyCreateDocument: false,
       allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
       allowedOrigins: [],
       oauth: {
@@ -1062,15 +1066,15 @@ describe("OAuth end-to-end over HTTP", () => {
     const client = new Client({ name: "swap-test", version: "0.0.0" });
     await client.connect(transport);
 
-    expect((await client.listTools()).tools.map((t) => t.name)).toContain("create_document");
+    expect((await client.listTools()).tools.map((t) => t.name)).toContain("plan_document_create");
 
     presented = readToken;
-    expect((await client.listTools()).tools.map((t) => t.name)).not.toContain("create_document");
+    expect((await client.listTools()).tools.map((t) => t.name)).not.toContain("plan_document_create");
 
     // ...and back, so the result tracks the token rather than being latched by
     // the first downgrade.
     presented = writeToken;
-    expect((await client.listTools()).tools.map((t) => t.name)).toContain("create_document");
+    expect((await client.listTools()).tools.map((t) => t.name)).toContain("plan_document_create");
 
     await client.close();
   });
@@ -1092,6 +1096,7 @@ describe("OAuth end-to-end over HTTP", () => {
       allowWrite: false,
       allowSkillWrite: false,
       allowAuditWrite: false,
+      allowLegacyCreateDocument: false,
       allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
       allowedOrigins: [],
       oauth: {
@@ -1145,6 +1150,7 @@ describe("OAuth end-to-end over HTTP", () => {
       allowWrite: true,
       allowSkillWrite: false,
       allowAuditWrite: false,
+      allowLegacyCreateDocument: false,
       allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
       allowedOrigins: [],
       oauth: {
@@ -1160,18 +1166,18 @@ describe("OAuth end-to-end over HTTP", () => {
 
     const readTools = await listToolNamesOverModernHttp(issuer, await oauthObtainToken(issuer, "vault.read"));
     expect(readTools).toContain("search");
-    expect(readTools).not.toContain("create_document");
+    expect(readTools).not.toContain("plan_document_create");
 
     const writeTools = await listToolNamesOverModernHttp(
       issuer,
       await oauthObtainToken(issuer, "vault.read vault.write")
     );
-    expect(writeTools).toContain("create_document");
+    expect(writeTools).toContain("plan_document_create");
 
     // ...and the read-scoped token still sees no write tools afterwards, so the
     // surface follows the presented token rather than the first one seen.
     const readAgain = await listToolNamesOverModernHttp(issuer, await oauthObtainToken(issuer, "vault.read"));
-    expect(readAgain).not.toContain("create_document");
+    expect(readAgain).not.toContain("plan_document_create");
   });
 
   it("gates Skill writes separately from general document writes", async () => {
@@ -1195,6 +1201,7 @@ describe("OAuth end-to-end over HTTP", () => {
       allowWrite: false,
       allowSkillWrite: true,
       allowAuditWrite: false,
+      allowLegacyCreateDocument: false,
       allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
       allowedOrigins: [],
       oauth: {
@@ -1214,7 +1221,7 @@ describe("OAuth end-to-end over HTTP", () => {
     const writeTools = await listToolNamesOverHttp(issuer, await oauthObtainToken(issuer, "vault.read vault.write"));
     expect(writeTools).toContain("plan_skill_create");
     expect(writeTools).toContain("apply_planned_skill_create");
-    expect(writeTools).not.toContain("create_document");
+    expect(writeTools).not.toContain("plan_document_create");
   });
 
   it("keeps OAuth sessions across a server restart when a state file is configured", async () => {
@@ -1229,6 +1236,7 @@ describe("OAuth end-to-end over HTTP", () => {
       allowWrite: false,
       allowSkillWrite: false,
       allowAuditWrite: false,
+      allowLegacyCreateDocument: false,
       allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
       allowedOrigins: [],
       oauth: {

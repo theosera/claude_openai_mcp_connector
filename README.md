@@ -418,8 +418,14 @@ KNOWLEDGE_ROOT=/abs/path/to/private/vault \
 ```
 
 ```text
-MCP stdio transport ready (write=on, documents=on, skills=on, audit=reserved-only)
+MCP stdio transport ready (write=on, documents=on, legacy_create=off, skills=on, audit=reserved-only)
 ```
+
+`legacy_create=off` is also the expected value. It means the one-step
+`create_document` is **not** registered: every document write this process offers
+goes plan → your approval → apply, so nothing reaches the vault between a tool
+call and a diff you have seen. Set `MCP_ALLOW_LEGACY_CREATE_DOCUMENT=1` only if
+you still depend on the old routed-capture route.
 
 `audit` has three states, and **`reserved-only` is the expected one** for the env
 file above — it is the recommended configuration, not a half-finished one:
@@ -481,7 +487,7 @@ client entirely; nothing here depends on where that client keeps its logs.
 - `list_projects`
 - `trace_sources` — backlinks include relative Markdown links, resolved against
   the linking note's own directory.
-- `create_document` _(write — stdio, or HTTP only with `MCP_HTTP_ALLOW_WRITE=1`)_
+- `create_document` _(write, **off by default on every transport** — needs write to be enabled **and** `MCP_ALLOW_LEGACY_CREATE_DOCUMENT=1`; the one-step legacy route, superseded by `plan_document_create` → `apply_planned_document_create`)_
 - `plan_document_create` _(write; exact path, complete-file diff, no target mutation)_
 - `apply_planned_document_create` _(write; exact confirmed path required, create-only)_
 - `plan_document_update` _(write)_

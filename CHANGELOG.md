@@ -6,6 +6,65 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- **The legacy one-step `create_document` is now off by default on every
+  transport**, behind **`MCP_ALLOW_LEGACY_CREATE_DOCUMENT`**. It was the only
+  document write with no plan/apply pair, so "the current user approved this
+  exact target and content" was enforced by the server instructions asking the
+  model — whose other input is untrusted vault content (INV-5). On stdio it was
+  registered unconditionally.
+
+  Path containment, the frontmatter allowlist and `flag: "wx"` always applied,
+  and the frontmatter (including `id`) is server-built, so the tool could never
+  escape the vault, overwrite a note, or capture another document's identity.
+  What it could do without approval is **persist** attacker-chosen body text
+  under `projects/`, which every later session reads back as an ordinary note.
+
+  `scripts/check-http.mjs` scores it as its own category, so an endpoint that
+  exposes it without the flag now **fails** the operator check instead of being
+  permitted under general write. Both startup lines report `legacy_create=`.
+
+  **Migration:** set `MCP_ALLOW_LEGACY_CREATE_DOCUMENT=1` to keep the routed
+  `projects/<client>/<project>/<slug>.md` capture, or move to
+  `plan_document_create` → `apply_planned_document_create`, which takes an exact
+  path and requires confirmation.
+
+### Fixed
+
+- **`apply_planned_update` replaced a note in place, and was not strictly
+  compare-and-swap.** It read the target, hashed it, compared against the plan,
+  then wrote over the file — truncate-then-write, so an interrupted apply (crash,
+  full disk, kill) left the note half-written with no second copy in the vault.
+  It now writes a same-directory temp file, created no wider than the target and
+  `chmod`'d to exactly its permission bits, and renames it over the target. The
+  other three writers in the codebase already worked this way.
+
+  The read/hash/write is also serialized in-process: MCP pipelines concurrent
+  tool calls, so two applies staged from one base could both see a non-stale hash
+  and the second would silently discard the first. The second now re-reads what
+  the first wrote and is rejected as stale.
+
+  Atomic is not durable (no `fsync`, matching the other writers), and in-process
+  is not cross-process — two connector processes on one vault still race.
+
+  **Replacing a file is not the same operation as writing one, so two things
+  changed for operators.** An apply now needs write permission on the directory
+  containing the note, not only on the note; a vault that grants file-level edit
+  rights inside a non-writable folder gets a message naming that requirement
+  instead of a bare `EACCES`. And because the replacement is a new inode, uid and
+  gid are restored best-effort (relevant when the connector runs as root or a
+  service account) — ACLs and extended attributes are **not** carried, so a vault
+  relying on either should stay on a single-owner layout.
+
+- **The parse cache could serve a stale note indefinitely.** Validity was
+  `mtimeMs` + size, which cannot separate two writes inside one millisecond and
+  is defeated by any editor or sync client (iCloud Drive, for one) that rewrites
+  a note to the same length and restores its mtime. The signature is now
+  `mtimeNs` + `ctimeNs` + `ino` + size. `plan_document_update` additionally
+  derives the planned frontmatter from the bytes `expected_sha256` covers, so a
+  stale parse cannot re-serialize frontmatter an external editor already changed.
+
 ## [0.8.0] — 2026-08-10
 
 ### Security

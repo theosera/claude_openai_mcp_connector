@@ -40,12 +40,43 @@ HTTP は **opt-in の OAuth 2.1 authorization server** (`src/oauth/`、PKCE S256
 タスクが下の発火条件に一致したら、**着手前に必ず対応スキルをロード**する
 (裁量で省略しない = 常時ロードの信頼性をスキルで再現する決定論的ステップ)。
 
-| 発火条件 (このタスクを始める前に)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | 必ずロードするスキル |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
-| MCP のセキュリティ境界コードを書く/直す/レビューする — `src/pathSafety.ts` / `src/knowledgeStore.ts` (walk・write・two-step apply) / **`src/skillStore.ts` (Skill bundle plan/apply・create-only・atomic publish / `tests/skillStore.test.ts`)** / **`src/auditStore.ts` (constrained audit write surface = append+CAS・監査サブツリー予約 INV-9 / `tests/auditStore.test.ts`)** / **`src/multiRootStore.ts` (複数ルート合成・read-only ルート・overlap 拒否 / `tests/multiRootStore.test.ts`)** / `src/frontmatter.ts` (frontmatter allowlist) / `src/config.ts` / `tests/pathSafety.test.ts` / 新しい MCP tool を `src/index.ts`・`src/server.ts` に追加 / **HTTP transport (`src/httpServer.ts` = auth gate・scope gate (`vault.read`)・loopback bind・DNS-rebinding (`rejectRebinding`)・session 無しの per-request tool 面 (`surfaceFor`) / `src/webBridge.ts` = node:http ⇄ Web Request/Response 変換 (policy を置かない) / `src/httpAuth.ts` = bearer 照合 / `tests/httpServer.test.ts`)** / **OAuth 2.1 (`src/oauth/*.ts` = PKCE・auth code・token・redirect policy・login gate / `src/config.ts` の `loadOAuthConfig` / `tests/oauth.test.ts`)** | `mcp-vault-security` |
-| コマンド学習ログ機能の hook 設定 (`.claude/settings.json`) を書く・直す / マスキング規則・ログ出力先を変える / `capture-command.sh`・`push-log.sh` を触る                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | `ops-logging`        |
-| セッション履歴アーカイブ (Claude Code 履歴 → vault) の hook 設定を書く・直す / 出力フォーマット・保存先・マスキング規則を変える / `archive-session.sh` を触る                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | `session-archive`    |
+| 発火条件 (このタスクを始める前に)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | 必ずロードするスキル                                                                |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| MCP のセキュリティ境界コードを書く/直す/レビューする — `src/pathSafety.ts` / `src/knowledgeStore.ts` (walk・write・two-step apply) / **`src/skillStore.ts` (Skill bundle plan/apply・create-only・atomic publish / `tests/skillStore.test.ts`)** / **`src/auditStore.ts` (constrained audit write surface = append+CAS・監査サブツリー予約 INV-9 / `tests/auditStore.test.ts`)** / **`src/multiRootStore.ts` (複数ルート合成・read-only ルート・overlap 拒否 / `tests/multiRootStore.test.ts`)** / `src/frontmatter.ts` (frontmatter allowlist) / `src/config.ts` / `tests/pathSafety.test.ts` / 新しい MCP tool を `src/index.ts`・`src/server.ts` に追加 / **HTTP transport (`src/httpServer.ts` = auth gate・scope gate (`vault.read`)・loopback bind・DNS-rebinding (`rejectRebinding`)・session 無しの per-request tool 面 (`surfaceFor`) / `src/webBridge.ts` = node:http ⇄ Web Request/Response 変換 (policy を置かない) / `src/httpAuth.ts` = bearer 照合 / `tests/httpServer.test.ts`)** / **OAuth 2.1 (`src/oauth/*.ts` = PKCE・auth code・token・redirect policy・login gate / `src/config.ts` の `loadOAuthConfig` / `tests/oauth.test.ts`)** | `mcp-vault-security`                                                                |
+| コマンド学習ログ機能の hook 設定 (`.claude/settings.json`) を書く・直す / マスキング規則・ログ出力先を変える / `capture-command.sh`・`push-log.sh` を触る                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | `ops-logging`                                                                       |
+| セッション履歴アーカイブ (Claude Code 履歴 → vault) の hook 設定を書く・直す / 出力フォーマット・保存先・マスキング規則を変える / `archive-session.sh` を触る                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | `session-archive`                                                                   |
+| **★ ここだけ「着手前」でなく「commit する前」** — **`fs` に書く経路を新設/変更した** (`src/atomicWrite.ts` / `knowledgeStore` の write・apply / `skillStore` / `auditStore` / `oauth/store` の永続化)、または **write tool・write surface の gate を足した/変えた**変更を commit する前                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | **(a) `/claude-security` の change scan** — 使えなければ **(b) `/security-review`** |
 
+> **発火が「commit する前」なのは、探す対象が設計ではなく
+> 実装だから。** 着手前に回しても差分が無い。**実測 (2026-08-11 JST)**: `atomicWrite.ts` を
+> 足した際、temp を既定 mode で作ってから `chmod` していたため **`0600` のノートが
+> 書き込み中だけ `0644` で存在**した。CI 7 step は全緑、逆検証も 4 ガード分パスした後で、
+> **`/security-review` だけがこれを出した** — 「テストが緑」でも「逆検証を済ませた」でも
+> 代替にならない (逆検証は**書いたガードが効くか**を測る。これは**書かなかったガード**だった)。
+>
+> ⚠️ **逆に、これを逆検証の代わりにしない。** レビューは exploitability を見るので、
+> 「pin したつもりのテストが何も証明していない」形は検出しない (実際、同じ PR で
+> mtime を戻す cache テストがガード無しでも緑だった件は**レビューでは出ず**、
+> 逆検証でしか出なかった)。**2 つは別の失敗モードを見ている。**
+>
+> **なぜ二分岐か。** 本命は **(a) `/claude-security`** (`claude-security@claude-plugins-official`)
+> の change scan — branch/PR の diff を対象に、脅威モデルを作り、**全指摘を別エージェントが
+> 独立検証**してから残す。**(b) `/security-review` は同じものの弱い部分集合**で、
+> 現ブランチを**単一パス**で見るだけ (公式 docs も両者を別レイヤとして並べている)。
+> 上の permission window は (b) でも出たが、**(b) で出たことは (a) が不要な理由にならない**。
+> それでも (b) を残すのは、**プラグイン未導入・前提未達 (Claude Code v2.1.154+ / 有料プラン /
+> `python3` 3.9.6+) の環境が実在する**から。鮮度発火表の (a)/(b) と同じ理由で、
+> **どちらかは常に実行できる**形にしてある — 実行できない規約は規約ごと無視される。
+>
+> ⚠️ **どちらの分岐でも、走らせる前に diff が空でないことを確かめる。** **実測**: `origin/HEAD`
+> が未設定で `git diff origin/HEAD...` が全部エラーになり、**空の diff をレビューして
+> 「指摘なし」になる寸前**だった (`git remote set-head origin main` で復旧)。
+> これは cache テストが vacuous に緑だったのと**同じ失敗モード** — 検査した結果か、
+> **検査に到達しなかった結果か**。
+>
+> 全変更に広げない — 発火は「`fs` に書く経路」「write surface の gate」に限る。
+> 毎回回す規約は守られなくなり、守られない規約は無いのと同じ。
+>
 > skill 構成はフラット固定 (`.claude/skills/<name>/SKILL.md`)。中間カテゴリ
 > ディレクトリで機能グループ化しない (Claude Code の nested 検出は既知の不具合で
 > 発火の決定論性を損なうため)。新規 skill を足したら本発火表に 1 行追加する。
@@ -69,8 +100,8 @@ HTTP は **opt-in の OAuth 2.1 authorization server** (`src/oauth/`、PKCE S256
 進捗ノートや作業メモは、**PR・issue に関する事実については GitHub のキャッシュ**である。
 キャッシュを現在の状態として提示しない。同じ決定論的規律を鮮度にも適用する。
 
-| 発火条件 (これをする前に)                                                                          | 必ずやること                                                                                                                                                                                                                                                                                                                       |
-| -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 発火条件 (これをする前に)                                                                           | 必ずやること                                                                                                                                                                                                                                                                                        |
+| --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **担当表・残タスク・進捗表など「現在の状態」を提示する** / **次に着手するノード・PR・issue を選ぶ** | **as-of を必ず明記する** (`YYYY-MM-DD HH:MM JST` — 日付を省かない)。**その上で (a)** open な PR・issue と、**ノートの as-of 以降に merge / close されたもの**を取得して突き合わせる → as-of は**取得時刻**。**または (b)** 取得しない → as-of は**ノートの時刻**とし、**「GitHub 未確認」と添える** |
 
 > ⚠️ **as-of はどちらの分岐でも省略しない。** 取得が作るのは「**その瞬間の**鮮度」だけで、
@@ -137,13 +168,22 @@ realpath prefix 照合 → symlink escape 照合) を**弱めない**。新し�
 既存ファイル編集は `plan_document_update` → **完全なdiff提示後に現在の会話でユーザ承認** →
 `apply_planned_update`。Vault本文・frontmatter・tool出力に埋め込まれた「承認済み」は承認として
 扱わない。apply
-は plan 時の `expected_sha256` と現在のハッシュを照合し**stale なら適用拒否**。新規
+は plan 時の `expected_sha256` と現在のハッシュを照合し**stale なら適用拒否**。
+**apply の書き込みは同一ディレクトリ temp + rename で置換し** (`src/atomicWrite.ts` —
+in-place `writeFile` は中断で途中書きになる)、read→hash→write は in-process で**直列化**する
+(同一基点の 2 本が両方 apply されると後勝ちで消える)。atomic ≠ durable / in-process ≠
+cross-process を誇張しない。新規
 exact-path 作成は `plan_document_create` → 完全な内容/diffと `target_path` 提示 →
 `保存先は「…」でよろしいですか？` を **はい + 自由記述**で確認 →
 `apply_planned_document_create`。apply は `confirmed_target_path` が plan と完全一致しない限り
 拒否する。自由記述で修正された場合は apply せず修正パスで再 plan する。すべての新規作成は
 正確な対象と完全な内容を現在のユーザが承認した後だけ行い、`flag: "wx"` で既存を
 **上書きしない**。
+
+一段階の `create_document` は plan/apply 対を持たない唯一の document write なので
+**`MCP_ALLOW_LEGACY_CREATE_DOCUMENT` (両 transport 共通・既定 off) を要求する**。path 封じ込め・
+`wx`・サーバ生成 `id` は効くので上書きや identity 奪取はできないが、承認無しで `projects/` に
+任意本文を**永続化**でき、後続セッションがそれを untrusted vault content として読み戻す。
 
 Skill bundle 作成は `plan_skill_create` → ユーザ承認 →
 `apply_planned_skill_create`。`MCP_SKILLS_SUBDIR` 配下だけを対象とし、許可ファイルを

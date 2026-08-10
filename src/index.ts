@@ -52,7 +52,13 @@ if (transport === "http") {
   process.stderr.write(
     `MCP HTTP transport listening on http://${where}/mcp ` +
       `(write=${httpConfig.allowWrite || httpConfig.allowSkillWrite || httpConfig.allowAuditWrite ? "on" : "off"}, ` +
-      `documents=${httpConfig.allowWrite ? "on" : "off"}, skills=${httpConfig.allowSkillWrite ? "on" : "off"}, ` +
+      `documents=${httpConfig.allowWrite ? "on" : "off"}, ` +
+      // Both flags, because both are required to register the tool. Reporting
+      // the variable alone would print `documents=off, legacy_create=on` for an
+      // endpoint that exposes no create_document at all — a startup line exists
+      // to describe the surface, not to echo the environment back.
+      `legacy_create=${httpConfig.allowWrite && httpConfig.allowLegacyCreateDocument ? "on" : "off"}, ` +
+      `skills=${httpConfig.allowSkillWrite ? "on" : "off"}, ` +
       `audit=${httpConfig.allowAuditWrite ? "on" : "off"}, ` +
       `oauth=${httpConfig.oauth ? "on" : "off"})\n`
   );
@@ -76,6 +82,13 @@ if (transport === "http") {
     () =>
       buildMcpServer(store, {
         allowWrite: true,
+        // Off unless MCP_ALLOW_LEGACY_CREATE_DOCUMENT is set, even though stdio
+        // is otherwise the full surface. "Local client" is not the same as
+        // "approved by the user": this process reads untrusted vault content
+        // (INV-5) and create_document is the one write that acts on a single
+        // call, so leaving it on by default would keep the server's approval
+        // claim resting on the model rather than on the plan/apply mechanism.
+        allowLegacyCreateDocument: appConfig.allowLegacyCreateDocument,
         allowSkillWrite: Boolean(skillStore),
         skillStore,
         // Registering the audit write tools is a SEPARATE decision from
@@ -142,6 +155,7 @@ if (transport === "http") {
   const auditState = !auditStore ? "off" : appConfig.stdioAllowAuditWrite ? "on" : "reserved-only";
   process.stderr.write(
     `MCP stdio transport ready (write=on, documents=on, ` +
+      `legacy_create=${appConfig.allowLegacyCreateDocument ? "on" : "off"}, ` +
       `skills=${skillStore ? "on" : "off"}, audit=${auditState})\n`
   );
 }

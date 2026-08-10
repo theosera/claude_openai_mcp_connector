@@ -118,14 +118,39 @@ describe("stdio dual-era serving", () => {
     // HTTP-transport property (INV-6), and moving to serveStdio must not have
     // quietly imported it here.
     expect(legacyTools).toEqual(
-      expect.arrayContaining(["create_document", "plan_document_update", "apply_planned_update"])
+      expect.arrayContaining(["plan_document_create", "plan_document_update", "apply_planned_update"])
     );
+
+    // ...with one exception, and it is not the HTTP default leaking in: the
+    // legacy one-step create is the only document write with no approval gap
+    // between the call and the vault changing, so it needs its own opt-in even
+    // on the local transport (MCP_ALLOW_LEGACY_CREATE_DOCUMENT, unset here).
+    expect(legacyTools).not.toContain("create_document");
+    expect(modernTools).not.toContain("create_document");
 
     // INV-5: the untrusted-vault-data boundary text reaches BOTH eras. Asserted
     // on the wire rather than on the constant, because the failure mode worth
     // catching is an era that never receives it.
     expect(legacyInstructions).toBe(SERVER_INSTRUCTIONS);
     expect(modernInstructions).toBe(SERVER_INSTRUCTIONS);
+  }, 60_000);
+
+  // The other half of the gate: with the opt-in set, the legacy route is still
+  // reachable for operators who depend on it. Without this the "withholds it"
+  // assertion above would also pass if the tool had simply been deleted, which
+  // is a different change with a different migration cost.
+  it("registers the legacy create_document when its own flag is set", async () => {
+    const client = new Client({ name: "legacy-create", version: "0.0.0" });
+    await client.connect(
+      new StdioClientTransport({
+        ...spawnArgs,
+        env: { ...serverEnv(), MCP_ALLOW_LEGACY_CREATE_DOCUMENT: "1" }
+      })
+    );
+    const tools = (await client.listTools()).tools.map((tool) => tool.name);
+    await client.close();
+
+    expect(tools).toContain("create_document");
   }, 60_000);
 
   it("serves a real tool call on the modern era, not just discovery", async () => {

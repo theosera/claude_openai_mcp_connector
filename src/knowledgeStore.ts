@@ -1,7 +1,9 @@
 import crypto from "node:crypto";
+import type { BigIntStats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createTwoFilesPatch } from "diff";
+import { replaceFileAtomically } from "./atomicWrite.js";
 import { assertFrontmatterPatch, parseMarkdownSafe, serializeMarkdown, titleFromMarkdown } from "./frontmatter.js";
 import { extractAllLocalLinks, extractMarkdownLinks, resolveRelativeLink } from "./markdownLinks.js";
 import { ensurePatchStateDir, PATCH_STATE_FILE_MODE } from "./patchState.js";
@@ -40,6 +42,31 @@ const SCAN_MAX_RETRIES = 4;
 const SCAN_RETRY_BASE_MS = 100;
 const TRANSIENT_FS_CODES = new Set(["EAGAIN", "EMFILE", "ENFILE"]);
 
+/**
+ * What the parse cache watches to decide a file is unchanged.
+ *
+ * `mtimeMs` + size alone was too weak in both directions that matter here:
+ * millisecond mtime cannot separate two writes inside the same tick, and an
+ * editor (or a sync client such as iCloud Drive) that rewrites a note to the
+ * same byte length while restoring its mtime — which `utimes` lets anything do —
+ * produced an identical signature over different bytes, so the stale parse was
+ * served indefinitely.
+ *
+ * `ctimeNs` is the load-bearing addition: the inode change time moves on every
+ * write and, unlike mtime, cannot be set to an arbitrary value by userspace.
+ * `ino` catches the other shape — a replace-by-rename (which is how this server
+ * now writes, see src/atomicWrite.ts) swaps in a different inode entirely.
+ */
+type StatSignature = { mtimeNs: bigint; ctimeNs: bigint; ino: bigint; sizeBytes: bigint };
+
+function statSignature(stats: BigIntStats): StatSignature {
+  return { mtimeNs: stats.mtimeNs, ctimeNs: stats.ctimeNs, ino: stats.ino, sizeBytes: stats.size };
+}
+
+function sameSignature(a: StatSignature, b: StatSignature): boolean {
+  return a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs && a.ino === b.ino && a.sizeBytes === b.sizeBytes;
+}
+
 export function isTransientFsError(error: unknown): boolean {
   const code = (error as { code?: unknown } | null)?.code;
   return typeof code === "string" && TRANSIENT_FS_CODES.has(code);
@@ -75,14 +102,26 @@ export class KnowledgeStore implements VaultStore {
   private rootRealPath?: string;
   // Parse cache keyed by real path. Parsing every Markdown file on every query
   // is the search bottleneck for large vaults; we re-parse a file only when its
-  // mtime/size changes. Path-containment checks still run on every access.
-  private readonly documentCache = new Map<
-    string,
-    { mtimeMs: number; sizeBytes: number; document: MarkdownDocument }
-  >();
+  // stat signature changes. Path-containment checks still run on every access.
+  private readonly documentCache = new Map<string, { signature: StatSignature; document: MarkdownDocument }>();
+
+  // Promise-chain serializer for the overwriting write path. Each apply awaits
+  // the previous one settling; errors are swallowed on the chain itself so one
+  // failed apply never wedges the next. Mirrors AuditStore's queue deliberately
+  // — the read/modify/write window is the same shape in both.
+  private writeQueue: Promise<unknown> = Promise.resolve();
 
   constructor(config: StoreConfig) {
     this.config = config;
+  }
+
+  private serializeWrite<T>(op: () => Promise<T>): Promise<T> {
+    const run = this.writeQueue.then(op, op);
+    this.writeQueue = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
   }
 
   async init(): Promise<void> {
@@ -303,8 +342,16 @@ export class KnowledgeStore implements VaultStore {
     const frontmatterPatch = assertFrontmatterPatch(input.frontmatter_patch ?? {});
     const currentRaw = await fs.readFile(document.absolutePath, "utf8");
     const expectedSha = sha256(currentRaw);
+    // Build the planned frontmatter from the bytes `expectedSha` covers, NOT
+    // from `document.frontmatter` — that came through the parse cache, and a
+    // stat-signature cache can only be as fresh as the signature it watches.
+    // Merging the patch onto a stale parse would re-serialize the frontmatter an
+    // external editor had already changed, i.e. revert it. The diff below is
+    // computed against the fresh bytes, so such a revert did show up for the
+    // approver; a two-step write must not depend on the reviewer catching it.
+    const currentMetadata = parseMarkdownSafe(currentRaw).frontmatter;
     const newMetadata: DocumentMetadata = {
-      ...document.frontmatter,
+      ...currentMetadata,
       ...frontmatterPatch,
       updated_at: new Date().toISOString()
     };
@@ -335,7 +382,22 @@ export class KnowledgeStore implements VaultStore {
     return patch;
   }
 
+  /**
+   * Apply a staged update. Serialized against every other apply in this process:
+   * the body below reads the target, hashes it, compares against the plan, and
+   * only then writes. MCP pipelines concurrent tool calls within one session, so
+   * two applies racing through that window can both observe a non-stale hash and
+   * the second write silently discards the first — the exact lost update the
+   * audit surface already serializes away (INV-9). Note the scope: this closes
+   * the window WITHIN one process. Two connector processes writing the same
+   * vault still race, and nothing here pretends otherwise; that needs an on-disk
+   * lock and is called out in the operations docs rather than half-solved here.
+   */
   async applyPlannedUpdate(patchId: string): Promise<{ document: MarkdownDocument; diff: string }> {
+    return this.serializeWrite(() => this.applyPlannedUpdateSerialized(patchId));
+  }
+
+  private async applyPlannedUpdateSerialized(patchId: string): Promise<{ document: MarkdownDocument; diff: string }> {
     const patchRaw = await this.readPatchFile(patchId);
     const patch = JSON.parse(patchRaw) as PlannedPatch & { operation?: string };
     if (patch.operation === "document_create") {
@@ -349,14 +411,27 @@ export class KnowledgeStore implements VaultStore {
     // loaded as agent INSTRUCTIONS, so the only overwriting write in the codebase
     // must never be able to replace a SKILL.md / references file.
     await this.assertNotSkillReserved(relativeToRoot(await this.root(), absolutePath), absolutePath);
-    const currentRaw = await fs.readFile(absolutePath, "utf8");
+    // Read the bytes and the inode metadata through ONE handle, so what gets
+    // re-applied to the replacement describes exactly the file that was hashed.
+    const handle = await fs.open(absolutePath, "r");
+    let currentRaw: string;
+    let original: { mode: number; uid: number; gid: number };
+    try {
+      currentRaw = await handle.readFile("utf8");
+      const stats = await handle.stat();
+      original = { mode: stats.mode & 0o777, uid: stats.uid, gid: stats.gid };
+    } finally {
+      await handle.close();
+    }
     const currentSha = sha256(currentRaw);
 
     if (currentSha !== patch.expected_sha256) {
       throw new Error("Patch is stale: the target document changed after the plan was created.");
     }
 
-    await fs.writeFile(absolutePath, patch.new_content, "utf8");
+    // Same-directory temp + rename: an interrupted apply must leave the note
+    // whole (old or new), never truncated. See src/atomicWrite.ts.
+    await replaceFileAtomically(absolutePath, patch.new_content, original);
     await fs.unlink(this.patchPath(patchId));
     return {
       document: await this.readDocument(absolutePath),
@@ -437,12 +512,12 @@ export class KnowledgeStore implements VaultStore {
     const realPath = await fs.realpath(absolutePath);
     const relativePath = relativeToRoot(root, realPath);
 
-    // Fast path: a pure metadata stat decides cache validity (mtime + size).
+    // Fast path: a pure metadata stat decides cache validity (see StatSignature).
     // Containment (realpath + relativeToRoot above) is re-validated every call.
     const cached = this.documentCache.get(realPath);
     if (cached) {
-      const meta = await fs.stat(realPath);
-      if (cached.mtimeMs === meta.mtimeMs && cached.sizeBytes === meta.size) {
+      const meta = await fs.stat(realPath, { bigint: true });
+      if (sameSignature(cached.signature, statSignature(meta))) {
         return cached.document;
       }
     }
@@ -454,7 +529,7 @@ export class KnowledgeStore implements VaultStore {
     const handle = await fs.open(realPath, "r");
     try {
       const raw = await handle.readFile("utf8");
-      const stats = await handle.stat();
+      const stats = await handle.stat({ bigint: true });
       const parsed = parseMarkdownSafe(raw);
       if (parsed.parseError) {
         // Do not print the parser message — it echoes file content. Just name the
@@ -474,19 +549,19 @@ export class KnowledgeStore implements VaultStore {
         body: parsed.body,
         title: titleFromMarkdown(relativePath, parsed.frontmatter, parsed.body),
         // Derived once here, on the same cache-miss path as the parse, and
-        // invalidated by the same mtime+size signature. Folding every body on
-        // every query is the search path's dominant cost once megabyte-scale
-        // notes (session archives) are in the vault.
+        // invalidated by the same stat signature. Folding every body on every
+        // query is the search path's dominant cost once megabyte-scale notes
+        // (session archives) are in the vault.
         searchDerived: {
           foldedBody: normalizeForMatch(parsed.body),
           compactBody: compactWhitespace(parsed.body)
         },
         stats: {
-          sizeBytes: stats.size,
+          sizeBytes: Number(stats.size),
           modifiedAt: stats.mtime.toISOString()
         }
       };
-      this.documentCache.set(realPath, { mtimeMs: stats.mtimeMs, sizeBytes: stats.size, document });
+      this.documentCache.set(realPath, { signature: statSignature(stats), document });
       return document;
     } finally {
       await handle.close();

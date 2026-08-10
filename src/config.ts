@@ -92,6 +92,28 @@ export interface AppConfig {
    * (`MCP_HTTP_ALLOW_AUDIT_WRITE`); stdio did not.
    */
   stdioAllowAuditWrite: boolean;
+  /**
+   * Whether the legacy one-step `create_document` tool is registered. Off by
+   * default, on **every** transport.
+   *
+   * Every other document write in this server is two-step: the client must
+   * present an exact target and complete content, and the current user has to
+   * approve it before an apply call touches the vault (INV-3). `create_document`
+   * predates that flow and is a single call — path containment, the frontmatter
+   * allowlist and `flag: "wx"` all still apply, so it cannot escape the vault,
+   * overwrite a note, or forge another document's identity (its frontmatter,
+   * `id` included, is server-built). What it *can* do is land attacker-chosen
+   * body text under `projects/` with no approval step, where it is read back as
+   * untrusted vault content (INV-5) by every later session — injection that
+   * persists. The mechanism therefore has to match the claim the server
+   * instructions make: approval was enforced only by asking the model nicely.
+   *
+   * One variable for both transports, unlike the audit surface's per-transport
+   * pair: the replacement (`plan_document_create` → `apply_planned_document_create`)
+   * exists everywhere, so there is no deployment that needs the legacy route on
+   * one transport but not the other.
+   */
+  allowLegacyCreateDocument: boolean;
   /** Max Markdown files opened concurrently during a scan (bounds FD pressure). */
   scanConcurrency?: number;
   /**
@@ -390,6 +412,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     throw new Error("MCP_STDIO_ALLOW_AUDIT_WRITE requires MCP_AUDIT_SUBDIR.");
   }
 
+  const allowLegacyCreateDocument = loadAllowLegacyCreateDocument(env);
+
   // Bounds how many files a vault scan opens at once. Left undefined (the store
   // applies a safe default) unless a positive integer override is provided.
   const parsedScanConcurrency = Number.parseInt(env.MCP_SCAN_CONCURRENCY?.trim() || "", 10);
@@ -436,10 +460,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     skillsSubdir,
     auditSubdir,
     stdioAllowAuditWrite,
+    allowLegacyCreateDocument,
     scanConcurrency,
     searchRecencyWeight,
     searchRecencyHalfLifeDays
   };
+}
+
+/**
+ * Read the one variable that governs the legacy `create_document` route.
+ *
+ * Deliberately shared by `loadConfig` (stdio) and `loadHttpConfig` (HTTP) rather
+ * than parsed twice: it is a single decision about a single tool, and two
+ * independent readers is exactly how a flag drifts into meaning different things
+ * per transport.
+ */
+function loadAllowLegacyCreateDocument(env: NodeJS.ProcessEnv): boolean {
+  return isTruthy(env.MCP_ALLOW_LEGACY_CREATE_DOCUMENT);
 }
 
 function parsePositiveNumber(raw: string | undefined): number | undefined {
@@ -507,6 +544,9 @@ export interface HttpConfig {
   /** Whether the constrained audit write surface (append + CAS, scoped to
    *  MCP_AUDIT_SUBDIR) is exposed over HTTP. Independent opt-in; defaults off. */
   allowAuditWrite: boolean;
+  /** Whether the legacy one-step `create_document` is registered when writes are
+   *  allowed. Same variable and same default (off) as stdio — see AppConfig. */
+  allowLegacyCreateDocument: boolean;
   /** Allowed Host headers (DNS-rebinding protection). */
   allowedHosts: string[];
   /** Allowed Origins (DNS-rebinding protection). Empty = allow any origin. */
@@ -603,6 +643,7 @@ export function loadHttpConfig(env: NodeJS.ProcessEnv = process.env): HttpConfig
     allowWrite,
     allowSkillWrite,
     allowAuditWrite,
+    allowLegacyCreateDocument: loadAllowLegacyCreateDocument(env),
     allowedHosts,
     allowedOrigins: splitList(env.MCP_HTTP_ALLOWED_ORIGINS),
     chatgptUrlBase: publicUrl,

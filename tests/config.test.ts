@@ -158,7 +158,9 @@ describe("startup env boundary (spawned entrypoint)", () => {
     expect(result.stderr).not.toMatch(/attacker-known-token/);
     // Objection-2 signal: a write-capable stdio process with no audit subdir
     // says so, instead of starting silently with the INV-9 reservation off.
-    expect(result.stderr).toContain("MCP stdio transport ready (write=on, documents=on, skills=off, audit=off)");
+    expect(result.stderr).toContain(
+      "MCP stdio transport ready (write=on, documents=on, legacy_create=off, skills=off, audit=off)"
+    );
     // stdout is the JSON-RPC channel and must carry nothing but protocol data
     // (the removed dotenv.config() used to print a banner there).
     expect(result.stdout).toBe("");
@@ -189,7 +191,7 @@ describe("startup env boundary (spawned entrypoint)", () => {
     // two single-call audit writes. Registering those needs its own opt-in — see
     // the next two cases.
     expect(result.stderr).toContain(
-      "MCP stdio transport ready (write=on, documents=on, skills=on, audit=reserved-only)"
+      "MCP stdio transport ready (write=on, documents=on, legacy_create=off, skills=on, audit=reserved-only)"
     );
     expect(result.code).toBe(0);
   }, 30_000);
@@ -203,8 +205,25 @@ describe("startup env boundary (spawned entrypoint)", () => {
       MCP_STDIO_ALLOW_AUDIT_WRITE: "1"
     });
 
-    expect(result.stderr).toContain("MCP stdio transport ready (write=on, documents=on, skills=off, audit=on)");
+    expect(result.stderr).toContain(
+      "MCP stdio transport ready (write=on, documents=on, legacy_create=off, skills=off, audit=on)"
+    );
     expect(result.code).toBe(0);
+  }, 30_000);
+
+  it("names the legacy create surface in the stdio startup line", async () => {
+    // Both states are printed, because "documents=on" alone stopped describing
+    // the write surface once the one-step create became its own decision.
+    const off = await runServer({ KNOWLEDGE_ROOT: vault, MCP_PATCH_STATE_DIR: path.join(stateDir, "patches") });
+    expect(off.stderr).toContain("documents=on, legacy_create=off,");
+
+    const on = await runServer({
+      KNOWLEDGE_ROOT: vault,
+      MCP_PATCH_STATE_DIR: path.join(stateDir, "patches"),
+      MCP_ALLOW_LEGACY_CREATE_DOCUMENT: "1"
+    });
+    expect(on.stderr).toContain("documents=on, legacy_create=on,");
+    expect(on.code).toBe(0);
   }, 30_000);
 
   it("refuses to start when the audit write flag names no subtree to write into", async () => {

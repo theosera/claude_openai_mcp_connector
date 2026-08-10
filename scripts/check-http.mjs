@@ -33,15 +33,25 @@ import path from "node:path";
 import { parseEnvFile, parsePort, isTruthy, requiredEnv, repoRoot } from "./repo-env.mjs";
 
 const GENERAL_WRITE_TOOLS = [
-  "create_document",
   "plan_document_create",
   "apply_planned_document_create",
   "plan_document_update",
   "apply_planned_update"
 ];
+// Its own category, not part of general write: create_document is the only
+// document write with no plan/apply pair, so it takes a second opt-in
+// (MCP_ALLOW_LEGACY_CREATE_DOCUMENT) on top of MCP_HTTP_ALLOW_WRITE. Folding it
+// back into GENERAL_WRITE_TOOLS would make this check accept it on any
+// write-enabled endpoint — i.e. stop checking the flag that gates it.
+const LEGACY_CREATE_TOOLS = ["create_document"];
 const SKILL_WRITE_TOOLS = ["plan_skill_create", "apply_planned_skill_create"];
 const AUDIT_WRITE_TOOLS = ["append_audit_report", "compare_and_swap_audit_state"];
-const KNOWN_WRITE_TOOLS = new Set([...GENERAL_WRITE_TOOLS, ...SKILL_WRITE_TOOLS, ...AUDIT_WRITE_TOOLS]);
+const KNOWN_WRITE_TOOLS = new Set([
+  ...GENERAL_WRITE_TOOLS,
+  ...LEGACY_CREATE_TOOLS,
+  ...SKILL_WRITE_TOOLS,
+  ...AUDIT_WRITE_TOOLS
+]);
 
 const TIMEOUT_MS = (() => {
   const raw = process.env.MCP_CHECK_TIMEOUT_MS?.trim();
@@ -151,11 +161,14 @@ async function checkEndpoint(envPath) {
 
     const declared = {
       generalWrite: isTruthy(env.MCP_HTTP_ALLOW_WRITE),
+      // Both flags, because the tool needs both to be registered.
+      legacyCreate: isTruthy(env.MCP_HTTP_ALLOW_WRITE) && isTruthy(env.MCP_ALLOW_LEGACY_CREATE_DOCUMENT),
       skillWrite: isTruthy(env.MCP_HTTP_ALLOW_SKILL_WRITE),
       auditWrite: isTruthy(env.MCP_HTTP_ALLOW_AUDIT_WRITE)
     };
     const categories = [
       { key: "general document write", tools: GENERAL_WRITE_TOOLS, declared: declared.generalWrite },
+      { key: "legacy create_document", tools: LEGACY_CREATE_TOOLS, declared: declared.legacyCreate },
       { key: "skill write", tools: SKILL_WRITE_TOOLS, declared: declared.skillWrite },
       { key: "audit write", tools: AUDIT_WRITE_TOOLS, declared: declared.auditWrite }
     ];
@@ -221,9 +234,9 @@ for (const envPath of envPaths) {
   console.log(`\n== ${envPath} ==`);
   try {
     const r = await checkEndpoint(envPath);
-    const flagsSummary = `write=${r.declared.generalWrite ? "on" : "off"} skill=${
-      r.declared.skillWrite ? "on" : "off"
-    } audit=${r.declared.auditWrite ? "on" : "off"}`;
+    const flagsSummary = `write=${r.declared.generalWrite ? "on" : "off"} legacy_create=${
+      r.declared.legacyCreate ? "on" : "off"
+    } skill=${r.declared.skillWrite ? "on" : "off"} audit=${r.declared.auditWrite ? "on" : "off"}`;
     console.log(`  local:    ${r.endpoint}`);
     if (r.publicUrl) console.log(`  public:   ${r.publicUrl}/mcp`);
     console.log(`  server:   ${r.server}`);

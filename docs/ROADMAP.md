@@ -277,7 +277,7 @@ The reasons to adopt it anyway, in cost/benefit order:
        boundary test passes unmodified.
      - **The modern leg resolves per request, because it has no sessions to
        resolve against.** That is not 2b arriving early: 2b is the move of the
-       *whole* endpoint off sessions plus the re-pin of every boundary test
+       _whole_ endpoint off sessions plus the re-pin of every boundary test
        against per-request resolution, and it is where `vault.read` enforcement
        lands. Here both eras call one `surfaceFor(principal, …)`, so there is a
        single scope→surface function to re-pin rather than two. The modern
@@ -288,7 +288,7 @@ The reasons to adopt it anyway, in cost/benefit order:
      - **DNS-rebinding enforcement moved to the endpoint boundary in this PR**
        (it had to: `createMcpHandler` exposes no such option), which graduates
        part 2 of the section below. See it for the two decisions that forced —
-       port-agnostic Host comparison, and *not* adopting the SDK's
+       port-agnostic Host comparison, and _not_ adopting the SDK's
        hostname-only Origin validator.
 
      Also in scope because the package line moved as a whole: `src/server.ts`
@@ -297,6 +297,7 @@ The reasons to adopt it anyway, in cost/benefit order:
      not the stdio migration — `serveStdio()` and dual-era **stdio** remain 2c.
      `@modelcontextprotocol/sdk` v1 stays as a **devDependency** only, driving
      the 2025-era half of the negotiation test from a real v1 client.
+
    - **2b. Per-request scope→tool-surface resolution ✅ — the security-boundary
      node.** Sessions are gone from the HTTP endpoint entirely: one
      `createMcpHandler` with `legacy: 'stateless'` serves 2026-07-28 natively and
@@ -337,6 +338,7 @@ The reasons to adopt it anyway, in cost/benefit order:
      Re-pinning cost, as predicted, was concentrated rather than large: exactly
      one pre-existing assertion had to invert (the 2025 handshake no longer
      issues a session id), and it is now asserted on the wire for both eras.
+
    - **2c. stdio + operations migration ✅.** `src/index.ts` serves stdio through
      `serveStdio()`, so a local client may open either era against the same tool
      factory; before this, stdio answered the 2025 handshake only and did not
@@ -347,7 +349,7 @@ The reasons to adopt it anyway, in cost/benefit order:
        silently turn 2025-era clients away. Flipping it to `'reject'` fails the
        2025 leg with `-32022`, which is what makes the test meaningful.
      - **`onerror` is passed to keep start-up failures visible.** `serveStdio`
-       starts the wire in the background and *drops* the rejection when no
+       starts the wire in the background and _drops_ the rejection when no
        handler is installed, where the previous `await server.connect(…)` would
        have crashed the process. Without a handler, a transport that failed to
        start would leave the "ready" line as the only output. It reports the
@@ -375,6 +377,7 @@ The reasons to adopt it anyway, in cost/benefit order:
      runbook cannot drift from the server it documents.
 
    The order is forced: 2a → 2b → 2c. Item 3 below depends on **2b**, not on 2c.
+
 3. **Cache hints (`ttlMs` / `cacheScope`) ✅ — the safe values are the defaults,
    and they are now pinned.** The tool surface is static only _per scope_, not
    globally: `src/httpServer.ts` derives `allowWrite` / `allowSkillWrite` /
@@ -388,8 +391,8 @@ The reasons to adopt it anyway, in cost/benefit order:
    hole to close: the SDK fills the required 2026-07-28 fields from its
    `cacheHints` option, which this server does not set, so cacheable results
    already go out as `ttlMs: 0` / `cacheScope: 'private'` (measured on the wire
-   for both `server/discover` and `tools/list`). The work is not *fixing* a leak
-   but *not opening* one — so it lands as a test, not a change.
+   for both `server/discover` and `tools/list`). The work is not _fixing_ a leak
+   but _not opening_ one — so it lands as a test, not a change.
 
    **Two corrections to what this item used to say:**
 
@@ -398,7 +401,7 @@ The reasons to adopt it anyway, in cost/benefit order:
      `ttlMs` + `cacheScope` and nothing else; cache keying belongs to the client
      and no server-side lever reaches it.
    - **`private` alone is not sufficient either.** 2b made the surface follow the
-     *token*, while a private cache is keyed by the *client*. One client swapping
+     _token_, while a private cache is keyed by the _client_. One client swapping
      bearers — the case the token-swap test already pins — would be served the
      previous token's tool list. With no way to put the token in the key,
      **`ttlMs: 0` is the only safe value**, and "private" is the weaker half of
@@ -408,6 +411,7 @@ The reasons to adopt it anyway, in cost/benefit order:
    on the wire, and the capture itself is asserted so the test cannot pass
    vacuously. Red/green measured — `cacheScope: 'public'` and `ttlMs: 60000` each
    fail it. Adding `cacheHints` for any reason now has to argue with a test.
+
 4. **Stateless scale-out / header routing — deliberately not pursued.** Gated on
    multi-user graduating from 💭. Adopting it now buys nothing and widens surface.
 
@@ -539,14 +543,14 @@ worst because gray-matter then treats the whole file as the block.
 - **Nothing that inspects the parsed result can help** — the CPU is spent during
   the parse. The existing anchor/alias expansion guard runs after `matter()`
   returns and therefore never covered this. A block-size cap was correctly
-  *rejected* for that expansion bomb (a few hundred bytes tells you nothing about
+  _rejected_ for that expansion bomb (a few hundred bytes tells you nothing about
   size) and is the right bound here. The two are complementary; neither replaces
   the other.
 - **The `!!omap` path is fixed at the dependency; the comment stripper is not.**
   js-yaml **3.15.1** is patched and inside gray-matter's `^3.13.1` range, so
   `pnpm.overrides` pins it — no major upgrade, no API break. Measured on the
   resolved tree: 3.15.0 quadruples per doubling, 3.15.1 is linear. The bound
-  still covers that path as defence in depth, but calling it *the* mitigation
+  still covers that path as defence in depth, but calling it _the_ mitigation
   would make an out-of-date js-yaml look acceptable. The comment stripper is
   gray-matter's own code and the bound is the only thing standing there. The two
   remaining advisories are dev-only.
@@ -555,7 +559,7 @@ worst because gray-matter then treats the whole file as the block.
   `>=3.15.1`. The title is why an earlier revision of this entry said 5.x-only.
 - **Sized from real data**, not from the attack: 2,381 notes, frontmatter median
   225 B, max 1,042 B. 8 KiB keeps ~7.9x headroom while holding the attack to
-  ~41 ms — the *unterminated* shape, which is the worst case and ~1.8x costlier
+  ~41 ms — the _unterminated_ shape, which is the worst case and ~1.8x costlier
   than the terminated one at the same size. Absolute milliseconds are
   host-dependent (the same payloads run ~6x slower on a CI container); only the
   exponent transfers. Over-cap frontmatter fails loudly — logged and body-only on the
@@ -576,12 +580,12 @@ ran — and `pnpm audit` had been printing it in CI on every run.
 it was always green, and it mixed dev noise into the one signal that mattered.
 The comment justifying that said triage happens in the Dependabot PR; Dependabot
 alerts were enabled and showed **0 open alerts**, and `dependabot.yml`'s
-`updates:` bumps *direct* dependencies while js-yaml is transitive — so no PR
+`updates:` bumps _direct_ dependencies while js-yaml is transitive — so no PR
 could be raised there either. A single detector, configured to be invisible, is
 not a control. CI now fails on a **production** high (`pnpm audit --prod
 --audit-level high`) and keeps the full-tree moderate scan advisory. Scoping the
 blocking step to `--prod` is the point: dev noise is what turns a step into one
-people stop reading. The threshold is a deliberate trade — a *moderate*
+people stop reading. The threshold is a deliberate trade — a _moderate_
 production advisory still passes.
 
 ### Document identity is not a frontmatter field — _second security scan, root A_ ✅
@@ -647,7 +651,7 @@ content.
   times: `assertWritableText`, which both audit writers already pass through,
   and `validateFileSet`, where the Skill plan and apply paths meet. A first
   attempt sat in `validatePlannedFiles` — reached by apply, not by plan — and
-  the test asking for refusal at *plan* time is what caught it. Refusing only at
+  the test asking for refusal at _plan_ time is what caught it. Refusing only at
   apply would still block the write, but only after showing an operator a diff
   to approve; the squat has to be unrepresentable, not merely unapplied.
 - **Bounded parse on a write surface.** Knowing what content claims requires
@@ -704,6 +708,67 @@ write back into an existing vault taxonomy. The exact-path flow is now complete:
 
 ---
 
+### The overwriting write is atomic, serialized, and the last one-step write is gated — _external review triage_ ✅
+
+An independent review of `main` at #105 (Codex, 2026-08-11 JST) landed three code
+findings. All three were verified against the source before being accepted, and
+one of them was accepted with its severity **lowered**, not raised.
+
+**1. `applyPlannedUpdate` was neither atomic nor strictly compare-and-swap.** It
+read the target, hashed it, compared against the plan, then `writeFile`d over the
+target — truncate-then-write, with no second copy of the note to recover from.
+The repo was already inconsistent with itself here: `auditStore`, `skillStore`
+and the OAuth state file all wrote temp-then-rename; the only write that
+overwrites a _user's_ note did not. `src/atomicWrite.ts` now performs a
+same-directory temp write, copies the target's permission bits, and renames over
+it. The read/hash/write window is closed by an in-process serializer of the same
+shape `AuditStore` already used — INV-9 had described that window as
+"`applyPlannedUpdate`'s", so the window was known and simply never closed for the
+general path. **Scope stated rather than overclaimed:** atomic ≠ durable (no
+`fsync`, matching the other three writers), and in-process ≠ cross-process (two
+connector processes on one vault still race and need an on-disk lock).
+
+**2. The parse cache could serve a stale note indefinitely.** Validity was
+`mtimeMs` + size, which cannot distinguish two writes inside one millisecond and
+is fully defeated by an editor or sync client that rewrites a note to the same
+length and restores its mtime (`utimes` lets anything do that). The signature is
+now `mtimeNs` + `ctimeNs` + `ino` + size; `ctimeNs` carries it, because userspace
+cannot set it. `planUpdate` additionally derives the planned frontmatter from the
+bytes `expected_sha256` covers instead of from the cached parse.
+
+> The review framed this second half as a plan that "may reuse old frontmatter".
+> Verified: the diff and `expected_sha256` were always computed from a fresh
+> read, so such a revert appeared **in the diff the approver saw**. Real bug,
+> visible rather than silent — and a two-step write must not rely on the reviewer
+> catching it. Recorded because the correction is the reason the fix is small.
+
+**3. `create_document` was the one document write with no plan/apply pair**, and
+on stdio it was always registered. Now behind `MCP_ALLOW_LEGACY_CREATE_DOCUMENT`,
+off by default on **both** transports (one variable, not the audit surface's
+per-transport pair: the replacement exists everywhere, so no deployment needs it
+on one transport only). `scripts/check-http.mjs` scores it as its own category,
+so an endpoint exposing it without the flag now **fails** the operator check
+instead of being silently permitted under general write.
+
+> **Severity lowered vs. the review.** The review left open what an unapproved
+> create could reach. Verified: `createDocument` builds the entire frontmatter
+> server-side, `id` included (`crypto.randomUUID()`), so it cannot squat another
+> document's identity (INV-2); `flag: "wx"` means no overwrite; the path is
+> routed, not caller-chosen. The residual is **persistence** — attacker-chosen
+> body text landing under `projects/` with no approval step, read back as
+> ordinary vault content (INV-5) by every later session. That is worth gating;
+> it is not identity capture.
+
+Reverse-verified per guard, one at a time: reverting the rename fails only the
+inode assertion; removing the serializer makes **both** concurrent applies
+succeed (the lost update); weakening the signature to `mtimeNs` + size serves the
+stale body; removing the gate puts `create_document` back on both stdio eras.
+The cache test needed a **second** attempt to be worth anything — the first
+restored a previously observed mtime, which `utimes` truncates, so it passed with
+the guard removed. It now freezes the mtime to a whole second on both sides.
+
+---
+
 ## Mid-term
 
 ### Hosting recipes 💭
@@ -740,16 +805,20 @@ writes, OAuth PKCE/audience/scope, SHA-pinned CI). It does **not** yet cover the
 following — listed honestly so adopters can judge fit. Most are prerequisites for
 _team / enterprise_ adoption rather than the core individual use case.
 
-| Gap                                                          | Why it matters                                                                                              | Tier                                                                                                                                                                                                                                |
-| ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Third-party penetration test**                             | Self-review + AI review have limits; an independent test is needed before security claims are load-bearing. | near-term 🔭                                                                                                                                                                                                                        |
-| **Audit log**                                                | No after-the-fact record of who searched / fetched / wrote what.                                            | near-term 🔭                                                                                                                                                                                                                        |
-| **Multi-user RBAC**                                          | Currently single-user by design; teams need per-user roles & scoping.                                       | larger bet 💭                                                                                                                                                                                                                       |
-| **Hardened secret scanning / release-artifact verification** | Needed if OSS distribution (npx / prebuilt binaries) is pushed harder — provenance, signed artifacts, SBOM. | mid-term 💭                                                                                                                                                                                                                         |
-| **OpenTelemetry / structured audit events**                  | Required for enterprise observability and SIEM ingestion.                                                   | mid-term 💭                                                                                                                                                                                                                         |
-| **DLP / exfiltration detection**                             | No control over leakage _of vault content_ once a client is authorized.                                     | larger bet 💭                                                                                                                                                                                                                       |
-| **Sandbox isolation**                                        | If the MCP server process itself is compromised, isolation from the host is limited.                        | ✅ layers 1–3 documented → [`operations.md`](./operations.md#sandbox-hardening-systemd) (systemd) + [§6](./operations.md#6-sandboxing-the-local-stdio-server-bwrap-optional) (bwrap); residual: operator-applied, not code-enforced |
-| **Formal threat model document**                             | `SECURITY.md` is good but was not a systematic STRIDE/LINDDUN-style model.                                  | 🚧 → [`threat-model.md`](./threat-model.md) (STRIDE) added; revisit as features land                                                                                                                                                |
+| Gap                                                          | Why it matters                                                                                                                                                                                                                                                                                                                                                     | Tier                                                                                                                                                                                                                                |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Third-party penetration test**                             | Self-review + AI review have limits; an independent test is needed before security claims are load-bearing.                                                                                                                                                                                                                                                        | near-term 🔭                                                                                                                                                                                                                        |
+| **Audit log**                                                | No after-the-fact record of who searched / fetched / wrote what.                                                                                                                                                                                                                                                                                                   | near-term 🔭                                                                                                                                                                                                                        |
+| **macOS CI**                                                 | The primary deployment target is macOS, and CI runs only on Linux. Case-insensitive-filesystem behaviour is therefore **asserted nowhere**: the `(dev, ino)` root-containment comparison exists precisely because `/vault` and `/Vault` are one directory on APFS, and a test for that shape is vacuous on ext4. NFD normalisation (HFS+) is in the same position. | near-term 🔭                                                                                                                                                                                                                        |
+| **Coverage thresholds**                                      | 374 tests is a count, not a floor. Nothing fails when a new branch arrives untested, which is the condition the reverse-verification rule exists to catch by hand — a threshold makes the cheap half automatic.                                                                                                                                                    | near-term 🔭                                                                                                                                                                                                                        |
+| **Filesystem fault injection**                               | Write paths are now atomic, but no test exercises `ENOSPC`, `EIO`, or a kill between temp write and rename. The recovery behaviour is argued in comments and unverified in CI.                                                                                                                                                                                     | mid-term 💭                                                                                                                                                                                                                         |
+| **Fuzz / property tests**                                    | `pathSafety` and the frontmatter parser take adversarial input and are pinned by enumerated cases only, so they are strong exactly where someone already thought to look. Property tests would search the space the enumeration misses.                                                                                                                            | mid-term 💭                                                                                                                                                                                                                         |
+| **Multi-user RBAC**                                          | Currently single-user by design; teams need per-user roles & scoping.                                                                                                                                                                                                                                                                                              | larger bet 💭                                                                                                                                                                                                                       |
+| **Hardened secret scanning / release-artifact verification** | Needed if OSS distribution (npx / prebuilt binaries) is pushed harder — provenance, signed artifacts, SBOM.                                                                                                                                                                                                                                                        | mid-term 💭                                                                                                                                                                                                                         |
+| **OpenTelemetry / structured audit events**                  | Required for enterprise observability and SIEM ingestion.                                                                                                                                                                                                                                                                                                          | mid-term 💭                                                                                                                                                                                                                         |
+| **DLP / exfiltration detection**                             | No control over leakage _of vault content_ once a client is authorized.                                                                                                                                                                                                                                                                                            | larger bet 💭                                                                                                                                                                                                                       |
+| **Sandbox isolation**                                        | If the MCP server process itself is compromised, isolation from the host is limited.                                                                                                                                                                                                                                                                               | ✅ layers 1–3 documented → [`operations.md`](./operations.md#sandbox-hardening-systemd) (systemd) + [§6](./operations.md#6-sandboxing-the-local-stdio-server-bwrap-optional) (bwrap); residual: operator-applied, not code-enforced |
+| **Formal threat model document**                             | `SECURITY.md` is good but was not a systematic STRIDE/LINDDUN-style model.                                                                                                                                                                                                                                                                                         | 🚧 → [`threat-model.md`](./threat-model.md) (STRIDE) added; revisit as features land                                                                                                                                                |
 
 **Suggested sequencing:** start with the cheap, high-signal items —
 (1) a **formal threat model** (STRIDE) to make the gaps explicit and prioritize
@@ -853,7 +922,7 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       together per SEP-2468. Pinned in `tests/oauth.test.ts` (code-issuance
       redirect, metadata flag, and the HTTP E2E). The sequencing note stands:
       the same revision deprecates DCR for CIMD, which makes `client_id` a
-      *stable* identity — revisit the `client_id` appendix **before** building
+      _stable_ identity — revisit the `client_id` appendix **before** building
       the audit log's attribution on it.
 - [ ] **Bind a two-step plan to the vault that staged it** — `applyPlannedUpdate`
       looks a plan up by `patch_id` alone and resolves its `target_path` against
@@ -928,39 +997,40 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       against come from the file itself.
 
       **What is settled:** a check that runs **before the file is read** cannot
-      reach it. `loadEnvFile()` runs before `KNOWLEDGE_ROOT` exists, so at the
-      moment of the read there is nothing to compare against. That is an
-      ordering fact, not a design preference — and it is narrower than "no
-      startup check is possible", which would be false. Refusing to start is
-      still on the table; see below.
+          reach it. `loadEnvFile()` runs before `KNOWLEDGE_ROOT` exists, so at the
+          moment of the read there is nothing to compare against. That is an
+          ordering fact, not a design preference — and it is narrower than "no
+          startup check is possible", which would be false. Refusing to start is
+          still on the table; see below.
 
-      **What was NOT considered when this entry was first written** (v0.8.0):
-      a check *after* the roots are known. Once `loadConfig()` has resolved
-      them — still during startup, before the stores exist and before anything
-      is served — `MCP_ENV_FILE` can be tested with the same `(dev, ino)` walk
-      and the server refused if it lands inside a root. This does not undo the
-      exposure: the secrets are already in `process.env` by then, and a file in
-      an indexed root may already have been read by anything with vault access.
-      What it buys is refusing to keep serving on credentials that a vault
-      reader may already know. `MCP_OAUTH_STATE_FILE` fails *before the write*;
-      this would fail *after the read*, which is a materially weaker guarantee
-      and belongs to a separate decision rather than the same mechanism.
-      Recorded here so the next person does not re-derive it: this option is
-      **unevaluated, not rejected**.
+          **What was NOT considered when this entry was first written** (v0.8.0):
+          a check *after* the roots are known. Once `loadConfig()` has resolved
+          them — still during startup, before the stores exist and before anything
+          is served — `MCP_ENV_FILE` can be tested with the same `(dev, ino)` walk
+          and the server refused if it lands inside a root. This does not undo the
+          exposure: the secrets are already in `process.env` by then, and a file in
+          an indexed root may already have been read by anything with vault access.
+          What it buys is refusing to keep serving on credentials that a vault
+          reader may already know. `MCP_OAUTH_STATE_FILE` fails *before the write*;
+          this would fail *after the read*, which is a materially weaker guarantee
+          and belongs to a separate decision rather than the same mechanism.
+          Recorded here so the next person does not re-derive it: this option is
+          **unevaluated, not rejected**.
 
-      **Priority input:** no deployment is *known* to set `MCP_ENV_FILE`, and
-      the evidence behind that covers **one host, as of 2026-08-10** — the
-      unattended scan endpoint, whose launchd plist carries an empty
-      `EnvironmentVariables`, whose `launchctl getenv` reports every relevant
-      name unset, and whose cwd-relative `.env` path has been retired.
-      [§9](./operations.md#9-two-endpoint-deployment-interactive--unattended-audit-scan)
-      describes a **two-endpoint** layout and tells operators to add
-      `MCP_ENV_FILE` to *both* plists; **the interactive endpoint's plist was
-      not inspected.** So this is one scope observed out of at least two, not an
-      inventory. On that evidence nobody is known to be standing on the
-      question yet, and the migration that starts using `MCP_ENV_FILE` is the
-      deadline for answering it — but the observation should be re-taken, and
-      widened to every endpoint, before it is leaned on again.
+          **Priority input:** no deployment is *known* to set `MCP_ENV_FILE`, and
+          the evidence behind that covers **one host, as of 2026-08-10** — the
+          unattended scan endpoint, whose launchd plist carries an empty
+          `EnvironmentVariables`, whose `launchctl getenv` reports every relevant
+          name unset, and whose cwd-relative `.env` path has been retired.
+          [§9](./operations.md#9-two-endpoint-deployment-interactive--unattended-audit-scan)
+          describes a **two-endpoint** layout and tells operators to add
+          `MCP_ENV_FILE` to *both* plists; **the interactive endpoint's plist was
+          not inspected.** So this is one scope observed out of at least two, not an
+          inventory. On that evidence nobody is known to be standing on the
+          question yet, and the migration that starts using `MCP_ENV_FILE` is the
+          deadline for answering it — but the observation should be re-taken, and
+          widened to every endpoint, before it is leaned on again.
+
 - [ ] **Audit log** — append-only, content-free events (who searched / fetched /
       wrote what, no note bodies) — the largest security follow-up, and still the
       one that most improves the posture; it now sits **second** because the
@@ -983,23 +1053,20 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       third "why connections drop" cause, process-memory MCP sessions →
       `404 unknown_session`, to [`operations.md §1`](./operations.md)). Land them
       as three PRs in that order; do not bundle the boundary re-pin with the
-      dependency bump.
-      - [x] **2a** ✅ — v2 packages, `isLegacyRequest` routing, sessionful 2025
-            leg unchanged, sessionless 2026-07-28 leg, DNS-rebinding moved to the
-            endpoint boundary, negotiation tests. Every pre-existing boundary
-            test passes unmodified, which is the claim that the boundary did not
-            move.
-      - [x] **2b** ✅ — sessions removed from the endpoint (`legacy: 'stateless'`),
-            surface resolved per request for both eras through the one
-            `surfaceFor`, `vault.read` enforced with a `403 insufficient_scope`
-            challenge, consent page states the granted scope, and the
-            session-id assertion re-pinned. Pinned by a token-swap test that
-            fails under per-session resolution.
-      - [x] **2c** ✅ — `serveStdio()` with an explicit `legacy: 'serve'` and an
-            `onerror` that keeps swallowed start-up failures visible; both eras
-            driven end-to-end against the spawned real entrypoint. `operations.md`
-            §1.C records the third cause as resolved, and §9 Step 5's stale
-            `mcp-session-id` step was replaced with a snippet the tests assert.
+      dependency bump. - [x] **2a** ✅ — v2 packages, `isLegacyRequest` routing, sessionful 2025
+      leg unchanged, sessionless 2026-07-28 leg, DNS-rebinding moved to the
+      endpoint boundary, negotiation tests. Every pre-existing boundary
+      test passes unmodified, which is the claim that the boundary did not
+      move. - [x] **2b** ✅ — sessions removed from the endpoint (`legacy: 'stateless'`),
+      surface resolved per request for both eras through the one
+      `surfaceFor`, `vault.read` enforced with a `403 insufficient_scope`
+      challenge, consent page states the granted scope, and the
+      session-id assertion re-pinned. Pinned by a token-swap test that
+      fails under per-session resolution. - [x] **2c** ✅ — `serveStdio()` with an explicit `legacy: 'serve'` and an
+      `onerror` that keeps swallowed start-up failures visible; both eras
+      driven end-to-end against the spawned real entrypoint. `operations.md`
+      §1.C records the third cause as resolved, and §9 Step 5's stale
+      `mcp-session-id` step was replaced with a snippet the tests assert.
 - [x] **Search P0 + P1 slices** — ✅ P0: NFKC search folding (query + text,
       snippets still sliced from the original), result timestamps/`size_bytes`,
       `total_count`/`offset` envelope, backlink relative-link resolution,
