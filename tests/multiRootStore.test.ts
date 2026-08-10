@@ -111,7 +111,10 @@ describe("MultiRootStore", () => {
   const makeConfig = (roots: Array<{ name: string; path: string }>) => ({
     knowledgeRoots: roots,
     writeMode: "two_step" as const,
-    patchStateDir
+    patchStateDir,
+    // Transport-level flag; the store never reads it. Set explicitly rather
+    // than made optional so a future surface flag cannot be forgotten here.
+    stdioAllowAuditWrite: false
   });
 
   beforeEach(async () => {

@@ -51,7 +51,14 @@ export interface CompareAndSwapAuditStateInput {
  *    scanner has no human-approval gap to prevent an interleaved read/modify.
  *  - The general document-write tools are separately forbidden from writing into
  *    this subtree (see KnowledgeStore INV-9 reservation), so a compromised
- *    interactive session cannot forge or clobber audit files.
+ *    interactive session cannot forge or clobber audit files THROUGH THEM.
+ *    That clause is only worth as much as the tools below being absent from
+ *    such a session: these two are single-call writes with no plan/apply step
+ *    and no user confirmation, so a session that holds them can forge a report
+ *    or clobber `state.md` directly, reservation or not. Registering them is
+ *    therefore its own opt-in on every transport — `MCP_HTTP_ALLOW_AUDIT_WRITE`
+ *    on HTTP, `MCP_STDIO_ALLOW_AUDIT_WRITE` on stdio — and setting only
+ *    `MCP_AUDIT_SUBDIR` reserves the subtree without handing anyone the keys.
  */
 export class AuditStore {
   private readonly config: AuditStoreConfig;

@@ -261,6 +261,18 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
    symlink escape を検査 (`resolveInsideRoot` + `realpath` + `relativeToRoot`)。
    `MCP_HTTP_ALLOW_AUDIT_WRITE=1` だけでは subdir 未設定なら**起動拒否**。`loadConfig` は監査
    subdir が `projects/` (create-root) と **disjoint** かを boot で assert。
+   **★ 予約と tool 登録は別の決定 — 全 transport で独立 opt-in が要る。** `MCP_AUDIT_SUBDIR` は
+   「このサブツリーを一般 write から予約する」だけ。audit tool を**登録**するのは HTTP =
+   `MCP_HTTP_ALLOW_AUDIT_WRITE` / stdio = **`MCP_STDIO_ALLOW_AUDIT_WRITE`** (既定 off、
+   `src/index.ts` / `AppConfig.stdioAllowAuditWrite`)。stdio は以前 subdir の存在だけで
+   登録していたため、**「write 可能な全 process に subdir を設定せよ」という運用指示に従うと、
+   untrusted vault content を読む interactive セッションに append/CAS が生えた** (2 つとも
+   plan/apply 無し・確認無しの single-call write なので、予約があっても直接 forge/clobber
+   できる)。予約は `config.auditSubdir` → `createStore` 経由なので、**tool を外しても INV-9 は
+   効き続ける** — テストで両方 pin (`tests/stdio.test.ts` の "withholds the audit write tools"
+   と直後の予約テストが同じ env を踏む)。stdio 起動行は 3 状態を出す:
+   `audit=off` (subdir 無し = 予約なし) / `audit=reserved-only` (既定) / `audit=on`。
+   `MCP_STDIO_ALLOW_AUDIT_WRITE=1` で subdir 未設定なら**起動拒否**。
 2. `append_audit_report` は `reports/<run_id>.md` に **create-only** (`flag:"wx"`, `0600`)。
    EEXIST は同一内容なら idempotent no-op、相違なら reject (**上書きしない**)。`run_id` は厳格
    パターン (先頭英数字・`/`/`..`/NUL 不可) で reports/ 外へ出られない。

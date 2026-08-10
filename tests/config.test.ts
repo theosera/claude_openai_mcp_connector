@@ -165,7 +165,7 @@ describe("startup env boundary (spawned entrypoint)", () => {
     expect(result.code).toBe(0);
   }, 30_000);
 
-  it("applies the operator's MCP_ENV_FILE, so the audit/skill surface comes back on", async () => {
+  it("applies the operator's MCP_ENV_FILE, so the skill surface and the audit reservation come back on", async () => {
     await fs.mkdir(path.join(vault, "_skills"), { recursive: true });
     await fs.mkdir(path.join(vault, "90_Audit", "vault-scan", "reports"), { recursive: true });
     const envFile = path.join(stateDir, "vault.env");
@@ -184,8 +184,41 @@ describe("startup env boundary (spawned entrypoint)", () => {
     // other setting in the operator's own file.
     const result = await runServer({ KNOWLEDGE_ROOT: vault, MCP_ENV_FILE: envFile });
 
-    expect(result.stderr).toContain("MCP stdio transport ready (write=on, documents=on, skills=on, audit=on)");
+    // `reserved-only`, not `on`: MCP_AUDIT_SUBDIR turns the INV-9 reservation on
+    // (which is what operators are told to set it for) WITHOUT registering the
+    // two single-call audit writes. Registering those needs its own opt-in — see
+    // the next two cases.
+    expect(result.stderr).toContain(
+      "MCP stdio transport ready (write=on, documents=on, skills=on, audit=reserved-only)"
+    );
     expect(result.code).toBe(0);
+  }, 30_000);
+
+  it("registers the stdio audit write tools only when their own flag is set", async () => {
+    await fs.mkdir(path.join(vault, "90_Audit", "vault-scan", "reports"), { recursive: true });
+    const result = await runServer({
+      KNOWLEDGE_ROOT: vault,
+      MCP_PATCH_STATE_DIR: path.join(stateDir, "patches"),
+      MCP_AUDIT_SUBDIR: "90_Audit/vault-scan",
+      MCP_STDIO_ALLOW_AUDIT_WRITE: "1"
+    });
+
+    expect(result.stderr).toContain("MCP stdio transport ready (write=on, documents=on, skills=off, audit=on)");
+    expect(result.code).toBe(0);
+  }, 30_000);
+
+  it("refuses to start when the audit write flag names no subtree to write into", async () => {
+    // The contradiction fails at boot rather than starting a server whose audit
+    // surface silently does not exist — the same shape MCP_HTTP_ALLOW_AUDIT_WRITE
+    // already had.
+    const result = await runServer({
+      KNOWLEDGE_ROOT: vault,
+      MCP_PATCH_STATE_DIR: path.join(stateDir, "patches"),
+      MCP_STDIO_ALLOW_AUDIT_WRITE: "1"
+    });
+
+    expect(result.stderr).toMatch(/MCP_STDIO_ALLOW_AUDIT_WRITE requires MCP_AUDIT_SUBDIR/);
+    expect(result.code).not.toBe(0);
   }, 30_000);
 
   it("refuses to start on a relative or unreadable MCP_ENV_FILE", async () => {

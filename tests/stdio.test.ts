@@ -57,16 +57,23 @@ describe("stdio dual-era serving", () => {
    * README registration blocks use, and because the real environment wins over
    * the file (tests/config.test.ts), so the two cannot fight.
    */
-  async function operatorEnv(): Promise<Record<string, string>> {
+  /**
+   * The operator-file registration. `auditWrite` is off by default on purpose:
+   * that is what setting MCP_AUDIT_SUBDIR alone now produces — the INV-9
+   * reservation in effect, the two single-call audit writes NOT registered.
+   * Pass it to get the full surface.
+   */
+  async function operatorEnv(options: { auditWrite?: boolean } = {}): Promise<Record<string, string>> {
     await fs.mkdir(path.join(vault, "_skills"), { recursive: true });
     await fs.mkdir(path.join(vault, "90_Audit", "vault-scan", "reports"), { recursive: true });
-    const envFile = path.join(stateDir, "vault.env");
+    const envFile = path.join(stateDir, options.auditWrite ? "vault-auditwrite.env" : "vault.env");
     await fs.writeFile(
       envFile,
       [
         "MCP_SKILLS_SUBDIR=_skills",
         "MCP_AUDIT_SUBDIR=90_Audit/vault-scan",
         `MCP_PATCH_STATE_DIR=${path.join(stateDir, "patches")}`,
+        ...(options.auditWrite ? ["MCP_STDIO_ALLOW_AUDIT_WRITE=1"] : []),
         ""
       ].join("\n"),
       "utf8"
@@ -140,7 +147,7 @@ describe("stdio dual-era serving", () => {
   }, 60_000);
 
   it("keeps the two eras identical on the FULL surface, not just the audit-off one", async () => {
-    const env = await operatorEnv();
+    const env = await operatorEnv({ auditWrite: true });
 
     const legacyClient = new Client({ name: "legacy-full", version: "0.0.0" });
     await legacyClient.connect(new StdioClientTransport({ ...spawnArgs, env }));
@@ -168,6 +175,34 @@ describe("stdio dual-era serving", () => {
       ])
     );
     expect(modernTools).toEqual(legacyTools);
+  }, 60_000);
+
+  it("withholds the audit write tools from a session that only reserved the subtree", async () => {
+    // MCP_AUDIT_SUBDIR is what operators are told to set on EVERY write-capable
+    // process, so the INV-9 reservation holds everywhere. It used to also hand
+    // the session `append_audit_report` and `compare_and_swap_audit_state` —
+    // two single-call writes into the audit trail, with no plan/apply step and
+    // no user confirmation, on a transport whose input is untrusted vault
+    // content (INV-5). Following the documented guidance therefore armed the
+    // one surface the reservation exists to protect.
+    //
+    // The two are separate decisions now. The very next test drives this same
+    // env and shows the reservation still refuses a general write, so this is
+    // withholding the tools, not disabling the protection.
+    const env = await operatorEnv();
+    const client = new ModernClient(
+      { name: "modern-reserved-only", version: "0.0.0" },
+      { versionNegotiation: { mode: { pin: "2026-07-28" } } }
+    );
+    await client.connect(new ModernStdioClientTransport({ ...spawnArgs, env }));
+    const tools = (await client.listTools()).tools.map((tool) => tool.name);
+    await client.close();
+
+    expect(tools).not.toContain("append_audit_report");
+    expect(tools).not.toContain("compare_and_swap_audit_state");
+    // Scoped to the audit tools: the Skill surface, which the same operator file
+    // enables and which is protected by its own plan/apply step, is untouched.
+    expect(tools).toEqual(expect.arrayContaining(["plan_skill_create", "apply_planned_skill_create"]));
   }, 60_000);
 
   it("refuses a general document write into the reserved audit subtree, on the wire", async () => {
