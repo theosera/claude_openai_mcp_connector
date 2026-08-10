@@ -41,13 +41,28 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   bomb (that bomb is a few hundred bytes) and is the right bound here, because
   size is exactly what drives these two.
 
-  **The cap is not an upgrade away.** gray-matter requires js-yaml `^3.13.1`; the
-  `!!omap` fix exists only in 5.x, whose API is incompatible. The bound *is* the
-  mitigation.
+  **The `!!omap` path is additionally fixed at the dependency.** js-yaml
+  **3.15.1** is patched and sits inside gray-matter's `^3.13.1` range, so
+  `pnpm.overrides` pins it — no major upgrade and no API break. Measured on the
+  resolved tree: 3.15.0 quadruples per doubling (74 / 173 / 670 / 3,068 ms at
+  n = 5k / 10k / 20k / 40k) while 3.15.1 is linear (83 / 82 / 112 / 171 ms). The
+  cap still bounds that path as defence in depth, but it is no longer the only
+  thing standing there.
+
+  Read the advisory's structured fields, not its title: the record is titled
+  "CVE-2026-59870 fix not backported" while its own `patched_versions` says
+  `>=3.15.1`. The title is why an earlier revision of this entry claimed the fix
+  existed only in 5.x. Note also that `pnpm update` will not move a transitive the
+  lockfile already considers satisfied — the override is what moves it.
+
+  The **comment-stripper** path is not an upgrade away: it is gray-matter's own
+  code, and the bound is the only mitigation for it.
 
   Sized against the real vault this server was built for — 2,381 notes,
   frontmatter median 225 B, p99 501 B, max 1,042 B — so 8 KiB keeps ~7.9x
-  headroom over the largest note that exists while holding the attack to ~23 ms.
+  headroom over the largest note that exists while holding the attack to ~41 ms —
+  measured on the *unterminated* shape, which is the worst case and ~1.8x costlier
+  than the terminated one at the same size.
   Over-cap frontmatter fails **loudly**: the read path logs it and indexes the
   note body-only (exactly like any other malformed frontmatter), and the write
   paths refuse rather than dropping metadata.
@@ -61,6 +76,22 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
   Reverse-verified: with the cap removed, the unterminated-block test takes
   **177 seconds** instead of failing under its 1-second assertion.
+
+- **A production advisory now fails CI.** The dependency audit was a single
+  non-blocking step, on the stated theory that "real triage happens in the
+  Dependabot PR". That theory did not survive contact with the js-yaml advisory
+  above: Dependabot alerts were enabled but reported **0 open alerts**, and
+  `dependabot.yml`'s `updates:` bumps *direct* dependencies while js-yaml is
+  transitive — so no PR was raised there either. `pnpm audit` was the only
+  detector, and it was configured to be invisible.
+
+  CI now runs `pnpm audit --prod --audit-level high` as a **blocking** step, with
+  the previous full-tree `--audit-level moderate` retained as the non-blocking
+  one. Scoping the blocking step to `--prod` keeps dev-only noise out of it, which
+  is how the single step stopped being read in the first place.
+
+  Reverse-verified: with js-yaml reverted to 3.15.0, the blocking step exits 1 and
+  names `.>gray-matter>js-yaml`; with 3.15.1 it reports no vulnerabilities.
 
 - **A note's frontmatter `id` could impersonate any other document, and no
   longer can.** `readDocument` takes `document.id` verbatim from the file's own

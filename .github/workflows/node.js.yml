@@ -48,11 +48,24 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Dependency audit (advisory, non-blocking)
-        # Supply-chain advisory. `pnpm audit` exits non-zero when it finds
-        # advisories; keep it visible as a CI warning but non-blocking (real
-        # triage happens in the Dependabot PR). continue-on-error surfaces the
-        # result without failing the build.
+      - name: Dependency audit — production paths (blocking)
+        # A high advisory on a PRODUCTION path fails the build, because nothing
+        # else catches it. This step exists because the previous single advisory
+        # step below was non-blocking on the theory that "real triage happens in
+        # the Dependabot PR" — and that theory did not hold for the case that
+        # actually occurred (js-yaml GHSA-5p4m-2wfm-xmqj):
+        #   * Dependabot alerts were ENABLED yet reported 0 open alerts;
+        #   * dependabot.yml's `updates:` bumps DIRECT dependencies, and js-yaml
+        #     is transitive, so no PR could be raised there either.
+        # So `pnpm audit` was the only detector, and it was configured to be
+        # invisible. Scoped to --prod so dev-only noise cannot make this the step
+        # people learn to ignore, which is how the last one stopped being read.
+        run: pnpm audit --prod --audit-level high
+
+      - name: Dependency audit — full tree (advisory, non-blocking)
+        # Dev-tree advisories stay visible but non-blocking. If something here
+        # needs action it gets promoted to the blocking step above or waived
+        # explicitly; it does not sit unread as the only signal.
         continue-on-error: true
         run: pnpm audit --audit-level moderate
 

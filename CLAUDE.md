@@ -149,7 +149,13 @@ CAS は読んだ版一致時のみ更新、append/CAS は in-process mutex で�
 
 - `pnpm typecheck` (tsc strict、`tsconfig.json` = src + `tsconfig.test.json` = src+tests。
   **build config は src しか見ないので、tests を型検査する第 2 config が要る**) → `pnpm build` →
-  `pnpm test` (vitest)。CI と同一。
+  `pnpm test` (vitest)。
+- **★ ただしこれは CI の全部ではない。** CI は 7 step:
+  `pnpm audit --prod --audit-level high` (blocking) → `lint:ox` → `format:check` → `lint` →
+  `typecheck` → `build` → `test`。**上の 3 つだけ回して緑を確認したせいで、`format:check` で
+  CI を落としたことが実際にある**。ローカルで通すなら
+  `.github/workflows/node.js.yml` の step 列を正典として全部回す (ここの列挙は写しであり、
+  食い違ったら workflow が正しい)。
 - **セキュリティ挙動は規約でなくテストで pin** する: path traversal / symlink escape /
   frontmatter allowlist / stale patch / exact-path確認・patch完全性 / overwrite collision / Skill bundle containment・
   create-only・atomic publish (`tests/`)。挙動を変える

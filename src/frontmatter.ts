@@ -94,17 +94,31 @@ export function parseMarkdown(raw: string): { frontmatter: DocumentMetadata; bod
 //      U+2028 and U+2029 start lines too, so counting newline characters is the
 //      wrong shape of fix.
 //   2. js-yaml's `!!omap` resolution (GHSA-5p4m-2wfm-xmqj, js-yaml <3.15.1).
-//      `!!omap` is in the DEFAULT schema, so a plain load hits it. gray-matter
-//      requires `^3.13.1` and the fix exists only in 5.x, whose API is
-//      incompatible — so an override cannot resolve this and the size bound below
-//      IS the mitigation.
+//      `!!omap` is in the DEFAULT schema, so a plain load hits it.
+//      ⚠️ Path 2 is FIXED BY THE DEPENDENCY, not by this cap. Read the advisory's
+//      STRUCTURED fields, not its title: the title says "CVE-2026-59870 fix not
+//      backported" while `patched_versions` on the same record says `>=3.15.1` —
+//      and 3.15.1 is a real release (dist-tag `v3-legacy`) inside gray-matter's
+//      `^3.13.1` range. The title is what made an earlier revision of this comment
+//      claim the fix existed only in 5.x. package.json pins it through
+//      `pnpm.overrides`; a plain `pnpm update` will NOT move a transitive that the
+//      lockfile already considers satisfied. Measured on the
+//      resolved tree: 3.15.0 quadruples per doubling (74 / 173 / 670 / 3,068 ms at
+//      n = 5k / 10k / 20k / 40k) while 3.15.1 stays linear (83 / 82 / 112 / 171 ms).
+//      The cap keeps path 2 bounded as defence in depth if the resolution ever
+//      slides back — it is not the primary fix, and reading it as one would make
+//      an out-of-date js-yaml look acceptable.
 //
-// Measured (Node 22, gray-matter 4.0.3 / js-yaml 3.15.0), quadrupling per
-// doubling in both — the signature of O(n^2):
+// Measured (Node 22, gray-matter 4.0.3 / js-yaml 3.15.0 — i.e. BEFORE the bump for
+// path 2), quadrupling per doubling in both — the signature of O(n^2):
 //
 //   path 1, no closing delimiter   391 KB -> 101.8 s
 //   path 1, closing delimiter      156 KB ->   9.1 s
 //   path 2, !!omap               1,228 KB ->   3.5 s
+//
+// These are wall-clock on one machine. Only the EXPONENT transfers between hosts:
+// the same payloads on a ~6x slower CI container scale by that factor throughout,
+// so treat the absolute milliseconds as calibration, not as a threshold.
 //
 // A file whose frontmatter never closes is the worst case, because gray-matter
 // falls back to treating the WHOLE file as the block (`if (closeIndex === -1)
@@ -128,7 +142,11 @@ export function parseMarkdown(raw: string): { frontmatter: DocumentMetadata; bod
  * Measured against the real vault this server was built for: 2,381 notes,
  * frontmatter median 225 B, p99 501 B, p99.9 and max 1,042 B. A 2 KiB cap would
  * already reject nothing; 8 KiB keeps ~7.9x headroom over the largest note that
- * exists while holding the attack to ~23 ms (path 1) and ~0.3 ms (path 2).
+ * exists while holding the attack to ~41 ms (path 1) and ~1 ms (path 2).
+ *
+ * That 41 ms is the UNTERMINATED shape, which is the worst case — the same as the
+ * block comment above says, and the reason an earlier ~23 ms here was wrong: it
+ * was the terminated shape, which is ~1.8x cheaper at the same size.
  *
  * If a legitimate note ever needs more than this, raise the DESIGN rather than
  * the number: frontmatter carrying kilobytes of `source_refs` is the smell, and
