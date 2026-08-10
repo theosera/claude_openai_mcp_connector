@@ -144,6 +144,18 @@ tools scoped to one reserved subtree (`MCP_AUDIT_SUBDIR` +
   `MCP_HTTP_ALLOW_AUDIT_WRITE=1`) so an injected scanner has **no** general write
   tools to be steered into — that endpoint separation, not INV-9, is what closes
   the confused-deputy.
+- **Reserving the subtree and registering the tools are separate decisions, on
+  every transport** — `MCP_HTTP_ALLOW_AUDIT_WRITE` on HTTP and
+  **`MCP_STDIO_ALLOW_AUDIT_WRITE`** (new, default off) on stdio. stdio used to
+  take the presence of `MCP_AUDIT_SUBDIR` as permission for both, which meant an
+  operator following the documented "set the same subdir on every write-capable
+  process" guidance also armed every interactive local session with the two
+  single-call audit writes — no plan/apply step, no confirmation, on a transport
+  whose input is untrusted vault content. The reservation rides on
+  `config.auditSubdir` and is unaffected by the flag, so withholding the tools
+  does not weaken INV-9; both halves are pinned by one pair of adjacent tests.
+  The stdio startup line now reports three states (`off` / `reserved-only` /
+  `on`) because a single on/off could only ever describe one of the two.
 - **Distinct from the "Audit log" gap below.** That is a _content-free,
   server-side_ event log of who searched / fetched / wrote (keyed on
   `client_id`); this is the _scanner's own_ audit output written into the vault.

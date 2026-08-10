@@ -8,6 +8,40 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **Setting `MCP_AUDIT_SUBDIR` on a stdio server also handed that session the
+  audit write tools; it now only reserves the subtree.** Registering
+  `append_audit_report` and `compare_and_swap_audit_state` takes its own opt-in,
+  **`MCP_STDIO_ALLOW_AUDIT_WRITE`** (default off), mirroring the
+  `MCP_HTTP_ALLOW_AUDIT_WRITE` that HTTP always required.
+
+  The documentation is what made conflating the two expensive rather than
+  theoretical: operators are told to set the **same** `MCP_AUDIT_SUBDIR` on every
+  write-capable process, precisely so the INV-9 reservation holds everywhere.
+  Following that advice armed every interactive local session with the two writes
+  the reservation exists to protect against — both single-call, with no
+  plan/apply step and no user confirmation, on a transport whose input is
+  untrusted vault content (INV-5). A note steered into
+  `compare_and_swap_audit_state` could rewrite an unattended scanner's `state.md`
+  wholesale; `append_audit_report` could plant a clean-looking run.
+
+  **Withholding the tools does not weaken the reservation.** It rides on
+  `config.auditSubdir` through `createStore`, not on the audit store instance, so
+  a process with the subdir and no flag gets exactly what the guidance promised —
+  general writes still refused from that subtree. Two adjacent tests drive the
+  same environment: one asserts the tools are absent, the next asserts a general
+  write into the subtree is still rejected on the wire.
+
+  Asking for the tools without a subtree for them to write into now fails at
+  boot, the shape `MCP_HTTP_ALLOW_AUDIT_WRITE` already had. The stdio startup
+  line reports three states — `audit=off` (no subdir, so no reservation),
+  `audit=reserved-only` (the new default), `audit=on` — because one on/off could
+  only ever describe one of two decisions, and reading `off` for a reserved
+  subtree would wrongly suggest the reservation had lapsed.
+
+  Reverse-verified per guard: dropping the flag from the registration makes the
+  withholding test report `to not include 'append_audit_report'`; removing the
+  boot check makes the server start instead of refusing.
+
 - **A constrained write surface can no longer author a document's identity.**
   Refusing to honour a forged `id` on the read side left the other half open:
   the surfaces that let a client choose a vault file's **bytes** could still

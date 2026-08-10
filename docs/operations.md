@@ -729,10 +729,21 @@ no hands). Run **two** connector processes:
 > **INV-9 operating condition.** The audit-subtree reservation (general writes
 > can't touch `MCP_AUDIT_SUBDIR`) only takes effect in a process that *sets*
 > `MCP_AUDIT_SUBDIR`. Set the **same** `MCP_AUDIT_SUBDIR` on **both** endpoints —
-> and on any local **stdio** server that can write the vault. On the interactive
-> endpoint it just reserves the subtree (its general writes are excluded); on the
-> scan endpoint it also enables the audit tools. A write-capable process that omits
-> it can still edit audit files through a general write.
+> and on any local **stdio** server that can write the vault. A write-capable
+> process that omits it can still edit audit files through a general write.
+>
+> **Setting it reserves the subtree; it does not hand out the audit tools.**
+> Registering `append_audit_report` / `compare_and_swap_audit_state` takes a
+> second, independent opt-in on every transport — `MCP_HTTP_ALLOW_AUDIT_WRITE`
+> on HTTP, `MCP_STDIO_ALLOW_AUDIT_WRITE` on stdio. So the interactive endpoint
+> and your local stdio server get the reservation and nothing else, while the
+> scan endpoint gets both. This split matters because those two tools are
+> single-call writes with no plan/apply step and no confirmation: a session that
+> holds them can forge a report or clobber `state.md` regardless of the
+> reservation. Until 0.7.x a stdio server took `MCP_AUDIT_SUBDIR` alone as
+> permission for both, so following the advice above also armed every local
+> session; the stdio startup line now distinguishes the two states
+> (`audit=reserved-only` vs `audit=on`).
 >
 > **Since the working-directory `.env` was removed, "sets it" means: in the
 > process's real environment, or in its own `MCP_ENV_FILE`** (Step 2). This

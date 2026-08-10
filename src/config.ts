@@ -76,6 +76,22 @@ export interface AppConfig {
   /** Vault-relative subtree reserved for the audit write surface (append + CAS).
    *  When set, general document writes may NOT target it (INV-9). */
   auditSubdir?: string;
+  /**
+   * Whether a **stdio** server registers the audit write tools
+   * (`append_audit_report` / `compare_and_swap_audit_state`).
+   *
+   * Deliberately separate from `auditSubdir`, and off by default. Setting the
+   * subdir means "reserve this subtree from general writes" (INV-9) — operators
+   * are told to set it on every write-capable process precisely so the
+   * reservation holds everywhere. Registering the write tools is a different
+   * decision, and conflating the two handed an interactive session, whose input
+   * is untrusted vault content (INV-5), the two single-call writes that can
+   * forge (`append_audit_report`) or clobber (`compare_and_swap_audit_state`)
+   * the audit trail — with no plan/apply step and no user confirmation in
+   * between. HTTP always required a second, independent opt-in for this
+   * (`MCP_HTTP_ALLOW_AUDIT_WRITE`); stdio did not.
+   */
+  stdioAllowAuditWrite: boolean;
   /** Max Markdown files opened concurrently during a scan (bounds FD pressure). */
   scanConcurrency?: number;
   /**
@@ -213,6 +229,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     }
   }
 
+  // Registering the stdio audit write tools is its own opt-in, mirroring
+  // MCP_HTTP_ALLOW_AUDIT_WRITE. Asking for the tools without a subtree for them
+  // to write into is a contradiction, so it fails at boot rather than starting a
+  // server whose audit surface silently does not exist — the same fail-closed
+  // shape loadHttpConfig applies. Checked here rather than in the stdio branch
+  // so the contradiction surfaces under either transport.
+  const stdioAllowAuditWrite = isTruthy(env.MCP_STDIO_ALLOW_AUDIT_WRITE);
+  if (stdioAllowAuditWrite && !auditSubdir) {
+    throw new Error("MCP_STDIO_ALLOW_AUDIT_WRITE requires MCP_AUDIT_SUBDIR.");
+  }
+
   // Bounds how many files a vault scan opens at once. Left undefined (the store
   // applies a safe default) unless a positive integer override is provided.
   const parsedScanConcurrency = Number.parseInt(env.MCP_SCAN_CONCURRENCY?.trim() || "", 10);
@@ -242,6 +269,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     patchStateDir: path.resolve(env.MCP_PATCH_STATE_DIR?.trim() || defaultPatchStateDir(knowledgeRoots[0].path)),
     skillsSubdir,
     auditSubdir,
+    stdioAllowAuditWrite,
     scanConcurrency,
     searchRecencyWeight,
     searchRecencyHalfLifeDays

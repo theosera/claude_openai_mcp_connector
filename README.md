@@ -477,7 +477,7 @@ client entirely; nothing here depends on where that client keeps its logs.
 - `apply_planned_update` _(write)_
 - `plan_skill_create` _(write — only when the constrained Skill store is configured)_
 - `apply_planned_skill_create` _(write; create-only, atomic, never overwrites)_
-- `append_audit_report` _(audit write — only with `MCP_AUDIT_SUBDIR` + `MCP_HTTP_ALLOW_AUDIT_WRITE`; create-only reports in the reserved subtree, never overwrites)_
+- `append_audit_report` _(audit write — needs `MCP_AUDIT_SUBDIR` **and** the transport's own opt-in: `MCP_HTTP_ALLOW_AUDIT_WRITE` on HTTP, `MCP_STDIO_ALLOW_AUDIT_WRITE` on stdio; create-only reports in the reserved subtree, never overwrites)_
 - `compare_and_swap_audit_state` _(audit write; atomic sha256 compare-and-swap of the reserved `state.md`)_
 - `search` / `fetch` — ChatGPT-connector-compatible read-only aliases
 
