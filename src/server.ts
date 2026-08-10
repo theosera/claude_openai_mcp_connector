@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { chatgptFetch, chatgptSearch } from "./chatgpt.js";
+import { withClientSafeErrors } from "./clientSafeError.js";
 import type { AuditStore } from "./auditStore.js";
 import type { SkillStore } from "./skillStore.js";
 import type { MarkdownDocument, PublicDocument, VaultStore } from "./types.js";
@@ -78,7 +79,15 @@ export function toPublicDocument(document: MarkdownDocument): PublicDocument {
  * Chat connectors), so the tool surface and the untrusted-content boundary
  * (`instructions`) stay identical across transports.
  */
-export function buildMcpServer(store: VaultStore, options: BuildServerOptions): McpServer {
+export function buildMcpServer(vaultStore: VaultStore, options: BuildServerOptions): McpServer {
+  // Single choke for the error channel: every tool handler below reaches the
+  // filesystem through one of these three stores, so wrapping them here covers
+  // the whole surface — including tools added later — instead of enumerating
+  // throw sites. See src/clientSafeError.ts for why that distinction matters.
+  const store = withClientSafeErrors(vaultStore);
+  const skillStore = options.skillStore ? withClientSafeErrors(options.skillStore) : undefined;
+  const auditStore = options.auditStore ? withClientSafeErrors(options.auditStore) : undefined;
+
   const server = new McpServer(
     {
       name: "claude-openai-markdown-connector",
@@ -285,7 +294,7 @@ export function buildMcpServer(store: VaultStore, options: BuildServerOptions): 
     );
   }
 
-  if (options.allowSkillWrite && options.skillStore) {
+  if (options.allowSkillWrite && skillStore) {
     server.registerTool(
       "plan_skill_create",
       {
@@ -304,7 +313,7 @@ export function buildMcpServer(store: VaultStore, options: BuildServerOptions): 
         },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false }
       },
-      async (input) => jsonResult(await options.skillStore!.planCreate(input))
+      async (input) => jsonResult(await skillStore.planCreate(input))
     );
 
     server.registerTool(
@@ -317,11 +326,11 @@ export function buildMcpServer(store: VaultStore, options: BuildServerOptions): 
         },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false }
       },
-      async (input) => jsonResult(await options.skillStore!.applyPlannedCreate(input.patch_id))
+      async (input) => jsonResult(await skillStore.applyPlannedCreate(input.patch_id))
     );
   }
 
-  if (options.allowAuditWrite && options.auditStore) {
+  if (options.allowAuditWrite && auditStore) {
     server.registerTool(
       "append_audit_report",
       {
@@ -336,7 +345,7 @@ export function buildMcpServer(store: VaultStore, options: BuildServerOptions): 
         // run_id+content is a safe no-op.
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true }
       },
-      async (input) => jsonResult(await options.auditStore!.appendAuditReport(input))
+      async (input) => jsonResult(await auditStore.appendAuditReport(input))
     );
 
     server.registerTool(
@@ -353,7 +362,7 @@ export function buildMcpServer(store: VaultStore, options: BuildServerOptions): 
         // because a repeated call fails the compare-and-swap once state advances.
         annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false }
       },
-      async (input) => jsonResult(await options.auditStore!.compareAndSwapAuditState(input))
+      async (input) => jsonResult(await auditStore.compareAndSwapAuditState(input))
     );
   }
 
