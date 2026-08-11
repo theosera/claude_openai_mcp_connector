@@ -371,6 +371,15 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
 > (#91: `check-http.mjs` は 2b 以降ずっと FAIL していたが、比較の手前で throw していたので
 > surface 検査は一度も走っていなかった。)
 
+> **★ 1 つのファイルについて複数の属性を assert するときは、単一 handle から取る。**
+> `fs.stat(path)` の後に `fs.readFile(path)` と書くと、**assert 同士が別バージョンのファイルを
+> 指しうる** — 「inode が変わった」と「中身が新しい」が同じファイルの話である保証が無い。
+> 本番コード (`readDocument` / `applyPlannedUpdate` / `replaceFileAtomically`) が handle 経由で
+> 揃えているのと同じ理由が、テストにもそのまま当てはまる。
+> **実測: CodeQL が #106 と #107 で同じ形を 2 回検出した** (どちらも新規テスト、high)。
+> ⚠️ **これは `GD-VACUOUS-CHECK` とは別の失敗モード。** あちらは**検査に到達したか**、
+> こちらは**検査対象が同一か**。テストは正しく到達しており、見ている対象がズレうるだけ。
+
 最低限カバー:
 
 - path traversal (`../`, encoded `%2e%2e`, malformed escape `%ZZ`, 絶対, `~`, NUL/制御文字, 超過長) → reject
