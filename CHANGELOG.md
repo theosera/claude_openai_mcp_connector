@@ -6,6 +6,25 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`plan_document_update` could stage a diff that deleted frontmatter it failed
+  to parse.** It read the note's current bytes with the read path's forgiving
+  parser, which falls back to _empty_ frontmatter when the YAML is malformed,
+  over the block-size cap, or an expansion bomb. Planning an update against such
+  a note therefore produced a diff dropping every field the parser could not
+  read — and the approver was shown that deletion as the intended change. The
+  write path now uses the throwing parser, as INV-2 always required: a reader has
+  an obligation to keep returning the note, a writer does not.
+
+- **An update could silently change a note's owner.** `rename` needs write
+  permission on the containing directory, not ownership of the target, so a
+  process with access to a shared vault folder can replace another user's note
+  with a temp file it owns — and then be unable to `chown` the replacement back.
+  Ignoring that failure published the note under the wrong owner. The `chown` is
+  now skipped only when the temp already carries the target's ids, and a failure
+  aborts before the rename, leaving the note's contents _and_ owner untouched.
+
 ### Security
 
 - **The legacy one-step `create_document` is now off by default on every
@@ -246,18 +265,18 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Measured on this repo's pinned versions (Node 22, gray-matter 4.0.3 / js-yaml
   3.15.0), quadrupling per doubling in both — the signature of O(n²):
 
-  | path | input | blocked for |
-  | --- | --- | --- |
-  | comment stripper, no closing delimiter | 391 KB | **101.8 s** |
-  | comment stripper, closing delimiter | 156 KB | 9.1 s |
-  | `!!omap` | 1,228 KB | 3.5 s |
+  | path                                   | input    | blocked for |
+  | -------------------------------------- | -------- | ----------- |
+  | comment stripper, no closing delimiter | 391 KB   | **101.8 s** |
+  | comment stripper, closing delimiter    | 156 KB   | 9.1 s       |
+  | `!!omap`                               | 1,228 KB | 3.5 s       |
 
   The worst case is a file whose frontmatter never closes, because gray-matter
   then treats the **whole file** as the block. All of it sits far inside
   `append_audit_report`'s 512 KB ceiling.
 
   `parseMarkdown` now refuses a block over **8 KiB** before calling `matter()`.
-  Nothing that inspects the parsed *result* can help here — the CPU is spent
+  Nothing that inspects the parsed _result_ can help here — the CPU is spent
   during the parse — which is why the existing anchor/alias expansion guard,
   which runs after `matter()` returns, never covered this. The two guards are
   complementary: a block-size cap was correctly **rejected** for the expansion
@@ -284,7 +303,7 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Sized against the real vault this server was built for — 2,381 notes,
   frontmatter median 225 B, p99 501 B, max 1,042 B — so 8 KiB keeps ~7.9x
   headroom over the largest note that exists while holding the attack to ~41 ms —
-  measured on the *unterminated* shape, which is the worst case and ~1.8x costlier
+  measured on the _unterminated_ shape, which is the worst case and ~1.8x costlier
   than the terminated one at the same size.
   Over-cap frontmatter fails **loudly**: the read path logs it and indexes the
   note body-only (exactly like any other malformed frontmatter), and the write
@@ -304,7 +323,7 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   non-blocking step, on the stated theory that "real triage happens in the
   Dependabot PR". That theory did not survive contact with the js-yaml advisory
   above: Dependabot alerts were enabled but reported **0 open alerts**, and
-  `dependabot.yml`'s `updates:` bumps *direct* dependencies while js-yaml is
+  `dependabot.yml`'s `updates:` bumps _direct_ dependencies while js-yaml is
   transitive — so no PR was raised there either. `pnpm audit` was the only
   detector, and it was configured to be invisible.
 
@@ -318,7 +337,7 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **A note's frontmatter `id` could impersonate any other document, and no
   longer can.** `readDocument` takes `document.id` verbatim from the file's own
-  frontmatter — untrusted vault content — and `fetch()` matched that id *before*
+  frontmatter — untrusted vault content — and `fetch()` matched that id _before_
   the vault-relative path, with no uniqueness check. A single note declaring
   another note's server-generated uuid, or another note's path, therefore
   answered every lookup aimed at that other note: `fetch_document`, the ChatGPT
@@ -330,7 +349,7 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   landed on the impostor file. Documents this server created are the most
   hijackable, because `create_document` / `plan_document_create` stamp a
   `crypto.randomUUID()` — their own path is never claimed by their own id, so a
-  squatter is the *only* id match and wins regardless of scan order.
+  squatter is the _only_ id match and wins regardless of scan order.
 
   `fetch` now resolves a reference only when it names exactly one document
   across the id and path namespaces, at **both** `KnowledgeStore.fetch` and
@@ -348,7 +367,7 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `id` CAN be a vault-relative path, and claiming one is the primary attack
   shape. A victim that carries its own uuid stays reachable by that uuid, but a
   note carrying **no** frontmatter `id` has exactly one handle — its path, since
-  its id *is* its path — and a squatter claiming that path leaves it with no
+  its id _is_ its path — and a squatter claiming that path leaves it with no
   reference at all. Both cases are pinned. The error therefore does not tell the
   caller to retry with the exact path (that retry lands on the same collision);
   it says the reference cannot be disambiguated and the duplicate `id` has to go.
@@ -777,6 +796,7 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   A body that begins with a `---` YAML block is now preserved verbatim in the
   body instead of being absorbed into the front matter. Bodies that do not begin
   with `---` serialize byte-identically to before.
+
 - **`vault.read` is enforced, and the HTTP tool surface is now resolved from the
   token presented on every single request.** Two changes that had to land
   together ([ROADMAP item 2b](./docs/ROADMAP.md)).

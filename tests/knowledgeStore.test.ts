@@ -552,6 +552,31 @@ describe("KnowledgeStore", () => {
     expect((await store.fetch("chatgpt-research-001")).body).toContain(marker);
   });
 
+  // INV-2, write side. The read path degrades an unparseable or over-sized
+  // frontmatter to EMPTY so a single bad note never aborts a whole-vault scan.
+  // A writer must not inherit that: planning against such a note would stage a
+  // diff that deletes every field the parser could not read, and the approver
+  // would be shown that deletion as if it were the intended change.
+  it("refuses to plan an update against a note whose frontmatter does not parse", async () => {
+    await fs.writeFile(path.join(root, "broken.md"), "---\ntags: [unclosed\n---\n\nbody\n", "utf8");
+
+    await expect(
+      store.planUpdate({ id_or_path: "broken.md", new_body: "replacement", reason: "malformed" })
+    ).rejects.toThrow();
+    // Nothing was staged: a refused plan must not leave a patch behind for a
+    // later apply to pick up.
+    expect(await fs.readdir(patchStateDir)).toEqual([]);
+  });
+
+  it("refuses to plan an update against a note whose frontmatter exceeds the block cap", async () => {
+    await fs.writeFile(path.join(root, "huge.md"), `---\ntitle: ${"a".repeat(9 * 1024)}\n---\n\nbody\n`, "utf8");
+
+    await expect(
+      store.planUpdate({ id_or_path: "huge.md", new_body: "replacement", reason: "oversized" })
+    ).rejects.toThrow();
+    expect(await fs.readdir(patchStateDir)).toEqual([]);
+  });
+
   it("rejects a non-allowlisted frontmatter key in plan_document_update", async () => {
     await expect(
       store.planUpdate({
