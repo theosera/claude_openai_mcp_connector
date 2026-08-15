@@ -555,11 +555,24 @@ export class KnowledgeStore implements VaultStore {
     // where the guarantee lives. Move a directory out of the root and symlink it
     // back: the file's own dev, ino, ctime and mtime are all untouched — a
     // parent's rename does not move a child's ctime — so the signature matches
-    // across a genuine escape. What stops such a path from ever reaching here is
-    // the CALLER: `walkMarkdownFiles` realpaths and containment-checks every
-    // directory it descends and every symlink it meets, and `resolveForWrite` /
-    // `resolveForExistingRead` do the same per call. The resolution this skips
-    // was a second resolution of a path already resolved on the same call.
+    // across a genuine escape. Containment is the CALLER's: `walkMarkdownFiles`
+    // realpaths and containment-checks every directory it descends and every
+    // symlink it meets, and `resolveForWrite` / `resolveForExistingRead` do the
+    // same per call. The resolution skipped here was a second resolution of a
+    // path already resolved on the same call.
+    //
+    // ★★ "On the same call" is not "at the same instant", and that gap is real:
+    // the walk collects paths, then the reads happen. Swap a directory for an
+    // escaping symlink in between and the old realpath here would have dropped
+    // that document, where a cache hit now returns it. What bounds it is that a
+    // hit requires the SAME (dev, ino) — so the bytes returned are always the
+    // ones already validated and already cached, never a file the server had not
+    // read. The window changes how long a document keeps appearing after its
+    // directory leaves the vault; it cannot make a new file readable. And no
+    // client-reachable write moves a directory: every write surface creates or
+    // replaces files within an already-contained parent. Raised as P1 by an
+    // external review on #108; the mechanism is exactly right and is why this
+    // paragraph exists, but it does not carry content across the boundary.
     //
     // So the rule for anyone adding a call site: run the guard chain BEFORE
     // calling readDocument. It no longer does that for you, and a signature match

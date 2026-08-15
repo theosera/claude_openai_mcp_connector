@@ -595,10 +595,14 @@ describe("KnowledgeStore", () => {
     const staging = path.join(path.dirname(target), "replacement.tmp");
     await fs.writeFile(staging, replaced, "utf8");
     await fs.rename(staging, target);
-    await fs.utimes(target, frozen, frozen);
 
+    // Restore the mtime and read it back through the SAME handle. Doing the
+    // utimes by path and then opening the path is the same check-then-use one
+    // step removed — and it is what the first fix here left behind, which is why
+    // the alert moved instead of clearing.
     const after = await fs.open(target, "r");
     try {
+      await after.utimes(frozen, frozen);
       const stats = await after.stat({ bigint: true });
       expect(stats.ino).not.toBe(startingIno); // the case under test actually occurred
       expect(stats.mtimeNs).toBe(BigInt(frozen) * 1_000_000_000n);
