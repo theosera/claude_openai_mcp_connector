@@ -567,18 +567,18 @@ describe("KnowledgeStore", () => {
   it("re-reads a note replaced by a different inode at the same path", async () => {
     const target = path.join(root, "projects/chatgpt/research/shared-search.md");
     const frozen = 1_700_000_000;
-    await fs.utimes(target, frozen, frozen);
 
-    // The starting inode AND the bytes the replacement is built from, through ONE
-    // handle. `stat(path)` followed by `readFile(path)` would let "the inode
-    // changed" and "the content is the one I replaced" describe two different
-    // files — the very check-then-use this test exists to observe the store
-    // surviving. CodeQL has now caught this shape here three times running
-    // (#106, #107, #108), always in a freshly written test.
-    const before = await fs.open(target, "r");
+    // ONE path lookup per file, and every observation through the handle it
+    // returned. Two earlier attempts kept fixing the specific pair CodeQL named
+    // — stat+readFile, then utimes+open — and each time the alert MOVED rather
+    // than cleared, because the shape is "resolve this path again", not any one
+    // pair. So: freeze the mtime, take the inode, and read the bytes the
+    // replacement is built from, all from the original's single handle.
+    const before = await fs.open(target, "r+");
     let startingIno: bigint;
     let original: string;
     try {
+      await before.utimes(frozen, frozen);
       startingIno = (await before.stat({ bigint: true })).ino;
       original = await before.readFile("utf8");
     } finally {
@@ -593,21 +593,21 @@ describe("KnowledgeStore", () => {
     const replaced = `${original.slice(0, -5)}ZZZZ\n`;
     expect(replaced.length).toBe(original.length);
     const staging = path.join(path.dirname(target), "replacement.tmp");
-    await fs.writeFile(staging, replaced, "utf8");
-    await fs.rename(staging, target);
 
-    // Restore the mtime and read it back through the SAME handle. Doing the
-    // utimes by path and then opening the path is the same check-then-use one
-    // step removed — and it is what the first fix here left behind, which is why
-    // the alert moved instead of clearing.
-    const after = await fs.open(target, "r");
+    // The replacement's handle is held ACROSS the rename. A handle follows the
+    // inode, not the name, so once the rename lands this is the file now living
+    // at `target` — which is how the post-conditions get asserted without ever
+    // resolving `target` a second time.
+    const published = await fs.open(staging, "wx");
     try {
-      await after.utimes(frozen, frozen);
-      const stats = await after.stat({ bigint: true });
+      await published.writeFile(replaced, "utf8");
+      await fs.rename(staging, target);
+      await published.utimes(frozen, frozen);
+      const stats = await published.stat({ bigint: true });
       expect(stats.ino).not.toBe(startingIno); // the case under test actually occurred
       expect(stats.mtimeNs).toBe(BigInt(frozen) * 1_000_000_000n);
     } finally {
-      await after.close();
+      await published.close();
     }
 
     expect((await store.fetch("chatgpt-research-001")).body).toContain("ZZZZ");
@@ -695,6 +695,10 @@ describe("KnowledgeStore", () => {
       expect(trace.backlinks.map((backlink) => backlink.relativePath)).toContain(
         "projects/chatgpt/research/shared-search.md"
       );
+      // Named in this test's title, so it has to actually be called: asserting
+      // only fetch and traceSources would leave a prune of listProjects alone
+      // green under a title claiming otherwise (raised by Bugbot on #108).
+      expect((await store2.listProjects()).map((summary) => summary.client).sort()).toEqual(["chatgpt", "claude"]);
       expect((await store2.listDocuments()).length).toBe(2);
     });
   });
