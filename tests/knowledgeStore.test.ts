@@ -568,14 +568,28 @@ describe("KnowledgeStore", () => {
     const target = path.join(root, "projects/chatgpt/research/shared-search.md");
     const frozen = 1_700_000_000;
     await fs.utimes(target, frozen, frozen);
-    const before = await fs.stat(target, { bigint: true });
+
+    // The starting inode AND the bytes the replacement is built from, through ONE
+    // handle. `stat(path)` followed by `readFile(path)` would let "the inode
+    // changed" and "the content is the one I replaced" describe two different
+    // files — the very check-then-use this test exists to observe the store
+    // surviving. CodeQL has now caught this shape here three times running
+    // (#106, #107, #108), always in a freshly written test.
+    const before = await fs.open(target, "r");
+    let startingIno: bigint;
+    let original: string;
+    try {
+      startingIno = (await before.stat({ bigint: true })).ino;
+      original = await before.readFile("utf8");
+    } finally {
+      await before.close();
+    }
 
     expect((await store.fetch("chatgpt-research-001")).body).toContain("Markdown body text");
 
     // Replace by rename — how src/atomicWrite.ts writes, and how an external
     // editor or a sync client replaces a file. Same byte length and the mtime put
     // back, so the inode is the only thing that moved.
-    const original = await fs.readFile(target, "utf8");
     const replaced = `${original.slice(0, -5)}ZZZZ\n`;
     expect(replaced.length).toBe(original.length);
     const staging = path.join(path.dirname(target), "replacement.tmp");
@@ -583,9 +597,14 @@ describe("KnowledgeStore", () => {
     await fs.rename(staging, target);
     await fs.utimes(target, frozen, frozen);
 
-    const after = await fs.stat(target, { bigint: true });
-    expect(after.ino).not.toBe(before.ino); // the case under test actually occurred
-    expect(after.mtimeNs).toBe(BigInt(frozen) * 1_000_000_000n);
+    const after = await fs.open(target, "r");
+    try {
+      const stats = await after.stat({ bigint: true });
+      expect(stats.ino).not.toBe(startingIno); // the case under test actually occurred
+      expect(stats.mtimeNs).toBe(BigInt(frozen) * 1_000_000_000n);
+    } finally {
+      await after.close();
+    }
 
     expect((await store.fetch("chatgpt-research-001")).body).toContain("ZZZZ");
   });
