@@ -37,12 +37,19 @@ injection」「③ 既存ノートの破壊的/stale 上書き」「④ public r
    set を持ち、再訪したら `[]` を返して打ち切る (`loop → root` で無限再帰させない)。escape
    照合 (7) は**温存** — cycle 対策の都合で root 外 symlink を通してはならない。
 
-9. **cache hit の再解決省略は (dev, ino) 同一性に依る**。`readDocument` は cache hit 時に
-   `realpath` を再実行せず、`fs.stat` 1 回の signature 一致で「同じ inode」を確認する。成立条件は
-   **呼び出し側が同じ呼び出しで 6/7 を通していること**で、そこが崩れると封じ込めごと崩れる。
-   `dev` を signature から落とさない。**測定 (2,880 ノート / iCloud Drive)**: 全 stat 0.864 s に対し
-   全 47.4 MB の読み込みは +0.23 s — **コストは byte でなく per-file syscall** なので、この二重解決は
-   read tool 1 回あたり数千回分の実費だった。
+9. **`readDocument` は cache hit 時に再解決しない。封じ込めを保証するのは呼び出し側である。**
+   signature 一致が言えるのは「同じ inode = 前に読んだのと同じ bytes」までで、`dev` はその同一性を
+   1 filesystem 内に閉じないために要る (落とさない)。
+   ⚠️ **signature 一致は「今も root 内」を意味しない。** ディレクトリを root の外へ移して
+   symlink で戻すと、**子ファイル自身の dev/ino/ctime/mtime は全て不変**なので (親の rename は
+   子の ctime を動かさない)、**本物の escape をまたいで signature が一致する**。
+   それでも安全なのは、そういうパスが `readDocument` に**到達しない**からで、到達させないのは
+   `walkMarkdownFiles` (降りる全ディレクトリと出会う全 symlink を realpath + 照合) と
+   `resolveForWrite` / `resolveForExistingRead` (呼び出しごとに照合) である。
+   → **新しい呼び出し側を足すときは、呼ぶ前に自分でガードを通す。`readDocument` はもう
+   肩代わりしないし、signature 一致はその差を検出しない。**
+   **測定 (2,880 ノート / iCloud Drive)**: 全 stat 0.864 s に対し全 47.4 MB の読み込みは +0.23 s —
+   **コストは byte でなく per-file syscall** なので、この二重解決は read tool 1 回あたり数千回分の実費だった。
 
 - 違反は**例外で fail-closed** (sentinel fallback しない = MCP は黙って別物を返さない)。
 - **新しい read/write 経路を足したら必ずこのガードを通す**。root 外の生パスで `fs` を
@@ -407,6 +414,10 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
   **実際に walk が縮んでいる**。⚠️ **2 つの半分は別の syscall で測る** — file を飛ばしたら `open` が減り、
   subtree ごと飛ばしたら `readdir` が減る。**実測: `open` だけを数えていたら、`subtreeMayMatch` を
   `return true` に潰しても全テストが緑だった** (per-file 判定だけで `open` は抑止されるため)。
+  ⚠️ **prune は escape の検出範囲も狭める** — 従来はどの検索でも walk が全域を回るので、vault の
+  どこかに symlink escape があれば必ず throw した。prefix 付き検索は subtree を飛ばすので、
+  **同じ設定ミスが prefix 無し検索でしか鳴らなくなる** (アクセスは許していない — 飛ばした側は
+  読まれもしない)。
   `path_prefix` は**ディレクトリ名でなく素の文字列 prefix**のまま (`projects/chatgpt/res` が
   `research/` に届く = prune の「prefix の方が深い」節) / `fetch`・`trace_sources`・`list_projects` は
   **絞らない** (INV-2 の id 一意性と backlink 完全性は部分集合の上では「少ない」でなく「誤り」)

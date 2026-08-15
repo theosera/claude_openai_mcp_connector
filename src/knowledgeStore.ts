@@ -125,8 +125,8 @@ export class KnowledgeStore implements VaultStore {
   // Parse cache keyed by the path as handed to readDocument. Parsing every
   // Markdown file on every query is the search bottleneck for large vaults; we
   // re-parse a file only when its stat signature changes. That signature carries
-  // (dev, ino), so a hit also re-establishes that the path still names the inode
-  // whose containment was verified — see readDocument.
+  // (dev, ino), so a hit still names the same inode — but it does NOT re-prove
+  // containment, which is the caller's job on every call. See readDocument.
   private readonly documentCache = new Map<string, { signature: StatSignature; document: MarkdownDocument }>();
 
   // Promise-chain serializer for the overwriting write path. Each apply awaits
@@ -547,12 +547,23 @@ export class KnowledgeStore implements VaultStore {
   private async readDocument(absolutePath: string): Promise<MarkdownDocument> {
     // Fast path: ONE stat, on the path exactly as given. `fs.stat` follows
     // symlinks, so a signature match says this path still resolves to the very
-    // inode whose containment was verified when the entry was cached — see
-    // StatSignature on why (dev, ino) makes that an identity claim rather than a
-    // freshness one. That is what lets the resolution below be SKIPPED instead of
-    // merely repeated: anything that re-points the path (a symlink swapped to
-    // aim outside the root, a replace-by-rename, a delete) lands on a different
-    // inode or fails outright, and falls through to the full guard chain.
+    // inode that was read before — see StatSignature on why (dev, ino) makes that
+    // an identity claim and not merely a freshness one. The bytes handed back are
+    // therefore the ones already validated, never a different file.
+    //
+    // ★ That is NOT the same as re-proving containment, and the difference is
+    // where the guarantee lives. Move a directory out of the root and symlink it
+    // back: the file's own dev, ino, ctime and mtime are all untouched — a
+    // parent's rename does not move a child's ctime — so the signature matches
+    // across a genuine escape. What stops such a path from ever reaching here is
+    // the CALLER: `walkMarkdownFiles` realpaths and containment-checks every
+    // directory it descends and every symlink it meets, and `resolveForWrite` /
+    // `resolveForExistingRead` do the same per call. The resolution this skips
+    // was a second resolution of a path already resolved on the same call.
+    //
+    // So the rule for anyone adding a call site: run the guard chain BEFORE
+    // calling readDocument. It no longer does that for you, and a signature match
+    // will not catch the difference.
     //
     // Keyed by the path as given rather than by its realpath, because that is the
     // string whose meaning has to be re-checked; two references to one file cost
