@@ -811,6 +811,7 @@ _team / enterprise_ adoption rather than the core individual use case.
 | **Audit log**                                                | No after-the-fact record of who searched / fetched / wrote what.                                                                                                                                                                                                                                                                                                   | near-term 🔭                                                                                                                                                                                                                        |
 | **macOS CI**                                                 | The primary deployment target is macOS, and CI runs only on Linux. Case-insensitive-filesystem behaviour is therefore **asserted nowhere**: the `(dev, ino)` root-containment comparison exists precisely because `/vault` and `/Vault` are one directory on APFS, and a test for that shape is vacuous on ext4. NFD normalisation (HFS+) is in the same position. | near-term 🔭                                                                                                                                                                                                                        |
 | **Coverage thresholds**                                      | 374 tests is a count, not a floor. Nothing fails when a new branch arrives untested, which is the condition the reverse-verification rule exists to catch by hand — a threshold makes the cheap half automatic.                                                                                                                                                    | near-term 🔭                                                                                                                                                                                                                        |
+| **No connection or request limits on the HTTP endpoint**     | `http.createServer` is left at its defaults: no `maxConnections`, no `requestTimeout` / `headersTimeout` / `keepAliveTimeout`, and no rate limit on `/mcp` (the two limiters cover only the public OAuth endpoints). The ceiling on concurrent agents is therefore the process file-descriptor limit, not anything this repo chooses — and every read tool walks the whole vault at `MCP_SCAN_CONCURRENCY` handles, so it is that limit divided by the scan width. | near-term 🔭                                                                                                                                                                                                                        |
 | **Filesystem fault injection**                               | Write paths are now atomic, but no test exercises `ENOSPC`, `EIO`, or a kill between temp write and rename. The recovery behaviour is argued in comments and unverified in CI.                                                                                                                                                                                     | mid-term 💭                                                                                                                                                                                                                         |
 | **Fuzz / property tests**                                    | `pathSafety` and the frontmatter parser take adversarial input and are pinned by enumerated cases only, so they are strong exactly where someone already thought to look. Property tests would search the space the enumeration misses.                                                                                                                            | mid-term 💭                                                                                                                                                                                                                         |
 | **Multi-user RBAC**                                          | Currently single-user by design; teams need per-user roles & scoping.                                                                                                                                                                                                                                                                                              | larger bet 💭                                                                                                                                                                                                                       |
@@ -913,6 +914,39 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       the allowlist (`loadHttpConfig` adds `MCP_HTTP_PUBLIC_URL`'s host, so the
       supported setups are covered — but an unsupported one would start failing
       at `/authorize` instead of `/mcp`). Cheap; needs its own red-green test.
+- [ ] **Give the HTTP server explicit connection and request limits** — measured
+      at `e91c1c8`: `src/httpServer.ts` calls `http.createServer` and `listen`
+      without setting `maxConnections`, `requestTimeout`, `headersTimeout` or
+      `keepAliveTimeout`, and the only rate limiters in the process are the OAuth
+      ones (`authorize` 20/5min, `register` 20/10min). `/mcp` itself has neither.
+      What _is_ bounded is request memory (`MAX_BODY_BYTES` = 4 MiB) and scan
+      width (`MCP_SCAN_CONCURRENCY`, default 24).
+
+      **Why it matters more here than for a typical service:** the endpoint is
+      sessionless and shared, so N agents can be in flight at once, and every
+      read tool (`fetch_document` / `search_documents` / `plan_document_update`)
+      still walks the entire vault through `listDocuments()`. N concurrent scans
+      therefore want N × 24 descriptors, which makes the effective ceiling
+      `ulimit -n` divided by the scan width rather than a number this repo picked.
+      Exhaustion degrades rather than crashes — `EAGAIN` / `EMFILE` / `ENFILE`
+      are retried with backoff and unreadable notes are skipped — but that is
+      resilience arrived at from below, not a limit chosen from above. An idle
+      connection also currently has no deadline at all.
+
+      **Scope note:** this is availability, not confidentiality — bearer/OAuth
+      still gates every request, and the per-request tool surface is unaffected.
+      Pair it with the walk itself: a cap that merely rations a full-vault scan
+      per call is treating the symptom, so this belongs near the retrieval work,
+      not on its own.
+
+      **What is _not_ in scope here:** a plan is looked up by `patch_id` alone
+      and is not bound to the principal that staged it, so on a shared endpoint
+      one agent can apply a plan another agent staged. The id is a v4 UUID that
+      appears only in the staging response, so this is not reachable by guessing
+      — but "the approving agent and the applying agent are the same" is not a
+      property the code states. Related to the vault-binding item below and worth
+      settling with it; both are INV-3 changes and neither should ride along with
+      a limits patch.
 - [x] **RFC 9207 `iss` in the authorization response** (`src/oauth/`) — ✅ the
       `authorizePost` success redirect (the only redirect the AS emits — error
       paths render a 400 page precisely so codes cannot leak via redirects, so
