@@ -44,6 +44,19 @@ interface RecencySettings {
   now: number;
 }
 
+/**
+ * Canonical form of `path_prefix`, shared by the filter below and by the scan
+ * that narrows the walk before the filter ever runs.
+ *
+ * It has to be one function: the walk decides which subtrees to skip and the
+ * filter decides which documents survive, so if the two normalized the string
+ * differently the walk could drop a file the filter would have kept — a silent
+ * loss of results, not a slower search.
+ */
+export function normalizePathPrefix(pathPrefix: string | undefined): string | undefined {
+  return pathPrefix ? pathPrefix.normalize("NFC").replace(/^\.\//, "") : undefined;
+}
+
 export function searchDocuments(
   documents: MarkdownDocument[],
   filters: SearchFilters,
@@ -61,7 +74,7 @@ export function searchDocuments(
     now: defaults.now ?? Date.now()
   };
 
-  const pathPrefix = filters.path_prefix ? filters.path_prefix.normalize("NFC").replace(/^\.\//, "") : undefined;
+  const pathPrefix = normalizePathPrefix(filters.path_prefix);
   const updatedAfter = parseFilterDate(filters.updated_after, "updated_after");
   const updatedBefore = parseFilterDate(filters.updated_before, "updated_before");
 

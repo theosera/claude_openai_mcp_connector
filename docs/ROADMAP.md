@@ -767,6 +767,67 @@ The cache test needed a **second** attempt to be worth anything — the first
 restored a previously observed mtime, which `utimes` truncates, so it passed with
 the guard removed. It now freezes the mtime to a whole second on both sides.
 
+### The scan costs syscalls, not bytes — _measured, then narrowed_ ✅
+
+Every read tool walks the whole vault through `listDocuments()`. What that costs
+was argued from operation counts for a long time and finally measured, on the
+real 2,880-note vault (47.4 MB of Markdown, iCloud Drive, macOS):
+
+| | measured |
+| --- | --- |
+| tree walk (`find`, 670 directories) | 0.155 s |
+| `stat` on all 2,880 notes | 0.864 s |
+| `cat` of all 2,880 notes (47.4 MB) | 1.098 s |
+
+**Reading every byte costs 0.23 s more than merely stat-ing them.** The bytes are
+almost free; the per-file syscalls are the bill. That inverted the plan twice
+over, and both wrong turns are worth keeping:
+
+- _"Narrow the default scan to the folder that changes most"_ — the folder that
+  absorbs nearly all edits holds **6.3 %** of the notes, while one archive folder
+  holds **58.5 %**. Cost concentrates where writes do not.
+- _"Excluding the asset folder is free money"_ — it holds 0 Markdown files but
+  only **19 of 670** directories. Large in bytes, negligible in walk cost. Both
+  claims were made before measuring, which is the failure the numbers above exist
+  to stop repeating.
+
+Two changes followed, neither of which narrows anything by default:
+
+- **`path_prefix` now prunes the walk.** It was already a search filter, applied
+  after the walk had read every note. It is now also handed to the walk, which
+  skips subtrees that provably cannot contain a match. `searchDocuments` stays
+  the authority, so the prune only has to be conservative — and `fetch`,
+  `trace_sources` and `list_projects` deliberately keep scanning everything,
+  because id uniqueness (INV-2) and backlink completeness are wrong, not merely
+  short, when computed over a subset.
+- **A cache hit no longer re-resolves the path.** `readDocument` ran `realpath`
+  before consulting its cache, thousands of times per call; every caller already
+  runs the full INV-1 chain on the same call, so it was a second resolution of an
+  already-resolved path. It is one `stat` now, against a signature that gained
+  `dev` beside `ino` — the `(dev, ino)` identity argument `config.ts` already
+  uses for roots.
+
+**No new tool, no new env flag, no changed default.** The rejected alternative —
+making one folder the default scan target with a prompt to widen it — bought the
+same speed by making 6 notes in 10 unfindable, and would have made unattended
+scans depend on an interactive answer.
+
+Reverse-verified per guard: removing the cache-hit signature check fails four
+tests including both freshness tests; dropping `subtreeMayMatch`'s
+prefix-reaches-deeper clause fails the partial-segment test. The third guard
+**failed its first reverse verification** — with the directory prune disabled
+entirely every test stayed green, because the assertions counted file opens and
+the per-file check alone already suppressed those. The two halves of the prune
+are measured by different syscalls (`open` for a skipped file, `readdir` for a
+skipped subtree); the test now counts both. The `dev` field is **not**
+reverse-verifiable here — separating two devices needs a mount — and is recorded
+as unverified rather than assumed.
+
+Still open: an unprefixed search pays the full scan, so the
+[inverted index](#context-engineering-layer--get_context--link-graph--project-state-)
+tail is nearer than its "> 10k notes" trigger suggests — its **other** trigger,
+search p95 over 200 ms, is already met at 2,880 notes.
+
 ---
 
 ## Mid-term
@@ -937,7 +998,10 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       still gates every request, and the per-request tool surface is unaffected.
       Pair it with the walk itself: a cap that merely rations a full-vault scan
       per call is treating the symptom, so this belongs near the retrieval work,
-      not on its own.
+      not on its own. 🚧 The scan half moved first (see the section below): a
+      prefixed search no longer scans the whole vault, and a cached note is no
+      longer re-resolved. The unprefixed scan is unchanged, so the ceiling this
+      item describes still stands — it is just no longer the only lever.
 
       **What is _not_ in scope here:** a plan is looked up by `patch_id` alone
       and is not bound to the principal that staged it, so on a shared endpoint

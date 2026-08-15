@@ -209,12 +209,30 @@ export interface TraceResult {
  */
 export type PublicDocument = Omit<MarkdownDocument, "absolutePath" | "searchDerived">;
 
+/**
+ * Narrowing hints for a vault scan. Purely a cost control: a scan given a
+ * `pathPrefix` may skip subtrees that provably cannot contain a matching file,
+ * but it is always free to return MORE than was asked for. The authoritative
+ * filter stays in `searchDocuments`, so an over-eager prune here would be a
+ * correctness bug while an under-eager one is only slower — which is why the
+ * walk's prune rule is deliberately conservative and symlinked entries opt out
+ * of it entirely.
+ */
+export interface ListDocumentsOptions {
+  /**
+   * Vault-relative path prefix (NFC, POSIX separators, no `./`), matched the way
+   * `SearchFilters.path_prefix` is matched: a plain string prefix of the
+   * document's path, not necessarily a directory boundary.
+   */
+  pathPrefix?: string;
+}
+
 export interface VaultStore {
   init(): Promise<void>;
   search(filters: SearchFilters): Promise<SearchResponse>;
   fetch(idOrPath: string): Promise<MarkdownDocument>;
   listProjects(client?: string, tags?: string[]): Promise<ProjectSummary[]>;
-  listDocuments(): Promise<MarkdownDocument[]>;
+  listDocuments(options?: ListDocumentsOptions): Promise<MarkdownDocument[]>;
   createDocument(input: CreateDocumentInput): Promise<MarkdownDocument>;
   planDocumentCreate(input: PlanDocumentCreateInput): Promise<PlannedDocumentCreate>;
   applyPlannedDocumentCreate(

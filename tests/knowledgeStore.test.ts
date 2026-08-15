@@ -552,6 +552,130 @@ describe("KnowledgeStore", () => {
     expect((await store.fetch("chatgpt-research-001")).body).toContain(marker);
   });
 
+  // INV-1, read path. `readDocument` no longer re-resolves a path it already
+  // holds a cache entry for. That is safe because every caller — the walk,
+  // `resolveForWrite`, `resolveForExistingRead` — runs the full guard chain on
+  // the same call, so the resolution inside `readDocument` was a SECOND
+  // resolution of an already-resolved path; the containment check itself still
+  // happens on every read. What the cache entry has to keep guaranteeing is that
+  // the parse it hands back belongs to the file that was validated, which is the
+  // job of (dev, ino) in the stat signature.
+  //
+  // Known gap: `dev` cannot be exercised portably — separating two devices needs
+  // a mount, so a single-filesystem test can never distinguish it from `ino`.
+  // Recorded as unverified rather than assumed.
+  it("re-reads a note replaced by a different inode at the same path", async () => {
+    const target = path.join(root, "projects/chatgpt/research/shared-search.md");
+    const frozen = 1_700_000_000;
+    await fs.utimes(target, frozen, frozen);
+    const before = await fs.stat(target, { bigint: true });
+
+    expect((await store.fetch("chatgpt-research-001")).body).toContain("Markdown body text");
+
+    // Replace by rename — how src/atomicWrite.ts writes, and how an external
+    // editor or a sync client replaces a file. Same byte length and the mtime put
+    // back, so the inode is the only thing that moved.
+    const original = await fs.readFile(target, "utf8");
+    const replaced = `${original.slice(0, -5)}ZZZZ\n`;
+    expect(replaced.length).toBe(original.length);
+    const staging = path.join(path.dirname(target), "replacement.tmp");
+    await fs.writeFile(staging, replaced, "utf8");
+    await fs.rename(staging, target);
+    await fs.utimes(target, frozen, frozen);
+
+    const after = await fs.stat(target, { bigint: true });
+    expect(after.ino).not.toBe(before.ino); // the case under test actually occurred
+    expect(after.mtimeNs).toBe(BigInt(frozen) * 1_000_000_000n);
+
+    expect((await store.fetch("chatgpt-research-001")).body).toContain("ZZZZ");
+  });
+
+  // Every read tool walks the vault, and on the measured vault it is the
+  // per-FILE syscalls that cost, not the bytes. A search that already declares a
+  // `path_prefix` therefore hands it to the walk. Two halves have to hold, and
+  // asserting only the first is how this would pass while doing nothing: the
+  // answer must be unchanged (searchDocuments stays the authority), AND the walk
+  // must actually have shrunk.
+  describe("path_prefix narrows the scan", () => {
+    let opened: string[];
+    let listed: string[];
+
+    async function freshStore(): Promise<KnowledgeStore> {
+      const created = new KnowledgeStore({ knowledgeRoot: root, writeMode: "two_step", patchStateDir });
+      await created.init();
+      // A warm cache opens nothing, so each measurement needs its own store.
+      opened.length = 0;
+      listed.length = 0;
+      return created;
+    }
+
+    beforeEach(() => {
+      opened = [];
+      listed = [];
+      const realOpen = fs.open.bind(fs);
+      vi.spyOn(fs, "open").mockImplementation((...args: Parameters<typeof fs.open>) => {
+        const target = args[0];
+        if (typeof target === "string" && target.endsWith(".md")) {
+          opened.push(target);
+        }
+        return realOpen(...args);
+      });
+      // The two halves of the prune are measured by DIFFERENT syscalls, and
+      // conflating them makes one of them untested: skipping a file shows up as
+      // a missing `open`, skipping a whole subtree shows up as a missing
+      // `readdir`. Measured — asserting only on opens left subtreeMayMatch free
+      // to return a constant `true` with every test still green, because the
+      // per-file check alone already suppressed the open.
+      const realReaddir = fs.readdir.bind(fs);
+      vi.spyOn(fs, "readdir").mockImplementation((...args: Parameters<typeof fs.readdir>) => {
+        if (typeof args[0] === "string") {
+          listed.push(args[0]);
+        }
+        return realReaddir(...args);
+      });
+    });
+
+    it("returns what the unpruned search would, having read fewer files", async () => {
+      const wide = await (await freshStore()).search({ query: "" });
+      const wideOpens = opened.length;
+
+      const narrow = await (await freshStore()).search({ query: "", path_prefix: "projects/chatgpt" });
+      const narrowOpens = opened.length;
+
+      expect(narrow.results.map((result) => result.path)).toEqual(
+        wide.results.filter((result) => result.path.startsWith("projects/chatgpt")).map((result) => result.path)
+      );
+      expect(narrow.total_count).toBe(1);
+      // The prune fired, on both levels. Without these the test above passes on a
+      // walk that visited everything and let the filter do all the work.
+      expect(narrowOpens).toBeLessThan(wideOpens);
+      expect(opened.every((file) => file.includes("chatgpt"))).toBe(true);
+      expect(listed.some((dir) => dir.includes("claude"))).toBe(false); // subtree never entered
+    });
+
+    it("keeps path_prefix a plain string prefix, not a directory name", async () => {
+      // `projects/chatgpt/res` cuts a path segment in half. The walk must still
+      // descend into `research/`, because the prefix reaches deeper than the
+      // directory it is being compared against — the second half of
+      // subtreeMayMatch. Dropping it silently loses this hit.
+      const { results } = await (await freshStore()).search({ query: "", path_prefix: "projects/chatgpt/res" });
+      expect(results.map((result) => result.path)).toEqual(["projects/chatgpt/research/shared-search.md"]);
+    });
+
+    it("leaves fetch, trace_sources and list_projects scanning the whole vault", async () => {
+      // Only search narrows: fetch has to see every document to detect an id
+      // claimed twice (INV-2), and backlinks are wrong rather than merely short
+      // if the scan behind them was pruned.
+      const store2 = await freshStore();
+      expect((await store2.fetch("claude-plan-001")).relativePath).toBe("projects/claude/planning/connector-plan.md");
+      const trace = await store2.traceSources("projects/claude/planning/connector-plan.md");
+      expect(trace.backlinks.map((backlink) => backlink.relativePath)).toContain(
+        "projects/chatgpt/research/shared-search.md"
+      );
+      expect((await store2.listDocuments()).length).toBe(2);
+    });
+  });
+
   // INV-2, write side. The read path degrades an unparseable or over-sized
   // frontmatter to EMPTY so a single bad note never aborts a whole-vault scan.
   // A writer must not inherit that: planning against such a note would stage a

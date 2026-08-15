@@ -6,6 +6,32 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **A search that declares a `path_prefix` no longer scans the whole vault.**
+  Every read tool walks the vault through `listDocuments()`, and the filter used
+  to run after the walk had already read every note. The prefix is now handed to
+  the walk, which skips subtrees that provably cannot contain a match. Results
+  are unchanged by construction — `searchDocuments` is still the authority and
+  the walk's prune rule is deliberately conservative — so this is a cost change
+  only, and `fetch` / `trace_sources` / `list_projects` keep scanning everything
+  (id uniqueness under INV-2 and backlink completeness both need the full
+  corpus).
+
+  Measured on a 2,880-note / 47.4 MB vault on iCloud Drive: the tree walk costs
+  0.155 s, `stat`-ing every note 0.864 s, and reading all 47.4 MB only 0.23 s
+  more than that. **The cost is per-file syscalls, not bytes** — which is why the
+  narrowing is on file count, and why the parse cache alone never removed it.
+
+- **A cached note is no longer re-resolved on every read.** `readDocument` ran
+  `realpath` before consulting its parse cache, thousands of times per tool call.
+  Every caller — the walk, `resolveForWrite`, `resolveForExistingRead` — already
+  runs the full INV-1 guard chain on that same call, so this was a second
+  resolution of an already-resolved path. It is now one `stat`, compared against
+  a signature that gained **`dev`** alongside `ino`: a match says the path still
+  names the exact inode whose containment was verified, the same `(dev, ino)`
+  identity argument `config.ts` uses for roots rather than comparing spellings.
+
 ### Fixed
 
 - **`plan_document_update` could stage a diff that deleted frontmatter it failed
