@@ -84,7 +84,24 @@ Improve relevance and ergonomics of `search_documents` / `search`:
   foundation). 🚧 First responsiveness slice landed: vault scans now open files
   with **bounded concurrency** (`MCP_SCAN_CONCURRENCY`, default 24) + transient
   `EAGAIN` retry + skip-and-log, so a thousands-of-notes vault no longer
-  exhausts file descriptors mid-search (`src/knowledgeStore.ts`).
+  exhausts file descriptors mid-search (`src/knowledgeStore.ts`). ✅ The other
+  half of "stays responsive" also landed: **the parse cache is now bounded**
+  (`DOCUMENT_CACHE_MAX_CHARS`, 24M characters of retained text, LRU eviction).
+  It previously had no cap, no eviction and no delete path at all, so a note
+  removed from the vault kept its parse alive for the life of the process and a
+  vault larger than memory had no behaviour other than to exhaust it — measured
+  at 1,000 synthetic notes / 16.9 MB on disk: heap 7.7 MB → 42.7 MB, retained
+  through a forced GC. Over-budget vaults now degrade into re-parsing.
+
+  ⚠️ Two limits worth keeping in view rather than discovering later. The bound
+  counts **characters of retained text, not heap** — V8 string representation,
+  frontmatter objects and Map overhead sit outside it, so it is a proxy off by a
+  constant factor rather than a memory limit. And the LRU ordering is currently
+  **unobservable**: every read path enumerates the whole vault (`fetch` and
+  `search` both go through `listDocuments`), so under the only access pattern
+  that exists, LRU and FIFO are indistinguishable. The first point-read caller —
+  `get_context` is already named in the tool budget — is what would make the
+  difference real.
 
 Concretized by the [context-engineering proposal](./context-engineering.md)
 (survey-based, 2026-07) into two slices, both now landed — which closes out this

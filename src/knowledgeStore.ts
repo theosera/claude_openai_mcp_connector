@@ -51,6 +51,18 @@ const SCAN_RETRY_BASE_MS = 100;
 const TRANSIENT_FS_CODES = new Set(["EAGAIN", "EMFILE", "ENFILE"]);
 
 /**
+ * Ceiling on retained parsed text, counted in UTF-16 characters across every
+ * cached body and its two derived copies.
+ *
+ * 24 million characters is roughly 24 MB of source text held as ~72 MB of
+ * strings once the folded and compacted copies are counted — comfortably above
+ * any single query's working set on the vaults this serves (measured: 2,891
+ * notes / 48.3 MB on disk), so a steady-state workload never evicts, while a
+ * vault that outgrows memory degrades into re-parsing instead of dying.
+ */
+const DOCUMENT_CACHE_MAX_CHARS = 24_000_000;
+
+/**
  * What the parse cache watches to decide a file is unchanged.
  *
  * `mtimeMs` + size alone was too weak in both directions that matter here:
@@ -231,7 +243,90 @@ export class KnowledgeStore implements VaultStore {
   // is the search bottleneck for large vaults; we re-parse a file only when its
   // stat signature changes. Path-containment checks still run on every access —
   // see readDocument for why that stayed after #108 tried removing it.
-  private readonly documentCache = new Map<string, { signature: StatSignature; document: MarkdownDocument }>();
+  private readonly documentCache = new Map<
+    string,
+    { signature: StatSignature; document: MarkdownDocument; chars: number }
+  >();
+
+  /** Running total of `chars` across documentCache, so the bound costs no scan. */
+  private cachedChars = 0;
+
+  /**
+   * Read through the cache, refreshing recency on a hit.
+   *
+   * Map iterates in insertion order, so re-inserting on every hit makes the
+   * first entry the least recently used — which is what makes the eviction
+   * below an LRU rather than a "whatever happened to be parsed first" purge.
+   *
+   * ⚠️ Correct, and currently UNOBSERVABLE — noted so the green suite is not
+   * mistaken for coverage of it. Every read path in this class enumerates the
+   * whole vault (`fetch` and `search` both go through `listDocuments`, and
+   * `planUpdate` goes through `fetch`), so the only access pattern that exists
+   * is a full sweep in sorted-path order. Under that pattern the recency order
+   * a hit produces is the same order insertion would have produced, and LRU is
+   * indistinguishable from FIFO.
+   *
+   * Kept as the correct rule rather than a demonstrated one, because the first
+   * point-read caller — `get_context` is already named in the tool budget —
+   * would make the difference real, and arriving at that with FIFO eviction
+   * would be a silent regression rather than a visible one.
+   */
+  private cacheGet(key: string): { signature: StatSignature; document: MarkdownDocument; chars: number } | undefined {
+    const entry = this.documentCache.get(key);
+    if (entry) {
+      this.documentCache.delete(key);
+      this.documentCache.set(key, entry);
+    }
+    return entry;
+  }
+
+  /**
+   * Cache a parse, evicting least-recently-used entries until the total fits.
+   *
+   * The cache had no bound of any kind: no size cap, no eviction, and no delete
+   * — so a note removed from the vault kept its parse alive for the life of the
+   * process, and a vault simply larger than memory had no behaviour other than
+   * to exhaust it. Measured on 1,000 synthetic notes totalling 16.9 MB: heap
+   * went from 7.7 MB to 42.7 MB and stayed there through a forced GC, because
+   * each entry holds the body plus two derived copies of it (`foldedBody`,
+   * `compactBody`).
+   *
+   * Bounded in CHARACTERS of retained text rather than entry count, because the
+   * failure mode is one large note, not many small ones — a count cap would
+   * admit fifty ten-megabyte session archives and call it fifty entries. It is a
+   * proxy for bytes, not a measurement of heap: V8 string representation,
+   * frontmatter objects and Map overhead are all outside it. That is deliberate.
+   * A cache bound that tried to track real heap would be wrong in a way nobody
+   * could reason about; this one is wrong by a constant factor an operator can.
+   */
+  private cacheSet(key: string, entry: { signature: StatSignature; document: MarkdownDocument }): void {
+    const document = entry.document;
+    const chars =
+      document.body.length +
+      (document.searchDerived?.foldedBody.length ?? 0) +
+      (document.searchDerived?.compactBody.length ?? 0);
+
+    const existing = this.documentCache.get(key);
+    if (existing) {
+      this.cachedChars -= existing.chars;
+      this.documentCache.delete(key);
+    }
+    this.documentCache.set(key, { ...entry, chars });
+    this.cachedChars += chars;
+
+    // A single note bigger than the whole budget must still be servable, so the
+    // loop stops at one entry rather than evicting the note just cached.
+    for (const [oldestKey, oldest] of this.documentCache) {
+      if (this.cachedChars <= DOCUMENT_CACHE_MAX_CHARS || this.documentCache.size <= 1) {
+        break;
+      }
+      if (oldestKey === key) {
+        continue;
+      }
+      this.documentCache.delete(oldestKey);
+      this.cachedChars -= oldest.chars;
+    }
+  }
 
   // Promise-chain serializer for the overwriting write path. Each apply awaits
   // the previous one settling; errors are swallowed on the chain itself so one
@@ -685,7 +780,7 @@ export class KnowledgeStore implements VaultStore {
     const relativePath = relativeToRoot(root, realPath);
 
     // Fast path: a pure metadata stat decides cache validity (see StatSignature).
-    const cached = this.documentCache.get(realPath);
+    const cached = this.cacheGet(realPath);
     if (cached) {
       const meta = await fs.stat(realPath, { bigint: true });
       if (sameSignature(cached.signature, statSignature(meta))) {
@@ -732,7 +827,7 @@ export class KnowledgeStore implements VaultStore {
           modifiedAt: stats.mtime.toISOString()
         }
       };
-      this.documentCache.set(realPath, { signature: statSignature(stats), document });
+      this.cacheSet(realPath, { signature: statSignature(stats), document });
       return document;
     } finally {
       await handle.close();

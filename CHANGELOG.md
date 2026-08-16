@@ -33,6 +33,22 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The parse cache had no bound, no eviction, and no delete path.** Every note
+  read was retained for the life of the process — body plus the two derived
+  copies the search path needs — so a note deleted from the vault kept its parse
+  alive forever, and a vault larger than memory had no behaviour other than to
+  exhaust it. Measured on 1,000 synthetic notes totalling 16.9 MB on disk: heap
+  7.7 MB → 42.7 MB, still resident after a forced GC. It is now capped at 24
+  million characters of retained text with least-recently-used eviction, so an
+  over-budget vault degrades into re-parsing instead of growing.
+
+  Two things it is **not**. The cap counts characters, not heap: string
+  representation, frontmatter objects and Map overhead sit outside it, making it
+  a proxy off by a roughly constant factor rather than a memory limit — a cache
+  bound that tried to track real heap would be wrong in a way nobody could
+  reason about. And a note larger than the whole budget is still cached and
+  served rather than re-parsed on every access.
+
 - **stdio registered the Skill write tools for anyone who reserved the subtree.**
   `MCP_SKILLS_SUBDIR` exists so that general document writes cannot reach the
   Skill subtree (INV-8), and operators are told to set it on every write-capable
