@@ -1835,6 +1835,44 @@ describe("staged plans expire instead of accumulating forever", () => {
     expect(applied.document.body.trim()).toBe("edited");
   });
 
+  it("still sweeps when the permission tightening soft-fails", async () => {
+    // ensurePatchStateDir has FOUR exits, and the sweep belongs on three of them.
+    // The O_NOFOLLOW open failing for a reason that is NOT a symlink (EACCES on a
+    // directory another account owns, say) warns and returns rather than
+    // throwing — deliberately, because refusing to serve a vault over a
+    // permission that could not be hardened is the worse outcome. But the server
+    // then goes on staging plans through this path, so skipping the sweep here
+    // made it the one configuration that never expires any of them.
+    //
+    // The symlink refusal is the fourth exit and correctly does NOT sweep; it
+    // throws above this line, so nothing reaching here is a link.
+    if (process.platform === "win32") {
+      return; // No O_NOFOLLOW open on this platform, so no soft-fail to reach.
+    }
+    const stale = path.join(patchStateDir, "88888888-8888-4888-8888-888888888888.json");
+    await fs.writeFile(stale, "{}", "utf8");
+    await age(stale, PLAN_MAX_AGE_MS + 60_000);
+
+    const realOpen = fs.open.bind(fs);
+    const target = await fs.realpath(patchStateDir);
+    let injected = 0;
+    vi.spyOn(fs, "open").mockImplementation((async (file: string, ...rest: unknown[]) => {
+      if (String(file) === target || String(file) === patchStateDir) {
+        injected += 1;
+        const error = new Error("EACCES: permission denied") as NodeJS.ErrnoException;
+        error.code = "EACCES";
+        throw error;
+      }
+      return realOpen(file as never, ...(rest as []));
+    }) as unknown as typeof fs.open);
+
+    await expect(ensurePatchStateDir(patchStateDir)).resolves.toBeUndefined();
+    // It warned and carried on — and it still expired the old plan.
+    expect(injected).toBeGreaterThan(0);
+    await expect(fs.access(stale)).rejects.toThrow();
+    vi.restoreAllMocks();
+  });
+
   it("deletes NOTHING when the state directory is a symlink, and still refuses to start", async () => {
     // Ordering, not tidiness. The sweep first sat at the top of
     // ensurePatchStateDir, so a symlinked MCP_PATCH_STATE_DIR had its TARGET's

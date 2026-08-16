@@ -116,6 +116,17 @@ export async function ensurePatchStateDir(dir: string): Promise<void> {
       "[patch-state] could not tighten the patch state directory to owner-only; " +
         "check MCP_PATCH_STATE_DIR ownership and permissions\n"
     );
+    // Sweeps before returning, for the same reason the win32 branch does: this
+    // is a WARN-and-continue path, so the server goes on staging plans here and
+    // would otherwise be the one configuration that never expires any of them.
+    // The refusal above has already run, so a symlinked directory never reaches
+    // this line — which is the whole ordering rule, applied to this exit too.
+    //
+    // Missing it was the third exit path in one function to be treated
+    // differently by a rule meant to cover all of them. Any `return` added below
+    // needs the same line; there is deliberately no shared wrapper, because a
+    // wrapper would also have to run on the refusal, which must NOT sweep.
+    await prunePatchState(dir);
     return;
   }
 
