@@ -159,14 +159,20 @@ function projectDocument(
     body = body.slice(0, request.max_chars);
   }
 
-  if (body === document.body) {
+  // ⚠️ Branch on what was REQUESTED, not on whether the body happens to have
+  // changed. A document that is one heading with no sibling returns its whole
+  // text for `sections: ["That Heading"]` — a correct hit — and that took the
+  // legacy path, dropping the `sections_matched` the contract promises and
+  // leaving the caller unable to tell a hit from a typo in exactly the case
+  // where it got everything it asked for.
+  if (request.sections === undefined && request.max_chars === undefined) {
     return base;
   }
   return {
     ...base,
     body,
     ...(matched === undefined ? {} : { sections_matched: matched }),
-    truncated: true,
+    truncated: body.length < document.body.length,
     total_chars: totalChars
   };
 }

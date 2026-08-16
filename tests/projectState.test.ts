@@ -360,6 +360,32 @@ describe("selectSections", () => {
     // failure mode a caller cannot detect.
     expect(selectSections(body, ["Design", "Nonexistent"]).matched).toEqual(["Design"]);
   });
+
+  it("credits every selector that matched, not just the first", async () => {
+    // ⚠️ Overlapping selectors both hit this heading. Recording only the first
+    // reported the other as a miss — and `sections_matched` is exactly what a
+    // caller uses to decide whether to retry, so a false miss sends it back to
+    // re-request a selector that already worked.
+    // ⚠️ The section must have NO subsections. With `["Design", "Doc/Design"]`
+    // the path selector is credited again at the nested `Rejected` heading, so
+    // recording only the first hit still ends up crediting both and the fixture
+    // proves nothing — measured, it passed with the defect in place. `Other` is
+    // a leaf, so the overlap happens at one heading and nowhere else.
+    const { matched } = selectSections(body, ["Other", "Doc/Other"]);
+    expect(matched.sort()).toEqual(["Doc/Other", "Other"]);
+  });
+
+  it("matches a closed ATX heading by the name the outline shows", async () => {
+    // ⚠️ Two compounding failures, not one: the outline displayed `Setup ##`,
+    // and the name a caller would type after reading it then matched nothing.
+    // The outline is where the selector comes from.
+    const closed = "## Setup ##\nsetup text\n\n## Findings\nfinding text";
+    expect(outlineOf(closed).map((entry) => entry.heading)).toEqual(["Setup", "Findings"]);
+    expect(selectSections(closed, ["Setup"]).text).toContain("setup text");
+
+    // The false-positive guard: a hash that is part of the name stays.
+    expect(outlineOf("## C#\ntext").map((entry) => entry.heading)).toEqual(["C#"]);
+  });
 });
 
 describe("fetch_document sectioning over the wire", () => {
@@ -439,6 +465,37 @@ describe("fetch_document sectioning over the wire", () => {
     // caller that cannot tell how much it did not receive is back to guessing.
     expect(data.total_chars).toBeGreaterThan((data.body as string).length);
     await cleanup();
+  });
+
+  it("still reports sections_matched when the selection is the whole document", async () => {
+    // ⚠️ The projection was detected by comparing the RESULT to the original.
+    // A note that is one heading with no sibling returns its whole text for a
+    // correct selector, so the successful case took the legacy path and dropped
+    // the very signal a caller needs — leaving a hit indistinguishable from a
+    // typo in exactly the request that worked perfectly.
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-p4-whole-"));
+    const patchStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-p4-whole-state-"));
+    await fs.writeFile(path.join(root, "one.md"), "---\nid: one-001\n---\n# Only\nall of the text\n", "utf8");
+    const store = new KnowledgeStore({ knowledgeRoot: root, writeMode: "two_step", patchStateDir });
+    await store.init();
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = buildMcpServer(store, { allowWrite: false });
+    await server.connect(serverTransport);
+    const connected = new Client({ name: "p4-whole", version: "0.0.0" });
+    await connected.connect(clientTransport);
+
+    const data = dataOf(
+      await connected.callTool({ name: "fetch_document", arguments: { id_or_path: "one-001", sections: ["Only"] } })
+    );
+    expect(data.sections_matched).toEqual(["Only"]);
+    // Nothing was cut, and the response says so rather than claiming it was.
+    expect(data.truncated).toBe(false);
+    expect(data.total_chars).toBe((data.body as string).length);
+
+    await connected.close();
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(patchStateDir, { recursive: true, force: true });
   });
 
   it("truncates to max_chars", async () => {

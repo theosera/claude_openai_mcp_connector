@@ -67,6 +67,23 @@ export interface OutlineEntry {
  * are rare in this vault, and a lookahead rule that fires on a line of `-`
  * characters would cut on horizontal rules and on table separators.
  */
+/**
+ * Drop a closed ATX heading's trailing hash run: `## Setup ##` is a heading
+ * called `Setup`.
+ *
+ * ⚠️ Keeping them was two compounding failures, not one. The outline displayed
+ * `Setup ##` — the wrong name — and `sections: ["Setup"]`, which is the name a
+ * caller would naturally type after reading that outline, then matched nothing.
+ * The outline is where the selector comes from, so a wrong name there produces
+ * a miss that looks like the caller's own mistake.
+ *
+ * The run must be preceded by whitespace or be the entire content, which is
+ * what keeps `## C#` a heading called `C#`.
+ */
+function closeHashes(title: string): string {
+  return title.replace(/(?:^|\s+)#+$/, "").trim();
+}
+
 function findHeadings(lines: readonly string[]): HeadingLine[] {
   const headings: HeadingLine[] = [];
   let fence: string | undefined;
@@ -86,7 +103,7 @@ function findHeadings(lines: readonly string[]): HeadingLine[] {
     }
     const heading = /^(#{1,6})\s+(.*)$/.exec(line);
     if (heading) {
-      headings.push({ level: heading[1].length, title: heading[2].trim(), lineIndex });
+      headings.push({ level: heading[1].length, title: closeHashes(heading[2].trim()), lineIndex });
     }
   });
 
@@ -166,14 +183,21 @@ export function selectSections(body: string, wanted: readonly string[]): { text:
 
   headings.forEach((heading, position) => {
     const pathKey = normalize(ancestryOf(headings, position).join("/"));
-    const hit = requests.find(
+    // ⚠️ Every matching request, not the first one. Overlapping selectors —
+    // `["Design", "Doc/Design"]` — both match this heading, and recording only
+    // the first reported the other as a miss. `sections_matched` exists so a
+    // caller can tell a hit from a typo, so a false miss sends it to re-request
+    // a selector that already worked.
+    const hits = requests.filter(
       (request) =>
         request.key === normalize(heading.title) || pathKey === request.key || pathKey.startsWith(`${request.key}/`)
     );
-    if (!hit) {
+    if (hits.length === 0) {
       return;
     }
-    matched.add(hit.raw);
+    for (const hit of hits) {
+      matched.add(hit.raw);
+    }
 
     // The whole section, subsections included — so a nested heading does not
     // end its parent.
