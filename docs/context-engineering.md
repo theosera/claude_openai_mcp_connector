@@ -10,7 +10,7 @@
 > | **P0** 正確性 (NFKC / envelope+total_count / 結果の timestamp・size / backlink 相対リンク解決 / `absolutePath` 除去) | ✅ 実装済み | v0.7.0 |
 > | **P1** 検索品質 (CJK 分かち書き / opt-in recency / path・root・日付 filter / `order` / 2 窓 snippet / `explain` / 派生テキスト cache) | ✅ 実装済み | v0.7.0 |
 > | **P2** link graph & provenance (`src/linkGraph.ts` / `trace_sources` に `depth`・`direction`・`resolved_outgoing`・`related`) | ✅ 実装済み | Unreleased |
-> | **P3** `get_context` | 🔭 未実装 | — |
+> | **P3** `get_context` (`src/contextEngine.ts` / `tokenEstimate` / `markdownSections` / `typeRules`) | ✅ 実装済み | Unreleased |
 > | **P4** project memory (`get_project_state` / fetch sectioning) | 🔭 未実装 | — |
 > | **P5** 評価 & tuning | 💭 未着手 | — |
 >
@@ -317,6 +317,25 @@ Orchestrator / Client (将来)          ← 本リポでは実装しない (消�
   **inverted index は現段階では作らない** (G 節、トリガ付き defer)。
 
 ### D-3. `get_context` の仕様 (P3、中核)
+
+> **実装済み** (`src/contextEngine.ts` / `tests/contextEngine.test.ts`)。以下は仕様であり、
+> **実装時に確定した点・仕様から意図的に外した点**を各所に追記してある。
+>
+> ⚠️ **fuse 段の recency 項は採らなかった。** 下の score 式は
+> `× (1 + w·decay)` を fuse に置いているが、**recency は seed 段の検索が既に適用している**
+> (運用者の `MCP_SEARCH_RECENCY_WEIGHT`)。式のとおり書くと検索側の寄与を引き算してから
+> per-call の重みだけで掛け直すことになり、**`get_context` に限って env 由来の recency が
+> 死ぬ** — #112 と同型である。よって **recency は 1 箇所 (検索) だけで適用**し、expansion は
+> seed の score を継承する。結果として **packer は時計を持たない** (`now` も注入しない) ので、
+> package は (vault, 入力, rules) の純関数になる。
+>
+> 確定: **dedup の key は frontmatter `id` ではなく path** (下の「id 単位 dedup」に対する訂正)。
+> 理由は D-4 と同じで、`id` は自己申告であり INV-2 が既に一意解決を拒んでいる値なので、
+> そこで dedup すると 1 枚のノートが他ノートを答えから追い出せる。`id` は chunk に載せて返す。
+>
+> 確定: `query` / `project` / `tags` / `path_prefix` の**いずれか必須**は ergonomics ではなく
+> 境界である。予算だけでは「vault を全部」を「vault の先頭 4,000 token」に変えるだけで、
+> 防いだことにならない。
 
 入力 (zod、全 optional だが `query` / `project` / `tags` / `path_prefix` のいずれか必須 —
 vault 全 dump の primitive を作らない):

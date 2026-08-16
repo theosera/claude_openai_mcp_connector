@@ -6,6 +6,8 @@ import process from "node:process";
 import dotenv from "dotenv";
 import type { OAuthConfig } from "./oauth/provider.js";
 import { assertRelativePath, posixContains, toPosixPath } from "./pathSafety.js";
+import { parseTypeRules } from "./typeRules.js";
+import type { TypeRules } from "./typeRules.js";
 
 /**
  * Load an optional operator-named env file into `env`.
@@ -143,6 +145,19 @@ export interface AppConfig {
   searchRecencyWeight?: number;
   /** Half-life in days for that boost. */
   searchRecencyHalfLifeDays?: number;
+  /**
+   * Operator-authored document-type weights for `get_context` (D-7), loaded at
+   * boot from `MCP_CONTEXT_TYPE_RULES`. Absent unless configured, and absent
+   * means every document weighs 1.0 — no ranking changes on upgrade.
+   *
+   * ⚠️ The file must live OUTSIDE every knowledge root, and boot fails if it
+   * does not. A root is a read *and sync* surface: a rules file inside one is a
+   * ranking configuration that anything able to write a note — an Obsidian sync
+   * peer, an imported clipping, the MCP write tools — can edit. That is the same
+   * fail-closed rule `MCP_OAUTH_STATE_FILE` and `MCP_PATCH_STATE_DIR` already
+   * follow, applied to the one file that decides what the packer trusts.
+   */
+  contextTypeRules?: TypeRules;
 }
 
 /** Config for a single-root KnowledgeStore instance. */
@@ -536,8 +551,55 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     scanConcurrency,
     documentCacheMaxChars,
     searchRecencyWeight,
-    searchRecencyHalfLifeDays
+    searchRecencyHalfLifeDays,
+    contextTypeRules: loadContextTypeRules(env, knowledgeRoots)
   };
+}
+
+/**
+ * Load `MCP_CONTEXT_TYPE_RULES`, refusing a file that lives inside the vault.
+ *
+ * The containment check runs BEFORE the file is read, and the read failing is a
+ * startup error rather than a silent fallback to unweighted ranking. Both halves
+ * are deliberate: an operator who configured weighting and got none would have
+ * no signal that the ranking they are looking at is not the one they set, and
+ * "the config I could not load is the config I ignore" is how a security-shaped
+ * setting becomes advisory.
+ */
+function loadContextTypeRules(env: NodeJS.ProcessEnv, knowledgeRoots: readonly KnowledgeRoot[]): TypeRules | undefined {
+  const raw = env.MCP_CONTEXT_TYPE_RULES?.trim();
+  if (!raw) {
+    return undefined;
+  }
+  if (!path.isAbsolute(raw)) {
+    throw new Error(`MCP_CONTEXT_TYPE_RULES must be an absolute path (got "${raw}")`);
+  }
+  const resolved = path.resolve(raw);
+  assertOutsideKnowledgeRoots(
+    `MCP_CONTEXT_TYPE_RULES="${raw}"`,
+    "Ranking configuration inside a synced vault can be rewritten by anything that can write a note. Point it somewhere else.",
+    resolved,
+    knowledgeRoots
+  );
+  let contents: string;
+  try {
+    contents = fs.readFileSync(resolved, "utf8");
+  } catch {
+    throw new Error(`MCP_CONTEXT_TYPE_RULES="${raw}" could not be read`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(contents);
+  } catch {
+    throw new Error(`MCP_CONTEXT_TYPE_RULES="${raw}" is not valid JSON`);
+  }
+  try {
+    return parseTypeRules(parsed);
+  } catch (error) {
+    throw new Error(`MCP_CONTEXT_TYPE_RULES="${raw}": ${error instanceof Error ? error.message : String(error)}`, {
+      cause: error
+    });
+  }
 }
 
 /**

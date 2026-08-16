@@ -147,6 +147,10 @@ describe("buildMcpServer tool surface", () => {
     expect(names).toContain("search_documents");
     expect(names).toContain("search");
     expect(names).toContain("fetch");
+    // `get_context` is a read tool, so it belongs on the read-only surface. It
+    // assembles documents this principal could already fetch one at a time, and
+    // its budget makes the response smaller than the loop it replaces.
+    expect(names).toContain("get_context");
     expect(names).not.toContain("create_document");
     expect(names).not.toContain("plan_document_create");
     expect(names).not.toContain("apply_planned_document_create");

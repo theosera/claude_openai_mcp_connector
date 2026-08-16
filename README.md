@@ -501,6 +501,18 @@ client entirely; nothing here depends on where that client keeps its logs.
   unresolved link instead. Optional `depth` (1–2) and `direction`
   (`out` / `in` / `both`) add a bounded `related[]` neighbourhood; `backlinks`
   stays complete and is unaffected by `direction`.
+- `get_context` — one call instead of a search → fetch loop. Seeds from a search
+  over the same filters, expands one or two hops through the link graph, drops
+  duplicates, splits long notes at their headings, and packs greedily to a
+  `token_budget` (500–32000, default 4000). Every chunk carries its provenance
+  (`relationship`, `path`, `heading_path`, `score`) and **everything that did not
+  fit is listed in `omitted[]` with a reason**, so a short answer is
+  distinguishable from a complete one. Needs at least one of `query`, `project`,
+  `tags` or `path_prefix` — there is deliberately no way to ask for the whole
+  vault. No single document may take more than 40% of the budget, so one large
+  note cannot become the entire answer; a chunk cut to fit says `truncated`.
+  Optional owner-controlled type weighting via `MCP_CONTEXT_TYPE_RULES` (below).
+  Read-only, and available on every transport.
 - `create_document` _(write, **off by default on every transport** — needs write to be enabled **and** `MCP_ALLOW_LEGACY_CREATE_DOCUMENT=1`; the one-step legacy route, superseded by `plan_document_create` → `apply_planned_document_create`)_
 - `plan_document_create` _(write; exact path, complete-file diff, no target mutation)_
 - `apply_planned_document_create` _(write; exact confirmed path required, create-only)_
@@ -511,6 +523,38 @@ client entirely; nothing here depends on where that client keeps its logs.
 - `append_audit_report` _(audit write — needs `MCP_AUDIT_SUBDIR` **and** the transport's own opt-in: `MCP_HTTP_ALLOW_AUDIT_WRITE` on HTTP, `MCP_STDIO_ALLOW_AUDIT_WRITE` on stdio; create-only reports in the reserved subtree, never overwrites)_
 - `compare_and_swap_audit_state` _(audit write; atomic sha256 compare-and-swap of the reserved `state.md`)_
 - `search` / `fetch` — ChatGPT-connector-compatible read-only aliases
+
+### Document-type weighting for `get_context` (optional)
+
+`MCP_CONTEXT_TYPE_RULES=/absolute/path/rules.json` lets the vault's owner tell
+the packer which parts of the vault are worth more. Unset, every document weighs
+the same and ranking is byte-identical to not having the feature.
+
+```jsonc
+{
+  "rules": [
+    { "name": "permanent", "match": { "path_prefix": "permanent/" }, "weight": 1.5 },
+    { "name": "agent-log",  "match": { "root": "ops" },              "weight": 0.6 },
+    { "name": "inbox",      "match": { "path_prefix": "inbox/" },    "weight": 0.3 },
+    { "name": "tagged",     "match": { "tag": "synthesis" },         "weight": 1.2 }
+  ],
+  "frontmatter_type_hint": { "enabled": false, "max_weight": 1.25 }
+}
+```
+
+First rule that matches wins, so order is the priority statement. Two limits are
+enforced rather than documented:
+
+- **The file must live outside every knowledge root, or the server refuses to
+  start.** A root is synced and writable — by Obsidian peers, by imported notes,
+  by the MCP write tools — so a rules file inside one would let anything that can
+  write a note decide what the packer trusts.
+- **A weight above 1.25 can only come from a signal the owner controls** — a
+  `root` name (configuration) or a `path_prefix` (the filesystem). `tag` and the
+  frontmatter `type` hint are things a note says about itself, so they are
+  clamped to 1.25 and cannot outrank a directory you chose. `type` is
+  deliberately **not** in the frontmatter patch allowlist either, so promoting a
+  document stays an edit you make in Obsidian.
 
 ## Security
 

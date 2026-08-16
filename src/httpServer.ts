@@ -9,6 +9,7 @@ import type { OAuthHttpResponse } from "./oauth/provider.js";
 import { OAuthProvider, SCOPE_READ, SCOPE_WRITE } from "./oauth/provider.js";
 import { RateLimiter } from "./oauth/rateLimiter.js";
 import { buildMcpServer, type BuildServerOptions } from "./server.js";
+import type { TypeRules } from "./typeRules.js";
 import { sendWebResponse, toWebRequest } from "./webBridge.js";
 
 const MCP_PATH = "/mcp";
@@ -27,6 +28,10 @@ interface Principal {
 interface Endpoint {
   store: VaultStore;
   config: HttpConfig;
+  /** Operator type weights for `get_context`. Threaded from `loadConfig` rather
+   *  than re-read from env here: one setting, one reader — the shape
+   *  `loadAllowLegacyCreateDocument` is shared for. */
+  contextTypeRules: TypeRules | undefined;
   oauth: OAuthProvider | undefined;
   limiters: OAuthLimiters | undefined;
   skillStore: SkillStore | undefined;
@@ -69,7 +74,8 @@ export async function startHttpServer(
   store: VaultStore,
   config: HttpConfig,
   skillStore?: SkillStore,
-  auditStore?: AuditStore
+  auditStore?: AuditStore,
+  contextTypeRules?: TypeRules
 ): Promise<http.Server> {
   // OAuth 2.1 authorization server (only when configured). ChatGPT / Claude.ai
   // web require it; Desktop / Code / API keep using the static bearer.
@@ -87,6 +93,7 @@ export async function startHttpServer(
   const endpoint: Endpoint = {
     store,
     config,
+    contextTypeRules,
     oauth,
     limiters,
     skillStore,
@@ -104,7 +111,7 @@ export async function startHttpServer(
           // default would be the full one.
           throw new Error("unresolved_principal");
         }
-        return buildMcpServer(store, surfaceFor(principal, config, skillStore, auditStore));
+        return buildMcpServer(store, surfaceFor(principal, config, skillStore, auditStore, contextTypeRules));
       },
       { legacy: "stateless" }
     )
@@ -141,7 +148,8 @@ function surfaceFor(
   principal: Principal,
   config: HttpConfig,
   skillStore: SkillStore | undefined,
-  auditStore: AuditStore | undefined
+  auditStore: AuditStore | undefined,
+  contextTypeRules: TypeRules | undefined
 ): BuildServerOptions {
   // Defensive: `authorizeScope` refuses a principal without vault.read at the
   // gate, so reaching here without it means the gate was bypassed. Registering
@@ -159,7 +167,10 @@ function surfaceFor(
     allowAuditWrite: config.allowAuditWrite && write,
     auditStore,
     includeChatgptCompat: true,
-    chatgptUrlBase: config.chatgptUrlBase
+    chatgptUrlBase: config.chatgptUrlBase,
+    // Not gated on scope: `get_context` is read-only, and the weights only
+    // change the ORDER of documents a `vault.read` principal may already fetch.
+    contextTypeRules
   };
 }
 
