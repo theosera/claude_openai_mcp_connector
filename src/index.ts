@@ -41,7 +41,14 @@ if (transport === "http") {
   // Remote Streamable HTTP endpoint for Chat connectors (ChatGPT / Claude.ai).
   // Read-only by default; bearer-authenticated; binds to 127.0.0.1.
   const httpConfig = loadHttpConfig();
-  const httpServer = await startHttpServer(store, httpConfig, skillStore, auditStore, appConfig.contextTypeRules);
+  const httpServer = await startHttpServer(
+    store,
+    httpConfig,
+    skillStore,
+    auditStore,
+    appConfig.contextTypeRules,
+    appConfig.projectStateTag
+  );
   const address = httpServer.address();
   const where =
     typeof address === "object" && address
@@ -119,6 +126,7 @@ if (transport === "http") {
         allowSkillWrite: appConfig.stdioAllowSkillWrite,
         skillStore,
         contextTypeRules: appConfig.contextTypeRules,
+        projectStateTag: appConfig.projectStateTag,
         // Registering the audit write tools is a SEPARATE decision from
         // reserving the subtree (INV-9); see AppConfig.stdioAllowAuditWrite for
         // why conflating them was a hole. The reservation itself rides on

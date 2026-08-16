@@ -158,6 +158,17 @@ export interface AppConfig {
    * follow, applied to the one file that decides what the packer trusts.
    */
   contextTypeRules?: TypeRules;
+  /**
+   * Frontmatter tag that marks a note as a project's designated state document
+   * (`MCP_PROJECT_STATE_TAG`, default `project-state`).
+   *
+   * A tag rather than a path so the seat travels with the note — an owner
+   * reorganising folders should not have to re-point the server. Note that this
+   * is a note-authored signal, which is fine HERE and not in ranking: it decides
+   * which of the project's OWN documents get returned in full, not how much
+   * anything is trusted, and every candidate already had to carry the project.
+   */
+  projectStateTag?: string;
 }
 
 /** Config for a single-root KnowledgeStore instance. */
@@ -552,7 +563,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     documentCacheMaxChars,
     searchRecencyWeight,
     searchRecencyHalfLifeDays,
-    contextTypeRules: loadContextTypeRules(env, knowledgeRoots)
+    contextTypeRules: loadContextTypeRules(env, knowledgeRoots),
+    projectStateTag: env.MCP_PROJECT_STATE_TAG?.trim() || undefined
   };
 }
 

@@ -11,7 +11,7 @@
 > | **P1** 検索品質 (CJK 分かち書き / opt-in recency / path・root・日付 filter / `order` / 2 窓 snippet / `explain` / 派生テキスト cache) | ✅ 実装済み | v0.7.0 |
 > | **P2** link graph & provenance (`src/linkGraph.ts` / `trace_sources` に `depth`・`direction`・`resolved_outgoing`・`related`) | ✅ 実装済み | Unreleased |
 > | **P3** `get_context` (`src/contextEngine.ts` / `tokenEstimate` / `markdownSections` / `typeRules`) | ✅ 実装済み | Unreleased |
-> | **P4** project memory (`get_project_state` / fetch sectioning) | 🔭 未実装 | — |
+> | **P4** project memory (`src/projectState.ts` / `fetch_document` の outline・sections・max_chars) | ✅ 実装済み | Unreleased |
 > | **P5** 評価 & tuning | 💭 未着手 | — |
 >
 > **A 節・B 節は v0.6.0 時点のベースラインとして意図的に据え置く** — Gap の根拠
@@ -529,6 +529,19 @@ vault DATA であり、package への包含は指示でも承認でもなく ret
 
 ### D-5. `get_project_state` の仕様 (P4)
 
+> **実装済み** (`src/projectState.ts` / `tests/projectState.test.ts`)。
+>
+> 実装で確定した点: **`ops_recent` は root を問わず `target_repo` 一致で拾う**
+> (仕様の「非 primary root の文書」を条件にしていない)。理由は 2 つで、① 「非 primary」は
+> ops ログが置かれる場所の説明であってセキュリティ境界ではない ② **`target_repo` は
+> frontmatter = 自己申告**なので、root で絞っても「任意のノートがこの一覧に入れる」性質は
+> 変わらない。**だからこの節は pointer だけを返す** — 自己申告フィールドに本文を載せない、
+> という一点が効いている境界であり、root 条件ではない。
+>
+> ⚠️ **`recent_docs` からセッションノートを除いている** (仕様に明記が無い)。
+> 除かないと snippet が「メガバイトの先頭 240 文字」になり、**最も役に立たない部分**を
+> 返すことになる。サイズ非対称が理由なので `recent_sessions` の存在理由と同じ。
+
 決定論的に導出できるものだけを返す **dossier** であり、合成を装わない (出力 schema に
 自由文の `summary` / `blockers` / `next_steps` フィールドを**置かない**のが誠実さの境界):
 
@@ -554,6 +567,16 @@ get_project_state(project, client?, token_budget? = 3000,
 公開せずに済む)。
 
 ### D-6. `fetch_document` のセクション取得 (P4) — 新 tool にしない
+
+> **実装済み**。射影は **tool 層 (`src/server.ts` の `projectDocument`)** に置き、
+> `VaultStore` の interface は変えていない。store の仕事は「その path が指す文書を返す」
+> ことで、**どの一部を欲しいかは保存の問題ではない**。加えて tool 層に置けば
+> **両 store が実装なしで同じ挙動を得る** — single-root と multi-root の trace が
+> 手書き 2 本で食い違っていた形を作らない。
+>
+> ⚠️ **`total_chars` は常に文書全体の長さ**で、返した slice の長さではない。
+> どれだけ受け取らなかったかが分からない応答は、`get_context` の `omitted[]` が
+> 潰したのと同じ曖昧さに戻る。
 
 追加パラメータ (すべて optional、省略時は完全に従来動作):
 

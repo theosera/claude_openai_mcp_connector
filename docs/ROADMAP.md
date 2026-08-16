@@ -286,11 +286,38 @@ client detection, per the [appendix's anti-router ruling](#appendix--future-uses
   base changed nothing (the mutation read a `score_breakdown` the call no longer
   requested). A guard that cannot be observed failing has not been verified,
   whichever direction the run comes out.
-- **P4 — project memory** 🔭: `get_project_state` (deterministic dossier —
+- **P4 — project memory** ✅: `get_project_state` (deterministic dossier —
   designated `project-state`-tagged docs, recent docs, session-archive
   metadata + outline only, ops-log pointers via their `target_repo`
   frontmatter) and `fetch_document` gains `outline` / `sections` / `max_chars`
   so MB-scale session notes never have to be fetched whole.
+
+  **Shipped**, and the shape follows from one fact about this vault: a session
+  archive runs to megabytes while an ordinary note runs to kilobytes, so
+  "return the project's documents" is not one behaviour. `state_docs` carry
+  full text against a budget, `recent_docs` carry a snippet, and
+  `recent_sessions` carry **metadata and an outline and never a body** —
+  inlining one session note would spend the whole budget on the document the
+  caller asked about least.
+
+  **There is deliberately no `summary`, `blockers` or `next_steps` field.** A
+  server that emits prose has synthesized, and synthesis here would be either a
+  second model — which this one does not have, by design — or a template
+  pretending to be one. The seat for a conclusion is a `state_docs` note that a
+  human or an offline pipeline wrote, which this returns verbatim. A dossier
+  that is visibly assembled beats a summary that cannot be checked.
+
+  `ops_recent` reaches ops logs through their `target_repo` frontmatter with no
+  change to the capture hook, and returns **pointers only** — `target_repo` is
+  self-declared, so any note can join that list, and what it joins is a set of
+  paths the same caller could already enumerate.
+
+  `fetch_document` was extended rather than joined by a `fetch_section`
+  sibling: asking for part of a document is the same question as asking for it.
+  Every parameter is optional and omitting all of them reproduces the previous
+  response exactly, which is pinned by a test rather than asserted here.
+  `total_chars` always reports the whole document, never the returned slice —
+  the same reason `get_context` returns `omitted[]`.
 - 💭 tail (evaluation-gated): knowledge-lifecycle tooling; an inverted index
   (trigger: >10k notes or search p95 > 200 ms); embeddings/vector search
   (trigger: documented recall failures after P1–P3 land).

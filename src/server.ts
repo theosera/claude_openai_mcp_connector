@@ -11,6 +11,14 @@ import {
   MIN_TOKEN_BUDGET
 } from "./contextEngine.js";
 import { MAX_LINK_GRAPH_DEPTH } from "./linkGraph.js";
+import { outlineOf, selectSections } from "./markdownSections.js";
+import type { OutlineEntry } from "./markdownSections.js";
+import {
+  buildProjectState,
+  MAX_PROJECT_STATE_BUDGET,
+  MIN_PROJECT_STATE_BUDGET,
+  DEFAULT_PROJECT_STATE_BUDGET
+} from "./projectState.js";
 import type { AuditStore } from "./auditStore.js";
 import type { SkillStore } from "./skillStore.js";
 import type { TypeRules } from "./typeRules.js";
@@ -73,6 +81,8 @@ export interface BuildServerOptions {
    * changes the ORDER of documents a reader could already fetch one at a time.
    */
   contextTypeRules?: TypeRules;
+  /** Frontmatter tag naming a project's state documents (`MCP_PROJECT_STATE_TAG`). */
+  projectStateTag?: string;
 }
 
 export const SERVER_INSTRUCTIONS =
@@ -103,6 +113,67 @@ export function toPublicDocument(document: MarkdownDocument): PublicDocument {
     title: document.title,
     ...(document.root ? { root: document.root } : {}),
     stats: document.stats
+  };
+}
+
+/**
+ * Project a fetched document onto the part of it the caller asked for.
+ *
+ * A projection in the tool layer rather than a `VaultStore` change: the store's
+ * job is to hand back the document that path resolves to, and which slice of it
+ * a client wants is not a storage question. Keeping it here also means both
+ * stores get it without either implementing it — the shape that let the
+ * single-root and multi-root traces drift apart before they were unified.
+ *
+ * `total_chars` is always the WHOLE document's length, never the returned
+ * slice's. A caller that cannot tell how much it did not receive is back to the
+ * ambiguity `omitted[]` exists to remove on the other read tool.
+ */
+function projectDocument(
+  document: MarkdownDocument,
+  request: { outline?: boolean; sections?: string[]; max_chars?: number }
+): PublicDocument & {
+  outline?: OutlineEntry[];
+  sections_matched?: string[];
+  truncated?: boolean;
+  total_chars?: number;
+} {
+  const base = toPublicDocument(document);
+  const totalChars = document.body.length;
+
+  // `outline` replaces the body rather than accompanying it. Returning both
+  // would make the expensive case — the megabyte note this exists for — cost
+  // more than the plain fetch it was meant to avoid.
+  if (request.outline) {
+    return { ...base, body: "", outline: outlineOf(document.body), truncated: totalChars > 0, total_chars: totalChars };
+  }
+
+  let body = document.body;
+  let matched: string[] | undefined;
+  if (request.sections !== undefined && request.sections.length > 0) {
+    const selection = selectSections(body, request.sections);
+    body = selection.text;
+    matched = selection.matched;
+  }
+  if (request.max_chars !== undefined && body.length > request.max_chars) {
+    body = body.slice(0, request.max_chars);
+  }
+
+  // ⚠️ Branch on what was REQUESTED, not on whether the body happens to have
+  // changed. A document that is one heading with no sibling returns its whole
+  // text for `sections: ["That Heading"]` — a correct hit — and that took the
+  // legacy path, dropping the `sections_matched` the contract promises and
+  // leaving the caller unable to tell a hit from a typo in exactly the case
+  // where it got everything it asked for.
+  if (request.sections === undefined && request.max_chars === undefined) {
+    return base;
+  }
+  return {
+    ...base,
+    body,
+    ...(matched === undefined ? {} : { sections_matched: matched }),
+    truncated: body.length < document.body.length,
+    total_chars: totalChars
   };
 }
 
@@ -168,17 +239,43 @@ export function buildMcpServer(vaultStore: VaultStore, options: BuildServerOptio
     async (input) => jsonResult(await store.search(input))
   );
 
+  // Extended rather than joined by a `fetch_section` sibling: asking for part of
+  // a document is the same question as asking for it, and a second tool would
+  // add a surface without removing a round trip. Every parameter is optional and
+  // omitting them all reproduces the previous response exactly.
   server.registerTool(
     "fetch_document",
     {
       title: "Fetch Markdown document",
-      description: "Fetch a Markdown document by frontmatter id or vault-relative path.",
+      description:
+        "Fetch a Markdown document by frontmatter id or vault-relative path. A megabyte-scale note (a session " +
+        "archive, say) does not have to be fetched whole: `outline: true` returns its headings and their sizes " +
+        "instead of a body, `sections` returns only the named ones, and `max_chars` truncates. With none of them " +
+        "set the response is the full document, unchanged.",
       inputSchema: {
-        id_or_path: z.string()
+        id_or_path: z.string(),
+        outline: z
+          .boolean()
+          .optional()
+          .describe("Return the heading outline INSTEAD of the body — each entry with its size and token estimate."),
+        sections: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Keep only these sections. Matches a heading's text or a `/`-joined prefix of its heading path, " +
+              "case-insensitively; a section brings its subsections with it. `sections_matched` reports which " +
+              "requests actually hit, so a mistyped heading is visible rather than silently returning less."
+          ),
+        max_chars: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Truncate the body to this many characters. `total_chars` always reports the full length.")
       },
       annotations: { readOnlyHint: true }
     },
-    async (input) => jsonResult(toPublicDocument(await store.fetch(input.id_or_path)))
+    async (input) => jsonResult(projectDocument(await store.fetch(input.id_or_path), input))
   );
 
   server.registerTool(
@@ -282,6 +379,41 @@ export function buildMcpServer(vaultStore: VaultStore, options: BuildServerOptio
       annotations: { readOnlyHint: true }
     },
     async (input) => jsonResult(await buildContext(store, input, { typeRules: options.contextTypeRules }))
+  );
+
+  // Read-only, and registered everywhere for the same reason `get_context` is.
+  server.registerTool(
+    "get_project_state",
+    {
+      title: "Project state dossier",
+      description:
+        "Where a project stands, derived from the vault rather than summarized. Returns the notes the owner " +
+        "designated as its state (in full), the most recently touched documents (metadata and a snippet), the " +
+        "session archives that exist (metadata, size and — for the newest — a heading outline, never a body), and " +
+        "pointers to ops-log entries that name the project. There is deliberately no prose summary, blockers or " +
+        "next-steps field: everything here is derived, so a synthesized one could not be checked. A conclusion " +
+        "someone reached lives in a state document, which this returns verbatim.",
+      inputSchema: {
+        project: z.string(),
+        client: z.string().optional(),
+        token_budget: z
+          .number()
+          .int()
+          .min(MIN_PROJECT_STATE_BUDGET)
+          .max(MAX_PROJECT_STATE_BUDGET)
+          .optional()
+          .describe(
+            `Ceiling on the full-text state documents (${MIN_PROJECT_STATE_BUDGET}-${MAX_PROJECT_STATE_BUDGET}, ` +
+              `default ${DEFAULT_PROJECT_STATE_BUDGET}). The other sections are metadata-sized by construction.`
+          ),
+        include: z
+          .array(z.enum(["state_docs", "recent_docs", "sessions", "ops"]))
+          .optional()
+          .describe("Sections to build. All of them when omitted.")
+      },
+      annotations: { readOnlyHint: true }
+    },
+    async (input) => jsonResult(await buildProjectState(store, input, { stateTag: options.projectStateTag }))
   );
 
   if (options.includeChatgptCompat) {
