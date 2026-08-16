@@ -183,6 +183,57 @@ describe("MultiRootStore", () => {
     expect(multi).toBeInstanceOf(MultiRootStore);
   });
 
+  // Asserting the CLASS says nothing about what was handed to it. The recency
+  // defaults reached MultiRootStore and not the single-root KnowledgeStore for
+  // as long as that branch existed, and every deployment of this server runs
+  // one root — so the live config flag was dead exactly where it was used, and
+  // the suite stayed green because the only recency test builds a
+  // KnowledgeStore directly and never goes through createStore.
+  it("carries the operator recency defaults through createStore's single-root branch", async () => {
+    const recencyRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-recency-"));
+    // Same body, neither filename nor title carrying the query term, so the TEXT
+    // scores tie and recency is the only thing that can separate them.
+    // `updated_at` rather than mtime: effectiveTimestamp prefers frontmatter,
+    // and mtime is what a checkout rewrites. QUOTE the timestamps — bare ISO
+    // scalars come back from js-yaml as Date objects, and the scorer only reads
+    // `updated_at` when it is a string, so unquoted values fall through to mtime
+    // and both notes end up equally "recent".
+    await fs.writeFile(
+      path.join(recencyRoot, "alpha.md"),
+      '---\ntitle: Alpha\nupdated_at: "2020-01-01T00:00:00.000Z"\n---\n\nshared recencyprobe marker\n',
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(recencyRoot, "beta.md"),
+      '---\ntitle: Beta\nupdated_at: "2026-08-01T00:00:00.000Z"\n---\n\nshared recencyprobe marker\n',
+      "utf8"
+    );
+
+    const store = createStore({
+      ...makeConfig([{ name: "vault", path: recencyRoot }]),
+      // Weights are clamped to <= 1, so asking for more than that would silently
+      // test the same thing as 1.
+      searchRecencyWeight: 1,
+      searchRecencyHalfLifeDays: 30
+    });
+    await store.init();
+
+    const { results } = await store.search({ query: "recencyprobe", explain: true });
+    expect(results).toHaveLength(2);
+    expect(results[0].path).toBe("beta.md");
+    expect(results[1].path).toBe("alpha.md");
+
+    // The ordering flip alone would be satisfied by anything that reorders ties,
+    // so pin the SIGNAL instead: a recency term that separates the two notes can
+    // only come from a weight that survived the trip through createStore. With
+    // the weight dropped, `recencyWeight > 0` is false and BOTH breakdowns stay
+    // at 0 — equal, not merely small. Comparing them rather than checking an
+    // absolute value also keeps this stable as the fixture dates age.
+    const recencyOf = (index: number) => results[index].score_breakdown?.recency ?? 0;
+    expect(recencyOf(0)).toBeGreaterThan(recencyOf(1));
+    expect(results[0].score).toBeGreaterThan(results[1].score);
+  });
+
   it("searches across every root and labels hits with their root", async () => {
     const { results } = await store.search({ query: "retrieval" });
     const roots = new Set(results.map((result) => result.root));

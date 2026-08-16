@@ -33,6 +33,17 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`MCP_SEARCH_RECENCY_WEIGHT` did nothing on a single-root vault.**
+  `createStore` builds a plain `KnowledgeStore` when exactly one root is
+  configured, and that branch omitted the two recency fields, so the store's
+  search defaults read `undefined` and scoring fell back to a weight of `0` —
+  recency was off for every query no matter what the variable said.
+  `MultiRootStore` wired both fields from the start, so the disabled branch was
+  the one every single-root deployment runs. The empty-query default `order`
+  derives from the same weight, so it was pinned to `path` as a side effect.
+  A per-call `recency_weight` was never affected: it is read ahead of the server
+  default, so this was a dead default rather than an unreachable feature.
+
 - **`plan_document_update` could stage a diff that deleted frontmatter it failed
   to parse.** It read the note's current bytes with the read path's forgiving
   parser, which falls back to _empty_ frontmatter when the YAML is malformed,
