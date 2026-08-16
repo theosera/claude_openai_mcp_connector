@@ -415,8 +415,53 @@ vault DATA であり、package への包含は指示でも承認でもなく ret
 > ただし `path` と `basename` による到達は残るので、INV-2 が受け入れた代償
 > (「frontmatter `id` を持たない文書は handle が path 1 本だけで、squat されると引く手段が
 > 無くなる」) よりは軽い。**軽いことを理由に書き落とさない。**
-> なお「軽い」は構造からの推論であって実測ではない — 実 vault に alias 専用の wikilink が
-> 何本あるかは **P2-V で数えるまで未測定**である。
+>
+> **★ 実測済み (2026-08-16、実 vault 2,891 文書・単一ルート・main `809c500`)。**
+> `title` は**現在すでに生きている解決キー**なので (`knowledgeStore.ts:479` /
+> `multiRootStore.ts:221` の `linkTargets` / `crossRootTargets`)、本決定は仕様の策定ではなく
+> **既存 backlink の削除**である。他方 `basename` は**現在キーではない**ので、同じ決定が
+> basename 解決を**足しても**いる。得失は両方向で、符号は推論では決まらなかった。
+> edge は `(source, target)` で重複排除した本数:
+>
+> | | 定義 | edge |
+> | --- | --- | --- |
+> | A | 今 path 系で解決 (不変) | 29 |
+> | B | 今 title で解決、basename でも一意 (不変) | 71 |
+> | C | 今 title でしか解決しない (**失う**) | 3,927 |
+> | D | 今解決しない、basename で一意 (**得る**) | 249 |
+> | E | basename が多義 = candidates 止まり | 15 link / basename 5 |
+>
+> **C の 3,927 は「一意な解決」を 1 本も含まない。** title で解決する link 652 本を
+> 一意/多重で割ると、**一意だった 46 本は 46 本とも新案でも同じ相手に着地する**
+> (path 1 + basename 45)。C は全て多重一致 606 本による扇形展開で、しかも
+> **そのうち 580 本は「その basename を持つ文書が vault に 1 件も無い」** —
+> **Obsidian 自身が未解決として表示する link** に、現行が「たまたま H1/frontmatter title が
+> 一致した文書」全部へ偽の backlink を張っていたものである。残り 26 本は扇形から
+> **1 件 (Obsidian と同じ相手) に収束**する。
+>
+> ⚠️ **その結果、backlink edge 総数は 4,027 → 349 (−91%) に減る。**
+> これは recall の喪失ではなく偽 edge の除去だが、**数字自体は隠さず ROADMAP と PR に書く。**
+>
+> 背景 (なぜこの vault でそうなるか): 2,891 文書中 2,291 が frontmatter `title:` を持つのに
+> **相異なる title は 1,490 しかなく、1,751 文書が他文書と title を共有する** (最大 25)。
+> **この vault で title は識別子として運用されていない** — 解決キーとしての分解能が無い。
+>
+> **代替案 (「title は解決キーに残し、衝突時のみ fail closed」) は数字が支持しなかった。**
+> unique-title link 46 本は全て path か basename で解決済みなので、その三段目を足しても
+> **この vault での追加 edge は 0**。複雑さだけが増える。
+>
+> `aliases` は**この vault に 1 件も無い**ので、aliases を candidates 専用にする判断の得失は
+> ここでは測れない (現状の損失はゼロ)。
+>
+> ⚠️ **n=1 である。** 単一 vault・単一著者の測定なので、**title を一意な識別子として運用して
+> いる vault では C の性質が変わりうる** (「unique title かつ basename 不一致」が C に入る)。
+> この vault ではその形が 0 件だった、というのが測ったことの全部である。
+>
+> 計測の基準値そのものも逆検証してある: `store.traceSources()` を 24 文書 (in-degree 上位 10 +
+> 211 件おきの 14) に実際に呼び、再実装の逆引きと突き合わせて **mismatch 0** (missing 0 /
+> extra 0)。抽出はリポ自身の `extractAllLocalLinks` / `resolveRelativeLink` を使い、
+> 正規表現で書き直していない。**「現行」列がこの一致の上に乗っていなければ、
+> 上の得失はすべて別物を測っていたことになる。**
 
 ### D-5. `get_project_state` の仕様 (P4)
 
