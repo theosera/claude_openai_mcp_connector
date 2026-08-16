@@ -717,6 +717,34 @@ describe("apply re-checks the cap, so a stale plan cannot carry a write past it"
     await expect(fs.readFile(path.join(root, "projects", "new.md"), "utf8")).rejects.toThrow();
   });
 
+  it("refuses staged content whose oversize block hides behind a BOM", async () => {
+    // Found by review, and the third instance in one branch of the same mistake:
+    // this guard's comment claimed "the same first step as
+    // assertBoundedFrontmatterBlock" while copying only half of it. The sibling
+    // strips U+FEFF before looking for the delimiter; this one did not, so
+    // BOM + `---` + an oversize block did not look like frontmatter here, took
+    // the early return unchecked, and was written -- while the READ path, which
+    // does strip the BOM, then refused the file.
+    //
+    // Reachable through the same door as the rest of the apply-time check:
+    // staged new_content is not re-derived from serializeMarkdown (which never
+    // emits a BOM), and an update plan carries no hash of its own payload --
+    // expected_sha256 binds the TARGET's prior bytes.
+    const before = "---\ntitle: Keep Me\n---\n\nbody\n";
+    await fs.writeFile(path.join(root, "bom.md"), before, "utf8");
+    const patchId = await stagePlanFile({
+      target_path: "bom.md",
+      reason: "staged with a BOM",
+      expected_sha256: crypto.createHash("sha256").update(before).digest("hex"),
+      created_at: new Date().toISOString(),
+      new_content: "\uFEFF" + oversizedContent("Hidden"),
+      diff: "(elided)"
+    });
+
+    await expect(store.applyPlannedUpdate(patchId)).rejects.toThrow(/Refusing to write/);
+    expect(await fs.readFile(path.join(root, "bom.md"), "utf8")).toBe(before);
+  });
+
   it("still applies a staged plan whose frontmatter is within the cap", async () => {
     // The false-positive direction: re-checking at apply must not break the
     // ordinary path, where the same bytes already passed at plan time.

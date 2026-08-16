@@ -515,10 +515,23 @@ export function assertEmittedFrontmatterWithinLimit(serialized: string): void {
   // `source_refs`, so gray-matter always emits a block. Kept because the guard
   // it mirrors has it, and because "the serializer always emits frontmatter" is
   // a property of a different function than this one.
-  if (!serialized.startsWith(FRONTMATTER_DELIMITER)) {
+  // ⚠️ The BOM strip is half of that first step, and leaving it out was a hole,
+  // not a tidiness issue. `assertBoundedFrontmatterBlock` strips U+FEFF before it
+  // looks for the delimiter, so content starting BOM + `---` + an oversize block
+  // is refused on READ. Without the same strip here, that content does not even
+  // start with `---` as far as this function is concerned, returns early
+  // unchecked, and gets written — producing precisely the unreadable,
+  // unrepairable note this guard exists to prevent.
+  //
+  // Reachable through the same door as the apply-time check itself: staged
+  // `new_content` is not re-derived from `serializeMarkdown` (which never emits a
+  // BOM) and carries no content hash of its own — `expected_sha256` binds the
+  // TARGET's prior bytes, not the plan's payload.
+  const raw = serialized.charAt(0) === "\uFEFF" ? serialized.slice(1) : serialized;
+  if (!raw.startsWith(FRONTMATTER_DELIMITER)) {
     return;
   }
-  const close = serialized.indexOf("\n" + FRONTMATTER_DELIMITER, FRONTMATTER_DELIMITER.length);
+  const close = raw.indexOf("\n" + FRONTMATTER_DELIMITER, FRONTMATTER_DELIMITER.length);
   const blockLength = Buffer.byteLength(close === -1 ? serialized : serialized.slice(0, close), "utf8");
   if (blockLength > MAX_FRONTMATTER_BLOCK_BYTES) {
     throw new Error(
