@@ -427,19 +427,26 @@ goes plan → your approval → apply, so nothing reaches the vault between a to
 call and a diff you have seen. Set `MCP_ALLOW_LEGACY_CREATE_DOCUMENT=1` only if
 you still depend on the old routed-capture route.
 
-`audit` has three states, and **`reserved-only` is the expected one** for the env
-file above — it is the recommended configuration, not a half-finished one:
+`skills` and `audit` each have three states, and **`reserved-only` is the
+expected one** for the env file above — it is the recommended configuration, not
+a half-finished one:
 
 | value | meaning |
 | --- | --- |
-| `reserved-only` | `MCP_AUDIT_SUBDIR` reached the process, so the INV-9 audit-subtree reservation is in effect, and the audit **write tools are not registered**. This is what you want for an interactive session. |
-| `on` | the same, **plus** `append_audit_report` / `compare_and_swap_audit_state` registered, because `MCP_STDIO_ALLOW_AUDIT_WRITE` is set. Intended for an unattended scanner, not for a session you type into. |
-| `off` | no `MCP_AUDIT_SUBDIR` — on a write-capable process this means general writes can still reach the audit subtree, i.e. the registration is not finished. |
+| `reserved-only` | The subdir setting reached the process, so the subtree reservation is in effect (INV-8 for Skills, INV-9 for audit), and that surface's **write tools are not registered**. This is what you want for an interactive session. |
+| `on` | the same, **plus** the write tools registered, because that transport's own opt-in is set — `MCP_STDIO_ALLOW_SKILL_WRITE` / `MCP_STDIO_ALLOW_AUDIT_WRITE`. Intended for a process whose job is to write there, not for a session you type into. |
+| `off` | no subdir setting — on a write-capable process this means general writes can still reach that subtree, i.e. the registration is not finished. |
 
-Do **not** set `MCP_STDIO_ALLOW_AUDIT_WRITE` just to make this line read `on`.
-Those two tools are single-call writes into the audit trail with no plan/apply
-step and no confirmation; an interactive session, whose input includes untrusted
-vault content, is exactly who should not hold them.
+Do **not** set either flag just to make the line read `on`. Reserving a subtree
+and holding the tools that write into it are separate decisions, which is why
+one word could never describe both.
+
+The audit tools are single-call writes into the audit trail with no plan/apply
+step and no confirmation. Skill creation _is_ two-step, so it is not that same
+exposure — but a Skill is loaded by later sessions **as instructions**, which is
+the premise the whole constrained Skill surface exists for. An interactive
+session, whose input includes untrusted vault content, is who should hold
+neither.
 
 A line beginning `MCP HTTP transport listening`,
 or no line at all before the command hangs, means the env file belongs to an
@@ -492,8 +499,8 @@ client entirely; nothing here depends on where that client keeps its logs.
 - `apply_planned_document_create` _(write; exact confirmed path required, create-only)_
 - `plan_document_update` _(write)_
 - `apply_planned_update` _(write)_
-- `plan_skill_create` _(write — only when the constrained Skill store is configured)_
-- `apply_planned_skill_create` _(write; create-only, atomic, never overwrites)_
+- `plan_skill_create` _(Skill write — needs `MCP_SKILLS_SUBDIR` **and** the transport's own opt-in: `MCP_HTTP_ALLOW_SKILL_WRITE` on HTTP, `MCP_STDIO_ALLOW_SKILL_WRITE` on stdio)_
+- `apply_planned_skill_create` _(Skill write; create-only, atomic, never overwrites)_
 - `append_audit_report` _(audit write — needs `MCP_AUDIT_SUBDIR` **and** the transport's own opt-in: `MCP_HTTP_ALLOW_AUDIT_WRITE` on HTTP, `MCP_STDIO_ALLOW_AUDIT_WRITE` on stdio; create-only reports in the reserved subtree, never overwrites)_
 - `compare_and_swap_audit_state` _(audit write; atomic sha256 compare-and-swap of the reserved `state.md`)_
 - `search` / `fetch` — ChatGPT-connector-compatible read-only aliases

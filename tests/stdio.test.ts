@@ -58,15 +58,18 @@ describe("stdio dual-era serving", () => {
    * the file (tests/config.test.ts), so the two cannot fight.
    */
   /**
-   * The operator-file registration. `auditWrite` is off by default on purpose:
-   * that is what setting MCP_AUDIT_SUBDIR alone now produces — the INV-9
-   * reservation in effect, the two single-call audit writes NOT registered.
-   * Pass it to get the full surface.
+   * The operator-file registration. Both write flags are off by default on
+   * purpose: that is what setting MCP_AUDIT_SUBDIR / MCP_SKILLS_SUBDIR alone now
+   * produces — the INV-9 and INV-8 reservations in effect, neither write surface
+   * registered. Pass them to get the full surface.
    */
-  async function operatorEnv(options: { auditWrite?: boolean } = {}): Promise<Record<string, string>> {
+  async function operatorEnv(
+    options: { auditWrite?: boolean; skillWrite?: boolean } = {}
+  ): Promise<Record<string, string>> {
     await fs.mkdir(path.join(vault, "_skills"), { recursive: true });
     await fs.mkdir(path.join(vault, "90_Audit", "vault-scan", "reports"), { recursive: true });
-    const envFile = path.join(stateDir, options.auditWrite ? "vault-auditwrite.env" : "vault.env");
+    const suffix = `${options.auditWrite ? "-auditwrite" : ""}${options.skillWrite ? "-skillwrite" : ""}`;
+    const envFile = path.join(stateDir, `vault${suffix}.env`);
     await fs.writeFile(
       envFile,
       [
@@ -74,6 +77,7 @@ describe("stdio dual-era serving", () => {
         "MCP_AUDIT_SUBDIR=90_Audit/vault-scan",
         `MCP_PATCH_STATE_DIR=${path.join(stateDir, "patches")}`,
         ...(options.auditWrite ? ["MCP_STDIO_ALLOW_AUDIT_WRITE=1"] : []),
+        ...(options.skillWrite ? ["MCP_STDIO_ALLOW_SKILL_WRITE=1"] : []),
         ""
       ].join("\n"),
       "utf8"
@@ -172,7 +176,7 @@ describe("stdio dual-era serving", () => {
   }, 60_000);
 
   it("keeps the two eras identical on the FULL surface, not just the audit-off one", async () => {
-    const env = await operatorEnv({ auditWrite: true });
+    const env = await operatorEnv({ auditWrite: true, skillWrite: true });
 
     const legacyClient = new Client({ name: "legacy-full", version: "0.0.0" });
     await legacyClient.connect(new StdioClientTransport({ ...spawnArgs, env }));
@@ -202,18 +206,26 @@ describe("stdio dual-era serving", () => {
     expect(modernTools).toEqual(legacyTools);
   }, 60_000);
 
-  it("withholds the audit write tools from a session that only reserved the subtree", async () => {
-    // MCP_AUDIT_SUBDIR is what operators are told to set on EVERY write-capable
-    // process, so the INV-9 reservation holds everywhere. It used to also hand
-    // the session `append_audit_report` and `compare_and_swap_audit_state` —
-    // two single-call writes into the audit trail, with no plan/apply step and
-    // no user confirmation, on a transport whose input is untrusted vault
-    // content (INV-5). Following the documented guidance therefore armed the
-    // one surface the reservation exists to protect.
+  it("withholds BOTH write surfaces from a session that only reserved the subtrees", async () => {
+    // MCP_AUDIT_SUBDIR / MCP_SKILLS_SUBDIR are what operators are told to set on
+    // EVERY write-capable process, so the INV-9 and INV-8 reservations hold
+    // everywhere. Setting them used to also hand the session the tools that
+    // write into those subtrees, on a transport whose input is untrusted vault
+    // content (INV-5) — so following the documented guidance armed the very
+    // surfaces the reservations exist to protect.
     //
-    // The two are separate decisions now. The very next test drives this same
-    // env and shows the reservation still refuses a general write, so this is
-    // withholding the tools, not disabling the protection.
+    // The audit half was split first. The Skill half kept the old shape for
+    // long enough that this test asserted it POSITIVELY, one line below the
+    // audit assertions, describing the asymmetry as if it were a scope decision:
+    // "the Skill surface ... is untouched". It was the same hole, unfixed.
+    //
+    // Skill creation is two-step, so this was never the single-call exposure the
+    // audit pair had. That does not make it lighter: a Skill is loaded by later
+    // sessions AS INSTRUCTIONS, which is the premise INV-8 exists for.
+    //
+    // The next two tests drive this same env and show both reservations still
+    // refuse a general write, so this is withholding tools, not disabling
+    // protection.
     const env = await operatorEnv();
     const client = new ModernClient(
       { name: "modern-reserved-only", version: "0.0.0" },
@@ -225,9 +237,30 @@ describe("stdio dual-era serving", () => {
 
     expect(tools).not.toContain("append_audit_report");
     expect(tools).not.toContain("compare_and_swap_audit_state");
-    // Scoped to the audit tools: the Skill surface, which the same operator file
-    // enables and which is protected by its own plan/apply step, is untouched.
+    expect(tools).not.toContain("plan_skill_create");
+    expect(tools).not.toContain("apply_planned_skill_create");
+    // Not a blanket withdrawal: the general document write surface, which these
+    // flags say nothing about, is still there. Without this the test would also
+    // pass if stdio had stopped registering writes altogether.
+    expect(tools).toEqual(expect.arrayContaining(["plan_document_update", "apply_planned_update"]));
+  }, 60_000);
+
+  it("registers each write surface only when its own flag is set", async () => {
+    // The two flags are independent. Enabling Skills must not drag in the audit
+    // pair, or "separate decisions" would be true of the config and false of the
+    // surface it produces.
+    const env = await operatorEnv({ skillWrite: true });
+    const client = new ModernClient(
+      { name: "modern-skill-only", version: "0.0.0" },
+      { versionNegotiation: { mode: { pin: "2026-07-28" } } }
+    );
+    await client.connect(new ModernStdioClientTransport({ ...spawnArgs, env }));
+    const tools = (await client.listTools()).tools.map((tool) => tool.name);
+    await client.close();
+
     expect(tools).toEqual(expect.arrayContaining(["plan_skill_create", "apply_planned_skill_create"]));
+    expect(tools).not.toContain("append_audit_report");
+    expect(tools).not.toContain("compare_and_swap_audit_state");
   }, 60_000);
 
   it("refuses a general document write into the reserved audit subtree, on the wire", async () => {

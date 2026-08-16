@@ -468,6 +468,43 @@ export function parseMarkdownSafe(raw: string): {
   }
 }
 
+/**
+ * INV-2, write side — a write may not emit a note the read path will refuse.
+ *
+ * `assertBoundedFrontmatterBlock` caps what the parser will INGEST. Nothing
+ * capped what a writer EMITS, so a patch that satisfies every INV-2 rule — an
+ * allowlisted key, the right value type — could still serialize a frontmatter
+ * block past that cap (measured: 4,000 `tags` entries produced 50,959 bytes).
+ * The result is a note that is written successfully and then:
+ *
+ *   - indexes BODY-ONLY, because `parseMarkdownSafe` degrades to empty
+ *     frontmatter, so its `title` silently falls back to the basename — and a
+ *     note that had a frontmatter `id` loses it, moving its identity from that
+ *     id to its path, which is the handle INV-2 says content can squat;
+ *   - cannot be repaired through this server at all, because `planUpdate`
+ *     parses with `parseMarkdown`, which throws on exactly this input.
+ *
+ * "Read has an obligation to keep returning the note; a writer has no such
+ * obligation" was already the rule — it was just applied to the parse of the
+ * writer's INPUT and not to its OUTPUT.
+ *
+ * The check lives here rather than at the three call sites because this is the
+ * one function every writer passes through, so a fourth writer added later is
+ * covered without anyone remembering to add it (the same reason
+ * `assertWritableText` is the shared choke for the audit surface).
+ */
+function assertEmittedFrontmatterWithinLimit(serialized: string): void {
+  const close = serialized.indexOf("\n" + FRONTMATTER_DELIMITER, FRONTMATTER_DELIMITER.length);
+  const blockLength = Buffer.byteLength(close === -1 ? serialized : serialized.slice(0, close), "utf8");
+  if (blockLength > MAX_FRONTMATTER_BLOCK_BYTES) {
+    throw new Error(
+      `Refusing to write: the frontmatter this produces is ${blockLength} bytes, over the ` +
+        `${MAX_FRONTMATTER_BLOCK_BYTES}-byte limit the read path enforces. The note would be ` +
+        "indexed without its metadata and could not be edited through this server afterwards."
+    );
+  }
+}
+
 export function serializeMarkdown(frontmatter: DocumentMetadata, body: string): string {
   // The body is untrusted client input (`body` / `new_body`), so it is handed
   // over as a file OBJECT, never as a string: matter.stringify() re-parses a
@@ -478,7 +515,13 @@ export function serializeMarkdown(frontmatter: DocumentMetadata, body: string): 
   // smuggling keys past the write-time allowlist (INV-2). With `{ content }`
   // there is no `file.data`, so only the server-computed metadata is emitted and
   // a body that starts with `---` is written through verbatim.
-  return matter.stringify({ content: body.trimEnd() + "\n" }, normalizeMetadata(frontmatter), SAFE_MATTER_OPTIONS);
+  const serialized = matter.stringify(
+    { content: body.trimEnd() + "\n" },
+    normalizeMetadata(frontmatter),
+    SAFE_MATTER_OPTIONS
+  );
+  assertEmittedFrontmatterWithinLimit(serialized);
+  return serialized;
 }
 
 export function normalizeMetadata(input: DocumentMetadata): DocumentMetadata {

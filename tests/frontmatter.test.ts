@@ -525,3 +525,125 @@ describe("KnowledgeStore with expansion-bomb and repeated content", () => {
     expect(reread.title).toBe("Session archive index");
   });
 });
+
+describe("a write may not emit a note the read path will refuse (INV-2, write side)", () => {
+  let root: string;
+  let patchStateDir: string;
+  let store: KnowledgeStore;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-fm-emit-"));
+    patchStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-fm-emitpatch-"));
+    store = new KnowledgeStore({ knowledgeRoot: root, writeMode: "two_step", patchStateDir });
+    await store.init();
+  });
+
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(patchStateDir, { recursive: true, force: true });
+  });
+
+  /** Allowlisted key, correct value type — INV-2 has nothing to object to. */
+  const hugeTagPatch = { tags: Array.from({ length: 4000 }, (_, index) => `tag-${index}`) };
+
+  it("refuses at PLAN time, so the target is untouched and no approved diff is shown", async () => {
+    await fs.writeFile(path.join(root, "note.md"), "---\ntitle: Keep Me\n---\n\nbody\n", "utf8");
+    const before = await fs.readFile(path.join(root, "note.md"), "utf8");
+
+    await expect(
+      store.planUpdate({
+        id_or_path: "note.md",
+        new_body: "body\n",
+        frontmatter_patch: hugeTagPatch,
+        reason: "oversize"
+      })
+    ).rejects.toThrow(/Refusing to write.*over the 8192-byte limit/s);
+
+    // Rejecting at plan rather than apply is the point: apply-time refusal would
+    // stop only AFTER the user had been shown a diff to approve. Same placement
+    // reason as INV-8's validateFileSet.
+    expect(await fs.readFile(path.join(root, "note.md"), "utf8")).toBe(before);
+    expect(await fs.readdir(patchStateDir)).toHaveLength(0);
+  });
+
+  it("blocks the create paths too, leaving no note behind", async () => {
+    await expect(
+      store.createDocument({
+        client: "acme",
+        project: "p",
+        title: "T",
+        body: "b\n",
+        tags: hugeTagPatch.tags
+      })
+    ).rejects.toThrow(/Refusing to write/);
+
+    await expect(
+      store.planDocumentCreate({
+        relative_path: "projects/new.md",
+        client: "acme",
+        project: "p",
+        title: "T",
+        body: "b\n",
+        tags: hugeTagPatch.tags,
+        reason: "oversize"
+      })
+    ).rejects.toThrow(/Refusing to write/);
+
+    // The guard sits in serializeMarkdown, the one function all three writers
+    // pass through, so this is coverage of the choke rather than of three
+    // separate call sites — and a fourth writer inherits it.
+    //
+    // Asserted on NOTES, not on directory entries: `createDocument` creates the
+    // routed parent before it serializes, so a refusal leaves an empty directory
+    // behind. That is cosmetic — no content, no metadata, nothing a later read
+    // can return — and claiming "no file behind" would have been false. Moving
+    // the check ahead of the mkdir would tidy it at the cost of validating in a
+    // second place, which is the trade this guard's placement exists to avoid.
+    const notesUnderRoot = async (dir: string): Promise<string[]> => {
+      const entries = await fs.readdir(dir, { withFileTypes: true, recursive: true }).catch(() => []);
+      return entries.filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => entry.name);
+    };
+    expect(await notesUnderRoot(root)).toHaveLength(0);
+  });
+
+  it("is what stops a note from becoming unreadable AND unrepairable", async () => {
+    // The shape being prevented, written out by hand: bytes on disk whose
+    // frontmatter block is over the cap. This is what the write path used to
+    // produce, and it is reachable only by bypassing the writer now.
+    const oversized = `---\ntitle: Doomed\nid: doomed-uuid\ntags:\n${hugeTagPatch.tags
+      .map((tag) => `  - ${tag}`)
+      .join("\n")}\n---\n\nSTILLINDEXED\n`;
+    await fs.writeFile(path.join(root, "doomed.md"), oversized, "utf8");
+
+    // Read degrades: the note is still returned (read has that obligation), but
+    // body-only — its title falls back to the basename and its frontmatter id is
+    // gone, moving its identity to its path, which is the handle INV-2 says
+    // content can squat.
+    const degraded = await store.fetch("doomed.md");
+    expect(degraded.title).toBe("doomed");
+    expect(degraded.frontmatter.id).toBeUndefined();
+    expect((await store.search({ query: "STILLINDEXED" })).results).toHaveLength(1);
+
+    // ...and it cannot be repaired through this server, because planUpdate parses
+    // with parseMarkdown, which refuses exactly this input. Writing the note was
+    // the only reversible moment, which is why the guard is on the write.
+    await expect(store.planUpdate({ id_or_path: "doomed.md", new_body: "fixed\n", reason: "repair" })).rejects.toThrow(
+      /over the 8192-byte limit/
+    );
+  });
+
+  it("still writes frontmatter that is merely large (the false-positive direction)", async () => {
+    await fs.writeFile(path.join(root, "ok.md"), "---\ntitle: Fine\n---\n\nbody\n", "utf8");
+    const plan = await store.planUpdate({
+      id_or_path: "ok.md",
+      new_body: "body\n",
+      // ~4 KiB of tags: comfortably under the cap, and above anything the real
+      // vault holds (measured median 225 B, max 1,042 B).
+      frontmatter_patch: { tags: Array.from({ length: 300 }, (_, index) => `t-${index}`) },
+      reason: "large but legal"
+    });
+    const applied = await store.applyPlannedUpdate(plan.patch_id);
+    expect(applied.document.frontmatter.tags).toHaveLength(300);
+    expect((await store.fetch("ok.md")).frontmatter.tags).toHaveLength(300);
+  });
+});
