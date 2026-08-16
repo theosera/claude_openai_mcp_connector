@@ -37,5 +37,11 @@ secrets.yml
 # Local Claude Code overrides (personal vault path / endpoints) — never shared.
 .claude/settings.local.json
 
+# /claude-security change-scan output (threat models, findings). Local-only: a
+# scan of this repo names the operator's real KNOWLEDGE_ROOT and note paths, and
+# this repo is public. Until now the only thing keeping these out was the "never
+# `git add -A`" rule, which is a habit rather than a guard.
+CLAUDE-SECURITY-*/
+
 # OAuth session state (MCP_OAUTH_STATE_FILE) — local-only auth state, never commit
 *oauth-state*.json
