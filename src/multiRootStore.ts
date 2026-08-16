@@ -336,7 +336,15 @@ export function createStore(config: AppConfig): VaultStore {
       patchStateDir: config.patchStateDir,
       skillsSubdir: config.skillsSubdir,
       auditSubdir: config.auditSubdir,
-      scanConcurrency: config.scanConcurrency
+      scanConcurrency: config.scanConcurrency,
+      // Operator recency defaults reach the scorer ONLY through here. Dropping
+      // them silently disables MCP_SEARCH_RECENCY_WEIGHT for every single-root
+      // deployment: `searchDefaults()` reads undefined and `scoreDocument`
+      // falls back to DEFAULT_RECENCY_WEIGHT (0). MultiRootStore wired these
+      // from the start, so the two composites disagreed and only the branch
+      // nobody tested end-to-end was wrong.
+      searchRecencyWeight: config.searchRecencyWeight,
+      searchRecencyHalfLifeDays: config.searchRecencyHalfLifeDays
     });
   }
   return new MultiRootStore(config);
