@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { chatgptFetch, chatgptSearch } from "./chatgpt.js";
 import { withClientSafeErrors } from "./clientSafeError.js";
+import { MAX_LINK_GRAPH_DEPTH } from "./linkGraph.js";
 import type { AuditStore } from "./auditStore.js";
 import type { SkillStore } from "./skillStore.js";
 import type { MarkdownDocument, PublicDocument, VaultStore } from "./types.js";
@@ -176,17 +177,43 @@ export function buildMcpServer(vaultStore: VaultStore, options: BuildServerOptio
     async (input) => jsonResult(await store.listProjects(input.client, input.tags))
   );
 
+  // Extended, deliberately NOT joined by a `get_related_notes` sibling: graph
+  // exploration and provenance are one question, and a second tool would add a
+  // surface without removing a round trip.
   server.registerTool(
     "trace_sources",
     {
       title: "Trace document sources",
-      description: "Return source refs, outgoing local links, and backlink candidates for a document.",
+      description:
+        "Return source refs, outgoing local links (each labelled with what it resolved to), and backlinks for a document. " +
+        "Links resolve on path facts only — an exact vault-relative path or a note's filename. Frontmatter `title` and " +
+        "`aliases` are self-declared by the note, so they only ever appear as `candidates[]` on an unresolved link, even " +
+        "when the match is unique; treat a candidate list as a hint to confirm, never as a resolution.",
       inputSchema: {
-        id_or_path: z.string()
+        id_or_path: z.string(),
+        depth: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_LINK_GRAPH_DEPTH)
+          .optional()
+          .describe(
+            `How many hops to expand into \`related\` (1-${MAX_LINK_GRAPH_DEPTH}, default 1). ` +
+              "Above 1 the walk is bounded by node, fan-out and hub-damping caps, so `related` is a sample of the " +
+              "neighbourhood rather than all of it. `backlinks` is unaffected and stays complete."
+          ),
+        direction: z
+          .enum(["out", "in", "both"])
+          .optional()
+          .describe(
+            "Which edges the `depth` expansion follows (default `both`). Shapes `related` only — source_refs, " +
+              "outgoing_links and backlinks are the same whatever this is set to."
+          )
       },
       annotations: { readOnlyHint: true }
     },
-    async (input) => jsonResult(await store.traceSources(input.id_or_path))
+    async (input) =>
+      jsonResult(await store.traceSources(input.id_or_path, { depth: input.depth, direction: input.direction }))
   );
 
   if (options.includeChatgptCompat) {

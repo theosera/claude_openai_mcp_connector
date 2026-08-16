@@ -168,7 +168,7 @@ anti-forgery analysis, reject list) in the
 per-agent "context profiles" are request parameters only — never server-side
 client detection, per the [appendix's anti-router ruling](#appendix--future-uses-of-the-authenticated-client_id).
 
-- **P2 — link graph & provenance** 🔭: `src/linkGraph.ts` built from an
+- **P2 — link graph & provenance** ✅: `src/linkGraph.ts` built from an
   **unprefixed** `listDocuments()` (fs access stays behind the existing guard
   chain; `path_prefix` shipped with #108 but only `search` passes it — a backlink
   set computed over a subset is wrong, not merely smaller), correct relative-link
@@ -207,6 +207,43 @@ client detection, per the [appendix's anti-router ruling](#appendix--future-uses
   resolved-link output. Bounds: depth ≤ 2, node/fanout caps, hub damping for
   MOC notes. Decided as P2-D0; full rationale in the
   [context-engineering proposal](./context-engineering.md#d-4-linkgraph-の仕様-p2).
+
+  **Shipped**, with three things settled against the implementation rather than
+  ahead of it. The graph keys nodes on the **path**, not on frontmatter `id`:
+  the D-4 sketch said `outgoing(id)`, but `id` is the field INV-2 already
+  refuses to resolve on when two notes claim it, and a graph keyed there would
+  let one note redirect another's edges. `resolved_outgoing` therefore carries
+  both handles — `target_path` to follow, `target_id` for citation compatibility.
+  In multi-root deployments implicit forms (relative links, bare names, title /
+  alias lookups) resolve **inside the linking note's own root**; only the
+  explicit `<root>:` form crosses, because root names come from config and a
+  note cannot name one for itself. And a wikilink's name leg matches the **whole
+  link text**, so a folder-qualified `[[projects/a/note]]` that misses its path
+  is left unresolved instead of being retargeted at some other folder's
+  `note.md` — which is what keeps the exact-path leg load-bearing rather than
+  decorative.
+
+  ⚠️ **One record is left open on purpose: `D-G3-SUBSET-VIA-SKIP`.** The
+  argument above rests on "unprefixed `listDocuments()` = the whole vault", and
+  since #114 that is no longer exactly true — the walk skips entries it cannot
+  reach and continues, writing a line to stderr while **the return value says
+  nothing**. This ships degrading rather than failing closed: failing closed
+  would restore precisely the one-bad-entry-stops-everything behaviour #114
+  removed, and a link graph is a weaker reason to reverse that than the read
+  plane was to establish it. The missing piece is a completeness signal on
+  `listDocuments()` itself — a `VaultStore` change reaching every caller, so a
+  different boundary from this one. What must not happen meanwhile is filing an
+  unreachable skip under the same heading as a prefix exclusion: a prefix is
+  chosen by the caller and known to it, a skip is neither.
+
+  One corner of that gap is closed rather than merely recorded, because the
+  answer there was wrong and not just incomplete. When the **traced** note is
+  the one the walk skipped, `trace_sources` used to report that it writes no
+  links — a statement indistinguishable from a note that writes none, about a
+  document the same call had just fetched successfully. That case now falls back
+  to the fetched copy. The record stays open for everything else: a **backlink**
+  missing because some other note was skipped is still invisible, and only a
+  completeness signal on `listDocuments()` can fix that.
 - **P3 — `get_context`** 🔭: deterministic 5-stage pipeline (seed search →
   link expansion → fuse/dedup → heading-level chunking → greedy
   score-per-token packing) returning a `ContextPackage` with per-chunk
@@ -1311,8 +1348,11 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       `total_count`/`offset` envelope, backlink relative-link resolution,
       `absolutePath` removed from document responses. ✅ P1: CJK query
       segmentation, opt-in recency, path/root/date filters, `order`,
-      two-window snippets, `explain`, derived-text cache. Next in this track is
-      **P2 (link graph)** under the context-engineering layer above.
+      two-window snippets, `explain`, derived-text cache. ✅ P2: `src/linkGraph.ts`
+      (path-facts-only resolution, `title` / `aliases` as candidates only) and
+      `trace_sources` gaining `depth` / `direction` / `resolved_outgoing` /
+      `related` under bounded traversal. Next in this track is **P3
+      (`get_context`)** under the context-engineering layer above.
 - [x] **Exact-path document create** — ✅ two-step full-file plan, explicit
       target-path confirmation (`はい` + free text), confirmed-path echo at
       apply, content-integrity/no-overwrite checks, and MCP E2E coverage.

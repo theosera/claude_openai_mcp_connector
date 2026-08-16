@@ -9,7 +9,7 @@
 > | --- | --- | --- |
 > | **P0** 正確性 (NFKC / envelope+total_count / 結果の timestamp・size / backlink 相対リンク解決 / `absolutePath` 除去) | ✅ 実装済み | v0.7.0 |
 > | **P1** 検索品質 (CJK 分かち書き / opt-in recency / path・root・日付 filter / `order` / 2 窓 snippet / `explain` / 派生テキスト cache) | ✅ 実装済み | v0.7.0 |
-> | **P2** link graph & provenance | 🔭 未実装 | — |
+> | **P2** link graph & provenance (`src/linkGraph.ts` / `trace_sources` に `depth`・`direction`・`resolved_outgoing`・`related`) | ✅ 実装済み | Unreleased |
 > | **P3** `get_context` | 🔭 未実装 | — |
 > | **P4** project memory (`get_project_state` / fetch sectioning) | 🔭 未実装 | — |
 > | **P5** 評価 & tuning | 💭 未着手 | — |
@@ -388,6 +388,25 @@ vault DATA であり、package への包含は指示でも承認でもなく ret
 純減方向。
 
 ### D-4. linkGraph の仕様 (P2)
+
+> **実装済み** (`src/linkGraph.ts` / `tests/linkGraph.test.ts`)。以下は仕様であり、
+> **実装時に確定した点・未決のまま残した点**を各所に追記してある。
+>
+> 確定: node の key は **frontmatter `id` ではなく path** (D-4 の `outgoing(id)` 表記に対する
+> 訂正)。`id` は untrusted vault content で、INV-2 が既に squatting を fail closed にしている値
+> なので、グラフの同一性をそこに載せると 1 枚のノートが他ノートの edge を奪える。
+> `resolved_outgoing` は `target_path` (サーバ所有 = 追う handle) と `target_id` (citation 互換)
+> の**両方**を返す。多ルートでは**暗黙形は自ルート内のみ**で解決し、ルートを跨ぐのは明示
+> `<root>:` 形だけ (ルート名は config 由来でノート本文が名乗れない)。
+>
+> ⚠️ **未決 (`D-G3-SUBSET-VIA-SKIP`)**: 下の「引数なし = 全体集合」という含意は **#114 以降
+> 成り立たない**。walk は到達不能 entry (broken symlink / unreadable directory / 恒久的な
+> 読取失敗) を skip して続行し、**stderr には出るが戻り値には出ない**。本 PR は
+> **fail closed にしていない** — それは #114 が捨てた「1 entry で read plane 全体が停止」の
+> 復活であり、graph はそれを覆す理由として read plane より弱い。必要なのは
+> `listDocuments()` 側の完全性シグナル (skip 件数 / `complete`) で、これは `VaultStore` と
+> 全呼び出し側に及ぶ**別の境界**なので本 PR の範囲外。**「prefix による除外」と同じクラスに
+> しない** — prefix は呼び出し側が選び知っているが、skip はどちらでもない。
 
 - `src/linkGraph.ts` は **fs に触れない** — **引数なしの** `listDocuments()` の結果から構築
   (INV-1 は `VaultStore` 経由で継承)。⚠️ **`pathPrefix` を渡さない。** #108 でこの引数が
