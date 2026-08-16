@@ -494,6 +494,18 @@ export function parseMarkdownSafe(raw: string): {
  * `assertWritableText` is the shared choke for the audit surface).
  */
 function assertEmittedFrontmatterWithinLimit(serialized: string): void {
+  // Same first step as assertBoundedFrontmatterBlock, and for the same reason:
+  // with no opening delimiter there is no block to measure, and scanning for a
+  // closing one anyway would find the first `\n---` in the BODY and refuse a
+  // legitimate write whose body happens to contain a horizontal rule.
+  //
+  // Unreachable today — normalizeMetadata always yields at least `tags` and
+  // `source_refs`, so gray-matter always emits a block. Kept because the guard
+  // it mirrors has it, and because "the serializer always emits frontmatter" is
+  // a property of a different function than this one.
+  if (!serialized.startsWith(FRONTMATTER_DELIMITER)) {
+    return;
+  }
   const close = serialized.indexOf("\n" + FRONTMATTER_DELIMITER, FRONTMATTER_DELIMITER.length);
   const blockLength = Buffer.byteLength(close === -1 ? serialized : serialized.slice(0, close), "utf8");
   if (blockLength > MAX_FRONTMATTER_BLOCK_BYTES) {
