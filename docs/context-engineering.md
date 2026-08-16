@@ -9,9 +9,9 @@
 > | --- | --- | --- |
 > | **P0** 正確性 (NFKC / envelope+total_count / 結果の timestamp・size / backlink 相対リンク解決 / `absolutePath` 除去) | ✅ 実装済み | v0.7.0 |
 > | **P1** 検索品質 (CJK 分かち書き / opt-in recency / path・root・日付 filter / `order` / 2 窓 snippet / `explain` / 派生テキスト cache) | ✅ 実装済み | v0.7.0 |
-> | **P2** link graph & provenance (`src/linkGraph.ts` / `trace_sources` に `depth`・`direction`・`resolved_outgoing`・`related`) | ✅ 実装済み | Unreleased |
-> | **P3** `get_context` (`src/contextEngine.ts` / `tokenEstimate` / `markdownSections` / `typeRules`) | ✅ 実装済み | Unreleased |
-> | **P4** project memory (`src/projectState.ts` / `fetch_document` の outline・sections・max_chars) | ✅ 実装済み | Unreleased |
+> | **P2** link graph & provenance (`src/linkGraph.ts` / `trace_sources` に `depth`・`direction`・`resolved_outgoing`・`related`) | ✅ 実装済み | v0.9.0 |
+> | **P3** `get_context` (`src/contextEngine.ts` / `tokenEstimate` / `markdownSections` / `typeRules`) | ✅ 実装済み | v0.9.0 |
+> | **P4** project memory (`src/projectState.ts` / `fetch_document` の outline・sections・max_chars) | ✅ 実装済み | v0.9.0 |
 > | **P5** 評価 & tuning | 💭 未着手 | — |
 >
 > **A 節・B 節は v0.6.0 時点のベースラインとして意図的に据え置く** — Gap の根拠
@@ -20,9 +20,9 @@
 > 上表の ✅ が現状の正典であり、A 節の記述はその**改修前の状態**を指す。
 >
 > **最終照合点**: D 節以降が実装と照合されたのは `5fc80e8` (2026-08-07) までで、
-> **以降 #93〜#109 が `knowledgeStore.ts` / `frontmatter.ts` / `config.ts` / `search.ts` を
-> 変更している** (G2 security remediation、その後の外部レビュー 2 巡、および #108 の
-> prefixed-search walk pruning)。D-2 の性能項だけは 2026-08-16 に訂正済み。
+> **以降 #93〜#125 の 17 本が `knowledgeStore.ts` / `frontmatter.ts` /
+> `config.ts` / `search.ts` を変更している** (G2 security remediation、その後の外部レビュー
+> 2 巡、#108 の prefixed-search walk pruning、そして P2/P3/P4 そのもの)。D-2 の性能項だけは 2026-08-16 に訂正済み。
 > **P2 以降に着手するときは、本文書の指示を現在のコードに対して再検証してから使う** —
 > 照合されていない指示は、正しく見えても現在の実装を指していない。
 > ⚠️ 実例: D-2 の訂正自体が **2 日で 1 度陳腐化した** (#106 の 4 要素 → #108 で `dev` を
