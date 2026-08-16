@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   buildContext,
   LINK_DISTANCE_DECAY,
+  MAX_OMITTED_ENTRIES,
   MAX_DOCUMENT_BUDGET_SHARE,
   MAX_GRAPH_DEPTH,
   MAX_TOKEN_BUDGET,
@@ -164,6 +165,85 @@ describe("get_context stays inside its budget", () => {
     expect(new Set(result.chunks.map((chunk) => chunk.path)).size).toBeGreaterThan(1);
   });
 
+  it("bounds the omitted list, and says how many omissions there really were", async () => {
+    // ⚠️ `token_budget` was a bound on the CHUNKS and not on the response. A
+    // note carrying thousands of headings splits into thousands of sections,
+    // and every one rejected after the caps appended another omission object —
+    // a few hundred tokens of context wrapped in hundreds of kilobytes of
+    // refusals, driven entirely by vault content.
+    const manyHeadings = Array.from({ length: 2000 }, (_, index) => `## alpha ${index}\n\ntext ${index}`).join("\n\n");
+    const result = await build([note("notes/huge.md", manyHeadings)], {
+      query: "alpha",
+      graph_depth: 0,
+      token_budget: MIN_TOKEN_BUDGET
+    });
+
+    // One document, one reason, one entry — not one per rejected section.
+    expect(result.omitted).toHaveLength(1);
+    expect(result.omitted[0].reason).toBe("budget");
+    expect(result.chunks.length).toBeGreaterThan(0);
+  });
+
+  it("caps the omitted list and reports the count it was capped from", async () => {
+    // The other half: with more distinct documents than the cap, the list is a
+    // sample and `omitted_count` is what says so — the job `total_count` does
+    // for search results.
+    //
+    // ⚠️ The candidates have to come through EXPANSION, not from the seed
+    // search: `SEED_LIMIT` is 40, so a query alone can never produce more than
+    // 40 omissions and a test built that way would assert a cap of 50 against a
+    // set that cannot reach it. Measured — the first version topped out at 37.
+    const seeds = Array.from({ length: 30 }, (_, index) =>
+      note(`notes/seed-${index}.md`, `alpha ${index}\n[[notes/leaf-${index}-a]]\n[[notes/leaf-${index}-b]]`)
+    );
+    const leaves = seeds.flatMap((_, index) => [
+      note(`notes/leaf-${index}-a.md`, `leaf a ${index} ${"body ".repeat(200)}`),
+      note(`notes/leaf-${index}-b.md`, `leaf b ${index} ${"body ".repeat(200)}`)
+    ]);
+
+    const result = await build([...seeds, ...leaves], {
+      query: "alpha",
+      graph_depth: 1,
+      token_budget: MIN_TOKEN_BUDGET
+    });
+
+    expect(result.total_candidates).toBeGreaterThan(MAX_OMITTED_ENTRIES);
+    expect(result.omitted.length).toBe(MAX_OMITTED_ENTRIES);
+    expect(result.omitted_count).toBeGreaterThan(MAX_OMITTED_ENTRIES);
+  });
+
+  it("ranks by what a chunk actually costs, framing included", async () => {
+    // ⚠️ The greedy order divided by TEXT tokens while the packer charged text
+    // plus framing, which made a two-token chunk look ~20x more efficient than
+    // it is. With enough small chunks ahead of it, the one substantial section
+    // arrives at an almost-empty budget and gets cut.
+    //
+    // Separate documents, not one document split, so the per-document share —
+    // which already limits the one-note version of this — is not what decides it.
+    // Measured, because the two caps interact and a guessed fixture proves
+    // nothing: the substantial chunk costs 577 (537 text + framing) and each
+    // tiny one costs 42 (2 + framing). The budget is 1500, so the per-document
+    // share is 600 — enough for the substantial chunk WHOLE, which is what makes
+    // "truncated" the observable difference rather than an artifact of that cap.
+    // Ordered by full cost it goes first and fits; ordered by text alone the 25
+    // tiny chunks (1050) go first and leave it 410 tokens of room for 537.
+    const budget = 1500;
+    const documents = [
+      note("notes/substantial.md", `alpha\n${"detailed sentence about alpha. ".repeat(60)}`, { title: "Alpha Guide" }),
+      // ⚠️ Distinct bodies. Twenty-five notes reading `alpha` are twenty-five
+      // copies, so content dedup removed twenty-four of them and the fixture
+      // never had enough small chunks to crowd anything out — it passed under
+      // both orderings, which is a fixture that proves nothing.
+      ...Array.from({ length: 25 }, (_, index) => note(`notes/tiny-${index}.md`, `alpha ${index}`))
+    ];
+
+    const result = await build(documents, { query: "alpha", graph_depth: 0, token_budget: budget });
+    const substantial = result.chunks.find((chunk) => chunk.path === "notes/substantial.md");
+
+    expect(substantial).toBeDefined();
+    expect(substantial?.truncated).toBe(false);
+  });
+
   it("says when a chunk was cut instead of cutting it silently", async () => {
     const documents = [note("notes/huge.md", `alpha\n${"alpha paragraph. ".repeat(6000)}`)];
     const result = await build(documents, { query: "alpha", token_budget: MIN_TOKEN_BUDGET, graph_depth: 0 });
@@ -214,6 +294,42 @@ describe("get_context provenance", () => {
     expect(result.chunks.find((chunk) => chunk.path === "notes/b.md")?.relationship).toBe("seed");
   });
 
+  it("scores a source ref against the seed that named it, not against a floor", async () => {
+    // ⚠️ This was a fixed 0.4, and the security note asserted such a reference
+    // "cannot outrank the query". That was false: seed scores are normalized
+    // against the best hit, so a weak match scores far below 0.4 — and
+    // `source_refs` is patch-writable frontmatter, so a note could put its own
+    // chosen document above real query matches and spend budget before them.
+    // ⚠️ Compare TWO references, one cited by a strong seed and one by a weak
+    // one. Comparing a reference against its own seed does not reach the guard:
+    // a referenced note does not carry the query term, so `termDensity` floors
+    // its chunk score at a tenth — measured, that left the fixed 0.4 below the
+    // seed anyway and the test passed with the defect in place.
+    const scored = [
+      // Strong: the term is in the title as well as the body.
+      note("notes/strong.md", "alpha alpha alpha alpha", {
+        title: "Alpha Guide",
+        frontmatter: { source_refs: ["notes/ref-of-strong.md"] }
+      }),
+      // Weak: one body occurrence.
+      note("notes/weak.md", "alpha", { frontmatter: { source_refs: ["notes/ref-of-weak.md"] } }),
+      note("notes/ref-of-strong.md", "a note cited by the strong match"),
+      note("notes/ref-of-weak.md", "a note cited by the weak match")
+    ];
+
+    const result = await build(scored, { query: "alpha", graph_depth: 1, token_budget: 8000 });
+    const scoreOf = (path: string) => result.chunks.find((chunk) => chunk.path === path)?.score ?? 0;
+
+    expect(scoreOf("notes/ref-of-strong.md")).toBeGreaterThan(0);
+    expect(scoreOf("notes/ref-of-weak.md")).toBeGreaterThan(0);
+    // A reference is worth a FRACTION of whatever cited it, so the same
+    // reference weight applied to a weaker seed has to come out lower. A fixed
+    // floor makes these two equal, which is the defect.
+    expect(scoreOf("notes/ref-of-strong.md")).toBeGreaterThan(scoreOf("notes/ref-of-weak.md"));
+    // And neither can overtake the query's own best match.
+    expect(scoreOf("notes/ref-of-strong.md")).toBeLessThan(scoreOf("notes/strong.md"));
+  });
+
   it("carries the server-owned path alongside the self-declared id", async () => {
     const declared = [note("notes/seed.md", "alpha topic", { id: "self-declared-id" })];
     const result = await build(declared, { query: "alpha", graph_depth: 0 });
@@ -238,6 +354,26 @@ describe("get_context deduplication", () => {
     ];
     const result = await build(documents, { query: "alpha", graph_depth: 0, token_budget: 8000 });
     expect(result.chunks).toHaveLength(1);
+  });
+
+  it("does not treat two notes as copies just because their case differs", async () => {
+    // ⚠️ The fingerprint used the SEARCH normalizer, which folds NFKC and
+    // lowercases. That is right for matching and wrong for identity: `Foo` and
+    // `foo` are the same query and different documents, and for code,
+    // identifiers, paths and config values the difference is the content. One
+    // of the two was being reported as a duplicate of the other.
+    const documents = [
+      note("notes/upper.md", "alpha CONST_NAME = Foo"),
+      note("notes/lower.md", "alpha const_name = foo"),
+      // Same split, one more axis: half-width and full-width are folded
+      // together by NFKC and are genuinely different text.
+      note("notes/wide.md", "alpha ＭＣＰ"),
+      note("notes/narrow.md", "alpha MCP")
+    ];
+
+    const result = await build(documents, { query: "alpha", graph_depth: 0, token_budget: 8000 });
+    expect(result.chunks).toHaveLength(4);
+    expect(result.omitted).toEqual([]);
   });
 
   it("keeps two notes that genuinely differ", async () => {

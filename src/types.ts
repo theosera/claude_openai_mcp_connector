@@ -319,7 +319,20 @@ export interface ContextPackage {
     est_tokens_used: number;
   };
   chunks: ContextChunk[];
+  /**
+   * Candidates that did not make it, one entry per document per reason, capped
+   * at `MAX_OMITTED_ENTRIES`. Read `omitted_count` to know whether this list is
+   * the whole story.
+   */
   omitted: OmittedContext[];
+  /**
+   * How many omissions there were in total.
+   *
+   * ⚠️ Present because the list is capped, and a capped list that does not say
+   * so reintroduces exactly the ambiguity `omitted` exists to remove — the same
+   * job `total_count` does for search results.
+   */
+  omitted_count: number;
   total_candidates: number;
 }
 

@@ -56,6 +56,20 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   data and that inclusion is a retrieval outcome, never an endorsement; a
   fixture pins that an injected note passes through it inert.
 
+  Four properties came out of review rather than out of the design, and three
+  of them contradicted a claim this entry originally made. `omitted[]` is folded
+  to one entry per document per reason and capped, with `omitted_count`
+  reporting the true total — it was unbounded, so a note carrying thousands of
+  headings could answer a 500-token request with hundreds of kilobytes of
+  refusals, which made `token_budget` a bound on the chunks and not on the
+  response. A `source_ref` is scored as a **fraction of the seed that named it**
+  rather than at a fixed 0.4 — seed scores are normalized, so a weak match
+  scores below that floor, and a note could put its own chosen document above
+  real query matches through patch-writable frontmatter. Content dedup
+  fingerprints on **NFC**, not the search path's NFKC-and-lowercase, which was
+  treating `Foo` and `foo` as the same document. And the greedy order divides by
+  the **full** chunk cost, framing included, which it was already charging.
+
   ⚠️ **Recency is applied in exactly one place — search — and this deviates from
   the design note on purpose.** The proposal sketches a recency factor inside
   the packer's fuse stage. Implemented literally, that subtracted search's own

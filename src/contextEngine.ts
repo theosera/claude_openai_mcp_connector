@@ -66,8 +66,19 @@ export const SEED_LIMIT = 40;
 export const LINK_DISTANCE_DECAY = 0.6;
 /** Score for a document pulled in only because it shares the requested project. */
 export const SAME_PROJECT_BASE_SCORE = 0.15;
-/** Score for a document pulled in as a seed's declared source ref. */
-export const SOURCE_REF_BASE_SCORE = 0.4;
+/**
+ * Weight applied to the ORIGINATING SEED's score for a document it names in
+ * `source_refs` — a multiplier, not a floor.
+ *
+ * ⚠️ It was a fixed 0.4, and that was wrong in a way this module's own security
+ * note asserted was impossible. Seed scores are normalized against the best hit,
+ * so a weak match can score 0.05; a constant 0.4 put a note's self-authored
+ * reference ABOVE real query matches and let it spend budget before them.
+ * `source_refs` is patch-writable frontmatter, so that is a note choosing its
+ * own rank by proxy. Scaling by the seed reproduces the rule link expansion
+ * already follows: a reference is worth a fraction of whatever cited it.
+ */
+export const SOURCE_REF_WEIGHT = 0.4;
 /** How many same-project documents may join, most recent first. */
 export const SAME_PROJECT_LIMIT = 10;
 
@@ -94,6 +105,21 @@ export const MAX_DOCUMENT_BUDGET_SHARE = 0.4;
  * reported as omitted instead.
  */
 export const MIN_CHUNK_TOKENS = 32;
+
+/**
+ * Ceiling on entries in `omitted[]`.
+ *
+ * ⚠️ The list was unbounded, which made `token_budget` a bound on the chunks
+ * and not on the RESPONSE — the thing the parameter is described as limiting. A
+ * note carrying ten thousand headings splits into ten thousand sections, and
+ * every one rejected after the caps appended another object: a few hundred
+ * tokens of context wrapped in hundreds of kilobytes of refusals, driven
+ * entirely by vault content. Entries are now folded to one per document per
+ * reason (that note contributes ONE), and the list is capped on top of that
+ * with `omitted_count` reporting the true total — the same shape `total_count`
+ * gives search, and for the same reason: a truncated list has to say so.
+ */
+export const MAX_OMITTED_ENTRIES = 50;
 
 interface Candidate {
   document: MarkdownDocument;
@@ -133,9 +159,21 @@ function termDensity(text: string, terms: readonly { text: string }[]): number {
   return Math.max(0.1, present / terms.length);
 }
 
+/**
+ * Fingerprint for "these two notes are the same text".
+ *
+ * ⚠️ NFC and whitespace, NOT the search path's `normalizeForMatch`. That folds
+ * NFKC and lowercases, which is right for MATCHING and wrong for IDENTITY: it
+ * makes `Foo` and `foo` the same document, and half-width and full-width the
+ * same document, so two genuinely different notes — code, identifiers, paths,
+ * config values — would have one silently reported as a duplicate of the other.
+ * The two normalizations exist for different jobs, and this is the job that has
+ * to preserve identity: the same split `pathSafety`'s NFC keeps from
+ * `searchText`'s NFKC.
+ */
 function contentFingerprint(body: string): string {
   return createHash("sha256")
-    .update(compactWhitespace(normalizeForMatch(body)))
+    .update(compactWhitespace(body.normalize("NFC")))
     .digest("hex");
 }
 
@@ -313,11 +351,11 @@ export async function buildContext(
     // user did not ask for, which is the ordinary INV-5 position: it arrives as
     // labelled, inert data with `relationship: "source_ref"` saying exactly how
     // it got there.
-    for (const path of seedScores.keys()) {
+    for (const [path, base] of seedScores) {
       for (const reference of byPath.get(path)?.frontmatter.source_refs ?? []) {
         const target = byPath.get(reference);
         if (target) {
-          consider(target, SOURCE_REF_BASE_SCORE, "source_ref");
+          consider(target, base * SOURCE_REF_WEIGHT, "source_ref");
         }
       }
     }
@@ -334,7 +372,15 @@ export async function buildContext(
   }
 
   // ── 3. Fuse (content dedup) ────────────────────────────────────────────────
-  const omitted: OmittedContext[] = [];
+  // One entry per (document, reason). A document split into thousands of
+  // sections is one omission, not thousands of identical ones.
+  const omissions = new Map<string, OmittedContext>();
+  const omit = (document: MarkdownDocument, reason: OmittedContext["reason"]): void => {
+    const key = `${document.relativePath}\u0000${reason}`;
+    if (!omissions.has(key)) {
+      omissions.set(key, { id: document.id, title: document.title, reason });
+    }
+  };
   const seenContent = new Map<string, string>();
   const fused: Candidate[] = [];
   for (const candidate of [...candidates.values()].sort(
@@ -343,7 +389,7 @@ export async function buildContext(
     const fingerprint = contentFingerprint(candidate.document.body);
     const first = seenContent.get(fingerprint);
     if (first !== undefined) {
-      omitted.push({ id: candidate.document.id, title: candidate.document.title, reason: "duplicate" });
+      omit(candidate.document, "duplicate");
       continue;
     }
     seenContent.set(fingerprint, candidate.document.relativePath);
@@ -378,8 +424,14 @@ export async function buildContext(
   // ── 5. Pack ────────────────────────────────────────────────────────────────
   // Greedy by score per token. Ties break on path then section index so the same
   // vault and the same query produce the same package on every run.
+  // ⚠️ Divide by the FULL cost a chunk charges, framing included — the same
+  // number the packing loop spends below. Dividing by text alone made a
+  // 5-token chunk look eight times more efficient than it is, so a note split
+  // into many short sections could win the budget on metadata and crowd out the
+  // sections that carry the answer.
+  const chunkCost = (chunk: PackableChunk): number => estimateTokens(chunk.text) + CHUNK_JSON_OVERHEAD_TOKENS;
   packable.sort((a, b) => {
-    const byDensity = b.score / Math.max(estimateTokens(b.text), 1) - a.score / Math.max(estimateTokens(a.text), 1);
+    const byDensity = b.score / chunkCost(b) - a.score / chunkCost(a);
     if (byDensity !== 0) {
       return byDensity;
     }
@@ -399,7 +451,7 @@ export async function buildContext(
     const documentSpent = spentPerDocument.get(path) ?? 0;
     const room = Math.min(documentCap - documentSpent, budget - spent) - CHUNK_JSON_OVERHEAD_TOKENS;
     if (room < MIN_CHUNK_TOKENS) {
-      omitted.push({ id: chunk.candidate.document.id, title: chunk.candidate.document.title, reason: "budget" });
+      omit(chunk.candidate.document, "budget");
       continue;
     }
     const whole = estimateTokens(chunk.text);
@@ -440,7 +492,8 @@ export async function buildContext(
       est_tokens_used: spent
     },
     chunks,
-    omitted,
+    omitted: [...omissions.values()].slice(0, MAX_OMITTED_ENTRIES),
+    omitted_count: omissions.size,
     total_candidates: candidates.size
   };
 }
