@@ -51,16 +51,71 @@ const SCAN_RETRY_BASE_MS = 100;
 const TRANSIENT_FS_CODES = new Set(["EAGAIN", "EMFILE", "ENFILE"]);
 
 /**
- * Ceiling on retained parsed text, counted in UTF-16 characters across every
- * cached body and its two derived copies.
+ * Default ceiling on retained parsed text, counted in UTF-16 characters across
+ * every cached body and its two derived copies.
  *
- * 24 million characters is roughly 24 MB of source text held as ~72 MB of
- * strings once the folded and compacted copies are counted — comfortably above
- * any single query's working set on the vaults this serves (measured: 2,891
- * notes / 48.3 MB on disk), so a steady-state workload never evicts, while a
- * vault that outgrows memory degrades into re-parsing instead of dying.
+ * ⚠️ The unit is the whole point of this number, and the first value chosen for
+ * it was reasoned in a different one. 24,000,000 was set against "48.3 MB on
+ * disk" as the working set to stay above; what the cache actually counts is
+ * `body + foldedBody + compactBody` in CHARACTERS, which on that same vault is
+ * 80.9 million — 3.37x the cap. So one full scan did not fit, and because every
+ * read path in this class enumerates the whole vault (`fetch` and `search` both
+ * go through `listDocuments`), the entries evicted during a sweep were exactly
+ * the ones the next sweep reached first. The cache did not shrink; it stopped
+ * working.
+ *
+ * Measured on the reference vault, 2,894 notes / 48.6 MB on disk:
+ *
+ *     body characters                27,217,461
+ *     + foldedBody + compactBody     53,675,452   (~1.97x the body)
+ *     = what cacheSet counts         80,892,913
+ *
+ * and the cost of missing it, same vault, same probe:
+ *
+ *     warm full scan     91 ms  ->  689 ms
+ *     search             150 ms ->  724 ms
+ *     heapUsed after GC  168.6 MB -> 168.3 MB   (no reduction to show for it)
+ *
+ * Two lessons are baked into the value below. Characters are not bytes: CJK
+ * costs three UTF-8 bytes and one character, so a disk figure understates a
+ * Japanese vault's character count in one direction and the derived copies
+ * overstate it in the other. And the counted total is ~3x the body, never ~1x.
+ *
+ * 192,000,000 keeps the reference vault whole with 2.4x of headroom, which is
+ * about 116 MB of source text — past that a deployment should raise
+ * MCP_DOCUMENT_CACHE_MAX_CHARS rather than discover the degradation, and the
+ * first eviction now says so on stderr.
+ *
+ * ⚠️ What this number does NOT convert to is heap, and the tempting arithmetic
+ * is wrong. Dividing one heapUsed reading (168.6 MB) by the vault's retained
+ * characters suggests ~2 bytes each and so ~400 MB at this default. Measured
+ * instead as a slope — same vault, same work, one process per budget, heapUsed
+ * after repeated forced GC:
+ *
+ *     cap  1M -> 168.2 MB      cap 48M -> 168.7 MB
+ *     cap 12M -> 168.1 MB      cap 96M -> 170.1 MB
+ *     cap 24M -> 168.5 MB      cap 192M -> 170.1 MB
+ *
+ * 191 million characters of budget move retained heap by 1.9 MB, about a
+ * hundredth of that estimate, and a scan retains ~160 MB whether the cache
+ * keeps one note or all of them (heapUsed before any scan: 8.3 MB). So on a
+ * vault this size the bound is not what governs memory — it governs whether the
+ * cache works. Treat it as a safety valve for a vault far larger than the
+ * reference one, which is the regime #116's synthetic measurement (16.9 MB of
+ * notes, heap 7.7 -> 42.7 MB) actually describes.
  */
-const DOCUMENT_CACHE_MAX_CHARS = 24_000_000;
+export const DEFAULT_DOCUMENT_CACHE_MAX_CHARS = 192_000_000;
+
+/**
+ * The reference vault's measured working set, in the unit the cache counts.
+ *
+ * Exported so the default above can be asserted against it rather than trusted:
+ * the defect this replaces was a number that looked reasonable next to a disk
+ * figure and was three times too small next to this one. A deployment larger
+ * than the reference raises MCP_DOCUMENT_CACHE_MAX_CHARS; what must not happen
+ * again is the default silently dropping below a vault this size.
+ */
+export const REFERENCE_VAULT_RETAINED_CHARS = 80_892_913;
 
 /**
  * What the parse cache watches to decide a file is unchanged.
@@ -251,6 +306,14 @@ export class KnowledgeStore implements VaultStore {
   /** Running total of `chars` across documentCache, so the bound costs no scan. */
   private cachedChars = 0;
 
+  /** Resolved once: the operator override or DEFAULT_DOCUMENT_CACHE_MAX_CHARS. */
+  private readonly documentCacheMaxChars: number;
+
+  /** So the "this vault does not fit" line is printed once per STORE (a sweep
+   *  that overflows evicts hundreds of times), not once per process — see
+   *  warnOnceAboutEviction for why a composite deliberately says it per root. */
+  private warnedAboutEviction = false;
+
   /**
    * Read through the cache, refreshing recency on a hit.
    *
@@ -298,6 +361,12 @@ export class KnowledgeStore implements VaultStore {
    * frontmatter objects and Map overhead are all outside it. That is deliberate.
    * A cache bound that tried to track real heap would be wrong in a way nobody
    * could reason about; this one is wrong by a constant factor an operator can.
+   *
+   * Evicting is not free here the way it is in a cache with point reads. Every
+   * read path enumerates the whole vault, so a vault whose sweep does not fit
+   * evicts the front of that sweep before the next one arrives at it — the miss
+   * rate goes to ~100% rather than degrading gently. That is why the first
+   * eviction says so on stderr instead of quietly costing 7x per query.
    */
   private cacheSet(key: string, entry: { signature: StatSignature; document: MarkdownDocument }): void {
     const document = entry.document;
@@ -316,8 +385,9 @@ export class KnowledgeStore implements VaultStore {
 
     // A single note bigger than the whole budget must still be servable, so the
     // loop stops at one entry rather than evicting the note just cached.
+    const limit = this.documentCacheMaxChars;
     for (const [oldestKey, oldest] of this.documentCache) {
-      if (this.cachedChars <= DOCUMENT_CACHE_MAX_CHARS || this.documentCache.size <= 1) {
+      if (this.cachedChars <= limit || this.documentCache.size <= 1) {
         break;
       }
       if (oldestKey === key) {
@@ -325,7 +395,44 @@ export class KnowledgeStore implements VaultStore {
       }
       this.documentCache.delete(oldestKey);
       this.cachedChars -= oldest.chars;
+      this.warnOnceAboutEviction(limit);
     }
+  }
+
+  /**
+   * Say once PER STORE that this vault does not fit, because the cost is not
+   * gradual.
+   *
+   * A bound that silently turns every query into a full re-parse is the kind of
+   * cap this repo has already decided not to ship quietly: if a limit changes
+   * what the work costs, it has to be visible rather than inferred from a
+   * stopwatch.
+   *
+   * ⚠️ Per store, not per process, and that is the scope rather than an
+   * oversight — an earlier draft of this promised "once per process", which the
+   * code never did. `MultiRootStore` builds one store per root, each with its
+   * own cache and its own budget, so two roots overflowing are two separate
+   * operator problems needing two separate decisions. Deduplicating across the
+   * process would drop every root after the first, which is the same
+   * discoverable-only-by-stopwatch failure this line exists to prevent. What
+   * that leaves to fix is telling them apart, so the line names its root.
+   *
+   * The name is safe to print and the path is not: `name` is an operator-chosen
+   * label that already appears in every multi-root id as a `name:path` prefix,
+   * while the skip-and-log rule keeps filesystem locations out of stderr. A
+   * single-root deployment named nothing, so its line stays unqualified.
+   */
+  private warnOnceAboutEviction(limit: number): void {
+    if (this.warnedAboutEviction) {
+      return;
+    }
+    this.warnedAboutEviction = true;
+    const which = this.config.rootName ? ` for root "${this.config.rootName}"` : "";
+    process.stderr.write(
+      `[knowledge] parse cache is smaller than this vault's working set${which} ` +
+        `(cap ${limit} characters), so scans will re-parse. ` +
+        `Raise MCP_DOCUMENT_CACHE_MAX_CHARS if this process has the memory.\n`
+    );
   }
 
   // Promise-chain serializer for the overwriting write path. Each apply awaits
@@ -336,6 +443,7 @@ export class KnowledgeStore implements VaultStore {
 
   constructor(config: StoreConfig) {
     this.config = config;
+    this.documentCacheMaxChars = config.documentCacheMaxChars ?? DEFAULT_DOCUMENT_CACHE_MAX_CHARS;
   }
 
   private serializeWrite<T>(op: () => Promise<T>): Promise<T> {

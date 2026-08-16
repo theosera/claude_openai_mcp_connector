@@ -33,6 +33,22 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The new parse-cache bound was three times too small, so it turned the cache
+  off.** The cap counts `body + foldedBody + compactBody` in UTF-16 characters,
+  but 24,000,000 was chosen against a vault's size **on disk** — two different
+  units. Measured on the reference vault (2,894 notes, 48.6 MB on disk): 27.2M
+  body characters plus 53.7M of derived copies is **80.9M**, so a single scan
+  never fit. Every read path here enumerates the whole vault, so the entries
+  evicted during a sweep were the ones the next sweep reached first: a warm full
+  scan went **91 ms → 689 ms** and `search` **150 ms → 724 ms**, with retained
+  heap unchanged after a forced GC (168.6 MB → 168.3 MB). The default is now
+  192,000,000 — the measured working set with 2.4x of headroom — overridable
+  with **`MCP_DOCUMENT_CACHE_MAX_CHARS`** for a larger vault, and the first
+  eviction now says on stderr that scans will re-parse instead of leaving that
+  to a stopwatch. The eviction tests no longer inherit the shipped default:
+  they state their own budget, so re-sizing it cannot quietly stop them from
+  evicting.
+
 - **The parse cache had no bound, no eviction, and no delete path.** Every note
   read was retained for the life of the process — body plus the two derived
   copies the search path needs — so a note deleted from the vault kept its parse
