@@ -33,6 +33,28 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **stdio registered the Skill write tools for anyone who reserved the subtree.**
+  `MCP_SKILLS_SUBDIR` exists so that general document writes cannot reach the
+  Skill subtree (INV-8), and operators are told to set it on every write-capable
+  process — but stdio also read its presence as permission to register
+  `plan_skill_create` / `apply_planned_skill_create`. Following the documented
+  guidance therefore armed every interactive local session with them. Registering
+  them now needs **`MCP_STDIO_ALLOW_SKILL_WRITE`** (default off), matching
+  `MCP_HTTP_ALLOW_SKILL_WRITE` on HTTP and the audit surface's existing split.
+  The reservation is unaffected, and the startup line's `skills` field now
+  reports three states (`off` / `reserved-only` / `on`) for the same reason
+  `audit` does.
+
+- **A write could produce a note the server could no longer read or repair.**
+  The 8 KiB frontmatter cap was enforced when parsing a note and not when
+  emitting one, so a patch that satisfied every allowlist and type rule could
+  serialize past it. The note was written, then indexed body-only — its title
+  falling back to the basename and any frontmatter `id` dropping out, moving its
+  identity to its path — and `plan_document_update` could not touch it
+  afterwards, because planning parses with the strict reader. The limit is now
+  asserted on the serializer's output, which every writer passes through, and the
+  refusal happens at plan time so no diff is approved that cannot be applied.
+
 - **Staged two-step plans now expire after seven days instead of living
   forever.** A plan file is deleted only when it is *applied*, so one the user
   declined — or one whose conversation simply ended — sat on disk for the life of
