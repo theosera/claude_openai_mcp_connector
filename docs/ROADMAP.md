@@ -157,7 +157,7 @@ below:
   earlier with P0. Entirely additive: unset env and unset parameters reproduce
   0.7.0 ranking exactly. Pinned by `tests/search.test.ts`.
 
-### Context engineering layer — get_context / link graph / project state 🔭
+### Context engineering layer — get_context / link graph / project state ✅
 
 Evolve the read plane from "search API" to "context gateway": one call should
 return a token-budgeted, provenance-carrying context package instead of forcing
@@ -167,6 +167,13 @@ anti-forgery analysis, reject list) in the
 15 → 17; **no new write surface in any phase** (guiding priority #3), and
 per-agent "context profiles" are request parameters only — never server-side
 client detection, per the [appendix's anti-router ruling](#appendix--future-uses-of-the-authenticated-client_id).
+
+**Shipped in 0.9.0.** Every slice landed: P0/P1 (search), P2 (`8e4ec7e`), P3
+(`9e2c914`), P4 (`de9021c`). ⚠️ **The net tool count has reached the documented
+cap** — `registerTool` is called **17** times and both reserved slots are spent,
+so the next tool is a decision to *exceed* the cap rather than to spend a
+reservation. The staged-plan item under continuity below costed `discard_plan`
+against those reservations and is repriced accordingly.
 
 - **P2 — link graph & provenance** ✅: `src/linkGraph.ts` built from an
   **unprefixed** `listDocuments()` (fs access stays behind the existing guard
@@ -1084,7 +1091,7 @@ _team / enterprise_ adoption rather than the core individual use case.
 | **Third-party penetration test**                             | Self-review + AI review have limits; an independent test is needed before security claims are load-bearing.                                                                                                                                                                                                                                                        | near-term 🔭                                                                                                                                                                                                                        |
 | **Audit log**                                                | No after-the-fact record of who searched / fetched / wrote what.                                                                                                                                                                                                                                                                                                   | near-term 🔭                                                                                                                                                                                                                        |
 | **macOS CI**                                                 | The primary deployment target is macOS, and CI runs only on Linux. Case-insensitive-filesystem behaviour is therefore **asserted nowhere**: the `(dev, ino)` root-containment comparison exists precisely because `/vault` and `/Vault` are one directory on APFS, and a test for that shape is vacuous on ext4. NFD normalisation (HFS+) is in the same position. | near-term 🔭                                                                                                                                                                                                                        |
-| **Coverage thresholds**                                      | 374 tests is a count, not a floor. Nothing fails when a new branch arrives untested, which is the condition the reverse-verification rule exists to catch by hand — a threshold makes the cheap half automatic.                                                                                                                                                    | near-term 🔭                                                                                                                                                                                                                        |
+| **Coverage thresholds**                                      | 564 tests is a count, not a floor. Nothing fails when a new branch arrives untested, which is the condition the reverse-verification rule exists to catch by hand — a threshold makes the cheap half automatic.                                                                                                                                                    | near-term 🔭                                                                                                                                                                                                                        |
 | **No connection limit or rate limit on the HTTP endpoint**   | `http.createServer` is left at its defaults, and this repo sets nothing: no `maxConnections`, and no rate limit on `/mcp` (the two limiters cover only the public OAuth endpoints). ⚠️ **Node's own timeout defaults DO apply** — `requestTimeout` 300 s, `headersTimeout` min(60 s, requestTimeout), `keepAliveTimeout` 5 s; the one genuinely unset is `server.timeout` (socket inactivity, default 0). The ceiling on concurrent agents is therefore the process file-descriptor limit, not anything this repo chooses — and an unprefixed read still walks the whole vault at `MCP_SCAN_CONCURRENCY` handles, so it is that limit divided by the scan width. | near-term 🔭                                                                                                                                                                                                                        |
 | **Filesystem fault injection**                               | Write paths are now atomic, but no test exercises `ENOSPC`, `EIO`, or a kill between temp write and rename. The recovery behaviour is argued in comments and unverified in CI.                                                                                                                                                                                     | mid-term 💭                                                                                                                                                                                                                         |
 | **Fuzz / property tests**                                    | `pathSafety` and the frontmatter parser take adversarial input and are pinned by enumerated cases only, so they are strong exactly where someone already thought to look. Property tests would search the space the enumeration misses.                                                                                                                            | mid-term 💭                                                                                                                                                                                                                         |
@@ -1247,10 +1254,13 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       locks the client out with no way to clear the set — the only way to remove
       a plan is still to perform the operation that was just declined. A
       `discard_plan` tool fixes both, and it is a **tool-budget decision**, not a
-      free one: `registerTool` is called 15 times and `docs/context-engineering.md`
-      caps the net surface at 15 → 17 with both slots already named
-      (`get_context`, `get_project_state`). Spending a budgeted slot inside a bug
-      fix is the drift the ROADMAP firing rule exists to prevent.
+      free one. ⚠️ **As of 0.9.0 the budget is spent**: `registerTool` is called
+      **17** times and `docs/context-engineering.md` caps the net surface at
+      15 → 17, with both reserved slots taken by `get_context` (`9e2c914`) and
+      `get_project_state` (`de9021c`). Adding `discard_plan` is therefore a
+      decision to **exceed** the documented cap, not to spend a reservation — a
+      strictly heavier call than when this item was written. Spending a budgeted
+      slot inside a bug fix is the drift the ROADMAP firing rule exists to prevent.
 
       For comparison, the OAuth store has capped + pruned collections *and*
       orphan pruning, so the asymmetry between the two state stores is real and
@@ -1417,8 +1427,9 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       two-window snippets, `explain`, derived-text cache. ✅ P2: `src/linkGraph.ts`
       (path-facts-only resolution, `title` / `aliases` as candidates only) and
       `trace_sources` gaining `depth` / `direction` / `resolved_outgoing` /
-      `related` under bounded traversal. Next in this track is **P3
-      (`get_context`)** under the context-engineering layer above.
+      `related` under bounded traversal. ✅ **P3 (`get_context`, `9e2c914`) and
+      P4 (`get_project_state`, `de9021c`) have since landed in 0.9.0**, closing
+      the context-engineering layer above — this track has no next slice.
 - [x] **Exact-path document create** — ✅ two-step full-file plan, explicit
       target-path confirmation (`はい` + free text), confirmed-path echo at
       apply, content-integrity/no-overwrite checks, and MCP E2E coverage.
