@@ -29,6 +29,18 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   rides the parse cache alongside the derived search text, since `trace_sources`
   ran the extractors over every note in the vault on every call.
 
+  Two shapes of the response are worth knowing before reading it. **`raw` is not
+  a key**: a link is resolved once per _syntax_ it was written in, because
+  `[[foo]]` names the root-relative `foo.md` while `[x](foo)` names one relative
+  to the linking note's own directory — so a note writing both forms of one
+  string gets both edges, and the entries collapse only when they agree. And
+  **`outgoing_links` and `resolved_outgoing` always describe one snapshot**:
+  both are derived from the graph, whose view of the traced note is the vault
+  listing's, falling back to the fetched copy when the walk did not list it —
+  since #114 a note `fetch` can read may be skipped by the walk, and answering
+  "this note writes no links" would be indistinguishable from a note that
+  writes none.
+
 ### Changed
 
 - **A wikilink no longer resolves through a note's `title` or `aliases`, even

@@ -247,6 +247,27 @@ describe("linkGraph resolution (P2-D0: path facts only)", () => {
     expect(links[0].target_path).toBe("notes/alpha.md");
   });
 
+  it("still reports the broken wikilink when the Markdown link of the same text works", () => {
+    // The third shape, between the two above: they do not agree and they do not
+    // both resolve. `[x](foo)` finds dir/foo.md while `[[foo]]` finds neither an
+    // exact `foo.md` nor a unique basename. The note really does contain a
+    // broken wikilink, so collapsing it into the resolved entry would hide a
+    // defect in the vault behind a link that happens to share its text.
+    const graph = buildLinkGraph([
+      note("dir/source.md", "[[foo]]\n[x](foo)"),
+      note("dir/foo.md"),
+      note("elsewhere/foo.md")
+    ]);
+
+    const links = graph.outgoing("dir/source.md").filter((link) => link.raw === "foo");
+    expect(links).toHaveLength(2);
+    expect(links.filter((link) => link.resolved).map((link) => link.target_path)).toEqual(["dir/foo.md"]);
+    expect(links.find((link) => !link.resolved)?.candidates?.map((candidate) => candidate.path)).toEqual([
+      "dir/foo.md",
+      "elsewhere/foo.md"
+    ]);
+  });
+
   it("matches a decomposed wikilink against a composed filename", () => {
     // Enumerated paths are NFC (`relativeToRoot`); an editor on a decomposing
     // filesystem writes the link decomposed. Markdown links already normalized
@@ -575,14 +596,22 @@ describe("linkGraph direction and provenance", () => {
     expect(traced.outgoing_links).toEqual(["new"]);
   });
 
-  it("reports no links at all when the traced note left the vault mid-call", () => {
+  it("falls back to the fetched body when the walk did not list the traced note", () => {
+    // The listing wins above, but it is not always there to win: since #114 the
+    // walk skips entries it cannot reach and carries on, so a note `fetch` just
+    // read can be missing here — routine on an iCloud-backed vault where a file
+    // may be dataless for one of the two reads. Deriving from the absent node
+    // would answer "this note writes no links", which is indistinguishable from
+    // a note that writes none and is not what was fetched.
     const fetched = note("index.md", "[[old]]");
-    const traced = traceThroughGraph(fetched, [note("old.md")]);
+    const traced = traceThroughGraph(fetched, [note("old.md"), note("other.md", "[[index]]")]);
 
-    expect(traced.outgoing_links).toEqual([]);
-    expect(traced.resolved_outgoing).toEqual([]);
-    // The header still describes what was fetched, which is what was asked for.
+    expect(traced.outgoing_links).toEqual([...new Set(traced.resolved_outgoing.map((link) => link.raw))].sort());
+    expect(traced.outgoing_links).toEqual(["old"]);
+    expect(traced.resolved_outgoing[0].target_path).toBe("old.md");
     expect(traced.document.relativePath).toBe("index.md");
+    // Backlinks still come from the vault the walk did see.
+    expect(traced.backlinks.map((node) => node.relativePath)).toEqual(["other.md"]);
   });
 
   it("returns nothing for a path the graph does not hold", () => {

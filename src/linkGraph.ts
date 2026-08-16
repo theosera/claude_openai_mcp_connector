@@ -555,7 +555,6 @@ export function traceThroughGraph(
   documents: readonly MarkdownDocument[],
   options: { depth?: number; direction?: LinkDirection } = {}
 ): TraceResult {
-  const graph = buildLinkGraph(documents);
   const key = document.relativePath;
   const depth = options.depth ?? 1;
 
@@ -567,6 +566,18 @@ export function traceThroughGraph(
   // the two arrays describe different text, which is the one correspondence the
   // response promises. Deriving the raw strings from the labelled links makes
   // them line up by construction instead of by timing.
+  //
+  // The listing is the graph's own view and wins whenever it holds the note.
+  // But it does not always hold it: since #114 the walk skips entries it cannot
+  // reach and carries on, and on the iCloud-backed vaults this server is aimed
+  // at a note can be unreadable for the walk in the same call `fetch` read it.
+  // Deriving from an absent node would then answer "this note writes no links"
+  // — indistinguishable from a note that genuinely writes none, and wrong.
+  // Falling back to the fetched copy keeps both fields on ONE snapshot while
+  // refusing to report an emptiness that came from the filesystem.
+  const graph = buildLinkGraph(
+    documents.some((entry) => entry.relativePath === key) ? documents : [...documents, document]
+  );
   const resolvedOutgoing = graph.outgoing(key);
 
   const result: TraceResult = {
