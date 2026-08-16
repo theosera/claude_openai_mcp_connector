@@ -675,4 +675,80 @@ describe("server state must live outside the knowledge root", () => {
       path.join(outside, "patches")
     );
   });
+
+  // The context type rules join the same list, and for a sharper reason than the
+  // two above: the OAuth state file and the staged plans are secrets that must
+  // not be READ through the vault, while this file is configuration that must
+  // not be WRITTEN through it. A root is synced — Obsidian peers, imported
+  // clippings and the MCP write tools all reach into one — so a rules file
+  // inside would let anything that can write a note decide what the packer
+  // trusts, which is precisely what the D-7 ceiling exists to prevent.
+  const rulesEnv = (rootPath: string, rulesPath: string): NodeJS.ProcessEnv => ({
+    KNOWLEDGE_ROOT: rootPath,
+    MCP_PATCH_STATE_DIR: path.join(outside, "patches"),
+    MCP_CONTEXT_TYPE_RULES: rulesPath
+  });
+
+  it("rejects a context type-rules file inside the vault and names the root", async () => {
+    const inside = path.join(root, "config", "rules.json");
+    await fs.mkdir(path.dirname(inside), { recursive: true });
+    await fs.writeFile(inside, JSON.stringify({ rules: [] }), "utf8");
+
+    expect(() => loadConfig(rulesEnv(root, inside))).toThrow(/MCP_CONTEXT_TYPE_RULES/);
+    expect(() => loadConfig(rulesEnv(root, inside))).toThrow(/knowledge root "vault"/);
+  });
+
+  it("rejects a type-rules file reached through a symlink into the vault", async () => {
+    // The spelling-comparison miss, same as the OAuth case: the configured path
+    // shares no prefix with the root.
+    await fs.mkdir(path.join(root, "cfg"), { recursive: true });
+    await fs.writeFile(path.join(root, "cfg", "rules.json"), JSON.stringify({ rules: [] }), "utf8");
+    const link = path.join(outside, "rules-link");
+    await fs.symlink(path.join(root, "cfg"), link);
+
+    const through = path.join(link, "rules.json");
+    expect(through.startsWith(root)).toBe(false);
+    expect(() => loadConfig(rulesEnv(root, through))).toThrow(/knowledge root "vault"/);
+  });
+
+  it("loads a type-rules file outside the vault, and clamps a self-declared weight", async () => {
+    // The false-positive guard, plus the D-7 ceiling observed through the loader
+    // rather than only through the parser — a clamp applied in a module nothing
+    // wires up is not a clamp.
+    const target = path.join(outside, "rules.json");
+    await fs.writeFile(
+      target,
+      JSON.stringify({
+        rules: [
+          { name: "permanent", match: { path_prefix: "permanent/" }, weight: 2.0 },
+          { name: "tagged", match: { tag: "synthesis" }, weight: 5.0 }
+        ]
+      }),
+      "utf8"
+    );
+
+    const rules = loadConfig(rulesEnv(root, target)).contextTypeRules;
+    expect(rules?.rules.map((rule) => rule.weight)).toEqual([2.0, 1.25]);
+  });
+
+  it("fails closed on an unreadable, non-absolute or malformed rules file", async () => {
+    // Falling back to unweighted ranking would leave an operator looking at a
+    // ranking that is not the one they configured, with nothing saying so.
+    expect(() => loadConfig(rulesEnv(root, "rules.json"))).toThrow(/absolute path/);
+    expect(() => loadConfig(rulesEnv(root, path.join(outside, "absent.json")))).toThrow(/could not be read/);
+
+    const malformed = path.join(outside, "malformed.json");
+    await fs.writeFile(malformed, "{ not json", "utf8");
+    expect(() => loadConfig(rulesEnv(root, malformed))).toThrow(/not valid JSON/);
+
+    const invalid = path.join(outside, "invalid.json");
+    await fs.writeFile(invalid, JSON.stringify({ rules: [{ name: "x", match: {}, weight: 1 }] }), "utf8");
+    expect(() => loadConfig(rulesEnv(root, invalid))).toThrow(/at least one of path_prefix, root, tag/);
+  });
+
+  it("leaves the rules unset when the variable is absent", () => {
+    expect(
+      loadConfig({ KNOWLEDGE_ROOT: root, MCP_PATCH_STATE_DIR: path.join(outside, "patches") }).contextTypeRules
+    ).toBeUndefined();
+  });
 });

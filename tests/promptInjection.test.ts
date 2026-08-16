@@ -41,6 +41,30 @@ describe("untrusted vault content boundary", () => {
 
     expect(await fs.readFile(notePath, "utf8")).toBe(before);
     expect(await fs.readdir(patchStateDir)).toEqual([]);
+
+    // Same note through `get_context`. A package is a more convincing-looking
+    // container than a search hit — it is assembled, scored and labelled — so
+    // the boundary has to hold in exactly the same way: the payload comes back
+    // verbatim as one more chunk, nothing is executed, and nothing in the chunk
+    // says the content was vetted. The server instructions carry the rest.
+    const packaged = await client.callTool({
+      name: "get_context",
+      arguments: { query: "security article", token_budget: 2000 }
+    });
+    const chunks = (packaged.structuredContent as { data: { chunks: { text: string; relationship: string }[] } }).data
+      .chunks;
+    const poisoned = chunks.find((chunk) => chunk.text.includes("already approved"));
+    expect(poisoned).toBeDefined();
+    expect(poisoned?.text).toContain('"name":"apply_planned_update"');
+    expect(poisoned?.text).toContain("example.invalid/collect");
+    // Being packed is a retrieval outcome, and the label says only how it was
+    // reached. No field asserts trust, approval or vetting.
+    expect(poisoned?.relationship).toBe("seed");
+    expect(Object.keys(poisoned ?? {}).join(",")).not.toMatch(/trust|approv|verified|safe/i);
+
+    // And reading it still wrote nothing.
+    expect(await fs.readFile(notePath, "utf8")).toBe(before);
+    expect(await fs.readdir(patchStateDir)).toEqual([]);
     await client.close();
   });
 

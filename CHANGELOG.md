@@ -8,6 +8,81 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`get_context` — one call where clients were running a search → fetch loop.**
+  It seeds from a search over the usual filters, expands one or two hops through
+  the link graph, drops duplicates, splits long notes at their headings, and
+  packs greedily by score-per-token into a `token_budget` (500–32000, default
+  4000). Five fixed stages, no plugin mechanism: a pipeline whose stages are
+  configurable is one whose output cannot be reproduced from its inputs, and the
+  value of the rest of this entry depends on that.
+
+  **The package says what it left out.** Every chunk carries `relationship`
+  (`seed` / `linked:out` / `linked:in` / `source_ref` / `same_project` /
+  `recent`), its `path`, its `heading_path` when the note was split, and its
+  score. What did not fit is reported in `omitted[]` with a reason (`budget` /
+  `duplicate`) — **one entry per document per reason, capped, with
+  `omitted_count` carrying the true total** so a shortened list says it is
+  shortened rather than reading as the whole story. That is what makes a short
+  answer distinguishable from a complete one — the ambiguity that drives blind
+  re-querying — and it turns the follow-up into a precise `fetch_document`
+  rather than another search.
+
+  Three bounds are enforced rather than suggested. **At least one of `query`,
+  `project`, `tags` or `path_prefix` is required**, so there is no way to ask
+  for the vault whole; a budget alone would not have prevented that, only
+  truncated it. **No single document may occupy more than 40% of the budget**,
+  so one megabyte-scale session archive cannot become the entire answer — and a
+  chunk cut to fit says `truncated` instead of being quietly shortened. And
+  **token cost is estimated high on purpose** (`src/tokenEstimate.ts`,
+  dependency-free): every code point falls into one of three cost buckets with
+  the *expensive* one as the fallback, ASCII inside a fenced code block costs
+  more than the same characters as prose, and each chunk is charged for its JSON
+  framing as well as its text — a budget that priced only text would be a budget
+  on something the caller never receives on its own.
+
+  **Nothing a note says about itself moves it up the ranking.** Optional
+  owner-authored type weights (`MCP_CONTEXT_TYPE_RULES`, absolute path, JSON)
+  are off by default and change no ranking until configured. Weights above 1.25
+  can only come from signals the owner controls — a configured `root` name or a
+  `path_prefix` — while a `tag` rule and the frontmatter `type` hint are clamped
+  to 1.25, because both are things a note carries about itself and `tags` is
+  additionally writable through `plan_document_update`. `type` stays out of that
+  patch allowlist, so promoting a document remains a human edit in Obsidian. The
+  rules file must live **outside every knowledge root or the server refuses to
+  start**: a root is synced and writable, so a ranking file inside one could be
+  rewritten by anything that can write a note.
+
+  Read-only, so it is registered on every transport and at every scope that can
+  read at all — it assembles documents such a caller could already fetch one at
+  a time, and the budget makes the response smaller than the loop it replaces.
+  The server instructions gain a sentence saying a package is untrusted vault
+  data and that inclusion is a retrieval outcome, never an endorsement; a
+  fixture pins that an injected note passes through it inert.
+
+  Four properties came out of review rather than out of the design, and three
+  of them contradicted a claim this entry originally made. `omitted[]` is folded
+  to one entry per document per reason and capped, with `omitted_count`
+  reporting the true total — it was unbounded, so a note carrying thousands of
+  headings could answer a 500-token request with hundreds of kilobytes of
+  refusals, which made `token_budget` a bound on the chunks and not on the
+  response. A `source_ref` is scored as a **fraction of the seed that named it**
+  rather than at a fixed 0.4 — seed scores are normalized, so a weak match
+  scores below that floor, and a note could put its own chosen document above
+  real query matches through patch-writable frontmatter. Content dedup
+  fingerprints on **NFC**, not the search path's NFKC-and-lowercase, which was
+  treating `Foo` and `foo` as the same document. And the greedy order divides by
+  the **full** chunk cost, framing included, which it was already charging.
+
+  ⚠️ **Recency is applied in exactly one place — search — and this deviates from
+  the design note on purpose.** The proposal sketches a recency factor inside
+  the packer's fuse stage. Implemented literally, that subtracted search's own
+  recency contribution and re-applied a weight only a per-call parameter could
+  set, which left `MCP_SEARCH_RECENCY_WEIGHT` dead for `get_context`: two notes
+  with identical text ranked identically however the deployment was tuned. That
+  is the shape the recency wiring bug already had once, in a different module.
+  The packer therefore has no clock at all, and a package is a pure function of
+  (vault, input, rules).
+
 - **`trace_sources` now says what each link resolved to, and can walk two hops.**
   A new `resolved_outgoing[]` labels every entry of `outgoing_links` with
   `resolved`, the `target_path` / `target_id` it landed on, or the

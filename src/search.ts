@@ -26,7 +26,7 @@ export const DEFAULT_RECENCY_HALF_LIFE_DAYS = 30;
 
 const MS_PER_DAY = 86_400_000;
 
-interface QueryTerm {
+export interface QueryTerm {
   /** The term to match. */
   text: string;
   /** A whole user-typed token, as opposed to a piece of a segmented one. */
@@ -213,7 +213,13 @@ function toSearchResult(
  * ADDED to the whole token rather than replacing it, so an ASCII-only query
  * tokenizes exactly as it always did.
  */
-function tokenize(query: string): QueryTerm[] {
+/**
+ * Exported so the context packer scores sections against the SAME terms search
+ * ranked documents with. A second tokenizer would be a second CJK segmentation
+ * rule, and the one that is not on the search path is the one that rots — the
+ * shape `MCP_SEARCH_RECENCY_WEIGHT` was already dead in for three releases.
+ */
+export function tokenize(query: string): QueryTerm[] {
   const seen = new Set<string>();
   const terms: QueryTerm[] = [];
 

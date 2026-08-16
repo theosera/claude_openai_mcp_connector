@@ -442,6 +442,44 @@ describe("linkGraph traversal bounds", () => {
     expect(() => graph.neighbors("origin.md", { depth: MAX_LINK_GRAPH_DEPTH })).not.toThrow();
   });
 
+  // ⚠️ `depth` was checked here from the start and the other three bounds were
+  // not, which is worse than none of them being checked: a caller passing its
+  // own request object straight through would have `depth` refused and the rest
+  // silently honoured, so the D-4 ceilings would become client-settable through
+  // the options that LOOK like the one that is safe. `get_context` is the first
+  // caller to reach this directly, so the asymmetry stops being theoretical.
+  it("refuses a node cap that would widen the module's own", () => {
+    const graph = buildLinkGraph(fanOut(2, 1));
+    expect(() => graph.neighbors("origin.md", { depth: 1, nodeCap: MAX_RELATED_NODES + 1 })).toThrow(/nodeCap/);
+    expect(() => graph.neighbors("origin.md", { depth: 1, nodeCap: MAX_RELATED_NODES })).not.toThrow();
+  });
+
+  it("refuses a fan-out cap that would widen the module's own", () => {
+    const graph = buildLinkGraph(fanOut(2, 1));
+    expect(() => graph.neighbors("origin.md", { depth: 1, fanoutCap: MAX_EXPANSION_FANOUT + 1 })).toThrow(/fanoutCap/);
+    expect(() => graph.neighbors("origin.md", { depth: 1, fanoutCap: MAX_EXPANSION_FANOUT })).not.toThrow();
+  });
+
+  it("refuses a hub threshold that would damp less than the module's own", () => {
+    // The direction reverses here — a HIGHER threshold damps LESS — so "above
+    // the constant" is still the widening direction, and that is the one to
+    // refuse. Reading this as "bigger is stricter" would pin the opposite rule.
+    const graph = buildLinkGraph(fanOut(2, 1));
+    expect(() => graph.neighbors("origin.md", { depth: 1, hubThreshold: HUB_DEGREE_THRESHOLD + 1 })).toThrow(
+      /hubThreshold/
+    );
+    expect(() => graph.neighbors("origin.md", { depth: 1, hubThreshold: HUB_DEGREE_THRESHOLD })).not.toThrow();
+  });
+
+  it("still lets a caller tighten every bound", () => {
+    // The false-positive guard for the three above: refusing everything would
+    // satisfy them and make the options useless. Tightening is the whole point
+    // of their existing.
+    const graph = buildLinkGraph(fanOut(30, 0));
+    const tightened = graph.neighbors("origin.md", { depth: 1, nodeCap: 3, fanoutCap: 3, hubThreshold: 1 });
+    expect(tightened).toHaveLength(3);
+  });
+
   it("does not expand at all at the default depth", () => {
     const graph = buildLinkGraph(fanOut(3, 3));
 

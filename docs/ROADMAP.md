@@ -244,13 +244,48 @@ client detection, per the [appendix's anti-router ruling](#appendix--future-uses
   to the fetched copy. The record stays open for everything else: a **backlink**
   missing because some other note was skipped is still invisible, and only a
   completeness signal on `listDocuments()` can fix that.
-- **P3 — `get_context`** 🔭: deterministic 5-stage pipeline (seed search →
+- **P3 — `get_context`** ✅: deterministic 5-stage pipeline (seed search →
   link expansion → fuse/dedup → heading-level chunking → greedy
   score-per-token packing) returning a `ContextPackage` with per-chunk
   provenance and an `omitted[]` list; zero-dep CJK-aware token estimation;
   opt-in owner-controlled type weighting (`MCP_CONTEXT_TYPE_RULES`, refuses to
   load from inside a knowledge root; frontmatter self-claimed types never
   drive trust).
+
+  **Shipped**, with four things settled against the implementation rather than
+  ahead of it.
+
+  **Recency is applied in exactly one place, and it is not this one.** D-3
+  sketches a recency factor inside the fuse stage. Written literally it
+  subtracted search's own recency contribution and re-applied a weight only the
+  per-call `recency_weight` could set — which left `MCP_SEARCH_RECENCY_WEIGHT`
+  dead for `get_context`, exactly the shape #112 fixed elsewhere. The seed base
+  is therefore the whole search score, expansion inherits it, and the packer has
+  **no clock at all**: a package is a pure function of (vault, input, rules).
+  A second copy of a rule is the copy that rots.
+
+  **Dedup is keyed on the path, not on `id`** — the same reason P2 keyed the
+  link graph there. `id` is frontmatter, INV-2 already refuses to resolve on it
+  when two notes claim it, and a package deduplicated on a self-declared field
+  would let one note evict another from the answer.
+
+  **The selector requirement is a bound, not ergonomics.** `get_context()` with
+  no `query` / `project` / `tags` / `path_prefix` is refused, because a budget
+  alone would have turned "dump the vault" into "dump the first 4,000 tokens of
+  the vault" rather than preventing it.
+
+  **`truncated` exists because the 40%-per-document share is enforced.** One
+  megabyte-scale session archive would otherwise answer every query with its own
+  top section; capping it means a genuinely dominant document gets cut, and a
+  cut that is not reported is indistinguishable from a document that was short.
+
+  ⚠️ **Two guards passed their first inverse-verification run for the wrong
+  reason**, and both are recorded because the shape recurs: zeroing the
+  per-chunk JSON overhead constant left every test green (the assertion compared
+  two expressions that both contained it), and stripping recency from the seed
+  base changed nothing (the mutation read a `score_breakdown` the call no longer
+  requested). A guard that cannot be observed failing has not been verified,
+  whichever direction the run comes out.
 - **P4 — project memory** 🔭: `get_project_state` (deterministic dossier —
   designated `project-state`-tagged docs, recent docs, session-archive
   metadata + outline only, ops-log pointers via their `target_repo`

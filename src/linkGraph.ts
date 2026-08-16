@@ -123,6 +123,16 @@ export const HUB_DEGREE_THRESHOLD = 30;
 
 export type LinkDirection = "out" | "in" | "both";
 
+/**
+ * Traversal options.
+ *
+ * ⚠️ Every numeric field here may only **tighten** the corresponding constant.
+ * `neighbors()` refuses a value that would widen one, so passing a caller's own
+ * request object through cannot turn a server-side bound into a client-settable
+ * one. The refusal lives in the module rather than in the tool schema for the
+ * reason `depth` already did: a bound that only exists at the transport edge is
+ * not a bound on the module, and `get_context` calls this directly.
+ */
 export interface NeighborOptions {
   depth?: number;
   direction?: LinkDirection;
@@ -312,17 +322,27 @@ class MarkdownLinkGraph implements LinkGraph {
   }
 
   neighbors(key: string, options: NeighborOptions = {}): RelatedNode[] {
-    const depth = options.depth ?? 1;
-    // Bound the walk before doing any of it. The tool schema also caps depth,
+    // Bound the walk before doing any of it. The tool schema also caps these,
     // but a bound that only exists at the transport edge is not a bound on the
-    // module — `get_context` (P3) is already slated to call this directly.
+    // module — `get_context` (P3) calls this directly.
+    //
+    // ⚠️ All FOUR are checked here, not just `depth`. `depth` was, and the other
+    // three were not, which made the asymmetry invisible: a caller wiring its
+    // own request straight through would have `depth` refused and `nodeCap` /
+    // `fanoutCap` / `hubThreshold` silently honoured, so the D-4 ceilings would
+    // become client-settable through the one option that looked like the
+    // others. The constants' own docblock already says a caller may tighten and
+    // never widen; that sentence is only true if something enforces it.
+    const depth = options.depth ?? 1;
     if (!Number.isInteger(depth) || depth < 1 || depth > MAX_LINK_GRAPH_DEPTH) {
       throw new Error(`depth must be an integer between 1 and ${MAX_LINK_GRAPH_DEPTH}`);
     }
     const direction = options.direction ?? "both";
-    const nodeCap = options.nodeCap ?? MAX_RELATED_NODES;
-    const fanoutCap = options.fanoutCap ?? MAX_EXPANSION_FANOUT;
-    const hubThreshold = options.hubThreshold ?? HUB_DEGREE_THRESHOLD;
+    const nodeCap = boundedBy("nodeCap", options.nodeCap, MAX_RELATED_NODES);
+    const fanoutCap = boundedBy("fanoutCap", options.fanoutCap, MAX_EXPANSION_FANOUT);
+    // Hub damping runs the other way round — a HIGHER threshold damps less — so
+    // "above the constant" is the widening direction here too.
+    const hubThreshold = boundedBy("hubThreshold", options.hubThreshold, HUB_DEGREE_THRESHOLD);
 
     const origin = this.nodes.get(key);
     if (!origin) {
@@ -499,6 +519,24 @@ class MarkdownLinkGraph implements LinkGraph {
 
     return candidates.length > 0 ? { raw, resolved: false, candidates } : { raw, resolved: false };
   }
+}
+
+/**
+ * A caller-supplied bound, refused when it would widen the module's own.
+ *
+ * Throwing rather than clamping, and for the same reason `depth` throws: a
+ * caller asking for a wider walk than the module allows has a wrong belief
+ * about what it is going to get back, and silently handing it a narrower
+ * result leaves that belief intact.
+ */
+function boundedBy(name: string, requested: number | undefined, ceiling: number): number {
+  if (requested === undefined) {
+    return ceiling;
+  }
+  if (!Number.isInteger(requested) || requested < 0 || requested > ceiling) {
+    throw new Error(`${name} must be an integer between 0 and ${ceiling}`);
+  }
+  return requested;
 }
 
 function toRef(node: GraphNode): LinkGraphNodeRef {

@@ -257,6 +257,85 @@ export interface RelatedNode {
   via: string;
 }
 
+/** Why a chunk is in the package. Provenance, not ranking: `seed` says the
+ *  caller's own query matched it, the rest say how it was reached from one. */
+export type ContextRelationship = "seed" | "linked:out" | "linked:in" | "same_project" | "recent" | "source_ref";
+
+export interface GetContextInput {
+  query?: string;
+  client?: string;
+  project?: string;
+  tags?: string[];
+  root?: string;
+  path_prefix?: string;
+  /** Keep only documents the operator's type rules named. Inert unless
+   *  `MCP_CONTEXT_TYPE_RULES` is configured. */
+  types?: string[];
+  token_budget?: number;
+  graph_depth?: number;
+  recency_weight?: number;
+  order?: "relevance" | "recent";
+}
+
+export interface ContextChunk {
+  id: string;
+  /** Vault-relative path (`<root>:<path>` in multi-root mode) — the handle to
+   *  follow. Server-owned, unlike `id`. */
+  path: string;
+  root?: string;
+  title: string;
+  /** Name of the type rule that matched, when type weighting is configured. */
+  type?: string;
+  updated_at?: string;
+  score: number;
+  relationship: ContextRelationship;
+  /** Present only when the document was split. `heading_path` is the ancestry of
+   *  headings above this text, outermost first. */
+  section?: { heading_path: string[]; index: number };
+  /** True when the text was cut to fit the budget or the per-document share. */
+  truncated: boolean;
+  text: string;
+}
+
+/**
+ * A candidate that did not make it, and why.
+ *
+ * ⚠️ This list is the reason the package can be trusted as an answer rather than
+ * a sample. Without it a caller cannot distinguish "that is everything" from
+ * "that is what fitted", which is the loop `get_context` exists to end.
+ */
+export interface OmittedContext {
+  id: string;
+  title: string;
+  reason: "budget" | "duplicate" | "hub_damped";
+}
+
+export interface ContextPackage {
+  strategy: {
+    mode: "query" | "recent";
+    seed_count: number;
+    expanded_count: number;
+    budget: number;
+    est_tokens_used: number;
+  };
+  chunks: ContextChunk[];
+  /**
+   * Candidates that did not make it, one entry per document per reason, capped
+   * at `MAX_OMITTED_ENTRIES`. Read `omitted_count` to know whether this list is
+   * the whole story.
+   */
+  omitted: OmittedContext[];
+  /**
+   * How many omissions there were in total.
+   *
+   * ⚠️ Present because the list is capped, and a capped list that does not say
+   * so reintroduces exactly the ambiguity `omitted` exists to remove — the same
+   * job `total_count` does for search results.
+   */
+  omitted_count: number;
+  total_candidates: number;
+}
+
 export interface TraceOptions {
   /** 1 (default) or 2. Bounded by MAX_LINK_GRAPH_DEPTH in src/linkGraph.ts. */
   depth?: number;
