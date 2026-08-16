@@ -118,6 +118,17 @@ Improve relevance and ergonomics of `search_documents` / `search`:
   original tests sized their fixtures to straddle 24M, so any re-sizing would
   have left them passing without evicting.
 
+  ⚠️ **And it is weaker than "a proxy off by a constant factor" above.** Measured
+  as a slope rather than a single reading — same vault, one process per budget,
+  heapUsed after repeated forced GC — moving the cap from 1M to 192M characters
+  moves retained heap by **1.9 MB** (168.2 → 170.1), while a scan retains ~160 MB
+  whether the cache keeps one note or all of them (8.3 MB before any scan). So
+  on a vault this size the bound does not govern memory at all; it governs
+  whether the cache works. It is a safety valve for a vault far larger than the
+  reference one — the regime the original 1,000-synthetic-note measurement
+  (16.9 MB of notes, heap 7.7 → 42.7 MB) actually describes. Anyone sizing this
+  against a heap target should measure the slope on their own vault first.
+
 Concretized by the [context-engineering proposal](./context-engineering.md)
 (survey-based, 2026-07) into two slices, both now landed — which closes out this
 item; further retrieval work continues under the context-engineering layer

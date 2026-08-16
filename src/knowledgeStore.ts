@@ -85,6 +85,24 @@ const TRANSIENT_FS_CODES = new Set(["EAGAIN", "EMFILE", "ENFILE"]);
  * about 116 MB of source text — past that a deployment should raise
  * MCP_DOCUMENT_CACHE_MAX_CHARS rather than discover the degradation, and the
  * first eviction now says so on stderr.
+ *
+ * ⚠️ What this number does NOT convert to is heap, and the tempting arithmetic
+ * is wrong. Dividing one heapUsed reading (168.6 MB) by the vault's retained
+ * characters suggests ~2 bytes each and so ~400 MB at this default. Measured
+ * instead as a slope — same vault, same work, one process per budget, heapUsed
+ * after repeated forced GC:
+ *
+ *     cap  1M -> 168.2 MB      cap 48M -> 168.7 MB
+ *     cap 12M -> 168.1 MB      cap 96M -> 170.1 MB
+ *     cap 24M -> 168.5 MB      cap 192M -> 170.1 MB
+ *
+ * 191 million characters of budget move retained heap by 1.9 MB, about a
+ * hundredth of that estimate, and a scan retains ~160 MB whether the cache
+ * keeps one note or all of them (heapUsed before any scan: 8.3 MB). So on a
+ * vault this size the bound is not what governs memory — it governs whether the
+ * cache works. Treat it as a safety valve for a vault far larger than the
+ * reference one, which is the regime #116's synthetic measurement (16.9 MB of
+ * notes, heap 7.7 -> 42.7 MB) actually describes.
  */
 export const DEFAULT_DOCUMENT_CACHE_MAX_CHARS = 192_000_000;
 
@@ -291,7 +309,9 @@ export class KnowledgeStore implements VaultStore {
   /** Resolved once: the operator override or DEFAULT_DOCUMENT_CACHE_MAX_CHARS. */
   private readonly documentCacheMaxChars: number;
 
-  /** So the "this vault does not fit" line is printed once, not per eviction. */
+  /** So the "this vault does not fit" line is printed once per STORE (a sweep
+   *  that overflows evicts hundreds of times), not once per process — see
+   *  warnOnceAboutEviction for why a composite deliberately says it per root. */
   private warnedAboutEviction = false;
 
   /**
@@ -380,21 +400,36 @@ export class KnowledgeStore implements VaultStore {
   }
 
   /**
-   * Say once that this vault does not fit, because the cost is not gradual.
+   * Say once PER STORE that this vault does not fit, because the cost is not
+   * gradual.
    *
    * A bound that silently turns every query into a full re-parse is the kind of
    * cap this repo has already decided not to ship quietly: if a limit changes
    * what the work costs, it has to be visible rather than inferred from a
-   * stopwatch. No path is named, so this discloses nothing about the vault —
-   * the same rule the skip-and-log lines follow.
+   * stopwatch.
+   *
+   * ⚠️ Per store, not per process, and that is the scope rather than an
+   * oversight — an earlier draft of this promised "once per process", which the
+   * code never did. `MultiRootStore` builds one store per root, each with its
+   * own cache and its own budget, so two roots overflowing are two separate
+   * operator problems needing two separate decisions. Deduplicating across the
+   * process would drop every root after the first, which is the same
+   * discoverable-only-by-stopwatch failure this line exists to prevent. What
+   * that leaves to fix is telling them apart, so the line names its root.
+   *
+   * The name is safe to print and the path is not: `name` is an operator-chosen
+   * label that already appears in every multi-root id as a `name:path` prefix,
+   * while the skip-and-log rule keeps filesystem locations out of stderr. A
+   * single-root deployment named nothing, so its line stays unqualified.
    */
   private warnOnceAboutEviction(limit: number): void {
     if (this.warnedAboutEviction) {
       return;
     }
     this.warnedAboutEviction = true;
+    const which = this.config.rootName ? ` for root "${this.config.rootName}"` : "";
     process.stderr.write(
-      `[knowledge] parse cache is smaller than this vault's working set ` +
+      `[knowledge] parse cache is smaller than this vault's working set${which} ` +
         `(cap ${limit} characters), so scans will re-parse. ` +
         `Raise MCP_DOCUMENT_CACHE_MAX_CHARS if this process has the memory.\n`
     );

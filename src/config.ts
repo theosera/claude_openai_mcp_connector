@@ -161,6 +161,19 @@ export interface StoreConfig {
   scanConcurrency?: number;
   /** Ceiling on retained parsed text, in characters; see AppConfig. */
   documentCacheMaxChars?: number;
+  /**
+   * Operator's label for this root, when there is more than one.
+   *
+   * Diagnostics only — nothing resolves paths through it. A composite builds one
+   * store per root, so a warning that says "this vault does not fit" has to say
+   * WHICH one or it is not actionable. Left unset for a single-root deployment,
+   * where the operator never named anything and an unqualified line is exact.
+   *
+   * Safe to print: these names are already client-visible as `name:path`
+   * prefixes on every multi-root id, and `loadConfig` already names them in
+   * start-up errors. It is a label the operator chose, not a filesystem path.
+   */
+  rootName?: string;
   /** Operator-level recency ranking defaults; see AppConfig. */
   searchRecencyWeight?: number;
   searchRecencyHalfLifeDays?: number;

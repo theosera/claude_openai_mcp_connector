@@ -2166,6 +2166,10 @@ describe("the parse cache is bounded, and evicts least-recently-used", () => {
     // No path, no title, no body: the same disclosure rule the skip-and-log
     // lines follow.
     expect(lines[0]).not.toContain(root);
+    // A single-root deployment named nothing, so the line stays unqualified —
+    // the multi-root counterpart in tests/multiRootStore.test.ts is what pins
+    // the named form.
+    expect(lines[0]).not.toContain("for root");
   });
 
   it("keeps a vault the size of the reference one entirely cached, at the SHIPPED default", async () => {

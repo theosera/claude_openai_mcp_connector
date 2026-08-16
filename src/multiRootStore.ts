@@ -57,7 +57,12 @@ export class MultiRootStore implements VaultStore {
         // therefore retain N times it — stated here because the alternative
         // (splitting the budget) would silently shrink a single large root's
         // cache when a small read-only root is added beside it.
-        documentCacheMaxChars: config.documentCacheMaxChars
+        documentCacheMaxChars: config.documentCacheMaxChars,
+        // So the eviction warning can say which root overflowed. One store per
+        // root means one budget per root, so two roots overflowing are two
+        // separate operator problems needing two separate decisions — the
+        // warning is deliberately NOT deduplicated across them.
+        rootName: root.name
       })
     }));
   }

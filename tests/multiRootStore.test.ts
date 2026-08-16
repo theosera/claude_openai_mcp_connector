@@ -279,6 +279,61 @@ describe("MultiRootStore", () => {
     expect(opens).toBe(2);
   });
 
+  // The review on #118 read the per-instance warning flag as a bug against the
+  // "once per process" wording. The wording was what was wrong: one store per
+  // root means one budget per root, so two roots overflowing are two decisions
+  // for the operator, and deduplicating across the process would drop every one
+  // after the first. What the objection correctly identified is that the lines
+  // were INDISTINGUISHABLE — so they now name their root, and this pins both
+  // halves: one line per overflowing root, each identifiable.
+  it("warns once per overflowing ROOT, naming which one", async () => {
+    const alpha = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-warn-alpha-"));
+    const beta = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-warn-beta-"));
+    const body = "z".repeat(1_000_000);
+    for (const dir of [alpha, beta]) {
+      await fs.writeFile(path.join(dir, "one.md"), `---\ntitle: One\n---\n\n${body}\n`, "utf8");
+      await fs.writeFile(path.join(dir, "two.md"), `---\ntitle: Two\n---\n\n${body}\n`, "utf8");
+    }
+
+    const written: string[] = [];
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      written.push(String(chunk));
+      return true;
+    }) as unknown as typeof process.stderr.write);
+    try {
+      const store = createStore({
+        ...makeConfig([
+          { name: "alpha", path: alpha },
+          { name: "beta", path: beta }
+        ]),
+        knowledgeRoots: [
+          { name: "alpha", path: alpha },
+          { name: "beta", path: beta }
+        ],
+        scanConcurrency: 1,
+        documentCacheMaxChars: 2_500_000
+      });
+      await store.init();
+      await store.listDocuments();
+      await store.listDocuments();
+    } finally {
+      spy.mockRestore();
+      await fs.rm(alpha, { recursive: true, force: true });
+      await fs.rm(beta, { recursive: true, force: true });
+    }
+
+    const lines = written.filter((line) => line.includes("parse cache is smaller"));
+    expect(lines).toHaveLength(2);
+    expect(lines.filter((line) => line.includes('for root "alpha"'))).toHaveLength(1);
+    expect(lines.filter((line) => line.includes('for root "beta"'))).toHaveLength(1);
+    // The name is an operator-chosen label, already visible to clients as an
+    // id prefix. The path is not, and must not appear.
+    for (const line of lines) {
+      expect(line).not.toContain(alpha);
+      expect(line).not.toContain(beta);
+    }
+  });
+
   it("searches across every root and labels hits with their root", async () => {
     const { results } = await store.search({ query: "retrieval" });
     const roots = new Set(results.map((result) => result.root));
