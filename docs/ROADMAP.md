@@ -157,7 +157,7 @@ below:
   earlier with P0. Entirely additive: unset env and unset parameters reproduce
   0.7.0 ranking exactly. Pinned by `tests/search.test.ts`.
 
-### Context engineering layer — get_context / link graph / project state ✅
+### Context engineering layer — get_context / link graph / project state ✅ P0–P4 / 💭 P5
 
 Evolve the read plane from "search API" to "context gateway": one call should
 return a token-budgeted, provenance-carrying context package instead of forcing
@@ -168,12 +168,24 @@ anti-forgery analysis, reject list) in the
 per-agent "context profiles" are request parameters only — never server-side
 client detection, per the [appendix's anti-router ruling](#appendix--future-uses-of-the-authenticated-client_id).
 
-**Shipped in 0.9.0.** Every slice landed: P0/P1 (search), P2 (`8e4ec7e`), P3
-(`9e2c914`), P4 (`de9021c`). ⚠️ **The net tool count has reached the documented
-cap** — `registerTool` is called **17** times and both reserved slots are spent,
-so the next tool is a decision to *exceed* the cap rather than to spend a
-reservation. The staged-plan item under continuity below costed `discard_plan`
-against those reservations and is repriced accordingly.
+**P0–P4 shipped in 0.9.0**: P0/P1 (search), P2 (`8e4ec7e`), P3 (`9e2c914`), P4
+(`de9021c`). ⚠️ **The layer is not finished.** `P5 評価 & tuning` is still
+`💭 未着手` in the status table this section shares authority with, so the ✅
+above covers P0–P4 and nothing more — an earlier draft of this paragraph said
+"every slice landed", which contradicted that table.
+
+⚠️ **The net tool count has reached the documented cap** — `registerTool` is
+called **17** times and both reserved slots are spent, so the next tool is a
+decision to *exceed* the cap rather than to spend a reservation. The staged-plan
+item under continuity below costed `discard_plan` against those reservations and
+is repriced accordingly.
+
+**What P0–P4 landing did to the 💭 tail below.** The embeddings / vector-search
+entry is gated on "documented recall failures **after P1–P3 land**". P1–P3 have
+now landed, so **the gate is open** — precisely: the trigger did not fire, it
+became *able* to fire, and nothing has looked since. What would produce the
+documented failures it waits on is P5 itself, which makes P5 and the tail one
+decision rather than two.
 
 - **P2 — link graph & provenance** ✅: `src/linkGraph.ts` built from an
   **unprefixed** `listDocuments()` (fs access stays behind the existing guard
@@ -1428,8 +1440,10 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       (path-facts-only resolution, `title` / `aliases` as candidates only) and
       `trace_sources` gaining `depth` / `direction` / `resolved_outgoing` /
       `related` under bounded traversal. ✅ **P3 (`get_context`, `9e2c914`) and
-      P4 (`get_project_state`, `de9021c`) have since landed in 0.9.0**, closing
-      the context-engineering layer above — this track has no next slice.
+      P4 (`get_project_state`, `de9021c`) have since landed in 0.9.0.** The next
+      slice is **P5 (evaluation & tuning)**, still `💭 未着手` — and it is what
+      would produce the documented recall failures the layer's 💭 tail is gated
+      on, so the two are decided together rather than queued separately.
 - [x] **Exact-path document create** — ✅ two-step full-file plan, explicit
       target-path confirmation (`はい` + free text), confirmed-path echo at
       apply, content-integrity/no-overwrite checks, and MCP E2E coverage.
