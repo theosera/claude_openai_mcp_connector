@@ -468,6 +468,86 @@ export function parseMarkdownSafe(raw: string): {
   }
 }
 
+/**
+ * INV-2, write side — a write may not emit a note the read path will refuse.
+ *
+ * `assertBoundedFrontmatterBlock` caps what the parser will INGEST. Nothing
+ * capped what a writer EMITS, so a patch that satisfies every INV-2 rule — an
+ * allowlisted key, the right value type — could still serialize a frontmatter
+ * block past that cap (measured: 4,000 `tags` entries produced 50,959 bytes).
+ * The result is a note that is written successfully and then:
+ *
+ *   - indexes BODY-ONLY, because `parseMarkdownSafe` degrades to empty
+ *     frontmatter, so its `title` silently falls back to the basename — and a
+ *     note that had a frontmatter `id` loses it, moving its identity from that
+ *     id to its path, which is the handle INV-2 says content can squat;
+ *   - cannot be repaired through this server at all, because `planUpdate`
+ *     parses with `parseMarkdown`, which throws on exactly this input.
+ *
+ * "Read has an obligation to keep returning the note; a writer has no such
+ * obligation" was already the rule — it was just applied to the parse of the
+ * writer's INPUT and not to its OUTPUT.
+ *
+ * Called from `serializeMarkdown` so every writer that BUILDS content is covered
+ * at the moment it builds it, which is also early enough to refuse before a diff
+ * is shown for approval.
+ *
+ * ⚠️ That is not sufficient on its own, and believing it was is how this shipped
+ * with a hole. The two apply paths write `patch.new_content` — bytes serialized
+ * during an EARLIER call, possibly by an earlier build of this server — so they
+ * never re-enter `serializeMarkdown`. A plan staged before this guard existed
+ * therefore applied straight past it, and with staged plans having no TTL that
+ * window does not close by itself.
+ *
+ * So the applies assert it again on the bytes they are about to write. The
+ * general rule this is an instance of: **a write-side invariant enforced only at
+ * plan time can always be bypassed with a stale plan.** INV-9 already says the
+ * same thing in the other direction — `applyPlannedUpdate` is the authority and
+ * the plan-time check is a UX courtesy — and this guard had them backwards.
+ */
+export function assertEmittedFrontmatterWithinLimit(serialized: string): void {
+  // Same first step as assertBoundedFrontmatterBlock, and for the same reason:
+  // with no opening delimiter there is no block to measure, and scanning for a
+  // closing one anyway would find the first `\n---` in the BODY and refuse a
+  // legitimate write whose body happens to contain a horizontal rule.
+  //
+  // Unreachable today — normalizeMetadata always yields at least `tags` and
+  // `source_refs`, so gray-matter always emits a block. Kept because the guard
+  // it mirrors has it, and because "the serializer always emits frontmatter" is
+  // a property of a different function than this one.
+  // ⚠️ The BOM strip is half of that first step, and leaving it out was a hole,
+  // not a tidiness issue. `assertBoundedFrontmatterBlock` strips U+FEFF before it
+  // looks for the delimiter, so content starting BOM + `---` + an oversize block
+  // is refused on READ. Without the same strip here, that content does not even
+  // start with `---` as far as this function is concerned, returns early
+  // unchecked, and gets written — producing precisely the unreadable,
+  // unrepairable note this guard exists to prevent.
+  //
+  // Reachable through the same door as the apply-time check itself: staged
+  // `new_content` is not re-derived from `serializeMarkdown` (which never emits a
+  // BOM) and carries no content hash of its own — `expected_sha256` binds the
+  // TARGET's prior bytes, not the plan's payload.
+  const raw = serialized.charAt(0) === "\uFEFF" ? serialized.slice(1) : serialized;
+  if (!raw.startsWith(FRONTMATTER_DELIMITER)) {
+    return;
+  }
+  // `raw` for BOTH, exactly as the read guard does. Measuring `serialized` with
+  // an index found in `raw` mixes two coordinate systems: with a BOM present the
+  // slice carries the BOM's three bytes and stops one character early, so emit
+  // and read disagreed about the same bytes near the cap — and the direction of
+  // the disagreement let a write through that the read path then refused, which
+  // is the failure this whole guard exists to prevent.
+  const close = raw.indexOf("\n" + FRONTMATTER_DELIMITER, FRONTMATTER_DELIMITER.length);
+  const blockLength = Buffer.byteLength(close === -1 ? raw : raw.slice(0, close), "utf8");
+  if (blockLength > MAX_FRONTMATTER_BLOCK_BYTES) {
+    throw new Error(
+      `Refusing to write: the frontmatter this produces is ${blockLength} bytes, over the ` +
+        `${MAX_FRONTMATTER_BLOCK_BYTES}-byte limit the read path enforces. The note would be ` +
+        "indexed without its metadata and could not be edited through this server afterwards."
+    );
+  }
+}
+
 export function serializeMarkdown(frontmatter: DocumentMetadata, body: string): string {
   // The body is untrusted client input (`body` / `new_body`), so it is handed
   // over as a file OBJECT, never as a string: matter.stringify() re-parses a
@@ -478,7 +558,13 @@ export function serializeMarkdown(frontmatter: DocumentMetadata, body: string): 
   // smuggling keys past the write-time allowlist (INV-2). With `{ content }`
   // there is no `file.data`, so only the server-computed metadata is emitted and
   // a body that starts with `---` is written through verbatim.
-  return matter.stringify({ content: body.trimEnd() + "\n" }, normalizeMetadata(frontmatter), SAFE_MATTER_OPTIONS);
+  const serialized = matter.stringify(
+    { content: body.trimEnd() + "\n" },
+    normalizeMetadata(frontmatter),
+    SAFE_MATTER_OPTIONS
+  );
+  assertEmittedFrontmatterWithinLimit(serialized);
+  return serialized;
 }
 
 export function normalizeMetadata(input: DocumentMetadata): DocumentMetadata {

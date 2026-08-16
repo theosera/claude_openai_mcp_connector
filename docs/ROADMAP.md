@@ -210,6 +210,19 @@ tools scoped to one reserved subtree (`MCP_AUDIT_SUBDIR` +
   does not weaken INV-9; both halves are pinned by one pair of adjacent tests.
   The stdio startup line now reports three states (`off` / `reserved-only` /
   `on`) because a single on/off could only ever describe one of the two.
+- **The same split now applies to Skills** — `MCP_HTTP_ALLOW_SKILL_WRITE` on HTTP
+  and **`MCP_STDIO_ALLOW_SKILL_WRITE`** (default off) on stdio. This was written
+  as an audit-only lesson and fixed on the audit surface alone; stdio kept
+  deriving the Skill tools from `Boolean(skillStore)` for another release, two
+  lines above the comment explaining why that shape had been a hole. A test
+  asserted the surviving half **positively** — "the Skill surface … is
+  untouched" — which is how an unfixed instance of a known bug reads as a scope
+  decision. Skill creation is two-step, so it was never the single-call exposure
+  the audit pair had; it is arguably the heavier target anyway, because a Skill
+  is loaded by later sessions **as instructions**, which is the premise INV-8
+  exists for. The INV-8 reservation rides on `config.skillsSubdir`, so
+  withholding the tools does not weaken it, and `skills` now reports the same
+  three states.
 - **Distinct from the "Audit log" gap below.** That is a _content-free,
   server-side_ event log of who searched / fetched / wrote (keyed on
   `client_id`); this is the _scanner's own_ audit output written into the vault.

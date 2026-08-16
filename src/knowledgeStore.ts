@@ -5,6 +5,7 @@ import path from "node:path";
 import { createTwoFilesPatch } from "diff";
 import { replaceFileAtomically } from "./atomicWrite.js";
 import {
+  assertEmittedFrontmatterWithinLimit,
   assertFrontmatterPatch,
   parseMarkdown,
   parseMarkdownSafe,
@@ -442,6 +443,11 @@ export class KnowledgeStore implements VaultStore {
       throw new Error("Confirmed target path does not match the planned document target.");
     }
 
+    // Re-asserted on the STAGED bytes, not just when they were built. A plan
+    // carries content serialized in an earlier call — possibly by an earlier
+    // build of this server, since nothing expires a plan — so the plan-time
+    // check in serializeMarkdown cannot speak for what is written here.
+    assertEmittedFrontmatterWithinLimit(patch.new_content);
     const absolutePath = await this.resolveForWrite(await this.validateCreateTarget(patch.target_path));
     try {
       await fs.writeFile(absolutePath, patch.new_content, { encoding: "utf8", flag: "wx" });
@@ -569,6 +575,10 @@ export class KnowledgeStore implements VaultStore {
       throw new Error("Patch is stale: the target document changed after the plan was created.");
     }
 
+    // As in applyPlannedDocumentCreate: the staged bytes are re-checked here,
+    // because this is the authoritative gate and the plan-time one is only an
+    // early refusal. INV-9 draws that line the same way for the audit surface.
+    assertEmittedFrontmatterWithinLimit(patch.new_content);
     // Same-directory temp + rename: an interrupted apply must leave the note
     // whole (old or new), never truncated. See src/atomicWrite.ts.
     await replaceFileAtomically(absolutePath, patch.new_content, original);
