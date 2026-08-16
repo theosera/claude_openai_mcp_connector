@@ -30,18 +30,8 @@ export const PATCH_STATE_FILE_MODE = 0o600;
  */
 export async function ensurePatchStateDir(dir: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true, mode: PATCH_STATE_DIR_MODE });
-  // Swept here rather than from each plan writer on purpose. This is the one
-  // function every store that stages a plan already calls, so a fourth writer
-  // added later inherits the sweep instead of needing someone to remember it —
-  // and a rule applied to some of its call sites and not others is the shape
-  // this codebase has been bitten by repeatedly.
-  //
-  // It runs at init AND before each plan is staged (the callers invoke this
-  // first, and it is idempotent), because a long-running HTTP server may not
-  // restart for months — an init-only sweep would never fire on the deployment
-  // that accumulates the most.
-  await prunePatchState(dir);
   if (process.platform === "win32") {
+    await prunePatchState(dir);
     return; // POSIX mode bits are not meaningful here.
   }
 
@@ -87,6 +77,29 @@ export async function ensurePatchStateDir(dir: string): Promise<void> {
   } finally {
     await handle.close();
   }
+
+  // ★ AFTER the O_NOFOLLOW validation above, never before it.
+  //
+  // Swept here rather than from each plan writer because this is the one
+  // function every plan-staging store already calls, so a writer added later
+  // inherits the sweep instead of needing someone to remember it. But placing it
+  // at the TOP — which is where it went first — made a symlinked
+  // MCP_PATCH_STATE_DIR destructive: the sweep followed the link and deleted
+  // `.json` files from whatever it pointed at, and only then did the check
+  // below refuse to start. A configuration that used to fail closed without
+  // touching anything would have deleted files in another directory first.
+  //
+  // Deleting is the one operation here that cannot be taken back, so it goes
+  // last, after every reason to refuse has been evaluated.
+  //
+  // What this does NOT give you: a timer. The sweep fires at start-up and again
+  // whenever a plan is staged, so a server that stays up and stages nothing more
+  // never sweeps again — the plan staged just before the vault went quiet can
+  // outlive PLAN_MAX_AGE_MS by however long that quiet lasts. Bounding
+  // accumulation is what this is for, and accumulation only happens on the path
+  // that is already sweeping; an exact expiry deadline would need an interval,
+  // which is a heavier thing to own than the problem justifies.
+  await prunePatchState(dir);
 }
 
 /**

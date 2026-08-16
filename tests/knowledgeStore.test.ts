@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PLAN_MAX_AGE_MS, prunePatchState } from "../src/patchState.js";
+import { ensurePatchStateDir, PLAN_MAX_AGE_MS, prunePatchState } from "../src/patchState.js";
 import {
   isTransientFsError,
   KnowledgeStore,
@@ -1494,6 +1494,29 @@ describe("staged plans expire instead of accumulating forever", () => {
     // ...and the plan just staged is still there and still applies.
     const applied = await store.applyPlannedUpdate(plan.patch_id);
     expect(applied.document.body.trim()).toBe("edited");
+  });
+
+  it("deletes NOTHING when the state directory is a symlink, and still refuses to start", async () => {
+    // Ordering, not tidiness. The sweep first sat at the top of
+    // ensurePatchStateDir, so a symlinked MCP_PATCH_STATE_DIR had its TARGET's
+    // plan files deleted and only then did the O_NOFOLLOW check refuse to
+    // start. A configuration that previously failed closed without touching
+    // anything would have destroyed files in another directory on the way.
+    //
+    // Deleting is the one step here that cannot be undone, so it goes last,
+    // after every reason to refuse has been evaluated.
+    const realTarget = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-ttl-target-"));
+    const victim = path.join(realTarget, "44444444-4444-4444-8444-444444444444.json");
+    await fs.writeFile(victim, "{}", "utf8");
+    await age(victim, PLAN_MAX_AGE_MS + 60_000);
+
+    const link = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-ttl-link-")), "state");
+    await fs.symlink(realTarget, link);
+
+    await expect(ensurePatchStateDir(link)).rejects.toThrow(/must be a real directory/);
+    // The old plan in the link's target is untouched.
+    expect(await fs.readFile(victim, "utf8")).toBe("{}");
+    await fs.rm(realTarget, { recursive: true, force: true });
   });
 
   it("leaves files it does not own alone", async () => {
