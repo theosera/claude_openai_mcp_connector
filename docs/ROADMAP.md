@@ -1048,7 +1048,13 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       `ulimit -n` divided by the scan width rather than a number this repo picked.
       Exhaustion degrades rather than crashes — `EAGAIN` / `EMFILE` / `ENFILE`
       are retried with backoff and unreadable notes are skipped — but that is
-      resilience arrived at from below, not a limit chosen from above. What is
+      resilience arrived at from below, not a limit chosen from above.
+      ⚠️ **That sentence was only half true when written.** The retry lived in
+      the read stage; the walk that finds the notes had none, so the same errno
+      that was patiently retried while reading aborted every read tool while
+      walking. Both stages retry now, and one unreachable entry no longer takes
+      the scan down — but the ceiling this item describes is unchanged, because
+      resilience below is still not a limit above. What is
       genuinely unbounded is socket inactivity (`server.timeout` = 0) and the
       number of concurrent connections, not request or header time.
 

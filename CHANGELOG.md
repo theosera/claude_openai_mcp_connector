@@ -33,6 +33,30 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **One unreachable entry no longer takes down every read tool.** A dangling
+  symlink — the everyday residue of a synced folder (iCloud, Dropbox) or a moved
+  directory — made `search`, `fetch`, `list_projects` and `trace_sources` all
+  throw, because the walk resolved links before deciding whether it even cared
+  about the entry. Entries the OS reports as unreachable (`ENOENT` / `EACCES` /
+  `EPERM` / `ELOOP` / `ENOTDIR`) are now skipped with the basename on stderr.
+
+  **A symlink that escapes the knowledge root still aborts the whole walk**, and
+  that distinction is the point: the classifier matches on errno, so a
+  containment refusal — which carries none — can never be mistaken for an
+  availability accident. INV-1 keeps failing closed. What changed for escapes is
+  only that stderr now names the offending entry (basename, as elsewhere), so an
+  operator with a few thousand notes is not left to find it by hand. The thrown
+  error is unchanged, because that one reaches the MCP client.
+
+- **The walk now waits out transient FD exhaustion, as reading already did.**
+  `EAGAIN` / `EMFILE` / `ENFILE` were retried with backoff when reading a note
+  and not when walking to find it, so the two halves of one scan disagreed about
+  the same condition — and walking a few thousand notes at `MCP_SCAN_CONCURRENCY`
+  is exactly what produces those codes. Retries are per syscall; once they are
+  spent a directory-level failure still aborts, since a skipped directory is an
+  unbounded number of missing notes and a search that answers from a truncated
+  vault reports "no such note" about notes that exist.
+
 - **`MCP_SEARCH_RECENCY_WEIGHT` did nothing on a single-root vault.**
   `createStore` builds a plain `KnowledgeStore` when exactly one root is
   configured, and that branch omitted the two recency fields, so the store's

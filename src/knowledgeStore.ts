@@ -135,8 +135,71 @@ function warnSkippedEntry(absolutePath: string, reason: string): void {
   process.stderr.write(`[knowledge] skipped unreachable vault entry (${reason}): ${path.basename(absolutePath)}\n`);
 }
 
+/**
+ * Name the entry whose containment check failed, on stderr, and change nothing
+ * else. The caller rethrows: an escape stays fatal (INV-1).
+ *
+ * The abort IS the signal that the vault is misconfigured — and it named
+ * nothing, so in a vault of a few thousand notes the operator was told a
+ * symlink escapes somewhere and left to find which one by hand. The skip path
+ * beside it has printed the basename all along; only the fatal path was
+ * anonymous, which is backwards, since it is the one demanding action.
+ *
+ * ★ stderr, and NOT the thrown message. The two have different audiences.
+ * relativeToRoot's Error is server-authored, so withClientSafeErrors passes it
+ * through verbatim to the MCP client, and an escaping symlink's name is an
+ * entry the client cannot otherwise enumerate — the walk aborts before any
+ * listing exists. Basename-only on the operator's channel gives whoever can fix
+ * it everything they need and gives the client nothing new, the same split
+ * readDocumentResilient already draws.
+ */
+function nameEscapingEntry(absolutePath: string): void {
+  process.stderr.write(
+    `[knowledge] vault entry escapes the knowledge root (walk aborted): ${path.basename(absolutePath)}\n`
+  );
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Retry ONE filesystem call through transient resource exhaustion.
+ *
+ * The scan already did this when READING a note (readDocumentResilient), and did
+ * not do it when WALKING to find that note — so the two halves of the same scan
+ * held opposite opinions about EAGAIN/EMFILE/ENFILE. The read stage waited and
+ * tried again; the walk let the errno out, where it is not an unreachable-entry
+ * code, so it aborted every read tool. Running the walk at `scanConcurrency`
+ * over a few thousand notes is exactly the workload that produces those codes,
+ * which made the disagreement an everyday failure rather than a corner.
+ *
+ * ★ Per SYSCALL, never per subtree. Wrapping `walkSubtree` instead looks tidier
+ * and is silently wrong: `walkMarkdownFiles` adds its own realpath to `visited`
+ * BEFORE it reads the directory, so a retry of the whole subtree would find its
+ * own entry there and return [] — an empty result reported as a successful
+ * scan. A single fs call carries no such state, so retrying one is a genuine
+ * retry rather than a second call that answers differently.
+ *
+ * What this deliberately does NOT change is what happens when the retries run
+ * out: the errno still leaves here, and a directory-level failure still aborts.
+ * That asymmetry with readDocumentResilient (which skips the note) is the point
+ * rather than an oversight — a skipped note is one note, named on stderr, while
+ * a skipped directory is an unbounded number of them, and a search tool that
+ * quietly answers from a truncated vault reports "no such note" for notes that
+ * exist. Bounded under-reporting is tolerable; unbounded is not.
+ */
+async function withTransientRetry<T>(operation: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!isTransientFsError(error) || attempt >= SCAN_MAX_RETRIES) {
+        throw error;
+      }
+      await delay(SCAN_RETRY_BASE_MS * 2 ** attempt + Math.floor(Math.random() * SCAN_RETRY_BASE_MS));
+    }
+  }
 }
 
 /** Bounded async map: at most `limit` callbacks run at once; order is preserved. */
@@ -927,7 +990,7 @@ async function walkMarkdownFiles(
   current: string = root,
   visited = new Set<string>()
 ): Promise<string[]> {
-  const currentRealPath = await fs.realpath(current);
+  const currentRealPath = await withTransientRetry(() => fs.realpath(current));
   const relativeDir = relativeToRoot(root, currentRealPath);
   // Trailing separator so a prefix comparison cannot straddle a name boundary
   // (`05_logs/` must not be reachable from a directory literally named `05_log`).
@@ -942,7 +1005,7 @@ async function walkMarkdownFiles(
   }
   visited.add(currentRealPath);
 
-  const entries = await fs.readdir(current, { withFileTypes: true });
+  const entries = await withTransientRetry(() => fs.readdir(current, { withFileTypes: true }));
   const files: string[] = [];
 
   for (const entry of entries) {
@@ -969,7 +1032,7 @@ async function walkMarkdownFiles(
       // leaves broken links behind, and none of it is a containment question.
       let realPath: string;
       try {
-        realPath = await fs.realpath(absolutePath);
+        realPath = await withTransientRetry(() => fs.realpath(absolutePath));
       } catch (error) {
         if (!isUnreachableEntryError(error)) {
           throw error;
@@ -980,10 +1043,19 @@ async function walkMarkdownFiles(
       // OUTSIDE the try, and it must stay there: this is the containment check,
       // and it throws a plain Error, so widening either catch to cover it would
       // silently downgrade an INV-1 refusal into a skipped entry.
-      relativeToRoot(root, realPath);
+      //
+      // The catch below is NOT such a widening and must never become one: it has
+      // no condition and cannot acquire one. It exists only so the abort names
+      // the entry that caused it — see nameEscapingEntry.
+      try {
+        relativeToRoot(root, realPath);
+      } catch (error) {
+        nameEscapingEntry(absolutePath);
+        throw error;
+      }
       let stat: Awaited<ReturnType<typeof fs.stat>>;
       try {
-        stat = await fs.stat(realPath);
+        stat = await withTransientRetry(() => fs.stat(realPath));
       } catch (error) {
         if (!isUnreachableEntryError(error)) {
           throw error;
