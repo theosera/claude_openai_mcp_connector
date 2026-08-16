@@ -3,7 +3,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { normalizeMetadata, parseMarkdown, parseMarkdownSafe, serializeMarkdown } from "../src/frontmatter.js";
+import {
+  assertEmittedFrontmatterWithinLimit,
+  normalizeMetadata,
+  parseMarkdown,
+  parseMarkdownSafe,
+  serializeMarkdown
+} from "../src/frontmatter.js";
 import { KnowledgeStore } from "../src/knowledgeStore.js";
 import { toPublicDocument } from "../src/server.js";
 
@@ -743,6 +749,49 @@ describe("apply re-checks the cap, so a stale plan cannot carry a write past it"
 
     await expect(store.applyPlannedUpdate(patchId)).rejects.toThrow(/Refusing to write/);
     expect(await fs.readFile(path.join(root, "bom.md"), "utf8")).toBe(before);
+  });
+
+  it("agrees with the read path byte for byte across the cap boundary", async () => {
+    // The single strongest thing to assert about this guard is not a threshold
+    // but an AGREEMENT: whatever bytes exist, the writer must refuse exactly what
+    // the reader refuses. A boundary picked as one number can be off by three and
+    // still pass; a sweep cannot.
+    //
+    // Three bytes is the exact size of the discrepancy review found here, where
+    // `close` was located in the BOM-stripped string while the length was
+    // measured on the original -- so emit and read disagreed by the BOM, in the
+    // direction that lets a write through.
+    const pad = (bytes: number): string => "x".repeat(Math.max(0, bytes));
+    for (const bom of ["", "\uFEFF"]) {
+      for (const delta of [-8, -4, -1, 0, 1, 4, 8]) {
+        // "---\ntitle: " + pad + "\n" lands the block length on the cap + delta.
+        const overhead = Buffer.byteLength("---\ntitle: \n", "utf8");
+        const content = `${bom}---\ntitle: ${pad(8192 - overhead + delta)}\n---\n\nbody\n`;
+
+        const writerRefused = (() => {
+          try {
+            assertEmittedFrontmatterWithinLimit(content);
+            return false;
+          } catch {
+            return true;
+          }
+        })();
+        const readerRefused = (() => {
+          try {
+            parseMarkdown(content);
+            return false;
+          } catch {
+            return true;
+          }
+        })();
+
+        expect({ bom: bom === "" ? "none" : "bom", delta, writerRefused }).toEqual({
+          bom: bom === "" ? "none" : "bom",
+          delta,
+          writerRefused: readerRefused
+        });
+      }
+    }
   });
 
   it("still applies a staged plan whose frontmatter is within the cap", async () => {

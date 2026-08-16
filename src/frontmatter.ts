@@ -531,8 +531,14 @@ export function assertEmittedFrontmatterWithinLimit(serialized: string): void {
   if (!raw.startsWith(FRONTMATTER_DELIMITER)) {
     return;
   }
+  // `raw` for BOTH, exactly as the read guard does. Measuring `serialized` with
+  // an index found in `raw` mixes two coordinate systems: with a BOM present the
+  // slice carries the BOM's three bytes and stops one character early, so emit
+  // and read disagreed about the same bytes near the cap — and the direction of
+  // the disagreement let a write through that the read path then refused, which
+  // is the failure this whole guard exists to prevent.
   const close = raw.indexOf("\n" + FRONTMATTER_DELIMITER, FRONTMATTER_DELIMITER.length);
-  const blockLength = Buffer.byteLength(close === -1 ? serialized : serialized.slice(0, close), "utf8");
+  const blockLength = Buffer.byteLength(close === -1 ? raw : raw.slice(0, close), "utf8");
   if (blockLength > MAX_FRONTMATTER_BLOCK_BYTES) {
     throw new Error(
       `Refusing to write: the frontmatter this produces is ${blockLength} bytes, over the ` +
