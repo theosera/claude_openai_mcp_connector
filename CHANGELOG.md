@@ -31,6 +31,13 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   child's `dev`, `ino`, `ctime` and `mtime` all untouched, so the signature
   matches across a real escape. See `readDocument` for the recorded reason.
 
+- **`/claude-security` scan output is now ignored.** A change scan writes a
+  `CLAUDE-SECURITY-<timestamp>/` directory of threat models and findings, and a
+  scan of this repo names the operator's real `KNOWLEDGE_ROOT` and note paths.
+  Those directories were untracked but **not ignored**, so the only thing
+  keeping them out of a public repo was this project's "never `git add -A`"
+  rule — a habit, not a guard, and the canon for exclusions is `.gitignore`.
+
 ### Fixed
 
 - **The new parse-cache bound was three times too small, so it turned the cache
