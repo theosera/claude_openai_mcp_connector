@@ -1533,6 +1533,31 @@ describe("one unreachable vault entry does not take the whole scan down", () => 
     await fs.rm(outside, { recursive: true, force: true });
   });
 
+  it("skips a subdirectory that became a file between listing and descending", async () => {
+    // The dir-to-file race: readdir reported a directory, and by the time the
+    // recursion opened it the path was a regular file. Injected rather than
+    // raced, because a real race is not reproducible on demand and a flaky test
+    // that sometimes fails to reach its branch is worse than none.
+    //
+    // ENOTDIR was the one errno missing from the classifier while the comment
+    // above it already claimed to cover "a path that changed type underneath
+    // it" — caught in review, not here.
+    const target = path.join(root, "nested");
+    const realReaddir = fs.readdir.bind(fs);
+    vi.spyOn(fs, "readdir").mockImplementation((async (dir: string, options: unknown) => {
+      if (path.resolve(String(dir)) === path.resolve(target)) {
+        const error = new Error("ENOTDIR: not a directory") as NodeJS.ErrnoException;
+        error.code = "ENOTDIR";
+        throw error;
+      }
+      return realReaddir(dir as never, options as never);
+    }) as unknown as typeof fs.readdir);
+
+    const documents = await store.listDocuments();
+    expect(documents.map((document) => document.relativePath)).toEqual(["kept.md"]);
+    expect((await store.fetch("kept.md")).title).toBe("Kept");
+  });
+
   it("STILL aborts on an escaping symlink NESTED inside a subdirectory", async () => {
     // The case that actually exercises walkSubtree's catch. A root-level escape
     // throws in the root's own loop, where no try exists — so a test that only

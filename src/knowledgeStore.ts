@@ -111,9 +111,22 @@ export function isTransientFsError(error: unknown): boolean {
  * keeps the first class loud. A catch broad enough to swallow the escape would
  * turn a containment refusal into a skipped file.
  */
+const UNREACHABLE_ENTRY_CODES = new Set([
+  "ENOENT", // the target is gone (a dangling symlink, or a file removed mid-walk)
+  "EACCES", // not permitted to open it
+  "EPERM", // the same, on platforms that report it this way
+  "ELOOP", // a symlink chain that does not terminate
+  // `readdir` on a path that was a directory when the parent listed it and is a
+  // regular file by the time the recursion reaches it. This is the "changed type
+  // underneath it" case the doc comment above always claimed to cover, and it
+  // was the one errno missing from this set — the rule was written down in full
+  // and implemented in part.
+  "ENOTDIR"
+]);
+
 function isUnreachableEntryError(error: unknown): boolean {
   const code = (error as { code?: unknown } | null)?.code;
-  return typeof code === "string" && (code === "ENOENT" || code === "EACCES" || code === "EPERM" || code === "ELOOP");
+  return typeof code === "string" && UNREACHABLE_ENTRY_CODES.has(code);
 }
 
 /** Basename only, matching readDocumentResilient: enough to find the bad entry,
