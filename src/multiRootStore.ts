@@ -51,7 +51,13 @@ export class MultiRootStore implements VaultStore {
         // writes only ever reach the primary root — so reserve them on entry 0 only.
         skillsSubdir: index === 0 ? config.skillsSubdir : undefined,
         auditSubdir: index === 0 ? config.auditSubdir : undefined,
-        scanConcurrency: config.scanConcurrency
+        scanConcurrency: config.scanConcurrency,
+        // Per root, not divided between them: each store owns its own cache, so
+        // the bound is what one root may retain. A composite of N roots can
+        // therefore retain N times it — stated here because the alternative
+        // (splitting the budget) would silently shrink a single large root's
+        // cache when a small read-only root is added beside it.
+        documentCacheMaxChars: config.documentCacheMaxChars
       })
     }));
   }
@@ -337,6 +343,11 @@ export function createStore(config: AppConfig): VaultStore {
       skillsSubdir: config.skillsSubdir,
       auditSubdir: config.auditSubdir,
       scanConcurrency: config.scanConcurrency,
+      // Listed here as well as in the MultiRootStore constructor because this
+      // branch is the one #112 was about: a field wired into the composite and
+      // forgotten in the single-root path is dead for every single-root
+      // deployment, which is most of them, and nothing fails.
+      documentCacheMaxChars: config.documentCacheMaxChars,
       // Operator recency defaults reach the scorer ONLY through here. Dropping
       // them silently disables MCP_SEARCH_RECENCY_WEIGHT for every single-root
       // deployment: `searchDefaults()` reads undefined and `scoreDocument`

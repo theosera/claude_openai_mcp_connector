@@ -127,6 +127,15 @@ export interface AppConfig {
   /** Max Markdown files opened concurrently during a scan (bounds FD pressure). */
   scanConcurrency?: number;
   /**
+   * Ceiling on retained parsed text, in characters, across the parse cache.
+   *
+   * An override rather than a tuning knob: the default is sized for a vault of
+   * roughly 116 MB of source text, and a vault past that re-parses on every
+   * query instead of caching. Raising this is what a larger deployment does; the
+   * first eviction prints the same advice to stderr.
+   */
+  documentCacheMaxChars?: number;
+  /**
    * How strongly recency boosts a search hit (0 = off, the default, so an
    * upgrade changes no ranking until an operator opts in). Applied
    * multiplicatively, so it re-orders matches without surfacing non-matches.
@@ -150,6 +159,8 @@ export interface StoreConfig {
   auditSubdir?: string;
   /** Max Markdown files opened concurrently during a scan (bounds FD pressure). */
   scanConcurrency?: number;
+  /** Ceiling on retained parsed text, in characters; see AppConfig. */
+  documentCacheMaxChars?: number;
   /** Operator-level recency ranking defaults; see AppConfig. */
   searchRecencyWeight?: number;
   searchRecencyHalfLifeDays?: number;
@@ -447,6 +458,26 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const scanConcurrency =
     Number.isInteger(parsedScanConcurrency) && parsedScanConcurrency > 0 ? parsedScanConcurrency : undefined;
 
+  // Same shape as the line above, and the same reason for leaving a bad value
+  // undefined: the store's own default is a measured figure, so degrading to it
+  // is strictly better than honouring a typo that would make every query
+  // re-parse the vault.
+  //
+  // `Number` rather than `parseInt`, which is the one difference from the
+  // sibling above and is the point of the whole change. `parseInt("1.5e9", 10)`
+  // is 1 — a mistyped budget would not fail, it would silently become a cache
+  // of one character, which is the same class of defect as the mis-sized
+  // default this override exists to escape. `Number` reads "1.5e9" as
+  // 1,500,000,000, and refuses "1.5" outright rather than guessing which
+  // integer was meant. The sibling is left alone deliberately: bounding
+  // concurrency at 1 is slow, not silently 7x slower per query.
+  const rawDocumentCacheMaxChars = env.MCP_DOCUMENT_CACHE_MAX_CHARS?.trim();
+  const parsedDocumentCacheMaxChars = rawDocumentCacheMaxChars ? Number(rawDocumentCacheMaxChars) : Number.NaN;
+  const documentCacheMaxChars =
+    Number.isInteger(parsedDocumentCacheMaxChars) && parsedDocumentCacheMaxChars > 0
+      ? parsedDocumentCacheMaxChars
+      : undefined;
+
   // Recency ranking is opt-in. Left undefined (the search layer applies its own
   // default of 0 = off) unless a usable number is supplied, so a malformed value
   // degrades to "unchanged ranking" rather than to a surprising one.
@@ -490,6 +521,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     stdioAllowSkillWrite,
     allowLegacyCreateDocument,
     scanConcurrency,
+    documentCacheMaxChars,
     searchRecencyWeight,
     searchRecencyHalfLifeDays
   };

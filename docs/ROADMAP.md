@@ -86,7 +86,8 @@ Improve relevance and ergonomics of `search_documents` / `search`:
   `EAGAIN` retry + skip-and-log, so a thousands-of-notes vault no longer
   exhausts file descriptors mid-search (`src/knowledgeStore.ts`). ✅ The other
   half of "stays responsive" also landed: **the parse cache is now bounded**
-  (`DOCUMENT_CACHE_MAX_CHARS`, 24M characters of retained text, LRU eviction).
+  (`DEFAULT_DOCUMENT_CACHE_MAX_CHARS`, **192M** characters of retained text, LRU
+  eviction, overridable with `MCP_DOCUMENT_CACHE_MAX_CHARS`).
   It previously had no cap, no eviction and no delete path at all, so a note
   removed from the vault kept its parse alive for the life of the process and a
   vault larger than memory had no behaviour other than to exhaust it — measured
@@ -102,6 +103,20 @@ Improve relevance and ergonomics of `search_documents` / `search`:
   that exists, LRU and FIFO are indistinguishable. The first point-read caller —
   `get_context` is already named in the tool budget — is what would make the
   difference real.
+
+  ⚠️ **The first value shipped for that bound was 24M and it disabled the
+  cache.** It was chosen against a vault's size **on disk**; the counter sums
+  `body + foldedBody + compactBody` in UTF-16 characters, which for the same
+  vault is 80.9M (2,894 notes / 48.6 MB on disk → 27.2M body + 53.7M derived).
+  Because every read path enumerates the whole vault, a sweep that does not fit
+  evicts its own front before the next sweep arrives — the miss rate goes to
+  ~100% rather than degrading gently. Measured cost: warm full scan 91 ms →
+  689 ms, `search` 150 ms → 724 ms, retained heap unchanged after a forced GC.
+  Two things follow, and both are now pinned by tests rather than by comments:
+  the unit is ~3x the body and not the byte count on disk, and an eviction test
+  must state its own budget instead of inheriting the shipped default — the
+  original tests sized their fixtures to straddle 24M, so any re-sizing would
+  have left them passing without evicting.
 
 Concretized by the [context-engineering proposal](./context-engineering.md)
 (survey-based, 2026-07) into two slices, both now landed — which closes out this

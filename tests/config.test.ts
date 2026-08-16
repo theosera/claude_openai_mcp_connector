@@ -297,6 +297,32 @@ describe("startup env boundary (spawned entrypoint)", () => {
   }, 30_000);
 });
 
+describe("parse cache bound override", () => {
+  // The override exists because the default is a measured figure and a vault
+  // larger than the one it was measured on re-parses on every query. A typo in
+  // it must therefore not become a tiny cache — that failure is silent apart
+  // from a stopwatch, which is how the original mis-sizing survived review.
+  it("takes a positive integer and ignores anything else", () => {
+    expect(
+      loadConfig({ KNOWLEDGE_ROOT: "/vaults/alpha", MCP_DOCUMENT_CACHE_MAX_CHARS: "5000" }).documentCacheMaxChars
+    ).toBe(5000);
+    for (const bad of ["0", "-1", "abc", "", "  ", "1.5"]) {
+      expect(
+        loadConfig({ KNOWLEDGE_ROOT: "/vaults/alpha", MCP_DOCUMENT_CACHE_MAX_CHARS: bad }).documentCacheMaxChars
+      ).toBeUndefined();
+    }
+    expect(loadConfig({ KNOWLEDGE_ROOT: "/vaults/alpha" }).documentCacheMaxChars).toBeUndefined();
+
+    // ★ The case that decides `Number` over `parseInt`. A budget written in
+    // scientific notation is a plausible thing to type for a number this size;
+    // `parseInt` reads it as 1 and hands back a cache of one character, which
+    // looks like a working server and costs a full re-parse per query.
+    expect(
+      loadConfig({ KNOWLEDGE_ROOT: "/vaults/alpha", MCP_DOCUMENT_CACHE_MAX_CHARS: "1.5e9" }).documentCacheMaxChars
+    ).toBe(1_500_000_000);
+  });
+});
+
 describe("patch state directory default", () => {
   // A two-step plan holds the full proposed document text, so where the default
   // lands decides where vault plaintext lands. Resolved against the working

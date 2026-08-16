@@ -6,9 +6,11 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ensurePatchStateDir, PLAN_MAX_AGE_MS, prunePatchState } from "../src/patchState.js";
 import {
+  DEFAULT_DOCUMENT_CACHE_MAX_CHARS,
   isTransientFsError,
   KnowledgeStore,
   mapWithConcurrency,
+  REFERENCE_VAULT_RETAINED_CHARS,
   resolveUniqueReference
 } from "../src/knowledgeStore.js";
 import { MultiRootStore } from "../src/multiRootStore.js";
@@ -2033,11 +2035,18 @@ describe("the parse cache is bounded, and evicts least-recently-used", () => {
     // It is not something to assert a number against, so the eviction is pinned
     // sequentially and the concurrent case is described here instead of being
     // turned into a flaky expectation.
+    //
+    // The budget is stated here rather than inherited from the shipped default.
+    // It used to be inherited, and that coupled a test about EVICTION to a
+    // constant about SIZING: the note sizes above were picked to straddle 24M,
+    // so re-sizing the default would have turned this into a test that quietly
+    // stopped evicting and still passed its cold assertion.
     const store = new KnowledgeStore({
       knowledgeRoot: root,
       writeMode: "two_step",
       patchStateDir,
-      scanConcurrency: 1
+      scanConcurrency: 1,
+      documentCacheMaxChars: 24_000_000
     });
     await store.init();
 
@@ -2066,11 +2075,117 @@ describe("the parse cache is bounded, and evicts least-recently-used", () => {
     // The eviction loop must never evict the entry it just inserted, or a note
     // over the cap would be parsed and immediately discarded on every access —
     // and, worse, the loop would have nothing left to free.
+    //
+    // The budget is stated for the same reason as in the eviction test: "larger
+    // than the whole budget" is a relation between the note and the cap, and
+    // leaving the cap implicit made it a relation between the note and whatever
+    // the default happened to be. Against the shipped default this note is no
+    // longer over budget at all, so the assertion would have passed without ever
+    // reaching the branch it names.
     await writeBigNote("huge.md", 30_000_000);
-    const store = new KnowledgeStore({ knowledgeRoot: root, writeMode: "two_step", patchStateDir });
+    const store = new KnowledgeStore({
+      knowledgeRoot: root,
+      writeMode: "two_step",
+      patchStateDir,
+      documentCacheMaxChars: 24_000_000
+    });
     await store.init();
 
     expect((await store.fetch("huge.md")).title).toBe("huge.md");
     expect(await countOpens(() => store.fetch("huge.md"))).toBe(0);
+  });
+
+  it("counts the derived copies, not just the body — the unit the default is set in", async () => {
+    // The defect this pins is a UNIT error, not an off-by-one. 24,000,000 was
+    // chosen by reading a vault's size on disk as the working set to stay above,
+    // while what the cache counts is `body + foldedBody + compactBody` — about
+    // three times the body, and in UTF-16 characters rather than UTF-8 bytes.
+    //
+    // The budget below sits BETWEEN the two readings: two 1M-character notes are
+    // 2M of body (which fits) and ~6M once the derived copies are counted (which
+    // does not). So a cache that counted only bodies would keep both and open
+    // nothing on the second pass; the real one evicts and re-opens.
+    await writeBigNote("one.md", 1_000_000);
+    await writeBigNote("two.md", 1_000_000);
+    const store = new KnowledgeStore({
+      knowledgeRoot: root,
+      writeMode: "two_step",
+      patchStateDir,
+      scanConcurrency: 1,
+      documentCacheMaxChars: 2_500_000
+    });
+    await store.init();
+
+    expect(await countOpens(() => store.listDocuments())).toBe(2);
+    expect(await countOpens(() => store.listDocuments())).toBe(2);
+  });
+
+  it("ships a default that holds the reference vault, in that unit", async () => {
+    // A constant guard, deliberately. The shipped value was 3.37x too small for
+    // the vault its own comment cited as fitting comfortably, and nothing failed:
+    // every test in this file builds a synthetic vault of a size chosen to
+    // straddle whatever the cap happens to be, so all of them pass at any cap.
+    //
+    // Measured, 2,894 notes / 48.6 MB on disk: 27,217,461 body characters plus
+    // 53,675,452 of derived copies = 80,892,913. The cost of not fitting was a
+    // warm full scan going 91 ms -> 689 ms and search 150 ms -> 724 ms, with no
+    // reduction in retained heap to show for it.
+    expect(DEFAULT_DOCUMENT_CACHE_MAX_CHARS).toBeGreaterThan(REFERENCE_VAULT_RETAINED_CHARS);
+  });
+
+  it("says once that the vault does not fit, instead of costing 7x in silence", async () => {
+    // A cap that turns every query into a full re-parse is not a gradual
+    // degradation, so it may not be a silent one either. Once per process, not
+    // once per eviction: the sweep that overflows evicts hundreds of times.
+    const written: string[] = [];
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      written.push(String(chunk));
+      return true;
+    }) as unknown as typeof process.stderr.write);
+    try {
+      await writeBigNote("a.md", 1_000_000);
+      await writeBigNote("b.md", 1_000_000);
+      await writeBigNote("c.md", 1_000_000);
+      const store = new KnowledgeStore({
+        knowledgeRoot: root,
+        writeMode: "two_step",
+        patchStateDir,
+        scanConcurrency: 1,
+        documentCacheMaxChars: 2_500_000
+      });
+      await store.init();
+      await store.listDocuments();
+      await store.listDocuments();
+    } finally {
+      spy.mockRestore();
+    }
+
+    const lines = written.filter((line) => line.includes("parse cache is smaller"));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("MCP_DOCUMENT_CACHE_MAX_CHARS");
+    // No path, no title, no body: the same disclosure rule the skip-and-log
+    // lines follow.
+    expect(lines[0]).not.toContain(root);
+  });
+
+  it("keeps a vault the size of the reference one entirely cached, at the SHIPPED default", async () => {
+    // The false-positive direction for the default itself, at a scale that can
+    // actually fail. The test this replaces used 20 notes of a few dozen bytes:
+    // it asserted "normal operation does not evict" against a fixture four
+    // orders of magnitude below normal operation, so it passed at any budget and
+    // said nothing about the one that shipped.
+    //
+    // 30 notes of a megabyte is 90M characters counted — past the reference
+    // vault's measured 80,892,913, so a default that cannot hold that vault
+    // cannot pass this either. Note COUNT is not what the budget measures, so
+    // fewer, larger notes buy the same coverage without writing 2,894 files.
+    for (let i = 0; i < 30; i++) {
+      await writeBigNote(`big${i}.md`, 1_000_000);
+    }
+    const store = new KnowledgeStore({ knowledgeRoot: root, writeMode: "two_step", patchStateDir });
+    await store.init();
+    await store.listDocuments();
+
+    expect(await countOpens(() => store.listDocuments())).toBe(0);
   });
 });

@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig, loadHttpConfig } from "../src/config.js";
 import { KnowledgeStore } from "../src/knowledgeStore.js";
 import { MultiRootStore, createStore } from "../src/multiRootStore.js";
@@ -235,6 +235,48 @@ describe("MultiRootStore", () => {
     const recencyOf = (index: number) => results[index].score_breakdown?.recency ?? 0;
     expect(recencyOf(0)).toBeGreaterThan(recencyOf(1));
     expect(results[0].score).toBeGreaterThan(results[1].score);
+  });
+
+  // Same failure mode as the recency defaults above, one field later. The cache
+  // bound is only reachable through these two construction sites, and the
+  // single-root branch is the one every real deployment takes — so a field wired
+  // into the composite and forgotten here would be dead in production while the
+  // suite stayed green, which is exactly what #112 was.
+  it("carries the parse-cache bound through createStore's single-root branch", async () => {
+    const cacheRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-cachewire-"));
+    const body = "z".repeat(1_000_000);
+    await fs.writeFile(path.join(cacheRoot, "one.md"), `---\ntitle: One\n---\n\n${body}\n`, "utf8");
+    await fs.writeFile(path.join(cacheRoot, "two.md"), `---\ntitle: Two\n---\n\n${body}\n`, "utf8");
+
+    const store = createStore({
+      ...makeConfig([{ name: "vault", path: cacheRoot }]),
+      knowledgeRoots: [{ name: "vault", path: cacheRoot }],
+      scanConcurrency: 1,
+      // Far below what these two notes retain, so a bound that arrived must
+      // evict — and a bound that was dropped cannot.
+      documentCacheMaxChars: 2_500_000
+    });
+    await store.init();
+
+    let opens = 0;
+    const realOpen = fs.open.bind(fs);
+    const spy = vi.spyOn(fs, "open").mockImplementation((...args: Parameters<typeof fs.open>) => {
+      opens += 1;
+      return realOpen(...args);
+    });
+    try {
+      await store.listDocuments();
+      opens = 0;
+      await store.listDocuments();
+    } finally {
+      spy.mockRestore();
+      await fs.rm(cacheRoot, { recursive: true, force: true });
+    }
+
+    // Both notes re-read: the second insertion of each pass evicts the first.
+    // Without the bound reaching this store the default applies, both fit, and
+    // this is 0.
+    expect(opens).toBe(2);
   });
 
   it("searches across every root and labels hits with their root", async () => {
