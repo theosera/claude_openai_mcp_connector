@@ -13,8 +13,21 @@ export const PATCH_STATE_FILE_MODE = 0o600;
  * What a plan id may look like. The single definition — both stores validate
  * against this before building a path, and the sweep below recognises a file by
  * it. Two copies of a naming rule is how the sweep and the writers drift apart.
+ *
+ * ★ The UUID SHAPE, not "36 characters drawn from hex and dashes", which is what
+ * this was. The loose form predates the sweep and was harmless while it only
+ * validated an incoming patch_id — the id still had to name a real staged file.
+ * Sharing it with the sweep gave it a second job it was never accurate enough
+ * for: deciding what may be DELETED. Measured, `"------------------------------------.json"`
+ * — thirty-six dashes — classified as a plan.
+ *
+ * Every id this server produces comes from crypto.randomUUID(), and the Skill
+ * plan schema already validates `z.string().uuid()`, so this rejects nothing a
+ * writer can emit; it only stops the sweep from claiming a neighbouring file
+ * that happens to fall inside the old character class. Narrowing what an
+ * untrusted patch_id may look like is a free improvement in the same direction.
  */
-export const PATCH_ID_PATTERN = /^[0-9a-f-]{36}$/i;
+export const PATCH_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Skill plans are named apart from document plans so the two cannot collide. */
 export const SKILL_PLAN_PREFIX = "skill-create-";

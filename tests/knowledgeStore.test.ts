@@ -1538,7 +1538,22 @@ describe("staged plans expire instead of accumulating forever", () => {
     // and `MCP_OAUTH_STATE_FILE` are both operator-chosen with nothing keeping
     // them apart, so `oauth-state.json` is not hypothetical: it is every
     // registered client and every live token, gone on the seventh day.
-    const survivors = ["notes.txt", "oauth-state.json", "not-a-uuid.json", "skill-create-nope.json"];
+    //
+    // ★ The 36-dash entry is the one a hand-picked list would miss. The id
+    // pattern was `[0-9a-f-]{36}` — any 36 characters from hex plus dash — which
+    // was harmless while it only validated an incoming patch_id (the id still had
+    // to name a real staged file) and became a deletion rule the moment the sweep
+    // shared it. Found by probing the built sweep against a directory of
+    // near-miss names rather than by reading it.
+    const survivors = [
+      "notes.txt",
+      "oauth-state.json",
+      "not-a-uuid.json",
+      "skill-create-nope.json",
+      "------------------------------------.json",
+      "deadbeefdeadbeefdeadbeefdeadbeef.json",
+      "skill-create-------------------------------------.json"
+    ];
     for (const name of survivors) {
       const file = path.join(patchStateDir, name);
       await fs.writeFile(file, "keep me", "utf8");
