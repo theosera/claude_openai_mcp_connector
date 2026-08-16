@@ -10,6 +10,44 @@ export const PATCH_STATE_DIR_MODE = 0o700;
 export const PATCH_STATE_FILE_MODE = 0o600;
 
 /**
+ * What a plan id may look like. The single definition — both stores validate
+ * against this before building a path, and the sweep below recognises a file by
+ * it. Two copies of a naming rule is how the sweep and the writers drift apart.
+ */
+export const PATCH_ID_PATTERN = /^[0-9a-f-]{36}$/i;
+
+/** Skill plans are named apart from document plans so the two cannot collide. */
+export const SKILL_PLAN_PREFIX = "skill-create-";
+
+/**
+ * Is this directory entry one of OUR plan files?
+ *
+ * The sweep used to ask only whether the name ended in `.json`, while the
+ * comment above it — and its test — said it was "scoped to plan JSON". Those are
+ * not the same claim, and the gap is not academic: `MCP_PATCH_STATE_DIR` and
+ * `MCP_OAUTH_STATE_FILE` are both operator-chosen paths with no rule keeping
+ * them apart, so pointing the second inside the first meant the sweep deleted
+ * `oauth-state.json` — every registered client and every live token, on the
+ * seventh day. The test never noticed because the file it planted to prove
+ * "we leave other files alone" was `notes.txt`, which the extension check
+ * already excluded. It tested the half that worked.
+ *
+ * ★ Matching bare UUIDs is NOT enough, and getting this wrong would have
+ * silently undone this PR's own design point. Document plans are `<uuid>.json`,
+ * but Skill plans are `skill-create-<uuid>.json` — and skillStore is precisely
+ * the writer the sweep was extended to reach. A UUID-only rule would have
+ * dropped it straight back out while every test stayed green.
+ */
+export function isPlanFileName(entry: string): boolean {
+  if (!entry.endsWith(".json")) {
+    return false;
+  }
+  const stem = entry.slice(0, -".json".length);
+  const id = stem.startsWith(SKILL_PLAN_PREFIX) ? stem.slice(SKILL_PLAN_PREFIX.length) : stem;
+  return PATCH_ID_PATTERN.test(id);
+}
+
+/**
  * Creates the configured patch state directory owner-only, and tightens one
  * that already exists. Both halves are needed: `fs.mkdir` never chmods a
  * directory that is already there, so a directory left group/other-readable by
@@ -31,6 +69,13 @@ export const PATCH_STATE_FILE_MODE = 0o600;
 export async function ensurePatchStateDir(dir: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true, mode: PATCH_STATE_DIR_MODE });
   if (process.platform === "win32") {
+    // Swept here too, and this branch is the asymmetric one worth naming: the
+    // O_NOFOLLOW validation below does not run, so unlike every other platform
+    // the deletion is not preceded by a refusal to follow a linked state
+    // directory. Kept anyway, because the alternative is that Windows never
+    // expires a plan at all — the defect this exists to close. It does not
+    // widen anything either: the `mkdir` on the line above already follows such
+    // a link, so plans were being WRITTEN through it before the sweep existed.
     await prunePatchState(dir);
     return; // POSIX mode bits are not meaningful here.
   }
@@ -123,6 +168,10 @@ export const PLAN_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 /**
  * Delete plan files older than PLAN_MAX_AGE_MS.
  *
+ * "Plan files" per isPlanFileName, which is the same rule the two stores build
+ * their paths from — not "anything ending in .json", which is what this asked
+ * before and which reached whatever else an operator had put in the directory.
+ *
  * Age comes from the file's own mtime. Content freshness must never rest on
  * mtime — a checkout or a copy moves it while the bytes stay old — but nothing
  * here reads the plan: this asks how long the FILE has existed, and these files
@@ -144,7 +193,7 @@ export async function prunePatchState(dir: string, now: number = Date.now()): Pr
 
   let removed = 0;
   for (const entry of entries) {
-    if (!entry.endsWith(".json")) {
+    if (!isPlanFileName(entry)) {
       continue;
     }
     const file = path.join(dir, entry);

@@ -1069,6 +1069,27 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       property the code states. Related to the vault-binding item below and worth
       settling with it; both are INV-3 changes and neither should ride along with
       a limits patch.
+- [ ] **Bound the staged-plan set by count or bytes, and give a way to discard
+      one** — 🔭 the two halves of the plan-retention problem that the seven-day
+      TTL does **not** close, written down so "F4 is done" does not quietly cover
+      them. Inside the window a client may stage without limit, and each plan
+      holds vault plaintext outside the vault.
+
+      **They have to be decided together, which is why neither is in the TTL
+      patch.** Every eviction policy available without a discard tool is worse
+      than the unbounded window: dropping the oldest plan silently deletes one
+      the user may be seconds from approving, and refusing to stage past a cap
+      locks the client out with no way to clear the set — the only way to remove
+      a plan is still to perform the operation that was just declined. A
+      `discard_plan` tool fixes both, and it is a **tool-budget decision**, not a
+      free one: `registerTool` is called 15 times and `docs/context-engineering.md`
+      caps the net surface at 15 → 17 with both slots already named
+      (`get_context`, `get_project_state`). Spending a budgeted slot inside a bug
+      fix is the drift the ROADMAP firing rule exists to prevent.
+
+      For comparison, the OAuth store has capped + pruned collections *and*
+      orphan pruning, so the asymmetry between the two state stores is real and
+      deliberate rather than an oversight.
 - [x] **RFC 9207 `iss` in the authorization response** (`src/oauth/`) — ✅ the
       `authorizePost` success redirect (the only redirect the AS emits — error
       paths render a 400 page precisely so codes cannot leak via redirects, so

@@ -33,6 +33,23 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Staged two-step plans now expire after seven days instead of living
+  forever.** A plan file is deleted only when it is *applied*, so one the user
+  declined — or one whose conversation simply ended — sat on disk for the life of
+  the machine holding the pre-edit text and the full proposed text of a note
+  **outside the vault**, with no tool to discard it. The sweep runs from
+  `ensurePatchStateDir`, which every plan-staging store already calls, so it
+  covers document *and* Skill plans and a writer added later inherits it.
+
+  Two properties worth knowing rather than assuming. It **deletes only this
+  server's plan files** — `<uuid>.json` and `skill-create-<uuid>.json`, the same
+  rule the stores build their paths from — so an `MCP_OAUTH_STATE_FILE` or
+  anything else an operator keeps in that directory is left alone. And it is
+  **not a timer**: it fires at start-up and at each staging, so a server that
+  goes quiet right after a plan is declined does not sweep again until something
+  else happens. What that bounds is accumulation, which is the defect; the idle
+  residue is one file.
+
 - **`MCP_SEARCH_RECENCY_WEIGHT` did nothing on a single-root vault.**
   `createStore` builds a plain `KnowledgeStore` when exactly one root is
   configured, and that branch omitted the two recency fields, so the store's

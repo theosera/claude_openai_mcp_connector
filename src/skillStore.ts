@@ -5,7 +5,7 @@ import { createTwoFilesPatch } from "diff";
 import matter from "gray-matter";
 import { z } from "zod";
 import { assertNoServerOwnedFrontmatter, SAFE_MATTER_OPTIONS } from "./frontmatter.js";
-import { ensurePatchStateDir } from "./patchState.js";
+import { ensurePatchStateDir, PATCH_ID_PATTERN, SKILL_PLAN_PREFIX } from "./patchState.js";
 import { relativeToRoot, resolveExistingRoot, resolveInsideRoot, toPosixPath } from "./pathSafety.js";
 
 const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -188,10 +188,10 @@ export class SkillStore {
   }
 
   private patchPath(patchId: string): string {
-    if (!/^[0-9a-f-]{36}$/i.test(patchId)) {
+    if (!PATCH_ID_PATTERN.test(patchId)) {
       throw new Error("Invalid patch_id.");
     }
-    return path.join(this.config.patchStateDir, `skill-create-${patchId}.json`);
+    return path.join(this.config.patchStateDir, `${SKILL_PLAN_PREFIX}${patchId}.json`);
   }
 
   private async root(): Promise<string> {

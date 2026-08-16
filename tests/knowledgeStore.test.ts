@@ -1505,6 +1505,14 @@ describe("staged plans expire instead of accumulating forever", () => {
     //
     // Deleting is the one step here that cannot be undone, so it goes last,
     // after every reason to refuse has been evaluated.
+    if (process.platform === "win32") {
+      // The refusal is the O_NOFOLLOW open, which ensurePatchStateDir skips
+      // here along with the rest of the POSIX mode handling — so there is no
+      // rejection to assert and the sweep legitimately runs. Same guard as the
+      // sibling permission tests above; without it this case would fail on the
+      // one platform where the behaviour it describes does not exist.
+      return;
+    }
     const realTarget = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-ttl-target-"));
     const victim = path.join(realTarget, "44444444-4444-4444-8444-444444444444.json");
     await fs.writeFile(victim, "{}", "utf8");
@@ -1519,15 +1527,47 @@ describe("staged plans expire instead of accumulating forever", () => {
     await fs.rm(realTarget, { recursive: true, force: true });
   });
 
-  it("leaves files it does not own alone", async () => {
+  it("leaves files it does not own alone, including other .json", async () => {
     // The sweep is scoped to plan JSON. Anything else in the directory is not
     // this server's to delete — the false-positive direction.
-    const other = path.join(patchStateDir, "notes.txt");
-    await fs.writeFile(other, "keep me", "utf8");
-    await age(other, PLAN_MAX_AGE_MS * 10);
+    //
+    // ★ The .json entries are the ones that matter, and the ones this test used
+    // to omit. It planted `notes.txt` only, which the old `endsWith(".json")`
+    // filter excluded anyway — so it asserted the half that already worked while
+    // the sweep deleted every other `.json` in the directory. `MCP_PATCH_STATE_DIR`
+    // and `MCP_OAUTH_STATE_FILE` are both operator-chosen with nothing keeping
+    // them apart, so `oauth-state.json` is not hypothetical: it is every
+    // registered client and every live token, gone on the seventh day.
+    const survivors = ["notes.txt", "oauth-state.json", "not-a-uuid.json", "skill-create-nope.json"];
+    for (const name of survivors) {
+      const file = path.join(patchStateDir, name);
+      await fs.writeFile(file, "keep me", "utf8");
+      await age(file, PLAN_MAX_AGE_MS * 10);
+    }
 
     expect(await prunePatchState(patchStateDir)).toBe(0);
-    expect(await fs.readFile(other, "utf8")).toBe("keep me");
+    for (const name of survivors) {
+      expect(await fs.readFile(path.join(patchStateDir, name), "utf8")).toBe("keep me");
+    }
+  });
+
+  it("still sweeps SKILL plans, which are not named like document plans", async () => {
+    // The trap in narrowing the filter, and the reason it is one shared rule
+    // rather than a regex written twice. Document plans are `<uuid>.json`;
+    // Skill plans are `skill-create-<uuid>.json`. Matching bare UUIDs would read
+    // as the obvious fix and would quietly drop skillStore back out of the sweep
+    // — the very writer this change reaches for, since it was the one that used
+    // to call ensurePatchStateDir from init() alone.
+    const documentPlan = path.join(patchStateDir, "55555555-5555-4555-8555-555555555555.json");
+    const skillPlan = path.join(patchStateDir, "skill-create-66666666-6666-4666-8666-666666666666.json");
+    await fs.writeFile(documentPlan, "{}", "utf8");
+    await fs.writeFile(skillPlan, "{}", "utf8");
+    await age(documentPlan, PLAN_MAX_AGE_MS + 60_000);
+    await age(skillPlan, PLAN_MAX_AGE_MS + 60_000);
+
+    expect(await prunePatchState(patchStateDir)).toBe(2);
+    await expect(fs.access(documentPlan)).rejects.toThrow();
+    await expect(fs.access(skillPlan)).rejects.toThrow();
   });
 
   it("does not fail a start-up when the directory cannot be listed", async () => {

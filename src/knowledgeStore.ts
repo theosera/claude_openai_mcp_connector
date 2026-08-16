@@ -12,7 +12,7 @@ import {
   titleFromMarkdown
 } from "./frontmatter.js";
 import { extractAllLocalLinks, extractMarkdownLinks, resolveRelativeLink } from "./markdownLinks.js";
-import { ensurePatchStateDir, PATCH_STATE_FILE_MODE } from "./patchState.js";
+import { ensurePatchStateDir, PATCH_ID_PATTERN, PATCH_STATE_FILE_MODE } from "./patchState.js";
 import { compactWhitespace, normalizePathPrefix, searchDocuments, type SearchFilters } from "./search.js";
 import { normalizeForMatch } from "./searchText.js";
 import type { StoreConfig } from "./config.js";
@@ -821,7 +821,7 @@ export class KnowledgeStore implements VaultStore {
   }
 
   private patchPath(patchId: string): string {
-    if (!/^[0-9a-f-]{36}$/i.test(patchId)) {
+    if (!PATCH_ID_PATTERN.test(patchId)) {
       throw new Error("Invalid patch_id.");
     }
     return path.join(this.config.patchStateDir, `${patchId}.json`);
