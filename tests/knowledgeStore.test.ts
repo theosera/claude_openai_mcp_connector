@@ -1444,3 +1444,131 @@ describe("frontmatter id squatting (INV-2)", () => {
     await expect(single.fetch("missing/note.md")).rejects.toThrow(/not found/i);
   });
 });
+
+describe("one unreachable vault entry does not take the whole scan down", () => {
+  let root: string;
+  let patchStateDir: string;
+  let store: KnowledgeStore;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-walk-vault-"));
+    patchStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-walk-patches-"));
+    await fs.writeFile(path.join(root, "kept.md"), "---\ntitle: Kept\n---\n\nZZKEPTBODY\n", "utf8");
+    await fs.mkdir(path.join(root, "nested"), { recursive: true });
+    await fs.writeFile(path.join(root, "nested", "deep.md"), "---\ntitle: Deep\n---\n\nZZDEEPBODY\n", "utf8");
+    store = new KnowledgeStore({ knowledgeRoot: root, writeMode: "two_step", patchStateDir });
+    await store.init();
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(patchStateDir, { recursive: true, force: true });
+  });
+
+  /**
+   * ⚠️ The assertion that matters is that the OTHER notes come back, not that
+   * listDocuments resolved. A walk that swallowed everything and returned []
+   * would satisfy "did not throw" while being a worse failure than the one being
+   * fixed — the vault would look empty instead of broken.
+   */
+  async function expectVaultStillReadable(): Promise<void> {
+    const documents = await store.listDocuments();
+    expect(documents.map((document) => document.relativePath).sort()).toEqual(["kept.md", "nested/deep.md"]);
+    expect((await store.search({ query: "ZZDEEPBODY" })).results).toHaveLength(1);
+    expect((await store.fetch("kept.md")).title).toBe("Kept");
+    expect(await store.listProjects()).toBeDefined();
+  }
+
+  it("skips a dangling symlink instead of aborting every read tool", async () => {
+    await fs.symlink(path.join(root, "gone.md"), path.join(root, "broken.md"));
+    await expectVaultStillReadable();
+  });
+
+  it("skips a dangling symlink that is not even a note", async () => {
+    // The everyday shape, and the reason the resolution happens before the `.md`
+    // test: a synced folder leaves a broken attachment link behind, and that used
+    // to be indistinguishable from a containment failure.
+    await fs.symlink(path.join(root, "gone.png"), path.join(root, "image.png"));
+    await expectVaultStillReadable();
+  });
+
+  it("skips a symlinked directory whose target is gone", async () => {
+    await fs.symlink(path.join(root, "missing-dir"), path.join(root, "linked-dir"));
+    await expectVaultStillReadable();
+  });
+
+  it("skips a subdirectory the process may not read", async () => {
+    // EACCES cannot be produced as root, which is how this suite runs in some
+    // environments (containers, CI images that do not drop privileges) — chmod
+    // 000 stays readable and the test would pass without exercising anything.
+    // Rather than let that silently rot, the error is injected at the syscall,
+    // which is what this guard actually classifies.
+    const forbidden = path.join(root, "nested");
+    const realReaddir = fs.readdir.bind(fs);
+    vi.spyOn(fs, "readdir").mockImplementation((async (target: string, options: unknown) => {
+      if (path.resolve(String(target)) === path.resolve(forbidden)) {
+        const error = new Error("EACCES: permission denied") as NodeJS.ErrnoException;
+        error.code = "EACCES";
+        throw error;
+      }
+      return realReaddir(target as never, options as never);
+    }) as unknown as typeof fs.readdir);
+
+    const documents = await store.listDocuments();
+    // The unreadable subtree is gone from the results; everything else remains.
+    expect(documents.map((document) => document.relativePath)).toEqual(["kept.md"]);
+    expect((await store.fetch("kept.md")).title).toBe("Kept");
+  });
+
+  it("STILL aborts on a symlink that escapes the root", async () => {
+    // The other half, and the one a broad try/catch would quietly destroy. A
+    // containment failure is not an availability accident: it is INV-1 refusing,
+    // and it is the only loud signal that the vault is misconfigured.
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-walk-outside-"));
+    await fs.writeFile(path.join(outside, "secret.md"), "---\ntitle: Outside\n---\n\nZZOUTSIDE\n", "utf8");
+    await fs.symlink(path.join(outside, "secret.md"), path.join(root, "escape.md"));
+
+    await expect(store.listDocuments()).rejects.toThrow(/escapes|outside/i);
+    await fs.rm(outside, { recursive: true, force: true });
+  });
+
+  it("STILL aborts on an escaping symlink NESTED inside a subdirectory", async () => {
+    // The case that actually exercises walkSubtree's catch. A root-level escape
+    // throws in the root's own loop, where no try exists — so a test that only
+    // places one there passes no matter how the classifier behaves.
+    //
+    // Found by reverse verification: forcing isUnreachableEntryError to return
+    // true left the root-level escape test GREEN, which said the test never
+    // reached the branch rather than that the branch was safe.
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-walk-outside2-"));
+    await fs.writeFile(path.join(outside, "secret.md"), "---\ntitle: Outside\n---\n\nZZOUTSIDE2\n", "utf8");
+    await fs.symlink(path.join(outside, "secret.md"), path.join(root, "nested", "escape.md"));
+
+    await expect(store.listDocuments()).rejects.toThrow(/escapes|outside/i);
+    await fs.rm(outside, { recursive: true, force: true });
+  });
+
+  it("STILL aborts on a symlink to a DIRECTORY outside the root", async () => {
+    // A directory target reaches the recursive descent rather than the file
+    // branch, so it is a separate path through the same guard.
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-walk-outsidedir-"));
+    await fs.writeFile(path.join(outside, "secret.md"), "---\ntitle: Outside\n---\n\nZZOUTSIDE3\n", "utf8");
+    await fs.symlink(outside, path.join(root, "nested", "linked-out"));
+
+    await expect(store.listDocuments()).rejects.toThrow(/escapes|outside/i);
+    await fs.rm(outside, { recursive: true, force: true });
+  });
+
+  it("STILL aborts when the root itself cannot be read", async () => {
+    // A root that fails is a configuration error, not one bad entry. Serving an
+    // empty vault there would be the same "looks empty instead of broken"
+    // failure the skip is careful to avoid.
+    const gone = new KnowledgeStore({
+      knowledgeRoot: path.join(root, "does-not-exist"),
+      writeMode: "two_step",
+      patchStateDir
+    });
+    await expect(gone.init()).rejects.toThrow();
+  });
+});

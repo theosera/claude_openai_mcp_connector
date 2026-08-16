@@ -92,6 +92,36 @@ export function isTransientFsError(error: unknown): boolean {
   return typeof code === "string" && TRANSIENT_FS_CODES.has(code);
 }
 
+/**
+ * Filesystem entries the walk cannot reach right now: a symlink whose target is
+ * gone, a directory it may not open, a path that changed type underneath it.
+ *
+ * The distinction this draws is the whole point of the guard it serves. The walk
+ * has two failure classes that used to look identical, because both threw out of
+ * the same call and aborted every read tool:
+ *
+ *   - the entry ESCAPES the root — `relativeToRoot` throws a plain Error with no
+ *     errno, so it never matches here and keeps aborting the walk. That is INV-1
+ *     failing closed, and it is the only loud signal an operator gets that the
+ *     vault is misconfigured;
+ *   - the entry is UNREACHABLE — an errno from the OS. Nothing about containment
+ *     is in question; a synced folder moved and left a dangling link behind.
+ *
+ * Matching on errno rather than wrapping a `try` around the whole loop is what
+ * keeps the first class loud. A catch broad enough to swallow the escape would
+ * turn a containment refusal into a skipped file.
+ */
+function isUnreachableEntryError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" && (code === "ENOENT" || code === "EACCES" || code === "EPERM" || code === "ELOOP");
+}
+
+/** Basename only, matching readDocumentResilient: enough to find the bad entry,
+ *  not enough to disclose where the vault lives. */
+function warnSkippedEntry(absolutePath: string, reason: string): void {
+  process.stderr.write(`[knowledge] skipped unreachable vault entry (${reason}): ${path.basename(absolutePath)}\n`);
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -851,6 +881,33 @@ function subtreeMayMatch(dirKey: string, prefix: string | undefined): boolean {
   return prefix === undefined || dirKey.startsWith(prefix) || prefix.startsWith(dirKey);
 }
 
+/**
+ * Descend into a subtree, skipping it whole if it cannot be read.
+ *
+ * Only reachable from a PARENT directory's entry loop, never for the root — a
+ * root that cannot be read is a configuration error and must keep throwing, not
+ * quietly serve an empty vault.
+ *
+ * Containment failures are not caught here (see isUnreachableEntryError): a
+ * symlink escape found several levels down still aborts the whole walk.
+ */
+async function walkSubtree(
+  root: string,
+  options: ListDocumentsOptions,
+  dir: string,
+  visited: Set<string>
+): Promise<string[]> {
+  try {
+    return await walkMarkdownFiles(root, options, dir, visited);
+  } catch (error) {
+    if (!isUnreachableEntryError(error)) {
+      throw error;
+    }
+    warnSkippedEntry(dir, "unreadable directory");
+    return [];
+  }
+}
+
 async function walkMarkdownFiles(
   root: string,
   options: ListDocumentsOptions = {},
@@ -892,18 +949,44 @@ async function walkMarkdownFiles(
       // opt-out never changes the result set. Kept as the correct rule rather
       // than as a verified one — noted so the next reader does not mistake the
       // green suite for coverage of this branch.
-      const realPath = await fs.realpath(absolutePath);
+      //
+      // Resolved before the `.md` test, so a dangling link to an ATTACHMENT used
+      // to abort every read tool just as surely as one to a note. That is the
+      // everyday shape: a synced folder (iCloud, Dropbox) or a moved directory
+      // leaves broken links behind, and none of it is a containment question.
+      let realPath: string;
+      try {
+        realPath = await fs.realpath(absolutePath);
+      } catch (error) {
+        if (!isUnreachableEntryError(error)) {
+          throw error;
+        }
+        warnSkippedEntry(absolutePath, "broken symlink");
+        continue;
+      }
+      // OUTSIDE the try, and it must stay there: this is the containment check,
+      // and it throws a plain Error, so widening either catch to cover it would
+      // silently downgrade an INV-1 refusal into a skipped entry.
       relativeToRoot(root, realPath);
-      const stat = await fs.stat(realPath);
+      let stat: Awaited<ReturnType<typeof fs.stat>>;
+      try {
+        stat = await fs.stat(realPath);
+      } catch (error) {
+        if (!isUnreachableEntryError(error)) {
+          throw error;
+        }
+        warnSkippedEntry(absolutePath, "unreadable symlink target");
+        continue;
+      }
       if (stat.isDirectory()) {
-        files.push(...(await walkMarkdownFiles(root, {}, realPath, visited)));
+        files.push(...(await walkSubtree(root, {}, realPath, visited)));
       } else if (stat.isFile() && realPath.endsWith(".md")) {
         files.push(realPath);
       }
       continue;
     }
     if (entry.isDirectory()) {
-      files.push(...(await walkMarkdownFiles(root, options, absolutePath, visited)));
+      files.push(...(await walkSubtree(root, options, absolutePath, visited)));
     } else if (entry.isFile() && entry.name.endsWith(".md")) {
       // Same NFC form relativeToRoot would produce, without paying path.relative
       // per file. Only ever used to decide whether to read the file.
