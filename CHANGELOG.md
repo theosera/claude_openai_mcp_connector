@@ -6,7 +6,55 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`trace_sources` now says what each link resolved to, and can walk two hops.**
+  A new `resolved_outgoing[]` labels every entry of `outgoing_links` with
+  `resolved`, the `target_path` / `target_id` it landed on, or the
+  `candidates[]` it could have meant. Optional `depth` (1–2) and `direction`
+  (`out` / `in` / `both`) add a bounded `related[]` neighbourhood — node cap 50,
+  fan-out 20 per node taken most-recent-first, and **hub damping**: a note with
+  degree above 30 comes back as a neighbour but is not expanded through, so one
+  MOC cannot pull the vault into a depth-2 answer. The three long-standing
+  fields keep their shape, `related` is absent unless `depth` > 1, and
+  `direction` shapes only `related` — so a caller that starts passing it cannot
+  quietly lose its backlinks. No new tool: this is `trace_sources`, extended.
+
+  Behind it, `src/linkGraph.ts` builds the graph from an unprefixed
+  `listDocuments()` — a backlink set over a subset is wrong rather than short —
+  and never touches the filesystem itself, inheriting INV-1 containment from the
+  store. Nodes are keyed on the **path**, not on frontmatter `id`: `id` is the
+  field INV-2 already refuses to resolve on when two notes claim it, so a graph
+  keyed there would let one note redirect another's edges. Link extraction now
+  rides the parse cache alongside the derived search text, since `trace_sources`
+  ran the extractors over every note in the vault on every call.
+
 ### Changed
+
+- **A wikilink no longer resolves through a note's `title` or `aliases`, even
+  when the match is unique.** Links resolve on path facts only — an exact
+  vault-relative path first, then the link text as a filename — because those
+  are server-owned and a note cannot rename its own file. `title` and `aliases`
+  are frontmatter the body's author writes, which is the same class as the `id`
+  that INV-2 already refuses; honouring a *unique* alias would reopen that hole
+  under another name, since what decides uniqueness is attacker-writable. They
+  now appear as `candidates[]` on an unresolved link instead.
+
+  **This removes backlinks, and the number is not buried.** Measured against the
+  reference vault (2,891 notes, single root): backlink edges drop **4,027 → 349
+  (−91%)**. Every one of the 46 links that resolved through a *unique* title
+  still lands on the same note, and filename matching adds 249 edges that did
+  not resolve before. The 3,927 that disappear are all fan-out from titles
+  several notes shared — 580 of the 606 links producing them name a file **no
+  note in the vault has**, which Obsidian itself shows as unresolved and this
+  server was attaching to every note that happened to share an H1. Two limits
+  stay on the record: this is n=1, and a vault that genuinely operates `title`
+  as an identifier would split differently; and `aliases` appears nowhere in
+  that vault, so that half of the rule is pinned by tests rather than measured.
+
+  In multi-root deployments, implicit forms resolve **within the linking note's
+  own root** — only the explicit `<root>:<path>` form crosses, because root
+  names come from configuration and a note cannot claim one for itself.
 
 - **A search that declares a `path_prefix` no longer scans the whole vault.**
   Every read tool walks the vault through `listDocuments()`, and the filter used

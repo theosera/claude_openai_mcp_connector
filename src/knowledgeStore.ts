@@ -12,7 +12,8 @@ import {
   serializeMarkdown,
   titleFromMarkdown
 } from "./frontmatter.js";
-import { extractAllLocalLinks, extractMarkdownLinks, resolveRelativeLink } from "./markdownLinks.js";
+import { extractMarkdownLinks, extractWikiLinks } from "./markdownLinks.js";
+import { traceThroughGraph } from "./linkGraph.js";
 import { ensurePatchStateDir, PATCH_ID_PATTERN, PATCH_STATE_FILE_MODE } from "./patchState.js";
 import { compactWhitespace, normalizePathPrefix, searchDocuments, type SearchFilters } from "./search.js";
 import { normalizeForMatch } from "./searchText.js";
@@ -27,6 +28,7 @@ import type {
   ProjectSummary,
   SearchDefaults,
   SearchResponse,
+  TraceOptions,
   TraceResult,
   VaultStore
 } from "./types.js";
@@ -373,7 +375,14 @@ export class KnowledgeStore implements VaultStore {
     const chars =
       document.body.length +
       (document.searchDerived?.foldedBody.length ?? 0) +
-      (document.searchDerived?.compactBody.length ?? 0);
+      (document.searchDerived?.compactBody.length ?? 0) +
+      // Links are a small share of an entry next to the three body copies, but
+      // they are retained text all the same. #116 mis-set this budget by
+      // counting in a unit the cache does not use; the fix for that is to keep
+      // counting everything the cache actually holds, not to decide by eye
+      // which retained strings are too small to matter.
+      totalLength(document.linksDerived?.wiki) +
+      totalLength(document.linksDerived?.markdown);
 
     const existing = this.documentCache.get(key);
     if (existing) {
@@ -792,37 +801,12 @@ export class KnowledgeStore implements VaultStore {
     };
   }
 
-  async traceSources(idOrPath: string): Promise<TraceResult> {
+  async traceSources(idOrPath: string, options: TraceOptions = {}): Promise<TraceResult> {
     const document = await this.fetch(idOrPath);
+    // Unprefixed on purpose: a backlink set computed over a narrowed listing is
+    // wrong rather than merely short. See the header of src/linkGraph.ts.
     const documents = await this.listDocuments();
-    const linkTargets = new Set([document.relativePath, document.relativePath.replace(/\.md$/i, ""), document.title]);
-
-    const backlinks = documents
-      .filter((candidate) => candidate.relativePath !== document.relativePath)
-      .filter((candidate) => {
-        // Root-relative / wikilink form, matched literally.
-        if (
-          extractAllLocalLinks(candidate.body).some(
-            (link) => linkTargets.has(link) || linkTargets.has(ensureMarkdownExtension(link))
-          )
-        ) {
-          return true;
-        }
-        // Markdown links are written relative to the linking note's own
-        // directory, so they only match once resolved against it.
-        return extractMarkdownLinks(candidate.body).some((link) => {
-          const resolved = resolveRelativeLink(link, candidate.relativePath);
-          return resolved !== null && ensureMarkdownExtension(resolved) === document.relativePath;
-        });
-      })
-      .map((candidate) => ({ id: candidate.id, relativePath: candidate.relativePath, title: candidate.title }));
-
-    return {
-      document: { id: document.id, relativePath: document.relativePath, title: document.title },
-      source_refs: document.frontmatter.source_refs ?? [],
-      outgoing_links: extractAllLocalLinks(document.body),
-      backlinks
-    };
+    return traceThroughGraph(document, documents, options);
   }
 
   async listDocuments(options: ListDocumentsOptions = {}): Promise<MarkdownDocument[]> {
@@ -929,6 +913,14 @@ export class KnowledgeStore implements VaultStore {
         searchDerived: {
           foldedBody: normalizeForMatch(parsed.body),
           compactBody: compactWhitespace(parsed.body)
+        },
+        // Same deal for links, and for the same reason: trace_sources extracts
+        // from every note in the vault on every call, so the extractors were
+        // running over the whole corpus per request. Rides this cache's stat
+        // signature rather than adding a second one to keep fresh.
+        linksDerived: {
+          wiki: extractWikiLinks(parsed.body),
+          markdown: extractMarkdownLinks(parsed.body)
         },
         stats: {
           sizeBytes: Number(stats.size),
@@ -1298,6 +1290,15 @@ async function walkMarkdownFiles(
   }
 
   return files;
+}
+
+/** Characters held across a list of strings — what the cache budget counts. */
+function totalLength(values: readonly string[] | undefined): number {
+  let total = 0;
+  for (const value of values ?? []) {
+    total += value.length;
+  }
+  return total;
 }
 
 function slugSegment(value: string): string {

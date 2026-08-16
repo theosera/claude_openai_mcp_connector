@@ -811,11 +811,102 @@ describe("KnowledgeStore", () => {
     expect(on.results.map((result) => result.path)).toEqual(["zz-recent.md", "aa-stale.md"]);
   });
 
-  it("traces source refs and backlinks", async () => {
+  // P2-D0, and a user-visible change: connector-plan.md points here as
+  // `[[Shared Search Framework]]`, which is this note's frontmatter TITLE. A
+  // note's self-declared fields cannot resolve a link — the same rule INV-2
+  // already applies to frontmatter `id` — so that edge is gone. Measured
+  // against the reference vault the rule removes 4,027 backlink edges and adds
+  // 349; all but 46 of the removed ones were fan-out from titles several notes
+  // shared, and 580 of those named a file the vault does not contain.
+  it("traces source refs, and no longer counts a title match as a backlink", async () => {
     const traced = await store.traceSources("chatgpt-research-001");
 
     expect(traced.source_refs).toEqual(["synthetic://chatgpt/project/research"]);
-    expect(traced.backlinks).toEqual([expect.objectContaining({ id: "claude-plan-001" })]);
+    expect(traced.backlinks).toEqual([]);
+  });
+
+  it("offers the title match as a candidate instead of resolving it", async () => {
+    // The other half of the rule. "It stopped resolving" alone would also be
+    // true of a resolver that had simply broken, so pin what it says instead.
+    const traced = await store.traceSources("claude-plan-001");
+
+    const link = traced.resolved_outgoing.find((candidate) => candidate.raw === "Shared Search Framework");
+    expect(link?.resolved).toBe(false);
+    expect(link?.target_path).toBeUndefined();
+    expect(link?.candidates).toEqual([
+      {
+        id: "chatgpt-research-001",
+        path: "projects/chatgpt/research/shared-search.md",
+        title: "Shared Search Framework",
+        via: "title"
+      }
+    ]);
+  });
+
+  it("labels every outgoing link, and expands only when asked", async () => {
+    const shallow = await store.traceSources("chatgpt-research-001");
+    // The three long-standing fields keep their shape; the labels are additive.
+    expect(shallow.outgoing_links).toEqual(["../../claude/planning/connector-plan.md"]);
+    expect(shallow.resolved_outgoing).toEqual([
+      {
+        raw: "../../claude/planning/connector-plan.md",
+        resolved: true,
+        target_id: "claude-plan-001",
+        target_path: "projects/claude/planning/connector-plan.md"
+      }
+    ]);
+    expect(shallow.related).toBeUndefined();
+
+    const deep = await store.traceSources("chatgpt-research-001", { depth: 2 });
+    expect(deep.related).toEqual([
+      {
+        id: "claude-plan-001",
+        path: "projects/claude/planning/connector-plan.md",
+        title: "Claude Connector Plan",
+        distance: 1,
+        via: "projects/chatgpt/research/shared-search.md"
+      }
+    ]);
+  });
+
+  it("lets direction pick which edges the expansion follows", async () => {
+    // shared-search.md -> connector-plan.md is the only resolved edge in the
+    // fixture, so the two directions are cleanly opposite here.
+    const outward = await store.traceSources("chatgpt-research-001", { depth: 2, direction: "out" });
+    expect(outward.related?.map((node) => node.path)).toEqual(["projects/claude/planning/connector-plan.md"]);
+
+    const inward = await store.traceSources("chatgpt-research-001", { depth: 2, direction: "in" });
+    expect(inward.related).toEqual([]);
+
+    // ...and the pre-existing fields are the same either way, so a caller that
+    // starts passing `direction` cannot silently lose its backlinks.
+    expect(inward.backlinks).toEqual(outward.backlinks);
+    expect(inward.resolved_outgoing).toEqual(outward.resolved_outgoing);
+  });
+
+  it("re-extracts links when a note is edited to the same size with its mtime restored", async () => {
+    // Link extraction rides the parse cache's stat signature rather than
+    // carrying one of its own, so it has to survive the same adversarial edit
+    // the body does. A whole-second stamp before AND after, for the reason
+    // spelled out on the body's version of this test: "restoring" an observed
+    // mtime actually changes mtimeNs, and the read would refresh for that
+    // reason instead of the one under test.
+    const target = path.join(root, "projects/claude/planning/connector-plan.md");
+    const original = await fs.readFile(target, "utf8");
+    const frozen = 1_700_000_000;
+    await fs.utimes(target, frozen, frozen);
+
+    expect((await store.traceSources("claude-plan-001")).outgoing_links).toEqual(["Shared Search Framework"]);
+
+    // Same byte length, different link. `[[Shared Search Framework]]` is 27
+    // characters between the brackets; `[[Shared Search Frameworx]]` is too.
+    const edited = original.replace("[[Shared Search Framework]]", "[[Shared Search Frameworx]]");
+    expect(edited.length).toBe(original.length);
+    expect(edited).not.toBe(original);
+    await fs.writeFile(target, edited, "utf8");
+    await fs.utimes(target, frozen, frozen);
+
+    expect((await store.traceSources("claude-plan-001")).outgoing_links).toEqual(["Shared Search Frameworx"]);
   });
 
   it("counts a relative Markdown link as a backlink (resolved against the linking note)", async () => {

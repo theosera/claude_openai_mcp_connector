@@ -25,6 +25,22 @@ export interface DerivedSearchText {
   compactBody: string;
 }
 
+/**
+ * Local links extracted from the body once, when the file is parsed, and
+ * carried on the cached document — `trace_sources` runs the extractors over
+ * EVERY note in the vault, so re-scanning bodies per call is the link plane's
+ * equivalent of folding every body per query. Internal, like `DerivedSearchText`:
+ * `toPublicDocument` is an allowlist, so it never reaches a client, and it is
+ * optional so a hand-built document (tests, fixtures) still builds a correct
+ * graph — just by extracting on the spot.
+ */
+export interface DerivedLinks {
+  /** `[[wikilink]]` targets, anchors and aliases already stripped. */
+  wiki: string[];
+  /** `[text](target)` targets, external and fragment-only ones already dropped. */
+  markdown: string[];
+}
+
 export interface MarkdownDocument {
   id: string;
   relativePath: string;
@@ -33,6 +49,7 @@ export interface MarkdownDocument {
   body: string;
   title: string;
   searchDerived?: DerivedSearchText;
+  linksDerived?: DerivedLinks;
   /** Name of the knowledge root the document came from (multi-root mode only). */
   root?: string;
   stats: {
@@ -189,11 +206,85 @@ export interface PlanDocumentCreateInput {
   reason: string;
 }
 
+/**
+ * A note a link COULD have meant, offered when it did not resolve.
+ *
+ * `via` says what matched, and the distinction is the whole point: `basename`
+ * is a path fact the note cannot author about itself, while `title` and `alias`
+ * are frontmatter the body's author writes. The latter two never resolve a link
+ * on their own — not even a unique one — so they surface here instead.
+ */
+export interface LinkCandidate {
+  id: string;
+  /** Vault-relative path (`<root>:<path>` in multi-root mode). */
+  path: string;
+  title: string;
+  via: "basename" | "title" | "alias";
+}
+
+/** A graph node as handed back to a caller: the two handles plus a label. */
+export interface LinkGraphNodeRef {
+  id: string;
+  path: string;
+  title: string;
+}
+
+/**
+ * One local link the note writes, with what it resolved to.
+ *
+ * `target_path` is the handle to follow — it is server-owned. `target_id` is
+ * the document's frontmatter id, carried because citations elsewhere use it,
+ * but it is self-declared (INV-2) and is not what the graph is keyed on.
+ */
+export interface ResolvedOutgoingLink {
+  /** The link text exactly as written in the note. */
+  raw: string;
+  resolved: boolean;
+  target_id?: string;
+  target_path?: string;
+  /** Present only when unresolved AND something matched. Never a ranking. */
+  candidates?: LinkCandidate[];
+}
+
+/** A node reached by the bounded neighbourhood walk behind `depth`. */
+export interface RelatedNode {
+  id: string;
+  path: string;
+  title: string;
+  /** Hops from the traced document: 1 is a direct link either way. */
+  distance: number;
+  /** Path of the node this one was reached through — provenance for the hop. */
+  via: string;
+}
+
+export interface TraceOptions {
+  /** 1 (default) or 2. Bounded by MAX_LINK_GRAPH_DEPTH in src/linkGraph.ts. */
+  depth?: number;
+  /**
+   * Which edges the depth expansion follows. Shapes `related` only: the three
+   * pre-existing fields keep their meaning whatever this is set to, so adding
+   * the parameter cannot change what an existing caller sees.
+   */
+  direction?: "out" | "in" | "both";
+}
+
 export interface TraceResult {
   document: Pick<MarkdownDocument, "id" | "relativePath" | "title">;
   source_refs: string[];
   outgoing_links: string[];
   backlinks: Array<Pick<MarkdownDocument, "id" | "relativePath" | "title">>;
+  /**
+   * Every entry of `outgoing_links`, labelled with what it resolved to. Same
+   * raw strings, so a caller can line the two up; `outgoing_links` is kept
+   * because it is the shape existing clients already parse.
+   */
+  resolved_outgoing: ResolvedOutgoingLink[];
+  /**
+   * Bounded neighbourhood, present only when `depth` >= 2 was asked for.
+   * Unlike `backlinks`, this IS capped (node / fan-out / hub-damping limits in
+   * src/linkGraph.ts) — it is an exploration, not an inventory.
+   */
+  related?: RelatedNode[];
 }
 
 /**
@@ -207,7 +298,7 @@ export interface TraceResult {
  * it (the ChatGPT adapter has always omitted it). Built by an explicit allowlist
  * in `server.ts` so a future field on `MarkdownDocument` cannot leak by default.
  */
-export type PublicDocument = Omit<MarkdownDocument, "absolutePath" | "searchDerived">;
+export type PublicDocument = Omit<MarkdownDocument, "absolutePath" | "searchDerived" | "linksDerived">;
 
 /**
  * Narrowing hints for a vault scan. Purely a cost control: a scan given a
@@ -241,5 +332,5 @@ export interface VaultStore {
   ): Promise<{ document: MarkdownDocument; diff: string }>;
   planUpdate(input: PlanUpdateInput): Promise<PlannedPatch>;
   applyPlannedUpdate(patchId: string): Promise<{ document: MarkdownDocument; diff: string }>;
-  traceSources(idOrPath: string): Promise<TraceResult>;
+  traceSources(idOrPath: string, options?: TraceOptions): Promise<TraceResult>;
 }

@@ -523,13 +523,35 @@ describe("MultiRootStore", () => {
   });
 
   it("computes same-root backlinks through the composite", async () => {
-    // fixture: connector-plan.md links to shared-search.md inside the vault root.
-    const traced = await store.traceSources("chatgpt-research-001");
+    // fixture: shared-search.md links to the plan as a relative Markdown link
+    // inside the vault root, which only matches once resolved against the
+    // linking note's own directory — and must not leak into the other root.
+    const traced = await store.traceSources("claude-plan-001");
     expect(traced.backlinks).toEqual([
       expect.objectContaining({
-        id: "claude-plan-001",
-        relativePath: "vault:projects/claude/planning/connector-plan.md"
+        id: "chatgpt-research-001",
+        relativePath: "vault:projects/chatgpt/research/shared-search.md"
       })
+    ]);
+  });
+
+  it("refuses a title match through the composite too, and names the candidate", async () => {
+    // P2-D0 is a property of the resolver, so it has to hold on both stores —
+    // "one of them is right" has never been evidence about the other here.
+    // connector-plan.md points at shared-search.md by its frontmatter title.
+    const traced = await store.traceSources("chatgpt-research-001");
+    expect(traced.backlinks).toEqual([]);
+
+    const plan = await store.traceSources("claude-plan-001");
+    const link = plan.resolved_outgoing.find((candidate) => candidate.raw === "Shared Search Framework");
+    expect(link?.resolved).toBe(false);
+    expect(link?.candidates).toEqual([
+      {
+        id: "chatgpt-research-001",
+        path: "vault:projects/chatgpt/research/shared-search.md",
+        title: "Shared Search Framework",
+        via: "title"
+      }
     ]);
   });
 

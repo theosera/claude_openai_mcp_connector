@@ -492,8 +492,15 @@ client entirely; nothing here depends on where that client keeps its logs.
   — see `MCP_SEARCH_RECENCY_WEIGHT` in `.env.example`.
 - `fetch_document`
 - `list_projects`
-- `trace_sources` — backlinks include relative Markdown links, resolved against
-  the linking note's own directory.
+- `trace_sources` — source refs, outgoing links and backlinks, plus a
+  `resolved_outgoing[]` saying what each link landed on. Links resolve on **path
+  facts only**: an exact vault-relative path, then the link text as a filename.
+  Relative Markdown links are resolved against the linking note's own directory.
+  A note's frontmatter `title` / `aliases` are self-declared, so they never
+  resolve a link — not even a unique one — and show up as `candidates[]` on an
+  unresolved link instead. Optional `depth` (1–2) and `direction`
+  (`out` / `in` / `both`) add a bounded `related[]` neighbourhood; `backlinks`
+  stays complete and is unaffected by `direction`.
 - `create_document` _(write, **off by default on every transport** — needs write to be enabled **and** `MCP_ALLOW_LEGACY_CREATE_DOCUMENT=1`; the one-step legacy route, superseded by `plan_document_create` → `apply_planned_document_create`)_
 - `plan_document_create` _(write; exact path, complete-file diff, no target mutation)_
 - `apply_planned_document_create` _(write; exact confirmed path required, create-only)_
