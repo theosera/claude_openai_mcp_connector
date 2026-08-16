@@ -31,6 +31,13 @@
  *   is a `VaultStore` change touching every caller — a different boundary from
  *   this one. Until it exists, an operator sees the skips and a client does not.
  *
+ * One corner of it IS closed, in `traceThroughGraph` rather than here: when the
+ * skipped entry is the note being traced, the answer was not merely incomplete
+ * but wrong — "this note writes no links", about a document the same call had
+ * just fetched. That falls back to the fetched copy. Everything else stands: a
+ * backlink missing because some OTHER note was skipped is still invisible, and
+ * this module still cannot tell a short listing from a complete one.
+ *
  * What this does NOT license is treating an unreachable skip as equivalent to a
  * prefix exclusion. A prefix is chosen by the caller and knowable to it; a skip
  * is neither. It is also not a new capability for an attacker — anyone able to

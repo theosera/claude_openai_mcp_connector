@@ -235,6 +235,15 @@ client detection, per the [appendix's anti-router ruling](#appendix--future-uses
   different boundary from this one. What must not happen meanwhile is filing an
   unreachable skip under the same heading as a prefix exclusion: a prefix is
   chosen by the caller and known to it, a skip is neither.
+
+  One corner of that gap is closed rather than merely recorded, because the
+  answer there was wrong and not just incomplete. When the **traced** note is
+  the one the walk skipped, `trace_sources` used to report that it writes no
+  links — a statement indistinguishable from a note that writes none, about a
+  document the same call had just fetched successfully. That case now falls back
+  to the fetched copy. The record stays open for everything else: a **backlink**
+  missing because some other note was skipped is still invisible, and only a
+  completeness signal on `listDocuments()` can fix that.
 - **P3 — `get_context`** 🔭: deterministic 5-stage pipeline (seed search →
   link expansion → fuse/dedup → heading-level chunking → greedy
   score-per-token packing) returning a `ContextPackage` with per-chunk
