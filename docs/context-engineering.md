@@ -391,6 +391,10 @@ pin (tuning を 1 行 diff にする)。
     text
   }],
   omitted: [{ id, title, reason: 'budget' | 'duplicate' | 'hub_damped' }],
+                         // ⚠️ 実装では **文書 × 理由で 1 件に畳み、上限付き**。
+                         // 見出し数千のノートが 1 件になるのはこのため。
+  omitted_count,         // ⚠️ 実装で追加。畳んだ後の総数 (上限適用前)。
+                         // 上限で切った一覧が「これで全部」に見えるのを防ぐ
   total_candidates
 }
 ```

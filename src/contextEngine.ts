@@ -258,10 +258,15 @@ export async function buildContext(
 
   const consider = (document: MarkdownDocument, score: number, relationship: ContextRelationship): void => {
     const verdict = weighDocument(options.typeRules, document);
+    // ⚠️ `verdict.filterable` as well as the name. A filter is a BINARY
+    // decision, so the weight ceiling that makes a tag or a frontmatter hint
+    // safe for ranking does nothing here — a note satisfying `types` is simply
+    // in. Without this a clipping declaring `type: permanent` would enter a
+    // `types: ["permanent"]` result while living nowhere near `permanent/`.
     if (
       input.types !== undefined &&
       input.types.length > 0 &&
-      (verdict.type === undefined || !input.types.includes(verdict.type))
+      (!verdict.filterable || verdict.type === undefined || !input.types.includes(verdict.type))
     ) {
       return;
     }
@@ -404,6 +409,9 @@ export async function buildContext(
     sectionCount: number;
     text: string;
     score: number;
+    /** Tokens this chunk charges: its text plus its JSON framing. Measured once
+     *  at construction — see the sort below for why that matters. */
+    cost: number;
   }
 
   const packable: PackableChunk[] = [];
@@ -416,7 +424,8 @@ export async function buildContext(
         sectionIndex: section.index,
         sectionCount: sections.length,
         text: section.text,
-        score: candidate.score * termDensity(section.text, terms)
+        score: candidate.score * termDensity(section.text, terms),
+        cost: estimateTokens(section.text) + CHUNK_JSON_OVERHEAD_TOKENS
       });
     }
   }
@@ -429,9 +438,14 @@ export async function buildContext(
   // 5-token chunk look eight times more efficient than it is, so a note split
   // into many short sections could win the budget on metadata and crowd out the
   // sections that carry the answer.
-  const chunkCost = (chunk: PackableChunk): number => estimateTokens(chunk.text) + CHUNK_JSON_OVERHEAD_TOKENS;
+  // ⚠️ The cost is measured once per chunk, at construction, and NOT recomputed
+  // in the comparator. `estimateTokens` scans the whole section, and a
+  // comparator that calls it runs that scan O(n log n) times instead of n — on
+  // a vault whose section count grows with the vault, not with the budget. The
+  // 2,000-heading fixture alone would have re-tokenized tens of thousands of
+  // times for one request.
   packable.sort((a, b) => {
-    const byDensity = b.score / chunkCost(b) - a.score / chunkCost(a);
+    const byDensity = b.score / b.cost - a.score / a.cost;
     if (byDensity !== 0) {
       return byDensity;
     }
@@ -454,9 +468,11 @@ export async function buildContext(
       omit(chunk.candidate.document, "budget");
       continue;
     }
-    const whole = estimateTokens(chunk.text);
+    // Reuse the measured cost rather than re-scanning: the only case that needs
+    // a fresh estimate is the one where the text was actually cut.
+    const whole = chunk.cost - CHUNK_JSON_OVERHEAD_TOKENS;
     const text = whole <= room ? chunk.text : truncateToTokens(chunk.text, room);
-    const cost = estimateTokens(text) + CHUNK_JSON_OVERHEAD_TOKENS;
+    const cost = text === chunk.text ? chunk.cost : estimateTokens(text) + CHUNK_JSON_OVERHEAD_TOKENS;
     spent += cost;
     spentPerDocument.set(path, documentSpent + cost);
     chunks.push({

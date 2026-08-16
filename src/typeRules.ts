@@ -78,6 +78,26 @@ export interface TypeVerdict {
   /** The rule's `name`, or the frontmatter type when the hint supplied it. */
   type?: string;
   weight: number;
+  /**
+   * Whether this type may be used as a **selector** (`get_context`'s `types`).
+   *
+   * ⚠️ A weight ceiling bounds how far a self-declared signal can move a
+   * document up a ranking. It does nothing about a filter, because a filter is
+   * binary: a note that satisfies `types: ["permanent"]` is IN, and 1.25 versus
+   * 3.0 never enters the decision. So the ceiling that makes tags and the
+   * frontmatter hint safe for weighting leaves them unsafe as selectors.
+   *
+   * The frontmatter hint is the sharp case: the operator's rules enumerate
+   * names, but the hint lets the NOTE supply one — including a name the
+   * operator reserved for a path. A clipping declaring `type: permanent` would
+   * enter a `types: ["permanent"]` result without living under `permanent/`.
+   *
+   * A tag rule is the operator's own choice of key, so its weight is honoured;
+   * but selection has no capped middle ground, and the only equivalent of a cap
+   * here is refusal. `types` therefore selects on owner-controlled signals only
+   * — the same line the ceiling draws, applied where a ceiling cannot reach.
+   */
+  filterable: boolean;
 }
 
 function asNumber(value: unknown, field: string): number {
@@ -201,24 +221,28 @@ function matches(rule: TypeRule, document: MarkdownDocument, localPath: string):
  */
 export function weighDocument(rules: TypeRules | undefined, document: MarkdownDocument): TypeVerdict {
   if (!rules) {
-    return { weight: DEFAULT_TYPE_WEIGHT };
+    return { weight: DEFAULT_TYPE_WEIGHT, filterable: false };
   }
   const localPath = localPathOf(document);
   for (const rule of rules.rules) {
     if (matches(rule, document, localPath)) {
-      return { type: rule.name, weight: rule.weight };
+      // A rule that consulted a tag is only as trustworthy as that tag, which
+      // is why it was already marked self-declared for the weight ceiling. The
+      // same mark decides whether its name may be selected on.
+      return { type: rule.name, weight: rule.weight, filterable: !rule.selfDeclared };
     }
   }
 
   // The hint is last and capped: it is the note speaking about itself, so it
   // can only ever break a tie between documents no owner-controlled rule
-  // distinguished.
+  // distinguished — and it can never be selected on, because the name comes
+  // from the note rather than from the operator's list.
   if (rules.frontmatterTypeHint.enabled) {
     const declared = document.frontmatter.type;
     if (typeof declared === "string" && declared.length > 0) {
-      return { type: declared, weight: rules.frontmatterTypeHint.maxWeight };
+      return { type: declared, weight: rules.frontmatterTypeHint.maxWeight, filterable: false };
     }
   }
 
-  return { weight: DEFAULT_TYPE_WEIGHT };
+  return { weight: DEFAULT_TYPE_WEIGHT, filterable: false };
 }

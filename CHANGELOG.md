@@ -19,10 +19,13 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   **The package says what it left out.** Every chunk carries `relationship`
   (`seed` / `linked:out` / `linked:in` / `source_ref` / `same_project` /
   `recent`), its `path`, its `heading_path` when the note was split, and its
-  score; everything that did not fit is in `omitted[]` with a reason (`budget` /
-  `duplicate`). That is what makes a short answer distinguishable from a
-  complete one — the ambiguity that drives blind re-querying — and it turns the
-  follow-up into a precise `fetch_document` rather than another search.
+  score. What did not fit is reported in `omitted[]` with a reason (`budget` /
+  `duplicate`) — **one entry per document per reason, capped, with
+  `omitted_count` carrying the true total** so a shortened list says it is
+  shortened rather than reading as the whole story. That is what makes a short
+  answer distinguishable from a complete one — the ambiguity that drives blind
+  re-querying — and it turns the follow-up into a precise `fetch_document`
+  rather than another search.
 
   Three bounds are enforced rather than suggested. **At least one of `query`,
   `project`, `tags` or `path_prefix` is required**, so there is no way to ask

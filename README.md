@@ -505,9 +505,10 @@ client entirely; nothing here depends on where that client keeps its logs.
   over the same filters, expands one or two hops through the link graph, drops
   duplicates, splits long notes at their headings, and packs greedily to a
   `token_budget` (500–32000, default 4000). Every chunk carries its provenance
-  (`relationship`, `path`, `heading_path`, `score`) and **everything that did not
-  fit is listed in `omitted[]` with a reason**, so a short answer is
-  distinguishable from a complete one. Needs at least one of `query`, `project`,
+  (`relationship`, `path`, `heading_path`, `score`) and **what did not fit is
+  reported in `omitted[]` with a reason** — one entry per document per reason,
+  capped, with `omitted_count` giving the true total — so a short answer is
+  distinguishable from a complete one, and a shortened list from the whole story. Needs at least one of `query`, `project`,
   `tags` or `path_prefix` — there is deliberately no way to ask for the whole
   vault. No single document may take more than 40% of the budget, so one large
   note cannot become the entire answer; a chunk cut to fit says `truncated`.

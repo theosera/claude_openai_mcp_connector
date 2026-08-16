@@ -492,6 +492,47 @@ describe("get_context type weighting (D-7 anti-forgery)", () => {
     expect(withRules.chunks.every((chunk) => chunk.type === undefined)).toBe(true);
   });
 
+  it("refuses a self-declared type as a FILTER key, even though it is honoured as a weight", async () => {
+    // ⚠️ A ceiling bounds how far a self-declared signal can move a ranking. It
+    // does nothing to a filter, because a filter is binary: satisfying
+    // `types: [...]` is in or out, and 1.25 versus 3.0 never enters it. So the
+    // clamp that makes a tag and the frontmatter hint safe for WEIGHTING leaves
+    // them unsafe as SELECTORS.
+    // ⚠️ TWO rule sets, because first-match-wins means a tag rule short-circuits
+    // the frontmatter hint — measured, a single set left the hint unreached and
+    // its half of the guard could be deleted with every test still green.
+    const tagRules = parseTypeRules({ rules: [{ name: "tagged", match: { tag: "synthesis" }, weight: 1.2 }] });
+    const byTag = await buildContext(
+      storeOver(documents),
+      { query: "alpha", graph_depth: 0, types: ["tagged"] },
+      { typeRules: tagRules }
+    );
+    expect(byTag.chunks).toEqual([]);
+
+    // ...and the weight it earns is untouched, so this narrows the SELECTOR
+    // rather than removing the feature.
+    const unfiltered = await buildContext(
+      storeOver(documents),
+      { query: "alpha", graph_depth: 0 },
+      { typeRules: tagRules }
+    );
+    expect(unfiltered.chunks.find((chunk) => chunk.path === "inbox/clipping.md")?.type).toBe("tagged");
+
+    // The sharper case: the operator reserved `permanent` for a PATH, and the
+    // clipping declares `type: permanent` about itself. Only the path-matched
+    // note may answer to that name.
+    const hintRules = parseTypeRules({
+      rules: [{ name: "permanent", match: { path_prefix: "permanent/" }, weight: 1.5 }],
+      frontmatter_type_hint: { enabled: true, max_weight: 1.25 }
+    });
+    const byHint = await buildContext(
+      storeOver(documents),
+      { query: "alpha", graph_depth: 0, types: ["permanent"] },
+      { typeRules: hintRules }
+    );
+    expect(byHint.chunks.map((chunk) => chunk.path)).toEqual(["permanent/curated.md"]);
+  });
+
   it("filters to the requested types", async () => {
     const rules = parseTypeRules({
       rules: [{ name: "permanent", match: { path_prefix: "permanent/" }, weight: 1.5 }]
