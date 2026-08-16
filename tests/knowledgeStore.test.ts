@@ -1444,3 +1444,90 @@ describe("frontmatter id squatting (INV-2)", () => {
     await expect(single.fetch("missing/note.md")).rejects.toThrow(/not found/i);
   });
 });
+
+describe("the parse cache is bounded, and evicts least-recently-used", () => {
+  let root: string;
+  let patchStateDir: string;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-cache-vault-"));
+    patchStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-cache-patches-"));
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(patchStateDir, { recursive: true, force: true });
+  });
+
+  /**
+   * Counting RE-PARSES, not memory.
+   *
+   * "Heap went down" is unassertable — GC timing is not ours to control and the
+   * test would be flaky in the direction that hides regressions. What eviction
+   * actually means is observable and deterministic: an evicted entry has to be
+   * read from disk again, so the file is opened a second time. Same reasoning as
+   * counting `open` and `readdir` for the scan prune.
+   */
+  async function countOpens(fn: () => Promise<unknown>): Promise<number> {
+    let opens = 0;
+    const realOpen = fs.open.bind(fs);
+    const spy = vi.spyOn(fs, "open").mockImplementation((...args: Parameters<typeof fs.open>) => {
+      opens += 1;
+      return realOpen(...args);
+    });
+    try {
+      await fn();
+    } finally {
+      spy.mockRestore();
+    }
+    return opens;
+  }
+
+  /** One note big enough that a handful of them exceed the cache bound. */
+  async function writeBigNote(name: string, chars: number): Promise<void> {
+    await fs.writeFile(path.join(root, name), `---\ntitle: ${name}\n---\n\n${"z".repeat(chars)}\n`, "utf8");
+  }
+
+  it("re-reads a note evicted by later ones, and serves a cached note without re-reading", async () => {
+    // Each note is ~9M chars; with the derived copies that is ~27M per entry,
+    // so the second one alone pushes the first out of a 24M budget.
+    await writeBigNote("a.md", 9_000_000);
+    await writeBigNote("b.md", 9_000_000);
+    const store = new KnowledgeStore({ knowledgeRoot: root, writeMode: "two_step", patchStateDir });
+    await store.init();
+
+    await store.listDocuments();
+
+    // b was cached last, so it survives: a second read opens nothing.
+    expect(await countOpens(() => store.fetch("b.md"))).toBe(0);
+    // a was evicted by b, so reading it costs a re-parse.
+    expect(await countOpens(() => store.fetch("a.md"))).toBeGreaterThan(0);
+  });
+
+  it("keeps an ordinary vault entirely cached (the false-positive direction)", async () => {
+    // A bound that evicted during normal operation would turn a cache into a
+    // slowdown. Nothing here is near the budget, so the second pass must open
+    // no files at all.
+    for (let i = 0; i < 20; i++) {
+      await fs.writeFile(path.join(root, `n${i}.md`), `---\ntitle: N${i}\n---\n\nbody ${i}\n`, "utf8");
+    }
+    const store = new KnowledgeStore({ knowledgeRoot: root, writeMode: "two_step", patchStateDir });
+    await store.init();
+    await store.listDocuments();
+
+    expect(await countOpens(() => store.listDocuments())).toBe(0);
+  });
+
+  it("still serves a note larger than the whole budget", async () => {
+    // The eviction loop must never evict the entry it just inserted, or a note
+    // over the cap would be parsed and immediately discarded on every access —
+    // and, worse, the loop would have nothing left to free.
+    await writeBigNote("huge.md", 30_000_000);
+    const store = new KnowledgeStore({ knowledgeRoot: root, writeMode: "two_step", patchStateDir });
+    await store.init();
+
+    expect((await store.fetch("huge.md")).title).toBe("huge.md");
+    expect(await countOpens(() => store.fetch("huge.md"))).toBe(0);
+  });
+});
