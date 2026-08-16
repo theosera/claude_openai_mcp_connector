@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -149,6 +150,67 @@ describe("startup env boundary (spawned entrypoint)", () => {
     });
   }
 
+  /** An ephemeral port the HTTP cases can bind; MCP_HTTP_PORT rejects 0. */
+  function freePort(): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const probe = net.createServer();
+      probe.once("error", reject);
+      probe.listen(0, "127.0.0.1", () => {
+        const address = probe.address();
+        const port = typeof address === "object" && address ? address.port : 0;
+        probe.close(() => resolve(port));
+      });
+    });
+  }
+
+  /**
+   * Run the entrypoint as an HTTP listener and return its stderr.
+   *
+   * Unlike `runServer` this cannot wait for `close`: a listener never exits on
+   * its own, so waiting would hit the watchdog and cost 15 s per case. It
+   * resolves on the startup line and kills the child. `close` also resolves, so
+   * a boot refusal (which some cases want) reports its own message instead of
+   * timing out.
+   */
+  function runHttpServer(env: NodeJS.ProcessEnv): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ["--import", tsxLoader, entry], {
+        cwd: hostileCwd,
+        env: {
+          PATH: process.env.PATH,
+          HOME: process.env.HOME,
+          TMPDIR: process.env.TMPDIR,
+          MCP_TRANSPORT: "http",
+          MCP_AUTH_TOKEN: "startup-line-test-token",
+          ...env
+        },
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+      let stderr = "";
+      const finish = (settle: () => void) => {
+        clearTimeout(watchdog);
+        child.kill("SIGKILL");
+        settle();
+      };
+      const watchdog = setTimeout(
+        () => finish(() => reject(new Error(`no HTTP startup line. stderr was:\n${stderr}`))),
+        15_000
+      );
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (chunk: string) => {
+        stderr += chunk;
+        if (stderr.includes("HTTP transport listening")) {
+          finish(() => resolve(stderr));
+        }
+      });
+      child.on("error", (error) => finish(() => reject(error)));
+      child.on("close", () => {
+        clearTimeout(watchdog);
+        resolve(stderr);
+      });
+    });
+  }
+
   it("ignores a .env in the working directory and stays a local stdio server", async () => {
     const result = await runServer({ KNOWLEDGE_ROOT: vault, MCP_PATCH_STATE_DIR: path.join(stateDir, "patches") });
 
@@ -283,6 +345,44 @@ describe("startup env boundary (spawned entrypoint)", () => {
     const off = await runServer({ KNOWLEDGE_ROOT: vault, MCP_PATCH_STATE_DIR: path.join(stateDir, "patches") });
     expect(off.stderr).toContain("skills=off,");
     expect(off.code).toBe(0);
+  }, 60_000);
+
+  it("names subtree reservation apart from tool registration in the HTTP startup line", async () => {
+    // The stdio line has reported three states since the Skill and audit gates
+    // were split from their subdirs. This one printed the flag alone, so
+    // `audit=off` meant "tools not registered" on HTTP and "subtree NOT
+    // reserved" on stdio — one token, opposite readings, on the two processes
+    // INV-9 asks an operator to compare. Asserted on the spawned entrypoint
+    // rather than on loadHttpConfig, because the claim is about what an
+    // operator can read, not about what the config resolved to.
+    await fs.mkdir(path.join(vault, "_skills"), { recursive: true });
+    await fs.mkdir(path.join(vault, "90_Audit", "vault-scan"), { recursive: true });
+    const base = { KNOWLEDGE_ROOT: vault, MCP_PATCH_STATE_DIR: path.join(stateDir, "patches") };
+    const reserved = { MCP_SKILLS_SUBDIR: "_skills", MCP_AUDIT_SUBDIR: "90_Audit/vault-scan" };
+
+    const off = await runHttpServer({ ...base, MCP_HTTP_PORT: String(await freePort()) });
+    expect(off).toContain("skills=off, audit=off,");
+
+    // The middle state is the whole point, and the only one whose text differs
+    // from the flag: it is what an operator who followed "set the subdir on
+    // every write-capable process" now gets, and reading `off` there would say
+    // the reservation lapsed when it is in force.
+    const reservedOnly = await runHttpServer({ ...base, ...reserved, MCP_HTTP_PORT: String(await freePort()) });
+    expect(reservedOnly).toContain("skills=reserved-only, audit=reserved-only,");
+    // Reserving grants nothing, so neither write field may move with it.
+    expect(reservedOnly).toContain("(write=off, documents=off,");
+
+    const on = await runHttpServer({
+      ...base,
+      ...reserved,
+      MCP_HTTP_PORT: String(await freePort()),
+      MCP_HTTP_ALLOW_SKILL_WRITE: "1",
+      MCP_HTTP_ALLOW_AUDIT_WRITE: "1"
+    });
+    expect(on).toContain("skills=on, audit=on,");
+    // `on` without MCP_HTTP_ALLOW_WRITE: the write surfaces are independent, so
+    // documents stays off while the two constrained ones are registered.
+    expect(on).toContain("(write=on, documents=off,");
   }, 60_000);
 
   it("refuses to start on a relative or unreadable MCP_ENV_FILE", async () => {

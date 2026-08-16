@@ -47,6 +47,27 @@ if (transport === "http") {
     typeof address === "object" && address
       ? `${address.address}:${address.port}`
       : `${httpConfig.host}:${httpConfig.port}`;
+  // `skills` and `audit` report THREE states, the same ones the stdio branch
+  // below prints and for the same reason: reserving a subtree and registering
+  // the tools that write into it are separate decisions, so one on/off word can
+  // only ever name one of them.
+  //
+  //   off            no MCP_SKILLS_SUBDIR / MCP_AUDIT_SUBDIR — the INV-8 / INV-9
+  //                  reservation is NOT in effect for this process
+  //   reserved-only  subtree reserved, the write tools are not registered
+  //   on             reserved AND registered (MCP_HTTP_ALLOW_{SKILL,AUDIT}_WRITE)
+  //
+  // These two printed the flag alone until now, which is exactly the mistake the
+  // `legacy_create` comment below already names — echoing the environment back
+  // instead of describing the surface. It cost more here than a confusing word.
+  // `audit=off` meant "tools not registered" on HTTP and "subtree NOT reserved"
+  // on stdio: one token, opposite readings, on the two processes an operator is
+  // told to compare. INV-9 holds only if EVERY write-capable process against a
+  // vault reserves the same subtree, and the HTTP line was silent about the one
+  // half that condition is about, on the transport that is remotely reachable.
+  // Confirming it took reading loadHttpConfig; it is one word now.
+  const httpSkillsState = !skillStore ? "off" : httpConfig.allowSkillWrite ? "on" : "reserved-only";
+  const httpAuditState = !auditStore ? "off" : httpConfig.allowAuditWrite ? "on" : "reserved-only";
   // stderr only — stdout is reserved for protocol data on stdio, and we keep
   // logs free of the auth token or any vault content.
   process.stderr.write(
@@ -58,8 +79,8 @@ if (transport === "http") {
       // endpoint that exposes no create_document at all — a startup line exists
       // to describe the surface, not to echo the environment back.
       `legacy_create=${httpConfig.allowWrite && httpConfig.allowLegacyCreateDocument ? "on" : "off"}, ` +
-      `skills=${httpConfig.allowSkillWrite ? "on" : "off"}, ` +
-      `audit=${httpConfig.allowAuditWrite ? "on" : "off"}, ` +
+      `skills=${httpSkillsState}, ` +
+      `audit=${httpAuditState}, ` +
       `oauth=${httpConfig.oauth ? "on" : "off"})\n`
   );
 } else {

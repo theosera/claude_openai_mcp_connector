@@ -96,6 +96,18 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   child's `dev`, `ino`, `ctime` and `mtime` all untouched, so the signature
   matches across a real escape. See `readDocument` for the recorded reason.
 
+- **The HTTP startup line names the subtree reservation, not just the flag.**
+  `skills=` and `audit=` now report the same three states the stdio line has
+  reported since those gates were split — `off` (no `MCP_SKILLS_SUBDIR` /
+  `MCP_AUDIT_SUBDIR`, so the INV-8 / INV-9 reservation is not in effect),
+  `reserved-only` (subtree reserved, write tools not registered), `on` (both).
+  They printed `MCP_HTTP_ALLOW_{SKILL,AUDIT}_WRITE` alone, so `audit=off` meant
+  "tools not registered" on HTTP and "subtree NOT reserved" on stdio: one token,
+  opposite readings, on the two processes INV-9's condition — every write-capable
+  process against a vault reserves the same subtree — asks an operator to
+  compare. The HTTP line was the silent one, on the remotely reachable transport.
+  No gate changes; this is what the line says about them.
+
 - **`/claude-security` scan output is now ignored.** A change scan writes a
   `CLAUDE-SECURITY-<timestamp>/` directory of threat models and findings, and a
   scan of this repo names the operator's real `KNOWLEDGE_ROOT` and note paths.

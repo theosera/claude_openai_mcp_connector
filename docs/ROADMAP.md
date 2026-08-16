@@ -288,8 +288,12 @@ tools scoped to one reserved subtree (`MCP_AUDIT_SUBDIR` +
   whose input is untrusted vault content. The reservation rides on
   `config.auditSubdir` and is unaffected by the flag, so withholding the tools
   does not weaken INV-9; both halves are pinned by one pair of adjacent tests.
-  The stdio startup line now reports three states (`off` / `reserved-only` /
-  `on`) because a single on/off could only ever describe one of the two.
+  The startup line reports three states (`off` / `reserved-only` / `on`) on
+  **both** transports, because a single on/off could only ever describe one of
+  the two. stdio gained them here; HTTP kept printing the flag alone for another
+  release, so `audit=off` read as "tools not registered" there and "subtree NOT
+  reserved" here — one token, opposite meanings, on exactly the two processes
+  the guidance above tells an operator to compare.
 - **The same split now applies to Skills** — `MCP_HTTP_ALLOW_SKILL_WRITE` on HTTP
   and **`MCP_STDIO_ALLOW_SKILL_WRITE`** (default off) on stdio. This was written
   as an audit-only lesson and fixed on the audit surface alone; stdio kept
