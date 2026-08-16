@@ -336,6 +336,100 @@ export interface ContextPackage {
   total_candidates: number;
 }
 
+export type ProjectStateSection = "state_docs" | "recent_docs" | "sessions" | "ops";
+
+export interface GetProjectStateInput {
+  project: string;
+  client?: string;
+  token_budget?: number;
+  include?: ProjectStateSection[];
+}
+
+/** A note the owner designated as this project's state. Carries full text. */
+export interface StateDocument {
+  id: string;
+  path: string;
+  root?: string;
+  title: string;
+  updated_at: string;
+  est_tokens: number;
+  truncated: boolean;
+  text: string;
+}
+
+/** A recently-touched note: enough to decide whether to fetch it. */
+export interface RecentDocument {
+  id: string;
+  path: string;
+  root?: string;
+  title: string;
+  updated_at: string;
+  size_bytes: number;
+  snippet: string;
+}
+
+/**
+ * A session archive.
+ *
+ * ⚠️ There is no `text` / `body` / `snippet` field, and that is the point.
+ * These notes run to megabytes, so inlining one spends a whole budget on the
+ * document the caller asked about least. `outline` (headings only, newest entry
+ * only) is what lets a caller ask `fetch_document` for one section instead.
+ */
+export interface SessionDocument {
+  id: string;
+  path: string;
+  root?: string;
+  title: string;
+  updated_at: string;
+  size_bytes: number;
+  outline?: {
+    heading: string;
+    level: number;
+    heading_path: string[];
+    start_line: number;
+    chars: number;
+    est_tokens: number;
+  }[];
+}
+
+/**
+ * A pointer into an ops log.
+ *
+ * ⚠️ A pointer and not content, because `target_repo` is frontmatter — a note
+ * declares it about itself, so any note can join this list. What it joins is a
+ * list of paths the same caller could already enumerate, which is why this
+ * carries no body.
+ */
+export interface OpsPointer {
+  path: string;
+  root?: string;
+  date: string;
+}
+
+/**
+ * A project's state, derived and never synthesized.
+ *
+ * ⚠️ There is deliberately no `summary` prose, no `blockers`, no `next_steps`.
+ * A server that emits those has either run a second model — which this one does
+ * not have, by design — or filled in a template pretending to be one. Whatever
+ * conclusion a human or an offline pipeline reached belongs in a `state_docs`
+ * note, which this surfaces verbatim.
+ */
+export interface ProjectState {
+  summary: {
+    doc_count: number;
+    /** Newest effective timestamp across the project, absent when it has none. */
+    latest_ts?: string;
+    /** Knowledge roots the project's documents came from (multi-root only). */
+    roots: string[];
+  };
+  state_docs: StateDocument[];
+  recent_docs: RecentDocument[];
+  recent_sessions: SessionDocument[];
+  ops_recent: OpsPointer[];
+}
+
 export interface TraceOptions {
   /** 1 (default) or 2. Bounded by MAX_LINK_GRAPH_DEPTH in src/linkGraph.ts. */
   depth?: number;

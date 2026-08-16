@@ -490,7 +490,14 @@ client entirely; nothing here depends on where that client keeps its logs.
   query), `recent`, or `path` (default without one). `explain` adds a per-signal
   `score_breakdown` to each result. Recency ranking is **off unless configured**
   — see `MCP_SEARCH_RECENCY_WEIGHT` in `.env.example`.
-- `fetch_document`
+- `fetch_document` — the whole note by default. `outline: true` returns its
+  heading structure (with each section's size and token estimate) *instead of*
+  the body; `sections` keeps only the named ones — matching a heading's text or
+  a `/`-joined prefix of its heading path, case-insensitively, and bringing
+  subsections along — while `sections_matched` reports which requests actually
+  hit; `max_chars` truncates. `total_chars` always reports the **whole**
+  document's length, so a caller can see how much it did not receive. Omitting
+  all three reproduces the previous response exactly.
 - `list_projects`
 - `trace_sources` — source refs, outgoing links and backlinks, plus a
   `resolved_outgoing[]` saying what each link landed on. Links resolve on **path
@@ -514,6 +521,16 @@ client entirely; nothing here depends on where that client keeps its logs.
   note cannot become the entire answer; a chunk cut to fit says `truncated`.
   Optional owner-controlled type weighting via `MCP_CONTEXT_TYPE_RULES` (below).
   Read-only, and available on every transport.
+- `get_project_state` — where a project stands, **derived and never
+  summarized**. Returns the notes tagged as its state (in full, against a
+  budget), recently touched documents (metadata + snippet), the session archives
+  that exist (metadata, size, and a heading outline for the newest — **never a
+  body**, because these run to megabytes), and pointers to ops-log entries whose
+  `target_repo` names the project. There is deliberately no `summary`,
+  `blockers` or `next_steps` field: a server that emits prose has synthesized,
+  and a summary you cannot check is worse than a dossier you can. Put the
+  conclusion in a note tagged `project-state` (configurable with
+  `MCP_PROJECT_STATE_TAG`) and this returns it verbatim.
 - `create_document` _(write, **off by default on every transport** — needs write to be enabled **and** `MCP_ALLOW_LEGACY_CREATE_DOCUMENT=1`; the one-step legacy route, superseded by `plan_document_create` → `apply_planned_document_create`)_
 - `plan_document_create` _(write; exact path, complete-file diff, no target mutation)_
 - `apply_planned_document_create` _(write; exact confirmed path required, create-only)_

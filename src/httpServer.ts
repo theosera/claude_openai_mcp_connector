@@ -32,6 +32,8 @@ interface Endpoint {
    *  than re-read from env here: one setting, one reader — the shape
    *  `loadAllowLegacyCreateDocument` is shared for. */
   contextTypeRules: TypeRules | undefined;
+  /** Frontmatter tag naming a project's state documents. Threaded, not re-read. */
+  projectStateTag: string | undefined;
   oauth: OAuthProvider | undefined;
   limiters: OAuthLimiters | undefined;
   skillStore: SkillStore | undefined;
@@ -75,7 +77,8 @@ export async function startHttpServer(
   config: HttpConfig,
   skillStore?: SkillStore,
   auditStore?: AuditStore,
-  contextTypeRules?: TypeRules
+  contextTypeRules?: TypeRules,
+  projectStateTag?: string
 ): Promise<http.Server> {
   // OAuth 2.1 authorization server (only when configured). ChatGPT / Claude.ai
   // web require it; Desktop / Code / API keep using the static bearer.
@@ -94,6 +97,7 @@ export async function startHttpServer(
     store,
     config,
     contextTypeRules,
+    projectStateTag,
     oauth,
     limiters,
     skillStore,
@@ -111,7 +115,10 @@ export async function startHttpServer(
           // default would be the full one.
           throw new Error("unresolved_principal");
         }
-        return buildMcpServer(store, surfaceFor(principal, config, skillStore, auditStore, contextTypeRules));
+        return buildMcpServer(
+          store,
+          surfaceFor(principal, config, skillStore, auditStore, contextTypeRules, projectStateTag)
+        );
       },
       { legacy: "stateless" }
     )
@@ -149,7 +156,8 @@ function surfaceFor(
   config: HttpConfig,
   skillStore: SkillStore | undefined,
   auditStore: AuditStore | undefined,
-  contextTypeRules: TypeRules | undefined
+  contextTypeRules: TypeRules | undefined,
+  projectStateTag: string | undefined
 ): BuildServerOptions {
   // Defensive: `authorizeScope` refuses a principal without vault.read at the
   // gate, so reaching here without it means the gate was bypassed. Registering
@@ -170,7 +178,8 @@ function surfaceFor(
     chatgptUrlBase: config.chatgptUrlBase,
     // Not gated on scope: `get_context` is read-only, and the weights only
     // change the ORDER of documents a `vault.read` principal may already fetch.
-    contextTypeRules
+    contextTypeRules,
+    projectStateTag
   };
 }
 
