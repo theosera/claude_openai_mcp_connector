@@ -126,7 +126,11 @@ client detection, per the [appendix's anti-router ruling](#appendix--future-uses
   **unprefixed** `listDocuments()` (fs access stays behind the existing guard
   chain; `path_prefix` shipped with #108 but only `search` passes it — a backlink
   set computed over a subset is wrong, not merely smaller), correct relative-link
-  resolution, and Obsidian-style **basename** wikilink resolution. Frontmatter
+  resolution, and Obsidian-style wikilink resolution **from path facts only**: an
+  exact root-relative path match first, then basename. Keeping the exact-path leg
+  is what lets a folder-qualified link like `[[projects/a/note]]` keep its edge
+  when two folders hold a `note.md` — it is unambiguous without consulting a
+  single self-declared field, so there is no reason to drop it. Frontmatter
   `title` / `aliases` generate candidates but **never resolve on their own, even
   when the match is unique**: a note's self-declared fields are the same class as
   the `id` that INV-2 already refuses, so honouring a unique alias would reopen

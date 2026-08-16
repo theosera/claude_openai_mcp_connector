@@ -172,7 +172,7 @@ two-step stale-safe write (INV-3)、untrusted vault content の data 境界宣�
 | 4 | Pagination・総件数 | limit 10/50 のみ、切り捨て不可視 (`search.ts:8,24`) | `{results, total_count, offset, limit}` envelope | 盲目的な再検索ループの原因 | ★★★ |
 | 5 | Snippet | 1 窓 220 字 | 2 窓 × 160 字 (相異なる term 被覆) | 一致文脈が見えない | ★★ |
 | 6 | Backlink 正確性 | 相対 md リンク未解決 (fixture で再現) | リンク元 dir で posix 解決 + containment 検査 | **バグ** — recall 欠損 | ★★★ |
-| 7 | Wikilink 解決 | title 一致のみ (`knowledgeStore.ts:331`) | **basename (Obsidian 意味論) のみ自動解決**。title / aliases は**候補生成専用**で一意でも自動解決しない (自己申告 = INV-2 の適用範囲 / D-4) | Obsidian と意味論が不一致、かつ**信頼の根拠が untrusted 側にある** | ★★ |
+| 7 | Wikilink 解決 | title 一致のみ (`knowledgeStore.ts:331`) | **root 相対 exact path → basename** の順で自動解決 (どちらも path = サーバ所有)。title / aliases は**候補生成専用**で一意でも自動解決しない (自己申告 = INV-2 の適用範囲 / D-4) | Obsidian と意味論が不一致、かつ**信頼の根拠が untrusted 側にある** | ★★ |
 | 8 | Token budget | 概念なし、fetch は全文無制限 | `get_context(token_budget)` + 依存ゼロの token 推定 | Context Engineering の中核欠落 | ★★ |
 | 9 | 部分取得 | 全文 fetch のみ | `fetch_document` に outline / sections / max_chars | 100KB–1MB 級ノートが扱えない | ★★ |
 | 10 | Document type / 信頼度 | 概念ゼロ | owner 管理の type rules (opt-in、重み 0.25–2.0) | Permanent と作業ログの区別不能 | ★★ |
@@ -375,11 +375,18 @@ vault DATA であり、package への包含は指示でも承認でもなく ret
   リンク抽出は D-2 の derived cache に同居。
 - 解決規則: (a) Markdown リンクは**リンク元ディレクトリで posix 解決** (バグ修正)、
   `±.md` 補完、解決結果が root を逸脱したら unresolved (推測で別 root に張らない)。
-  (b) wikilink は **`basename` (Obsidian 意味論) だけを自動解決する**。frontmatter の
-  `title` / `aliases` は**候補生成にのみ使い、一意に当たっても自動解決しない**。
+  (b) wikilink は **path 由来の情報だけで自動解決する**。順序は
+  **① root 相対の exact path 一致** (`[[projects/a/note]]` のようなフォルダ修飾リンク。
+  `±.md` 補完あり) → **② `basename` 一致** (Obsidian 意味論)。**①② はどちらも path の一部で
+  サーバ所有**なので、ノートが自分で名乗ることはできない。
+  frontmatter の `title` / `aliases` は**候補生成にのみ使い、一意に当たっても自動解決しない**。
   したがって `title` / `aliases` の一致は、多義の場合と**同じ形**
   (`resolved: false` + `candidates[]`) を返す (決定論、推測しない)。多義・root 逸脱・
   曖昧候補からの先頭選択はいずれも禁止。
+  ⚠️ **① を省いて basename だけにしない。** `note.md` が 2 つのフォルダにあるとき、
+  `[[projects/a/note]]` は**曖昧ではないのに unresolved になる** — basename へ縮めると
+  衝突し、文字列全体を basename として探すと何も見つからない。**フォルダ修飾リンクは
+  自己申告を一切使わずに一意**なので、落とす理由が無い (Codex レビュー #111 の指摘)。
 - API: `buildLinkGraph(docs)` → `outgoing(id)` / `incoming(id)` /
   `neighbors(id, {depth≤2, direction, nodeCap})`。
 - 上限: depth ≤ 2、結果 node ≤ 50、node あたり展開 fanout ≤ 20 (recent 優先)、
@@ -552,7 +559,7 @@ ROADMAP と CHANGELOG が持つ。
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | **P0** 正確性 quick wins | NFC/NFKC 正規化、`SearchResult` に `modified_at`/`updated_at`/`size_bytes`、`total_count`+`offset` envelope、backlink 相対リンク解決 (最小修正)、`absolutePath` 除去 (境界 serializer) | `src/search.ts` `src/types.ts` `src/knowledgeStore.ts` `src/multiRootStore.ts` `src/server.ts` | — | `tests/search.test.ts` 新設 + `knowledgeStore.test.ts` (fixture の相対リンクが backlink になることを pin) + `httpServer.test.ts` 形状 pin | envelope と absolutePath が breaking → 0.7.0 で CHANGELOG `Changed` + README 移行注記 | 未知の consumer の envelope 依存 | S (~150 src / ~200 test LOC) |
 | **P1** 検索品質 | CJK segmentation・recency 減衰・`path_prefix`/`root`/日付 filter・`order`・snippet 2 窓・`explain`・derived cache | `src/search.ts` (全面改稿 ~300 行) `src/knowledgeStore.ts` `src/config.ts` `.env.example` | — | `search.test.ts` に正規化表・recency 順序・filter 行列・pagination 不変式・explain 形状 | なし (additive) | ranking 変化への不満 → `MCP_SEARCH_RECENCY_WEIGHT=0` | M (~700 / ~600) |
-| **P2** Graph + Provenance | linkGraph (相対リンク解決の完全版・**wikilink は basename のみ自動解決 / title・aliases は候補生成専用**・多義も一意も candidates)、`trace_sources` に depth/direction/`resolved_outgoing`/`related` | `src/knowledgeStore.ts` `src/multiRootStore.ts` `src/server.ts` `src/types.ts` | `src/linkGraph.ts` | `tests/linkGraph.test.ts` (basename が `resolved: true` / **title・aliases が一意でも `resolved: false` + 非空 `candidates[]`** ・循環・cache 無効化・depth/fanout/hub 上限)。⚠️ **`resolved: false` の件数を数える** — 解決数だけ数えると resolver を潰しても緑になる | なし (additive、backlink は増える = バグ修正として記載)。⚠️ **alias 専用の到達性は候補提示に落ちる** | MOC で link 爆発 → damping 定数 | M |
+| **P2** Graph + Provenance | linkGraph (相対リンク解決の完全版・**wikilink は root 相対 exact path → basename の順で自動解決 / title・aliases は候補生成専用**・多義も一意も candidates)、`trace_sources` に depth/direction/`resolved_outgoing`/`related` | `src/knowledgeStore.ts` `src/multiRootStore.ts` `src/server.ts` `src/types.ts` | `src/linkGraph.ts` | `tests/linkGraph.test.ts` (basename が `resolved: true` / **basename が衝突していてもフォルダ修飾 `[[a/note]]` は `resolved: true`** / **title・aliases が一意でも `resolved: false` + 非空 `candidates[]`** ・循環・cache 無効化・depth/fanout/hub 上限)。⚠️ **`resolved: false` の件数を数える** — 解決数だけ数えると resolver を潰しても緑になる | なし (additive、backlink は増える = バグ修正として記載)。⚠️ **alias 専用の到達性は候補提示に落ちる** | MOC で link 爆発 → damping 定数 | M |
 | **P3** Context Engine | `get_context`・token 推定・type rules (opt-in)・見出し分割 | `src/server.ts` `src/config.ts` `.env.example` `tests/promptInjection.test.ts` `tests/httpServer.test.ts` | `src/contextEngine.ts` `src/tokenEstimate.ts` `src/typeRules.ts` `src/markdownSections.ts` | `tests/contextEngine.test.ts` (budget 不超過・provenance 完全性・dedup・決定論・注入 fixture) `tests/tokenEstimate.test.ts` | なし (新規 read tool) | scope creep → 5 段固定 pipeline、plugin 化しない | L (~1000 / ~800) |
 | **P4** Project Memory | `get_project_state`・`fetch_document` sections/outline/max_chars | `src/server.ts` `src/knowledgeStore.ts` `src/multiRootStore.ts` `.env.example` | `src/projectState.ts` | `tests/projectState.test.ts` (決定論・巨大ノート非 inline・`target_repo` 経由 ops 到達) + fetch sectioning pin (巨大ノート fixture) | なし (additive) | 「合成の偽装」→ schema に自由文フィールドを置かない | M |
 | **P5** 評価 & tuning | explain 計測で type/recency 重み tuning、KPI (search→fetch 往復数) 実測、defer 項目のトリガ再評価 | docs / (任意) `scripts/` に eval script | — | — | なし | 使われない機構の先行構築 → すべて 💭 から | S |
