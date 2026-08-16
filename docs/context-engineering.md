@@ -19,6 +19,15 @@
 > 項目 (NFKC 正規化の欠落・`absolutePath` 露出・backlink の相対リンク未解決など) は
 > 上表の ✅ が現状の正典であり、A 節の記述はその**改修前の状態**を指す。
 >
+> **最終照合点**: D 節以降が実装と照合されたのは `5fc80e8` (2026-08-07) までで、
+> **以降 #93〜#109 が `knowledgeStore.ts` / `frontmatter.ts` / `config.ts` / `search.ts` を
+> 変更している** (G2 security remediation、その後の外部レビュー 2 巡、および #108 の
+> prefixed-search walk pruning)。D-2 の性能項だけは 2026-08-16 に訂正済み。
+> **P2 以降に着手するときは、本文書の指示を現在のコードに対して再検証してから使う** —
+> 照合されていない指示は、正しく見えても現在の実装を指していない。
+> ⚠️ 実例: D-2 の訂正自体が **2 日で 1 度陳腐化した** (#106 の 4 要素 → #108 で `dev` を
+> 加えて 5 要素)。**訂正した記述も、訂正した時点のスナップショットにすぎない。**
+>
 > **位置付け**: [`PRFAQ.md`](./PRFAQ.md) が約束する「vault を丸ごと渡さず、**必要な
 > ときに必要な分だけ**渡す」の直接の発展形。現状の「必要な分」の単位は _ファイル_
 > だが、これを _Token Budget 内に最適化された Context_ に引き上げる。
@@ -288,11 +297,24 @@ Orchestrator / Client (将来)          ← 本リポでは実装しない (消�
 - **Observability**: `explain?: boolean` で result ごとに `score_breakdown
   {title, path, tags, body, phrase, recency, type_weight}` を返す (既定 off、~20 行)。
   P5 の tuning と KPI 計測の計器。
-- **性能**: `documentCache` の entry を `{mtimeMs, sizeBytes, document, derived:
-  {searchText 各 field, segments, extractedLinks}}` に拡張し、正規化・分割・リンク抽出を
-  **parse 時 1 回**に移す。無効化条件は既存の mtime+size と同一。これで
-  「毎クエリ全文 `toLowerCase()`」(`search.ts:28-30,85`) が消える。**inverted index は
-  現段階では作らない** (G 節、トリガ付き defer)。
+- **性能**: **この項目は P1 で出荷済み。** `documentCache` の entry は
+  `{signature, document}` で、`document.searchDerived = {foldedBody, compactBody}` が
+  正規化を **parse 時 1 回**へ移している (`src/knowledgeStore.ts:610`)。
+  「毎クエリ全文 `toLowerCase()`」は既に消えた。**P2 が足すのは同じスロットへの
+  リンク抽出の同居**であって、cache 機構そのものの新設ではない。
+  ⚠️ **無効化条件を「mtime+size と同一」と書いていたのは誤り (2026-08-16 訂正)。**
+  現在は 5 要素の `StatSignature {mtimeNs, ctimeNs, dev, ino, sizeBytes}`
+  (`src/knowledgeStore.ts:74-82`)。#106 で mtime+size から 4 要素へ、
+  #108 で `dev` が加わった。`ctimeNs` が load-bearing —
+  **userspace が `utimes` で mtime を戻しても動かせない**唯一の値であり、
+  `ino` は replace-by-rename (本サーバの書き込み方式) を、`dev` は `ino` と対で
+  **filesystem をまたいだ同一性**を捕らえる。
+  **mtime+size へ戻すのは退行**で、同じ長さに書き換えられたノートの古い parse を
+  無期限に返すことになる。
+  ⚠️ **`(dev, ino)` を containment の代わりにしない** — これは freshness 専用の
+  フィールドである。#108 が実際に containment を `(dev, ino)` に載せようとして
+  **revert した**: 親ディレクトリが root の外へ移動しても、この 5 要素は 1 つも動かない。
+  **inverted index は現段階では作らない** (G 節、トリガ付き defer)。
 
 ### D-3. `get_context` の仕様 (P3、中核)
 

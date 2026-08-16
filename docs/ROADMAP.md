@@ -106,8 +106,11 @@ below:
   so it never surfaces a non-match; age from frontmatter before mtime, which git
   rewrites), `path_prefix` / `root` / date-range filters, `order`
   (`relevance` / `recent` / `path`), two-window snippets, per-result `explain`
-  score breakdown, and a derived-text cache on the existing mtime+size
-  invalidation (removes the per-query full-corpus fold). Pagination shipped
+  score breakdown, and a derived-text cache riding the parse cache's existing
+  stat-signature invalidation (removes the per-query full-corpus fold). That
+  signature was `mtimeMs` + size when P1 shipped and was strengthened afterwards
+  — see the external-review triage item below; the derived text rides whatever
+  the parse cache uses rather than adding a second cache. Pagination shipped
   earlier with P0. Entirely additive: unset env and unset parameters reproduce
   0.7.0 ranking exactly. Pinned by `tests/search.test.ts`.
 
