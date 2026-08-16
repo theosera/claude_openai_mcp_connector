@@ -3,10 +3,11 @@ import { createTwoFilesPatch } from "diff";
 import { KnowledgeStore, ensureMarkdownExtension, resolveUniqueReference } from "./knowledgeStore.js";
 import { extractAllLocalLinks, extractMarkdownLinks, resolveRelativeLink } from "./markdownLinks.js";
 import { assertRelativePath, toPosixPath } from "./pathSafety.js";
-import { searchDocuments, type SearchFilters } from "./search.js";
+import { normalizePathPrefix, searchDocuments, type SearchFilters } from "./search.js";
 import type { AppConfig } from "./config.js";
 import type {
   CreateDocumentInput,
+  ListDocumentsOptions,
   MarkdownDocument,
   PlanDocumentCreateInput,
   PlanUpdateInput,
@@ -80,13 +81,17 @@ export class MultiRootStore implements VaultStore {
 
   async search(filters: SearchFilters): Promise<SearchResponse> {
     // Rank across ALL roots in one pass so the limit applies globally.
-    return searchDocuments(await this.listDocuments(), filters, this.searchDefaults);
+    // `path_prefix` is matched against the UNPREFIXED path, so the same prefix
+    // narrows every root's scan — it is not a root selector, and passing it down
+    // does not silently scope the search to one root.
+    const documents = await this.listDocuments({ pathPrefix: normalizePathPrefix(filters.path_prefix) });
+    return searchDocuments(documents, filters, this.searchDefaults);
   }
 
-  async listDocuments(): Promise<MarkdownDocument[]> {
+  async listDocuments(options: ListDocumentsOptions = {}): Promise<MarkdownDocument[]> {
     const perRoot = await Promise.all(
       this.entries.map(async (entry) =>
-        (await entry.store.listDocuments()).map((document) => this.wrap(entry.name, document))
+        (await entry.store.listDocuments(options)).map((document) => this.wrap(entry.name, document))
       )
     );
     return perRoot.flat();

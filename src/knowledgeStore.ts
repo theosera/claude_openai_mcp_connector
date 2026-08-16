@@ -13,11 +13,12 @@ import {
 } from "./frontmatter.js";
 import { extractAllLocalLinks, extractMarkdownLinks, resolveRelativeLink } from "./markdownLinks.js";
 import { ensurePatchStateDir, PATCH_STATE_FILE_MODE } from "./patchState.js";
-import { compactWhitespace, searchDocuments, type SearchFilters } from "./search.js";
+import { compactWhitespace, normalizePathPrefix, searchDocuments, type SearchFilters } from "./search.js";
 import { normalizeForMatch } from "./searchText.js";
 import type { StoreConfig } from "./config.js";
 import type {
   DocumentMetadata,
+  ListDocumentsOptions,
   MarkdownDocument,
   PlanDocumentCreateInput,
   PlannedDocumentCreate,
@@ -62,15 +63,28 @@ const TRANSIENT_FS_CODES = new Set(["EAGAIN", "EMFILE", "ENFILE"]);
  * write and, unlike mtime, cannot be set to an arbitrary value by userspace.
  * `ino` catches the other shape — a replace-by-rename (which is how this server
  * now writes, see src/atomicWrite.ts) swaps in a different inode entirely.
+ *
+ * `dev` pairs with `ino` so the identity is unique across filesystems, not only
+ * within one: `ino` alone would let a path re-pointed at a different device
+ * collide by inode number. It is a freshness field only. It does NOT stand in
+ * for the containment check — #108 tried resting containment on `(dev, ino)` and
+ * reverted, because a parent directory moved out of the root leaves every one of
+ * these fields untouched (see readDocument).
  */
-type StatSignature = { mtimeNs: bigint; ctimeNs: bigint; ino: bigint; sizeBytes: bigint };
+type StatSignature = { mtimeNs: bigint; ctimeNs: bigint; dev: bigint; ino: bigint; sizeBytes: bigint };
 
 function statSignature(stats: BigIntStats): StatSignature {
-  return { mtimeNs: stats.mtimeNs, ctimeNs: stats.ctimeNs, ino: stats.ino, sizeBytes: stats.size };
+  return { mtimeNs: stats.mtimeNs, ctimeNs: stats.ctimeNs, dev: stats.dev, ino: stats.ino, sizeBytes: stats.size };
 }
 
 function sameSignature(a: StatSignature, b: StatSignature): boolean {
-  return a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs && a.ino === b.ino && a.sizeBytes === b.sizeBytes;
+  return (
+    a.mtimeNs === b.mtimeNs &&
+    a.ctimeNs === b.ctimeNs &&
+    a.dev === b.dev &&
+    a.ino === b.ino &&
+    a.sizeBytes === b.sizeBytes
+  );
 }
 
 export function isTransientFsError(error: unknown): boolean {
@@ -108,7 +122,8 @@ export class KnowledgeStore implements VaultStore {
   private rootRealPath?: string;
   // Parse cache keyed by real path. Parsing every Markdown file on every query
   // is the search bottleneck for large vaults; we re-parse a file only when its
-  // stat signature changes. Path-containment checks still run on every access.
+  // stat signature changes. Path-containment checks still run on every access —
+  // see readDocument for why that stayed after #108 tried removing it.
   private readonly documentCache = new Map<string, { signature: StatSignature; document: MarkdownDocument }>();
 
   // Promise-chain serializer for the overwriting write path. Each apply awaits
@@ -141,7 +156,12 @@ export class KnowledgeStore implements VaultStore {
   }
 
   async search(filters: SearchFilters): Promise<SearchResponse> {
-    return searchDocuments(await this.listDocuments(), filters, this.searchDefaults());
+    // Hand the scan the same prefix the filter will apply, so a scoped search
+    // stops walking subtrees whose files could only be filtered out anyway. The
+    // results are unchanged by construction — the filter still runs over
+    // whatever comes back.
+    const documents = await this.listDocuments({ pathPrefix: normalizePathPrefix(filters.path_prefix) });
+    return searchDocuments(documents, filters, this.searchDefaults());
   }
 
   private searchDefaults(): SearchDefaults {
@@ -486,9 +506,9 @@ export class KnowledgeStore implements VaultStore {
     };
   }
 
-  async listDocuments(): Promise<MarkdownDocument[]> {
+  async listDocuments(options: ListDocumentsOptions = {}): Promise<MarkdownDocument[]> {
     const root = await this.root();
-    const files = await walkMarkdownFiles(root);
+    const files = await walkMarkdownFiles(root, options);
     const scanned = await mapWithConcurrency(files, this.config.scanConcurrency ?? DEFAULT_SCAN_CONCURRENCY, (file) =>
       this.readDocumentResilient(file)
     );
@@ -522,12 +542,33 @@ export class KnowledgeStore implements VaultStore {
   }
 
   private async readDocument(absolutePath: string): Promise<MarkdownDocument> {
+    // ★ Containment is re-proven HERE, on every read, before the cache is even
+    // consulted. It is tempting to skip it — the callers (walkMarkdownFiles,
+    // resolveForWrite, resolveForExistingRead) all run the guard chain on the
+    // same call, so this looks like a second resolution of a resolved path, and
+    // dropping it removes thousands of realpath calls per tool call on a vault
+    // where syscalls, not bytes, are the entire cost.
+    //
+    // It was tried on #108 and reverted, so the reason is recorded rather than
+    // rediscovered: "validated on the same call" is not "validated at the same
+    // instant". The walk collects paths and the reads happen afterwards. Move a
+    // directory out of the root in that window and symlink it back, and the
+    // child file's own dev, ino, ctime and mtime are ALL untouched — a parent's
+    // rename does not move a child's ctime — so a stat-signature check matches
+    // across a genuine escape and returns Markdown for a path that no longer
+    // resolves inside KNOWLEDGE_ROOT. Two independent reviewers found it.
+    //
+    // The bytes served in that window are ones the server had already validated
+    // and cached, so nothing new is disclosed — but INV-1 says every file access
+    // stays under the root, and "true except during a window" is a weaker
+    // invariant than the one this repo committed to. Closing the window properly
+    // needs fd-based containment (openat / O_NOFOLLOW per component) that Node
+    // does not portably expose; until that exists, the cheap check stays.
     const root = await this.root();
     const realPath = await fs.realpath(absolutePath);
     const relativePath = relativeToRoot(root, realPath);
 
     // Fast path: a pure metadata stat decides cache validity (see StatSignature).
-    // Containment (realpath + relativeToRoot above) is re-validated every call.
     const cached = this.documentCache.get(realPath);
     if (cached) {
       const meta = await fs.stat(realPath, { bigint: true });
@@ -787,9 +828,44 @@ export class KnowledgeStore implements VaultStore {
   }
 }
 
-async function walkMarkdownFiles(root: string, current: string = root, visited = new Set<string>()): Promise<string[]> {
+/**
+ * Can any file under a directory match `prefix`?
+ *
+ * `dirKey` is the directory's vault-relative path with a trailing separator
+ * (empty at the root), so every file beneath it has a path starting with
+ * `dirKey`. Two cases keep the subtree in play, and BOTH are needed:
+ *
+ *   * `dirKey.startsWith(prefix)` — the prefix is already satisfied by the
+ *     directory itself, so everything under it matches;
+ *   * `prefix.startsWith(dirKey)` — the prefix reaches deeper than this
+ *     directory, so a match may still lie inside it.
+ *
+ * The second case is also why `path_prefix` keeps behaving as a plain string
+ * prefix rather than a directory name: `05_log` reaches `05_logs/a.md`, because
+ * the root's `dirKey` is `""` and the check falls through to the files.
+ *
+ * Erring toward `true` only costs time; erring toward `false` silently drops
+ * results. The authoritative filter is still `searchDocuments`.
+ */
+function subtreeMayMatch(dirKey: string, prefix: string | undefined): boolean {
+  return prefix === undefined || dirKey.startsWith(prefix) || prefix.startsWith(dirKey);
+}
+
+async function walkMarkdownFiles(
+  root: string,
+  options: ListDocumentsOptions = {},
+  current: string = root,
+  visited = new Set<string>()
+): Promise<string[]> {
   const currentRealPath = await fs.realpath(current);
-  relativeToRoot(root, currentRealPath);
+  const relativeDir = relativeToRoot(root, currentRealPath);
+  // Trailing separator so a prefix comparison cannot straddle a name boundary
+  // (`05_logs/` must not be reachable from a directory literally named `05_log`).
+  const dirKey = relativeDir === "" ? "" : `${relativeDir}/`;
+
+  if (!subtreeMayMatch(dirKey, options.pathPrefix)) {
+    return [];
+  }
 
   if (visited.has(currentRealPath)) {
     return [];
@@ -805,20 +881,38 @@ async function walkMarkdownFiles(root: string, current: string = root, visited =
     }
     const absolutePath = path.join(current, entry.name);
     if (entry.isSymbolicLink()) {
+      // Symlinks opt out of the prune. Their document path comes from the
+      // realpath, which can land anywhere in the vault, so this directory's
+      // position says nothing about whether the target matches — and including a
+      // file the filter later drops is the harmless direction.
+      //
+      // Untested, and not testable from here: inside one root a symlink can only
+      // point at something the walk already reaches directly (an escape is
+      // rejected above, and `visited` collapses a linked directory), so the
+      // opt-out never changes the result set. Kept as the correct rule rather
+      // than as a verified one — noted so the next reader does not mistake the
+      // green suite for coverage of this branch.
       const realPath = await fs.realpath(absolutePath);
       relativeToRoot(root, realPath);
       const stat = await fs.stat(realPath);
       if (stat.isDirectory()) {
-        files.push(...(await walkMarkdownFiles(root, realPath, visited)));
+        files.push(...(await walkMarkdownFiles(root, {}, realPath, visited)));
       } else if (stat.isFile() && realPath.endsWith(".md")) {
         files.push(realPath);
       }
       continue;
     }
     if (entry.isDirectory()) {
-      files.push(...(await walkMarkdownFiles(root, absolutePath, visited)));
+      files.push(...(await walkMarkdownFiles(root, options, absolutePath, visited)));
     } else if (entry.isFile() && entry.name.endsWith(".md")) {
-      files.push(absolutePath);
+      // Same NFC form relativeToRoot would produce, without paying path.relative
+      // per file. Only ever used to decide whether to read the file.
+      if (
+        options.pathPrefix === undefined ||
+        `${dirKey}${entry.name.normalize("NFC")}`.startsWith(options.pathPrefix)
+      ) {
+        files.push(absolutePath);
+      }
     }
   }
 

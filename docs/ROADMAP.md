@@ -767,6 +767,84 @@ The cache test needed a **second** attempt to be worth anything — the first
 restored a previously observed mtime, which `utimes` truncates, so it passed with
 the guard removed. It now freezes the mtime to a whole second on both sides.
 
+### The scan costs syscalls, not bytes — _measured, then narrowed_ ✅
+
+Every read tool walks the whole vault through `listDocuments()` — still true
+after this change for `fetch` / `trace_sources` / `list_projects` and for an
+**unprefixed** `search_documents`; a prefixed search now prunes (see below).
+What that costs was argued from operation counts for a long time and finally
+measured, on the real 2,880-note vault (47.4 MB of Markdown, iCloud Drive, macOS):
+
+| | measured |
+| --- | --- |
+| tree walk (`find`, 670 directories) | 0.155 s |
+| `stat` on all 2,880 notes | 0.864 s |
+| `cat` of all 2,880 notes (47.4 MB) | 1.098 s |
+
+**Reading every byte costs 0.23 s more than merely stat-ing them.** The bytes are
+almost free; the per-file syscalls are the bill. That inverted the plan twice
+over, and both wrong turns are worth keeping:
+
+- _"Narrow the default scan to the folder that changes most"_ — the folder that
+  absorbs nearly all edits holds **6.3 %** of the notes, while one archive folder
+  holds **58.5 %**. Cost concentrates where writes do not.
+- _"Excluding the asset folder is free money"_ — it holds 0 Markdown files but
+  only **19 of 670** directories. Large in bytes, negligible in walk cost. Both
+  claims were made before measuring, which is the failure the numbers above exist
+  to stop repeating.
+
+Two changes followed, neither of which narrows anything by default:
+
+- **`path_prefix` now prunes the walk.** It was already a search filter, applied
+  after the walk had read every note. It is now also handed to the walk, which
+  skips subtrees that provably cannot contain a match. `searchDocuments` stays
+  the authority, so the prune only has to be conservative — and `fetch`,
+  `trace_sources` and `list_projects` deliberately keep scanning everything,
+  because id uniqueness (INV-2) and backlink completeness are wrong, not merely
+  short, when computed over a subset.
+- **A cache hit no longer re-resolves the path.** `readDocument` ran `realpath`
+  before consulting its cache, thousands of times per call; every caller already
+  runs the full INV-1 chain on the same call, so it looked like a second
+  resolution of an already-resolved path. **Tried, then reverted before merge**
+  — see below. The signature did keep `dev` beside `ino`, as a freshness field.
+
+**No new tool, no new env flag, no changed default.** The rejected alternative —
+making one folder the default scan target with a prompt to widen it — bought the
+same speed by hiding **about 94 %** of the notes (the folder that absorbs nearly
+every edit holds 6.3 % of them), and would have made unattended scans depend on
+an interactive answer.
+
+**Why the cache half was reverted.** "Validated on the same call" is not
+"validated at the same instant": the walk collects paths and the reads happen
+afterwards. Move a directory out of the root in that window and symlink it back,
+and the child file's own `dev`, `ino`, `ctime` and `mtime` are **all untouched**
+— a parent's rename does not move a child's ctime — so a stat-signature check
+matches across a genuine escape and returns Markdown for a path that no longer
+resolves inside `KNOWLEDGE_ROOT`. Two independent reviewers found it (Codex as a
+P1, CodeRabbit as merge-blocking). The bytes served in that window were ones the
+server had already validated and cached, so nothing new was disclosed — but
+INV-1 says every file access stays under the root, and "true except during a
+window" is a weaker invariant than the one this repo committed to. Closing it
+properly needs fd-based containment (`openat` / `O_NOFOLLOW` per component) that
+Node does not portably expose, so the per-read `realpath` stays until that
+exists. **The prune, which is the larger measured win, was never in question.**
+
+Reverse-verified per guard: removing the cache-hit signature check fails four
+tests including both freshness tests; dropping `subtreeMayMatch`'s
+prefix-reaches-deeper clause fails the partial-segment test. The third guard
+**failed its first reverse verification** — with the directory prune disabled
+entirely every test stayed green, because the assertions counted file opens and
+the per-file check alone already suppressed those. The two halves of the prune
+are measured by different syscalls (`open` for a skipped file, `readdir` for a
+skipped subtree); the test now counts both. The `dev` field is **not**
+reverse-verifiable here — separating two devices needs a mount — and is recorded
+as unverified rather than assumed.
+
+Still open: an unprefixed search pays the full scan, so the
+[inverted index](#context-engineering-layer--get_context--link-graph--project-state-)
+tail is nearer than its "> 10k notes" trigger suggests — its **other** trigger,
+search p95 over 200 ms, is already met at 2,880 notes.
+
 ---
 
 ## Mid-term
@@ -811,6 +889,7 @@ _team / enterprise_ adoption rather than the core individual use case.
 | **Audit log**                                                | No after-the-fact record of who searched / fetched / wrote what.                                                                                                                                                                                                                                                                                                   | near-term 🔭                                                                                                                                                                                                                        |
 | **macOS CI**                                                 | The primary deployment target is macOS, and CI runs only on Linux. Case-insensitive-filesystem behaviour is therefore **asserted nowhere**: the `(dev, ino)` root-containment comparison exists precisely because `/vault` and `/Vault` are one directory on APFS, and a test for that shape is vacuous on ext4. NFD normalisation (HFS+) is in the same position. | near-term 🔭                                                                                                                                                                                                                        |
 | **Coverage thresholds**                                      | 374 tests is a count, not a floor. Nothing fails when a new branch arrives untested, which is the condition the reverse-verification rule exists to catch by hand — a threshold makes the cheap half automatic.                                                                                                                                                    | near-term 🔭                                                                                                                                                                                                                        |
+| **No connection limit or rate limit on the HTTP endpoint**   | `http.createServer` is left at its defaults, and this repo sets nothing: no `maxConnections`, and no rate limit on `/mcp` (the two limiters cover only the public OAuth endpoints). ⚠️ **Node's own timeout defaults DO apply** — `requestTimeout` 300 s, `headersTimeout` min(60 s, requestTimeout), `keepAliveTimeout` 5 s; the one genuinely unset is `server.timeout` (socket inactivity, default 0). The ceiling on concurrent agents is therefore the process file-descriptor limit, not anything this repo chooses — and an unprefixed read still walks the whole vault at `MCP_SCAN_CONCURRENCY` handles, so it is that limit divided by the scan width. | near-term 🔭                                                                                                                                                                                                                        |
 | **Filesystem fault injection**                               | Write paths are now atomic, but no test exercises `ENOSPC`, `EIO`, or a kill between temp write and rename. The recovery behaviour is argued in comments and unverified in CI.                                                                                                                                                                                     | mid-term 💭                                                                                                                                                                                                                         |
 | **Fuzz / property tests**                                    | `pathSafety` and the frontmatter parser take adversarial input and are pinned by enumerated cases only, so they are strong exactly where someone already thought to look. Property tests would search the space the enumeration misses.                                                                                                                            | mid-term 💭                                                                                                                                                                                                                         |
 | **Multi-user RBAC**                                          | Currently single-user by design; teams need per-user roles & scoping.                                                                                                                                                                                                                                                                                              | larger bet 💭                                                                                                                                                                                                                       |
@@ -913,6 +992,46 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       the allowlist (`loadHttpConfig` adds `MCP_HTTP_PUBLIC_URL`'s host, so the
       supported setups are covered — but an unsupported one would start failing
       at `/authorize` instead of `/mcp`). Cheap; needs its own red-green test.
+- [ ] **Give the HTTP server explicit connection and request limits** — measured
+      at `e91c1c8`: `src/httpServer.ts` calls `http.createServer` and `listen`
+      without setting `maxConnections` or `server.timeout`, and the only rate
+      limiters in the process are the OAuth ones (`authorize` 20/5min,
+      `register` 20/10min). `/mcp` itself has neither. ⚠️ **Node's `requestTimeout`
+      (300 s), `headersTimeout` (min 60 s) and `keepAliveTimeout` (5 s) defaults
+      DO apply** — an earlier draft of this item said otherwise; only
+      `server.timeout` (socket inactivity) is genuinely 0.
+      What _is_ bounded is request memory (`MAX_BODY_BYTES` = 4 MiB) and scan
+      width (`MCP_SCAN_CONCURRENCY`, default 24).
+
+      **Why it matters more here than for a typical service:** the endpoint is
+      sessionless and shared, so N agents can be in flight at once, and every
+      read tool (`fetch_document` / `search_documents` / `plan_document_update`)
+      still walks the entire vault through `listDocuments()`. N concurrent scans
+      therefore want N × 24 descriptors, which makes the effective ceiling
+      `ulimit -n` divided by the scan width rather than a number this repo picked.
+      Exhaustion degrades rather than crashes — `EAGAIN` / `EMFILE` / `ENFILE`
+      are retried with backoff and unreadable notes are skipped — but that is
+      resilience arrived at from below, not a limit chosen from above. What is
+      genuinely unbounded is socket inactivity (`server.timeout` = 0) and the
+      number of concurrent connections, not request or header time.
+
+      **Scope note:** this is availability, not confidentiality — bearer/OAuth
+      still gates every request, and the per-request tool surface is unaffected.
+      Pair it with the walk itself: a cap that merely rations a full-vault scan
+      per call is treating the symptom, so this belongs near the retrieval work,
+      not on its own. 🚧 The scan half moved first (see the section below): a
+      prefixed search no longer scans the whole vault. (The cache-hit half was
+      tried and reverted before merge — see that section.) The unprefixed scan is
+      unchanged, so the ceiling this item describes still stands.
+
+      **What is _not_ in scope here:** a plan is looked up by `patch_id` alone
+      and is not bound to the principal that staged it, so on a shared endpoint
+      one agent can apply a plan another agent staged. The id is a v4 UUID that
+      appears only in the staging response, so this is not reachable by guessing
+      — but "the approving agent and the applying agent are the same" is not a
+      property the code states. Related to the vault-binding item below and worth
+      settling with it; both are INV-3 changes and neither should ride along with
+      a limits patch.
 - [x] **RFC 9207 `iss` in the authorization response** (`src/oauth/`) — ✅ the
       `authorizePost` success redirect (the only redirect the AS emits — error
       paths render a 400 page precisely so codes cannot leak via redirects, so
