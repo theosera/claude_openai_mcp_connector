@@ -257,6 +257,19 @@ export class KnowledgeStore implements VaultStore {
    * Map iterates in insertion order, so re-inserting on every hit makes the
    * first entry the least recently used — which is what makes the eviction
    * below an LRU rather than a "whatever happened to be parsed first" purge.
+   *
+   * ⚠️ Correct, and currently UNOBSERVABLE — noted so the green suite is not
+   * mistaken for coverage of it. Every read path in this class enumerates the
+   * whole vault (`fetch` and `search` both go through `listDocuments`, and
+   * `planUpdate` goes through `fetch`), so the only access pattern that exists
+   * is a full sweep in sorted-path order. Under that pattern the recency order
+   * a hit produces is the same order insertion would have produced, and LRU is
+   * indistinguishable from FIFO.
+   *
+   * Kept as the correct rule rather than a demonstrated one, because the first
+   * point-read caller — `get_context` is already named in the tool budget —
+   * would make the difference real, and arriving at that with FIFO eviction
+   * would be a silent regression rather than a visible one.
    */
   private cacheGet(key: string): { signature: StatSignature; document: MarkdownDocument; chars: number } | undefined {
     const entry = this.documentCache.get(key);
@@ -286,10 +299,7 @@ export class KnowledgeStore implements VaultStore {
    * A cache bound that tried to track real heap would be wrong in a way nobody
    * could reason about; this one is wrong by a constant factor an operator can.
    */
-  private cacheSet(
-    key: string,
-    entry: { signature: StatSignature; document: MarkdownDocument }
-  ): void {
+  private cacheSet(key: string, entry: { signature: StatSignature; document: MarkdownDocument }): void {
     const document = entry.document;
     const chars =
       document.body.length +
