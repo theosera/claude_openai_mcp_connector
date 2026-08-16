@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
+import { PLAN_MAX_AGE_MS } from "../src/patchState.js";
 import { SkillStore, type PlanSkillCreateInput } from "../src/skillStore.js";
 
 const SKILL_MD = `---
@@ -208,6 +209,29 @@ describe("SkillStore", () => {
       const plan = await store.planCreate(withReference("# Evaluation\n\nRecord evidence.\n"));
       await expect(store.applyPlannedCreate(plan.patch_id)).resolves.toBeTruthy();
     });
+  });
+
+  it("expires old plans when a Skill plan is staged, not only at init", async () => {
+    // The claim this pins is one the PR that added the sweep made in prose and
+    // left untested: "without it this store would have been the one writer the
+    // sweep did not reach." It was true — SkillStore called ensurePatchStateDir
+    // from init() alone — and deleting the line it added to planCreate left the
+    // entire suite green, because every sweep test drove a DOCUMENT plan.
+    //
+    // A long-running server inits once. If only the document writers sweep, a
+    // deployment whose two-step traffic is Skill creation never expires
+    // anything, and a plan holds a whole proposed bundle on disk.
+    const stale = path.join(patchStateDir, "77777777-7777-4777-8777-777777777777.json");
+    await fs.writeFile(stale, "{}", "utf8");
+    const longAgo = new Date(Date.now() - (PLAN_MAX_AGE_MS + 60_000));
+    await fs.utimes(stale, longAgo, longAgo);
+
+    const plan = await store.planCreate(validInput());
+
+    await expect(fs.access(stale)).rejects.toThrow();
+    // The plan just staged survived its own sweep and still applies.
+    const applied = await store.applyPlannedCreate(plan.patch_id);
+    expect(applied.files).toContain("knowledge/skills/improve-ai-harness/SKILL.md");
   });
 });
 

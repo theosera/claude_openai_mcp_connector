@@ -89,7 +89,13 @@ if (transport === "http") {
         // call, so leaving it on by default would keep the server's approval
         // claim resting on the model rather than on the plan/apply mechanism.
         allowLegacyCreateDocument: appConfig.allowLegacyCreateDocument,
-        allowSkillWrite: Boolean(skillStore),
+        // Same split as the audit tools below, and it was missing here: this
+        // used to be `Boolean(skillStore)`, so setting MCP_SKILLS_SUBDIR to get
+        // the INV-8 reservation also registered the Skill write tools on every
+        // interactive stdio session. The reservation rides on
+        // `config.skillsSubdir` through `createStore`, so withholding the tools
+        // leaves it fully in force.
+        allowSkillWrite: appConfig.stdioAllowSkillWrite,
         skillStore,
         // Registering the audit write tools is a SEPARATE decision from
         // reserving the subtree (INV-9); see AppConfig.stdioAllowAuditWrite for
@@ -152,10 +158,16 @@ if (transport === "http") {
   // line states the surface this process WILL serve, not that the transport
   // came up. A failure therefore reads "ready" and then the `onerror` line
   // above; that line, not this one, is the one to trust about start-up.
+  //
+  // `skills` reports the same three states for the same reason. It used to be a
+  // plain on/off derived from whether the subtree existed, which named the
+  // reservation and the tool surface with one word while they were already
+  // capable of disagreeing.
   const auditState = !auditStore ? "off" : appConfig.stdioAllowAuditWrite ? "on" : "reserved-only";
+  const skillsState = !skillStore ? "off" : appConfig.stdioAllowSkillWrite ? "on" : "reserved-only";
   process.stderr.write(
     `MCP stdio transport ready (write=on, documents=on, ` +
       `legacy_create=${appConfig.allowLegacyCreateDocument ? "on" : "off"}, ` +
-      `skills=${skillStore ? "on" : "off"}, audit=${auditState})\n`
+      `skills=${skillsState}, audit=${auditState})\n`
   );
 }

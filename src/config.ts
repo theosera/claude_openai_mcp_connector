@@ -93,6 +93,16 @@ export interface AppConfig {
    */
   stdioAllowAuditWrite: boolean;
   /**
+   * Whether the constrained Skill write tools (`plan_skill_create` /
+   * `apply_planned_skill_create`) are registered on stdio. Off by default.
+   *
+   * Separate from `skillsSubdir` for the reason `stdioAllowAuditWrite` is
+   * separate from `auditSubdir`: reserving the subtree against general document
+   * writes (INV-8) and handing this session the tools that write into it are two
+   * decisions, and stdio previously collapsed them into one.
+   */
+  stdioAllowSkillWrite: boolean;
+  /**
    * Whether the legacy one-step `create_document` tool is registered. Off by
    * default, on **every** transport.
    *
@@ -412,6 +422,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     throw new Error("MCP_STDIO_ALLOW_AUDIT_WRITE requires MCP_AUDIT_SUBDIR.");
   }
 
+  // Same split for Skills, and for the same reason. stdio used to read the mere
+  // presence of MCP_SKILLS_SUBDIR as permission to register the Skill write
+  // tools, so an operator following the documented "set the same subdir on every
+  // write-capable process" guidance also armed every interactive local session
+  // with them. The reservation (INV-8, assertNotSkillReserved) rides on
+  // config.skillsSubdir through createStore and is unaffected by this flag, so
+  // withholding the tools does not weaken it.
+  //
+  // Skill creation is two-step, so this is not the single-call exposure the
+  // audit pair had. It is arguably the heavier target regardless: a Skill is
+  // loaded by later sessions AS INSTRUCTIONS, which is the premise INV-8 exists
+  // for, while an audit report is read back as data.
+  const stdioAllowSkillWrite = isTruthy(env.MCP_STDIO_ALLOW_SKILL_WRITE);
+  if (stdioAllowSkillWrite && !skillsSubdir) {
+    throw new Error("MCP_STDIO_ALLOW_SKILL_WRITE requires MCP_SKILLS_SUBDIR.");
+  }
+
   const allowLegacyCreateDocument = loadAllowLegacyCreateDocument(env);
 
   // Bounds how many files a vault scan opens at once. Left undefined (the store
@@ -460,6 +487,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     skillsSubdir,
     auditSubdir,
     stdioAllowAuditWrite,
+    stdioAllowSkillWrite,
     allowLegacyCreateDocument,
     scanConcurrency,
     searchRecencyWeight,

@@ -5,6 +5,7 @@ import path from "node:path";
 import { createTwoFilesPatch } from "diff";
 import { replaceFileAtomically } from "./atomicWrite.js";
 import {
+  assertEmittedFrontmatterWithinLimit,
   assertFrontmatterPatch,
   parseMarkdown,
   parseMarkdownSafe,
@@ -12,7 +13,7 @@ import {
   titleFromMarkdown
 } from "./frontmatter.js";
 import { extractAllLocalLinks, extractMarkdownLinks, resolveRelativeLink } from "./markdownLinks.js";
-import { ensurePatchStateDir, PATCH_STATE_FILE_MODE } from "./patchState.js";
+import { ensurePatchStateDir, PATCH_ID_PATTERN, PATCH_STATE_FILE_MODE } from "./patchState.js";
 import { compactWhitespace, normalizePathPrefix, searchDocuments, type SearchFilters } from "./search.js";
 import { normalizeForMatch } from "./searchText.js";
 import type { StoreConfig } from "./config.js";
@@ -48,6 +49,18 @@ const DEFAULT_SCAN_CONCURRENCY = 24;
 const SCAN_MAX_RETRIES = 4;
 const SCAN_RETRY_BASE_MS = 100;
 const TRANSIENT_FS_CODES = new Set(["EAGAIN", "EMFILE", "ENFILE"]);
+
+/**
+ * Ceiling on retained parsed text, counted in UTF-16 characters across every
+ * cached body and its two derived copies.
+ *
+ * 24 million characters is roughly 24 MB of source text held as ~72 MB of
+ * strings once the folded and compacted copies are counted — comfortably above
+ * any single query's working set on the vaults this serves (measured: 2,891
+ * notes / 48.3 MB on disk), so a steady-state workload never evicts, while a
+ * vault that outgrows memory degrades into re-parsing instead of dying.
+ */
+const DOCUMENT_CACHE_MAX_CHARS = 24_000_000;
 
 /**
  * What the parse cache watches to decide a file is unchanged.
@@ -92,8 +105,114 @@ export function isTransientFsError(error: unknown): boolean {
   return typeof code === "string" && TRANSIENT_FS_CODES.has(code);
 }
 
+/**
+ * Filesystem entries the walk cannot reach right now: a symlink whose target is
+ * gone, a directory it may not open, a path that changed type underneath it.
+ *
+ * The distinction this draws is the whole point of the guard it serves. The walk
+ * has two failure classes that used to look identical, because both threw out of
+ * the same call and aborted every read tool:
+ *
+ *   - the entry ESCAPES the root — `relativeToRoot` throws a plain Error with no
+ *     errno, so it never matches here and keeps aborting the walk. That is INV-1
+ *     failing closed, and it is the only loud signal an operator gets that the
+ *     vault is misconfigured;
+ *   - the entry is UNREACHABLE — an errno from the OS. Nothing about containment
+ *     is in question; a synced folder moved and left a dangling link behind.
+ *
+ * Matching on errno rather than wrapping a `try` around the whole loop is what
+ * keeps the first class loud. A catch broad enough to swallow the escape would
+ * turn a containment refusal into a skipped file.
+ */
+const UNREACHABLE_ENTRY_CODES = new Set([
+  "ENOENT", // the target is gone (a dangling symlink, or a file removed mid-walk)
+  "EACCES", // not permitted to open it
+  "EPERM", // the same, on platforms that report it this way
+  "ELOOP", // a symlink chain that does not terminate
+  // `readdir` on a path that was a directory when the parent listed it and is a
+  // regular file by the time the recursion reaches it. This is the "changed type
+  // underneath it" case the doc comment above always claimed to cover, and it
+  // was the one errno missing from this set — the rule was written down in full
+  // and implemented in part.
+  "ENOTDIR"
+]);
+
+function isUnreachableEntryError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" && UNREACHABLE_ENTRY_CODES.has(code);
+}
+
+/** Basename only, matching readDocumentResilient: enough to find the bad entry,
+ *  not enough to disclose where the vault lives. */
+function warnSkippedEntry(absolutePath: string, reason: string): void {
+  process.stderr.write(`[knowledge] skipped unreachable vault entry (${reason}): ${path.basename(absolutePath)}\n`);
+}
+
+/**
+ * Name the entry whose containment check failed, on stderr, and change nothing
+ * else. The caller rethrows: an escape stays fatal (INV-1).
+ *
+ * The abort IS the signal that the vault is misconfigured — and it named
+ * nothing, so in a vault of a few thousand notes the operator was told a
+ * symlink escapes somewhere and left to find which one by hand. The skip path
+ * beside it has printed the basename all along; only the fatal path was
+ * anonymous, which is backwards, since it is the one demanding action.
+ *
+ * ★ stderr, and NOT the thrown message. The two have different audiences.
+ * relativeToRoot's Error is server-authored, so withClientSafeErrors passes it
+ * through verbatim to the MCP client, and an escaping symlink's name is an
+ * entry the client cannot otherwise enumerate — the walk aborts before any
+ * listing exists. Basename-only on the operator's channel gives whoever can fix
+ * it everything they need and gives the client nothing new, the same split
+ * readDocumentResilient already draws.
+ */
+function nameEscapingEntry(absolutePath: string): void {
+  process.stderr.write(
+    `[knowledge] vault entry escapes the knowledge root (walk aborted): ${path.basename(absolutePath)}\n`
+  );
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Retry ONE filesystem call through transient resource exhaustion.
+ *
+ * The scan already did this when READING a note (readDocumentResilient), and did
+ * not do it when WALKING to find that note — so the two halves of the same scan
+ * held opposite opinions about EAGAIN/EMFILE/ENFILE. The read stage waited and
+ * tried again; the walk let the errno out, where it is not an unreachable-entry
+ * code, so it aborted every read tool. Running the walk at `scanConcurrency`
+ * over a few thousand notes is exactly the workload that produces those codes,
+ * which made the disagreement an everyday failure rather than a corner.
+ *
+ * ★ Per SYSCALL, never per subtree. Wrapping `walkSubtree` instead looks tidier
+ * and is silently wrong: `walkMarkdownFiles` adds its own realpath to `visited`
+ * BEFORE it reads the directory, so a retry of the whole subtree would find its
+ * own entry there and return [] — an empty result reported as a successful
+ * scan. A single fs call carries no such state, so retrying one is a genuine
+ * retry rather than a second call that answers differently.
+ *
+ * What this deliberately does NOT change is what happens when the retries run
+ * out: the errno still leaves here, and a directory-level failure still aborts.
+ * That asymmetry with readDocumentResilient (which skips the note) is the point
+ * rather than an oversight — a skipped note is one note, named on stderr, while
+ * a skipped directory is an unbounded number of them, and a search tool that
+ * quietly answers from a truncated vault reports "no such note" for notes that
+ * exist. Bounded under-reporting is tolerable; unbounded is not.
+ */
+async function withTransientRetry<T>(operation: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!isTransientFsError(error) || attempt >= SCAN_MAX_RETRIES) {
+        throw error;
+      }
+      await delay(SCAN_RETRY_BASE_MS * 2 ** attempt + Math.floor(Math.random() * SCAN_RETRY_BASE_MS));
+    }
+  }
 }
 
 /** Bounded async map: at most `limit` callbacks run at once; order is preserved. */
@@ -124,7 +243,90 @@ export class KnowledgeStore implements VaultStore {
   // is the search bottleneck for large vaults; we re-parse a file only when its
   // stat signature changes. Path-containment checks still run on every access —
   // see readDocument for why that stayed after #108 tried removing it.
-  private readonly documentCache = new Map<string, { signature: StatSignature; document: MarkdownDocument }>();
+  private readonly documentCache = new Map<
+    string,
+    { signature: StatSignature; document: MarkdownDocument; chars: number }
+  >();
+
+  /** Running total of `chars` across documentCache, so the bound costs no scan. */
+  private cachedChars = 0;
+
+  /**
+   * Read through the cache, refreshing recency on a hit.
+   *
+   * Map iterates in insertion order, so re-inserting on every hit makes the
+   * first entry the least recently used — which is what makes the eviction
+   * below an LRU rather than a "whatever happened to be parsed first" purge.
+   *
+   * ⚠️ Correct, and currently UNOBSERVABLE — noted so the green suite is not
+   * mistaken for coverage of it. Every read path in this class enumerates the
+   * whole vault (`fetch` and `search` both go through `listDocuments`, and
+   * `planUpdate` goes through `fetch`), so the only access pattern that exists
+   * is a full sweep in sorted-path order. Under that pattern the recency order
+   * a hit produces is the same order insertion would have produced, and LRU is
+   * indistinguishable from FIFO.
+   *
+   * Kept as the correct rule rather than a demonstrated one, because the first
+   * point-read caller — `get_context` is already named in the tool budget —
+   * would make the difference real, and arriving at that with FIFO eviction
+   * would be a silent regression rather than a visible one.
+   */
+  private cacheGet(key: string): { signature: StatSignature; document: MarkdownDocument; chars: number } | undefined {
+    const entry = this.documentCache.get(key);
+    if (entry) {
+      this.documentCache.delete(key);
+      this.documentCache.set(key, entry);
+    }
+    return entry;
+  }
+
+  /**
+   * Cache a parse, evicting least-recently-used entries until the total fits.
+   *
+   * The cache had no bound of any kind: no size cap, no eviction, and no delete
+   * — so a note removed from the vault kept its parse alive for the life of the
+   * process, and a vault simply larger than memory had no behaviour other than
+   * to exhaust it. Measured on 1,000 synthetic notes totalling 16.9 MB: heap
+   * went from 7.7 MB to 42.7 MB and stayed there through a forced GC, because
+   * each entry holds the body plus two derived copies of it (`foldedBody`,
+   * `compactBody`).
+   *
+   * Bounded in CHARACTERS of retained text rather than entry count, because the
+   * failure mode is one large note, not many small ones — a count cap would
+   * admit fifty ten-megabyte session archives and call it fifty entries. It is a
+   * proxy for bytes, not a measurement of heap: V8 string representation,
+   * frontmatter objects and Map overhead are all outside it. That is deliberate.
+   * A cache bound that tried to track real heap would be wrong in a way nobody
+   * could reason about; this one is wrong by a constant factor an operator can.
+   */
+  private cacheSet(key: string, entry: { signature: StatSignature; document: MarkdownDocument }): void {
+    const document = entry.document;
+    const chars =
+      document.body.length +
+      (document.searchDerived?.foldedBody.length ?? 0) +
+      (document.searchDerived?.compactBody.length ?? 0);
+
+    const existing = this.documentCache.get(key);
+    if (existing) {
+      this.cachedChars -= existing.chars;
+      this.documentCache.delete(key);
+    }
+    this.documentCache.set(key, { ...entry, chars });
+    this.cachedChars += chars;
+
+    // A single note bigger than the whole budget must still be servable, so the
+    // loop stops at one entry rather than evicting the note just cached.
+    for (const [oldestKey, oldest] of this.documentCache) {
+      if (this.cachedChars <= DOCUMENT_CACHE_MAX_CHARS || this.documentCache.size <= 1) {
+        break;
+      }
+      if (oldestKey === key) {
+        continue;
+      }
+      this.documentCache.delete(oldestKey);
+      this.cachedChars -= oldest.chars;
+    }
+  }
 
   // Promise-chain serializer for the overwriting write path. Each apply awaits
   // the previous one settling; errors are swallowed on the chain itself so one
@@ -336,6 +538,11 @@ export class KnowledgeStore implements VaultStore {
       throw new Error("Confirmed target path does not match the planned document target.");
     }
 
+    // Re-asserted on the STAGED bytes, not just when they were built. A plan
+    // carries content serialized in an earlier call — possibly by an earlier
+    // build of this server, since nothing expires a plan — so the plan-time
+    // check in serializeMarkdown cannot speak for what is written here.
+    assertEmittedFrontmatterWithinLimit(patch.new_content);
     const absolutePath = await this.resolveForWrite(await this.validateCreateTarget(patch.target_path));
     try {
       await fs.writeFile(absolutePath, patch.new_content, { encoding: "utf8", flag: "wx" });
@@ -463,6 +670,10 @@ export class KnowledgeStore implements VaultStore {
       throw new Error("Patch is stale: the target document changed after the plan was created.");
     }
 
+    // As in applyPlannedDocumentCreate: the staged bytes are re-checked here,
+    // because this is the authoritative gate and the plan-time one is only an
+    // early refusal. INV-9 draws that line the same way for the audit surface.
+    assertEmittedFrontmatterWithinLimit(patch.new_content);
     // Same-directory temp + rename: an interrupted apply must leave the note
     // whole (old or new), never truncated. See src/atomicWrite.ts.
     await replaceFileAtomically(absolutePath, patch.new_content, original);
@@ -569,7 +780,7 @@ export class KnowledgeStore implements VaultStore {
     const relativePath = relativeToRoot(root, realPath);
 
     // Fast path: a pure metadata stat decides cache validity (see StatSignature).
-    const cached = this.documentCache.get(realPath);
+    const cached = this.cacheGet(realPath);
     if (cached) {
       const meta = await fs.stat(realPath, { bigint: true });
       if (sameSignature(cached.signature, statSignature(meta))) {
@@ -616,7 +827,7 @@ export class KnowledgeStore implements VaultStore {
           modifiedAt: stats.mtime.toISOString()
         }
       };
-      this.documentCache.set(realPath, { signature: statSignature(stats), document });
+      this.cacheSet(realPath, { signature: statSignature(stats), document });
       return document;
     } finally {
       await handle.close();
@@ -821,7 +1032,7 @@ export class KnowledgeStore implements VaultStore {
   }
 
   private patchPath(patchId: string): string {
-    if (!/^[0-9a-f-]{36}$/i.test(patchId)) {
+    if (!PATCH_ID_PATTERN.test(patchId)) {
       throw new Error("Invalid patch_id.");
     }
     return path.join(this.config.patchStateDir, `${patchId}.json`);
@@ -851,13 +1062,40 @@ function subtreeMayMatch(dirKey: string, prefix: string | undefined): boolean {
   return prefix === undefined || dirKey.startsWith(prefix) || prefix.startsWith(dirKey);
 }
 
+/**
+ * Descend into a subtree, skipping it whole if it cannot be read.
+ *
+ * Only reachable from a PARENT directory's entry loop, never for the root — a
+ * root that cannot be read is a configuration error and must keep throwing, not
+ * quietly serve an empty vault.
+ *
+ * Containment failures are not caught here (see isUnreachableEntryError): a
+ * symlink escape found several levels down still aborts the whole walk.
+ */
+async function walkSubtree(
+  root: string,
+  options: ListDocumentsOptions,
+  dir: string,
+  visited: Set<string>
+): Promise<string[]> {
+  try {
+    return await walkMarkdownFiles(root, options, dir, visited);
+  } catch (error) {
+    if (!isUnreachableEntryError(error)) {
+      throw error;
+    }
+    warnSkippedEntry(dir, "unreadable directory");
+    return [];
+  }
+}
+
 async function walkMarkdownFiles(
   root: string,
   options: ListDocumentsOptions = {},
   current: string = root,
   visited = new Set<string>()
 ): Promise<string[]> {
-  const currentRealPath = await fs.realpath(current);
+  const currentRealPath = await withTransientRetry(() => fs.realpath(current));
   const relativeDir = relativeToRoot(root, currentRealPath);
   // Trailing separator so a prefix comparison cannot straddle a name boundary
   // (`05_logs/` must not be reachable from a directory literally named `05_log`).
@@ -872,7 +1110,7 @@ async function walkMarkdownFiles(
   }
   visited.add(currentRealPath);
 
-  const entries = await fs.readdir(current, { withFileTypes: true });
+  const entries = await withTransientRetry(() => fs.readdir(current, { withFileTypes: true }));
   const files: string[] = [];
 
   for (const entry of entries) {
@@ -892,18 +1130,53 @@ async function walkMarkdownFiles(
       // opt-out never changes the result set. Kept as the correct rule rather
       // than as a verified one — noted so the next reader does not mistake the
       // green suite for coverage of this branch.
-      const realPath = await fs.realpath(absolutePath);
-      relativeToRoot(root, realPath);
-      const stat = await fs.stat(realPath);
+      //
+      // Resolved before the `.md` test, so a dangling link to an ATTACHMENT used
+      // to abort every read tool just as surely as one to a note. That is the
+      // everyday shape: a synced folder (iCloud, Dropbox) or a moved directory
+      // leaves broken links behind, and none of it is a containment question.
+      let realPath: string;
+      try {
+        realPath = await withTransientRetry(() => fs.realpath(absolutePath));
+      } catch (error) {
+        if (!isUnreachableEntryError(error)) {
+          throw error;
+        }
+        warnSkippedEntry(absolutePath, "broken symlink");
+        continue;
+      }
+      // OUTSIDE the try, and it must stay there: this is the containment check,
+      // and it throws a plain Error, so widening either catch to cover it would
+      // silently downgrade an INV-1 refusal into a skipped entry.
+      //
+      // The catch below is NOT such a widening and must never become one: it has
+      // no condition and cannot acquire one. It exists only so the abort names
+      // the entry that caused it — see nameEscapingEntry.
+      try {
+        relativeToRoot(root, realPath);
+      } catch (error) {
+        nameEscapingEntry(absolutePath);
+        throw error;
+      }
+      let stat: Awaited<ReturnType<typeof fs.stat>>;
+      try {
+        stat = await withTransientRetry(() => fs.stat(realPath));
+      } catch (error) {
+        if (!isUnreachableEntryError(error)) {
+          throw error;
+        }
+        warnSkippedEntry(absolutePath, "unreadable symlink target");
+        continue;
+      }
       if (stat.isDirectory()) {
-        files.push(...(await walkMarkdownFiles(root, {}, realPath, visited)));
+        files.push(...(await walkSubtree(root, {}, realPath, visited)));
       } else if (stat.isFile() && realPath.endsWith(".md")) {
         files.push(realPath);
       }
       continue;
     }
     if (entry.isDirectory()) {
-      files.push(...(await walkMarkdownFiles(root, options, absolutePath, visited)));
+      files.push(...(await walkSubtree(root, options, absolutePath, visited)));
     } else if (entry.isFile() && entry.name.endsWith(".md")) {
       // Same NFC form relativeToRoot would produce, without paying path.relative
       // per file. Only ever used to decide whether to read the file.
