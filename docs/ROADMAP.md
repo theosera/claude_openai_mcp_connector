@@ -122,11 +122,23 @@ anti-forgery analysis, reject list) in the
 per-agent "context profiles" are request parameters only — never server-side
 client detection, per the [appendix's anti-router ruling](#appendix--future-uses-of-the-authenticated-client_id).
 
-- **P2 — link graph & provenance** 🔭: `src/linkGraph.ts` built from
-  `listDocuments()` (fs access stays behind the existing guard chain), correct
-  relative-link + Obsidian-style basename/alias wikilink resolution, and
-  `trace_sources` gains `depth` / `direction` + resolved-link output. Bounds:
-  depth ≤ 2, node/fanout caps, hub damping for MOC notes.
+- **P2 — link graph & provenance** 🔭: `src/linkGraph.ts` built from an
+  **unprefixed** `listDocuments()` (fs access stays behind the existing guard
+  chain; `path_prefix` shipped with #108 but only `search` passes it — a backlink
+  set computed over a subset is wrong, not merely smaller), correct relative-link
+  resolution, and Obsidian-style **basename** wikilink resolution. Frontmatter
+  `title` / `aliases` generate candidates but **never resolve on their own, even
+  when the match is unique**: a note's self-declared fields are the same class as
+  the `id` that INV-2 already refuses, so honouring a unique alias would reopen
+  that hole under another name (the same rule P3's type weighting states as
+  "frontmatter self-claimed types never drive trust"). Uniqueness is not a
+  safety argument here, because what decides it is attacker-writable. The
+  reachability cost is accepted and recorded rather than hidden: a note findable
+  only by alias stops being auto-followed from a wikilink, though `path` and
+  `basename` still reach it. `trace_sources` gains `depth` / `direction` +
+  resolved-link output. Bounds: depth ≤ 2, node/fanout caps, hub damping for
+  MOC notes. Decided as P2-D0; full rationale in the
+  [context-engineering proposal](./context-engineering.md#d-4-linkgraph-の仕様-p2).
 - **P3 — `get_context`** 🔭: deterministic 5-stage pipeline (seed search →
   link expansion → fuse/dedup → heading-level chunking → greedy
   score-per-token packing) returning a `ContextPackage` with per-chunk
