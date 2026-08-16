@@ -210,6 +210,19 @@ tools scoped to one reserved subtree (`MCP_AUDIT_SUBDIR` +
   does not weaken INV-9; both halves are pinned by one pair of adjacent tests.
   The stdio startup line now reports three states (`off` / `reserved-only` /
   `on`) because a single on/off could only ever describe one of the two.
+- **The same split now applies to Skills** — `MCP_HTTP_ALLOW_SKILL_WRITE` on HTTP
+  and **`MCP_STDIO_ALLOW_SKILL_WRITE`** (default off) on stdio. This was written
+  as an audit-only lesson and fixed on the audit surface alone; stdio kept
+  deriving the Skill tools from `Boolean(skillStore)` for another release, two
+  lines above the comment explaining why that shape had been a hole. A test
+  asserted the surviving half **positively** — "the Skill surface … is
+  untouched" — which is how an unfixed instance of a known bug reads as a scope
+  decision. Skill creation is two-step, so it was never the single-call exposure
+  the audit pair had; it is arguably the heavier target anyway, because a Skill
+  is loaded by later sessions **as instructions**, which is the premise INV-8
+  exists for. The INV-8 reservation rides on `config.skillsSubdir`, so
+  withholding the tools does not weaken it, and `skills` now reports the same
+  three states.
 - **Distinct from the "Audit log" gap below.** That is a _content-free,
   server-side_ event log of who searched / fetched / wrote (keyed on
   `client_id`); this is the _scanner's own_ audit output written into the vault.
@@ -1048,7 +1061,13 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       `ulimit -n` divided by the scan width rather than a number this repo picked.
       Exhaustion degrades rather than crashes — `EAGAIN` / `EMFILE` / `ENFILE`
       are retried with backoff and unreadable notes are skipped — but that is
-      resilience arrived at from below, not a limit chosen from above. What is
+      resilience arrived at from below, not a limit chosen from above.
+      ⚠️ **That sentence was only half true when written.** The retry lived in
+      the read stage; the walk that finds the notes had none, so the same errno
+      that was patiently retried while reading aborted every read tool while
+      walking. Both stages retry now, and one unreachable entry no longer takes
+      the scan down — but the ceiling this item describes is unchanged, because
+      resilience below is still not a limit above. What is
       genuinely unbounded is socket inactivity (`server.timeout` = 0) and the
       number of concurrent connections, not request or header time.
 
@@ -1069,6 +1088,27 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       property the code states. Related to the vault-binding item below and worth
       settling with it; both are INV-3 changes and neither should ride along with
       a limits patch.
+- [ ] **Bound the staged-plan set by count or bytes, and give a way to discard
+      one** — 🔭 the two halves of the plan-retention problem that the seven-day
+      TTL does **not** close, written down so "F4 is done" does not quietly cover
+      them. Inside the window a client may stage without limit, and each plan
+      holds vault plaintext outside the vault.
+
+      **They have to be decided together, which is why neither is in the TTL
+      patch.** Every eviction policy available without a discard tool is worse
+      than the unbounded window: dropping the oldest plan silently deletes one
+      the user may be seconds from approving, and refusing to stage past a cap
+      locks the client out with no way to clear the set — the only way to remove
+      a plan is still to perform the operation that was just declined. A
+      `discard_plan` tool fixes both, and it is a **tool-budget decision**, not a
+      free one: `registerTool` is called 15 times and `docs/context-engineering.md`
+      caps the net surface at 15 → 17 with both slots already named
+      (`get_context`, `get_project_state`). Spending a budgeted slot inside a bug
+      fix is the drift the ROADMAP firing rule exists to prevent.
+
+      For comparison, the OAuth store has capped + pruned collections *and*
+      orphan pruning, so the asymmetry between the two state stores is real and
+      deliberate rather than an oversight.
 - [x] **RFC 9207 `iss` in the authorization response** (`src/oauth/`) — ✅ the
       `authorizePost` success redirect (the only redirect the AS emits — error
       paths render a 400 page precisely so codes cannot leak via redirects, so

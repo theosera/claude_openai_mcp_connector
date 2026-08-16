@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ensurePatchStateDir, PLAN_MAX_AGE_MS, prunePatchState } from "../src/patchState.js";
 import {
   isTransientFsError,
   KnowledgeStore,
@@ -1306,8 +1307,9 @@ describe("frontmatter id squatting (INV-2)", () => {
     single = new KnowledgeStore({ knowledgeRoot: vaultRoot, writeMode: "two_step", patchStateDir });
     await single.init();
     multi = new MultiRootStore({
-      // Transport-level flag; the store never reads it.
+      // Transport-level flags; the store never reads them.
       stdioAllowAuditWrite: false,
+      stdioAllowSkillWrite: false,
       allowLegacyCreateDocument: false,
       knowledgeRoots: [
         { name: "vault", path: vaultRoot },
@@ -1442,6 +1444,526 @@ describe("frontmatter id squatting (INV-2)", () => {
     // containment error on the branch that still resolves references strictly.
     await expect(single.fetch("../outside.md")).rejects.toThrow(/escapes|Relative/);
     await expect(single.fetch("missing/note.md")).rejects.toThrow(/not found/i);
+  });
+});
+
+describe("one unreachable vault entry does not take the whole scan down", () => {
+  let root: string;
+  let patchStateDir: string;
+  let store: KnowledgeStore;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-walk-vault-"));
+    patchStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-walk-patches-"));
+    await fs.writeFile(path.join(root, "kept.md"), "---\ntitle: Kept\n---\n\nZZKEPTBODY\n", "utf8");
+    await fs.mkdir(path.join(root, "nested"), { recursive: true });
+    await fs.writeFile(path.join(root, "nested", "deep.md"), "---\ntitle: Deep\n---\n\nZZDEEPBODY\n", "utf8");
+    store = new KnowledgeStore({ knowledgeRoot: root, writeMode: "two_step", patchStateDir });
+    await store.init();
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(patchStateDir, { recursive: true, force: true });
+  });
+
+  /**
+   * ⚠️ The assertion that matters is that the OTHER notes come back, not that
+   * listDocuments resolved. A walk that swallowed everything and returned []
+   * would satisfy "did not throw" while being a worse failure than the one being
+   * fixed — the vault would look empty instead of broken.
+   */
+  async function expectVaultStillReadable(): Promise<void> {
+    const documents = await store.listDocuments();
+    expect(documents.map((document) => document.relativePath).sort()).toEqual(["kept.md", "nested/deep.md"]);
+    expect((await store.search({ query: "ZZDEEPBODY" })).results).toHaveLength(1);
+    expect((await store.fetch("kept.md")).title).toBe("Kept");
+    expect(await store.listProjects()).toBeDefined();
+  }
+
+  it("skips a dangling symlink instead of aborting every read tool", async () => {
+    await fs.symlink(path.join(root, "gone.md"), path.join(root, "broken.md"));
+    await expectVaultStillReadable();
+  });
+
+  it("skips a dangling symlink that is not even a note", async () => {
+    // The everyday shape, and the reason the resolution happens before the `.md`
+    // test: a synced folder leaves a broken attachment link behind, and that used
+    // to be indistinguishable from a containment failure.
+    await fs.symlink(path.join(root, "gone.png"), path.join(root, "image.png"));
+    await expectVaultStillReadable();
+  });
+
+  it("skips a symlinked directory whose target is gone", async () => {
+    await fs.symlink(path.join(root, "missing-dir"), path.join(root, "linked-dir"));
+    await expectVaultStillReadable();
+  });
+
+  it("skips a subdirectory the process may not read", async () => {
+    // EACCES cannot be produced as root, which is how this suite runs in some
+    // environments (containers, CI images that do not drop privileges) — chmod
+    // 000 stays readable and the test would pass without exercising anything.
+    // Rather than let that silently rot, the error is injected at the syscall,
+    // which is what this guard actually classifies.
+    // ★ realpath, not path.resolve. path.resolve normalizes `.`/`..` and makes a
+    // path absolute; it does NOT resolve symlinks. The store realpaths its root
+    // before walking, and on macOS os.tmpdir() is /var -> /private/var, so a
+    // forbidden path built with path.resolve NEVER equals what readdir is called
+    // with and the injection silently never fires. The assertion below then
+    // disagrees with a full walk and the test fails — on macOS only, while Linux
+    // CI (where /tmp is a real directory) stays green. Reported twice; the second
+    // report was this same mistake copied into the ENOTDIR test below.
+    const forbidden = await fs.realpath(path.join(root, "nested"));
+    const realReaddir = fs.readdir.bind(fs);
+    let injected = 0;
+    vi.spyOn(fs, "readdir").mockImplementation((async (target: string, options: unknown) => {
+      if (String(target) === forbidden) {
+        injected += 1;
+        const error = new Error("EACCES: permission denied") as NodeJS.ErrnoException;
+        error.code = "EACCES";
+        throw error;
+      }
+      return realReaddir(target as never, options as never);
+    }) as unknown as typeof fs.readdir);
+
+    const documents = await store.listDocuments();
+    // The unreadable subtree is gone from the results; everything else remains.
+    expect(documents.map((document) => document.relativePath)).toEqual(["kept.md"]);
+    expect((await store.fetch("kept.md")).title).toBe("Kept");
+    // ★ And the errno was actually delivered. Asserting only the result set let
+    // this test report green on Linux while the mock never matched on macOS —
+    // the same shape as a guard whose branch is never reached.
+    expect(injected).toBeGreaterThan(0);
+  });
+
+  it("STILL aborts on a symlink that escapes the root", async () => {
+    // The other half, and the one a broad try/catch would quietly destroy. A
+    // containment failure is not an availability accident: it is INV-1 refusing,
+    // and it is the only loud signal that the vault is misconfigured.
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-walk-outside-"));
+    await fs.writeFile(path.join(outside, "secret.md"), "---\ntitle: Outside\n---\n\nZZOUTSIDE\n", "utf8");
+    await fs.symlink(path.join(outside, "secret.md"), path.join(root, "escape.md"));
+
+    await expect(store.listDocuments()).rejects.toThrow(/escapes|outside/i);
+    await fs.rm(outside, { recursive: true, force: true });
+  });
+
+  it("skips a subdirectory that became a file between listing and descending", async () => {
+    // The dir-to-file race: readdir reported a directory, and by the time the
+    // recursion opened it the path was a regular file. Injected rather than
+    // raced, because a real race is not reproducible on demand and a flaky test
+    // that sometimes fails to reach its branch is worse than none.
+    //
+    // ENOTDIR was the one errno missing from the classifier while the comment
+    // above it already claimed to cover "a path that changed type underneath
+    // it" — caught in review, not here.
+    // realpath for the same reason as the EACCES test above — path.resolve does
+    // not follow symlinks, so this comparison never held on macOS and the
+    // injection never fired.
+    const target = await fs.realpath(path.join(root, "nested"));
+    const realReaddir = fs.readdir.bind(fs);
+    let injected = 0;
+    vi.spyOn(fs, "readdir").mockImplementation((async (dir: string, options: unknown) => {
+      if (String(dir) === target) {
+        injected += 1;
+        const error = new Error("ENOTDIR: not a directory") as NodeJS.ErrnoException;
+        error.code = "ENOTDIR";
+        throw error;
+      }
+      return realReaddir(dir as never, options as never);
+    }) as unknown as typeof fs.readdir);
+
+    const documents = await store.listDocuments();
+    expect(documents.map((document) => document.relativePath)).toEqual(["kept.md"]);
+    expect((await store.fetch("kept.md")).title).toBe("Kept");
+    expect(injected).toBeGreaterThan(0);
+  });
+
+  it("STILL aborts on an escaping symlink NESTED inside a subdirectory", async () => {
+    // The case that actually exercises walkSubtree's catch. A root-level escape
+    // throws in the root's own loop, where no try exists — so a test that only
+    // places one there passes no matter how the classifier behaves.
+    //
+    // Found by reverse verification: forcing isUnreachableEntryError to return
+    // true left the root-level escape test GREEN, which said the test never
+    // reached the branch rather than that the branch was safe.
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-walk-outside2-"));
+    await fs.writeFile(path.join(outside, "secret.md"), "---\ntitle: Outside\n---\n\nZZOUTSIDE2\n", "utf8");
+    await fs.symlink(path.join(outside, "secret.md"), path.join(root, "nested", "escape.md"));
+
+    await expect(store.listDocuments()).rejects.toThrow(/escapes|outside/i);
+    await fs.rm(outside, { recursive: true, force: true });
+  });
+
+  it("STILL aborts on a symlink to a DIRECTORY outside the root", async () => {
+    // A directory target reaches the recursive descent rather than the file
+    // branch, so it is a separate path through the same guard.
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-walk-outsidedir-"));
+    await fs.writeFile(path.join(outside, "secret.md"), "---\ntitle: Outside\n---\n\nZZOUTSIDE3\n", "utf8");
+    await fs.symlink(outside, path.join(root, "nested", "linked-out"));
+
+    await expect(store.listDocuments()).rejects.toThrow(/escapes|outside/i);
+    await fs.rm(outside, { recursive: true, force: true });
+  });
+
+  it("STILL aborts when the root itself cannot be read", async () => {
+    // A root that fails is a configuration error, not one bad entry. Serving an
+    // empty vault there would be the same "looks empty instead of broken"
+    // failure the skip is careful to avoid.
+    //
+    // ★ The injection targets the ROOT's own readdir, and the assertion is on
+    // listDocuments — not on init(). An earlier version of this test only
+    // checked that init() rejected for a MISSING knowledgeRoot, which
+    // resolveExistingRoot refuses before any walk happens. That version stayed
+    // green no matter what walkSubtree did, so it pinned the configuration
+    // check and never the claim in its own name: that the root walk is not
+    // wrapped in the skip helper. Reported in review; the fix is to fail the
+    // syscall the walk actually makes on the root.
+    const rootReal = await fs.realpath(root);
+    const realReaddir = fs.readdir.bind(fs);
+    vi.spyOn(fs, "readdir").mockImplementation((async (dir: string, options: unknown) => {
+      if (String(dir) === rootReal || String(dir) === root) {
+        const error = new Error("EACCES: permission denied") as NodeJS.ErrnoException;
+        error.code = "EACCES";
+        throw error;
+      }
+      return realReaddir(dir as never, options as never);
+    }) as unknown as typeof fs.readdir);
+
+    // EACCES is a code the classifier DOES skip for a subdirectory. The whole
+    // point is that the root is not a subdirectory: it never passes through
+    // walkSubtree, so the same errno that skips one level down aborts here.
+    await expect(store.listDocuments()).rejects.toThrow(/EACCES|permission denied/i);
+  });
+
+  it("STILL aborts when the configured root does not exist", async () => {
+    // The other half of "a root that fails is a configuration error" — refused
+    // at resolution, before any walk. Kept as its own case because the test
+    // above no longer covers it, and the two failures happen in different
+    // places for different reasons.
+    const gone = new KnowledgeStore({
+      knowledgeRoot: path.join(root, "does-not-exist"),
+      writeMode: "two_step",
+      patchStateDir
+    });
+    await expect(gone.init()).rejects.toThrow();
+  });
+
+  it("walks the REAL path of a symlinked root, which is why injections must realpath", async () => {
+    // Reproduces on Linux the condition that made two tests in this file pass in
+    // CI and fail on macOS, so CI can see it. There os.tmpdir() is
+    // /var -> /private/var; here the link is explicit. Either way the store
+    // realpaths its root before walking, so a mock comparing against the
+    // configured path never matches and its injection silently never fires.
+    //
+    // Pinning the FACT (readdir receives the resolved path) rather than the
+    // symptom keeps this true for mocks written later, which is where the
+    // mistake recurred — it was reported once, then copied into the next test.
+    const realRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-walk-realroot-"));
+    await fs.writeFile(path.join(realRoot, "only.md"), "---\ntitle: Only\n---\n\nZZONLY\n", "utf8");
+    const linkedRoot = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-walk-linkroot-")), "vault");
+    await fs.symlink(realRoot, linkedRoot);
+    expect(path.resolve(linkedRoot)).not.toBe(await fs.realpath(linkedRoot));
+
+    const seen: string[] = [];
+    const realReaddir = fs.readdir.bind(fs);
+    vi.spyOn(fs, "readdir").mockImplementation((async (dir: string, options: unknown) => {
+      seen.push(String(dir));
+      return realReaddir(dir as never, options as never);
+    }) as unknown as typeof fs.readdir);
+
+    const linked = new KnowledgeStore({ knowledgeRoot: linkedRoot, writeMode: "two_step", patchStateDir });
+    await linked.init();
+    expect((await linked.listDocuments()).map((document) => document.relativePath)).toEqual(["only.md"]);
+
+    // What a mock must compare against, and what it must not.
+    expect(seen).toContain(await fs.realpath(linkedRoot));
+    expect(seen).not.toContain(path.resolve(linkedRoot));
+
+    await fs.rm(realRoot, { recursive: true, force: true });
+  });
+
+  it("waits out transient FD exhaustion in the WALK, as the read stage already did", async () => {
+    // The two halves of one scan used to disagree about EAGAIN/EMFILE/ENFILE:
+    // readDocumentResilient waited and retried, the walk let the errno out — and
+    // it is not an unreachable-entry code, so it aborted every read tool. Walking
+    // a few thousand notes at scanConcurrency is precisely the workload that
+    // produces those codes, so the disagreement was an everyday failure.
+    const target = await fs.realpath(path.join(root, "nested"));
+    const realReaddir = fs.readdir.bind(fs);
+    let attempts = 0;
+    vi.spyOn(fs, "readdir").mockImplementation((async (dir: string, options: unknown) => {
+      if (String(dir) === target) {
+        attempts += 1;
+        if (attempts <= 2) {
+          const error = new Error("EMFILE: too many open files") as NodeJS.ErrnoException;
+          error.code = "EMFILE";
+          throw error;
+        }
+      }
+      return realReaddir(dir as never, options as never);
+    }) as unknown as typeof fs.readdir);
+
+    // Nothing is missing: the subtree is READ, not skipped, once the pressure clears.
+    await expectVaultStillReadable();
+    // ★ And the branch was actually reached. Without this the test passes just as
+    // happily when the mock never matches, which is the exact way the two tests
+    // above went green on Linux while measuring nothing.
+    expect(attempts).toBeGreaterThan(1);
+  });
+
+  it("STILL aborts when FD exhaustion does not clear", async () => {
+    // The retry is not a downgrade of the terminal behaviour. Once the retries
+    // are spent the errno leaves the walk exactly as before, because a skipped
+    // DIRECTORY is an unbounded number of missing notes, and a search tool that
+    // answers from a truncated vault says "no such note" about notes that exist.
+    // readDocumentResilient can afford to skip; it drops one named file.
+    const target = await fs.realpath(path.join(root, "nested"));
+    const realReaddir = fs.readdir.bind(fs);
+    let attempts = 0;
+    vi.spyOn(fs, "readdir").mockImplementation((async (dir: string, options: unknown) => {
+      if (String(dir) === target) {
+        attempts += 1;
+        const error = new Error("EMFILE: too many open files") as NodeJS.ErrnoException;
+        error.code = "EMFILE";
+        throw error;
+      }
+      return realReaddir(dir as never, options as never);
+    }) as unknown as typeof fs.readdir);
+
+    await expect(store.listDocuments()).rejects.toThrow(/EMFILE|too many open files/i);
+    // It retried before giving up rather than failing on the first call.
+    expect(attempts).toBeGreaterThan(1);
+  });
+
+  it("names the escaping entry on stderr while the thrown error stays unchanged", async () => {
+    // The abort IS the operator's signal that the vault is misconfigured, and it
+    // named nothing — in a few thousand notes, "a symlink escapes somewhere" left
+    // the entry to be found by hand. The skip path beside it has printed the
+    // basename all along; only the fatal path was anonymous.
+    //
+    // ★ stderr, NOT the thrown message. relativeToRoot's Error is server-authored,
+    // so withClientSafeErrors passes it to the MCP client verbatim, and the walk
+    // aborts before any listing exists — so the escaping entry's name is one the
+    // client cannot otherwise enumerate. The operator's channel gets it; the
+    // client's does not.
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-walk-named-"));
+    await fs.writeFile(path.join(outside, "secret.md"), "---\ntitle: Outside\n---\n\nZZOUTSIDE4\n", "utf8");
+    await fs.symlink(path.join(outside, "secret.md"), path.join(root, "nested", "escape.md"));
+
+    const written: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation(((chunk: string) => {
+      written.push(String(chunk));
+      return true;
+    }) as unknown as typeof process.stderr.write);
+
+    await expect(store.listDocuments()).rejects.toThrow(/escapes|outside/i);
+
+    const line = written.find((entry) => entry.includes("escapes the knowledge root"));
+    expect(line).toBeDefined();
+    expect(line).toContain("escape.md");
+    // Basename only — the same split readDocumentResilient draws. Neither the
+    // vault's location nor the link's target may appear.
+    expect(line).not.toContain(root);
+    expect(line).not.toContain(outside);
+
+    await fs.rm(outside, { recursive: true, force: true });
+  });
+
+  it("says nothing on stderr when no entry escapes", async () => {
+    // The false-positive direction. A guard that announced an escape on every
+    // scan would be indistinguishable from one that never fired.
+    const written: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation(((chunk: string) => {
+      written.push(String(chunk));
+      return true;
+    }) as unknown as typeof process.stderr.write);
+
+    await expectVaultStillReadable();
+    expect(written.filter((entry) => entry.includes("escapes the knowledge root"))).toEqual([]);
+  });
+});
+
+describe("staged plans expire instead of accumulating forever", () => {
+  let root: string;
+  let patchStateDir: string;
+  let store: KnowledgeStore;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-ttl-vault-"));
+    patchStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-ttl-patches-"));
+    await fs.writeFile(path.join(root, "note.md"), "---\ntitle: Note\n---\n\nbody\n", "utf8");
+    store = new KnowledgeStore({ knowledgeRoot: root, writeMode: "two_step", patchStateDir });
+    await store.init();
+  });
+
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(patchStateDir, { recursive: true, force: true });
+  });
+
+  const age = async (file: string, ms: number): Promise<void> => {
+    const when = new Date(Date.now() - ms);
+    await fs.utimes(file, when, when);
+  };
+
+  it("deletes a plan older than the window and keeps a fresh one", async () => {
+    const stale = path.join(patchStateDir, "11111111-1111-4111-8111-111111111111.json");
+    const fresh = path.join(patchStateDir, "22222222-2222-4222-8222-222222222222.json");
+    await fs.writeFile(stale, "{}", "utf8");
+    await fs.writeFile(fresh, "{}", "utf8");
+    await age(stale, PLAN_MAX_AGE_MS + 60_000);
+
+    expect(await prunePatchState(patchStateDir)).toBe(1);
+    await expect(fs.access(stale)).rejects.toThrow();
+    await expect(fs.access(fresh)).resolves.toBeUndefined();
+  });
+
+  it("sweeps when a new plan is staged, not only at start-up", async () => {
+    // The deployment that accumulates most is the one that never restarts, so an
+    // init-only sweep would miss it entirely.
+    const stale = path.join(patchStateDir, "33333333-3333-4333-8333-333333333333.json");
+    await fs.writeFile(stale, "{}", "utf8");
+    await age(stale, PLAN_MAX_AGE_MS + 60_000);
+
+    const plan = await store.planUpdate({ id_or_path: "note.md", new_body: "edited\n", reason: "edit" });
+
+    await expect(fs.access(stale)).rejects.toThrow();
+    // ...and the plan just staged is still there and still applies.
+    const applied = await store.applyPlannedUpdate(plan.patch_id);
+    expect(applied.document.body.trim()).toBe("edited");
+  });
+
+  it("still sweeps when the permission tightening soft-fails", async () => {
+    // ensurePatchStateDir has FOUR exits, and the sweep belongs on three of them.
+    // The O_NOFOLLOW open failing for a reason that is NOT a symlink (EACCES on a
+    // directory another account owns, say) warns and returns rather than
+    // throwing — deliberately, because refusing to serve a vault over a
+    // permission that could not be hardened is the worse outcome. But the server
+    // then goes on staging plans through this path, so skipping the sweep here
+    // made it the one configuration that never expires any of them.
+    //
+    // The symlink refusal is the fourth exit and correctly does NOT sweep; it
+    // throws above this line, so nothing reaching here is a link.
+    if (process.platform === "win32") {
+      return; // No O_NOFOLLOW open on this platform, so no soft-fail to reach.
+    }
+    const stale = path.join(patchStateDir, "88888888-8888-4888-8888-888888888888.json");
+    await fs.writeFile(stale, "{}", "utf8");
+    await age(stale, PLAN_MAX_AGE_MS + 60_000);
+
+    const realOpen = fs.open.bind(fs);
+    const target = await fs.realpath(patchStateDir);
+    let injected = 0;
+    vi.spyOn(fs, "open").mockImplementation((async (file: string, ...rest: unknown[]) => {
+      if (String(file) === target || String(file) === patchStateDir) {
+        injected += 1;
+        const error = new Error("EACCES: permission denied") as NodeJS.ErrnoException;
+        error.code = "EACCES";
+        throw error;
+      }
+      return realOpen(file as never, ...(rest as []));
+    }) as unknown as typeof fs.open);
+
+    await expect(ensurePatchStateDir(patchStateDir)).resolves.toBeUndefined();
+    // It warned and carried on — and it still expired the old plan.
+    expect(injected).toBeGreaterThan(0);
+    await expect(fs.access(stale)).rejects.toThrow();
+    vi.restoreAllMocks();
+  });
+
+  it("deletes NOTHING when the state directory is a symlink, and still refuses to start", async () => {
+    // Ordering, not tidiness. The sweep first sat at the top of
+    // ensurePatchStateDir, so a symlinked MCP_PATCH_STATE_DIR had its TARGET's
+    // plan files deleted and only then did the O_NOFOLLOW check refuse to
+    // start. A configuration that previously failed closed without touching
+    // anything would have destroyed files in another directory on the way.
+    //
+    // Deleting is the one step here that cannot be undone, so it goes last,
+    // after every reason to refuse has been evaluated.
+    if (process.platform === "win32") {
+      // The refusal is the O_NOFOLLOW open, which ensurePatchStateDir skips
+      // here along with the rest of the POSIX mode handling — so there is no
+      // rejection to assert and the sweep legitimately runs. Same guard as the
+      // sibling permission tests above; without it this case would fail on the
+      // one platform where the behaviour it describes does not exist.
+      return;
+    }
+    const realTarget = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-ttl-target-"));
+    const victim = path.join(realTarget, "44444444-4444-4444-8444-444444444444.json");
+    await fs.writeFile(victim, "{}", "utf8");
+    await age(victim, PLAN_MAX_AGE_MS + 60_000);
+
+    const link = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-ttl-link-")), "state");
+    await fs.symlink(realTarget, link);
+
+    await expect(ensurePatchStateDir(link)).rejects.toThrow(/must be a real directory/);
+    // The old plan in the link's target is untouched.
+    expect(await fs.readFile(victim, "utf8")).toBe("{}");
+    await fs.rm(realTarget, { recursive: true, force: true });
+  });
+
+  it("leaves files it does not own alone, including other .json", async () => {
+    // The sweep is scoped to plan JSON. Anything else in the directory is not
+    // this server's to delete — the false-positive direction.
+    //
+    // ★ The .json entries are the ones that matter, and the ones this test used
+    // to omit. It planted `notes.txt` only, which the old `endsWith(".json")`
+    // filter excluded anyway — so it asserted the half that already worked while
+    // the sweep deleted every other `.json` in the directory. `MCP_PATCH_STATE_DIR`
+    // and `MCP_OAUTH_STATE_FILE` are both operator-chosen with nothing keeping
+    // them apart, so `oauth-state.json` is not hypothetical: it is every
+    // registered client and every live token, gone on the seventh day.
+    //
+    // ★ The 36-dash entry is the one a hand-picked list would miss. The id
+    // pattern was `[0-9a-f-]{36}` — any 36 characters from hex plus dash — which
+    // was harmless while it only validated an incoming patch_id (the id still had
+    // to name a real staged file) and became a deletion rule the moment the sweep
+    // shared it. Found by probing the built sweep against a directory of
+    // near-miss names rather than by reading it.
+    const survivors = [
+      "notes.txt",
+      "oauth-state.json",
+      "not-a-uuid.json",
+      "skill-create-nope.json",
+      "------------------------------------.json",
+      "deadbeefdeadbeefdeadbeefdeadbeef.json",
+      "skill-create-------------------------------------.json"
+    ];
+    for (const name of survivors) {
+      const file = path.join(patchStateDir, name);
+      await fs.writeFile(file, "keep me", "utf8");
+      await age(file, PLAN_MAX_AGE_MS * 10);
+    }
+
+    expect(await prunePatchState(patchStateDir)).toBe(0);
+    for (const name of survivors) {
+      expect(await fs.readFile(path.join(patchStateDir, name), "utf8")).toBe("keep me");
+    }
+  });
+
+  it("still sweeps SKILL plans, which are not named like document plans", async () => {
+    // The trap in narrowing the filter, and the reason it is one shared rule
+    // rather than a regex written twice. Document plans are `<uuid>.json`;
+    // Skill plans are `skill-create-<uuid>.json`. Matching bare UUIDs would read
+    // as the obvious fix and would quietly drop skillStore back out of the sweep
+    // — the very writer this change reaches for, since it was the one that used
+    // to call ensurePatchStateDir from init() alone.
+    const documentPlan = path.join(patchStateDir, "55555555-5555-4555-8555-555555555555.json");
+    const skillPlan = path.join(patchStateDir, "skill-create-66666666-6666-4666-8666-666666666666.json");
+    await fs.writeFile(documentPlan, "{}", "utf8");
+    await fs.writeFile(skillPlan, "{}", "utf8");
+    await age(documentPlan, PLAN_MAX_AGE_MS + 60_000);
+    await age(skillPlan, PLAN_MAX_AGE_MS + 60_000);
+
+    expect(await prunePatchState(patchStateDir)).toBe(2);
+    await expect(fs.access(documentPlan)).rejects.toThrow();
+    await expect(fs.access(skillPlan)).rejects.toThrow();
+  });
+
+  it("does not fail a start-up when the directory cannot be listed", async () => {
+    expect(await prunePatchState(path.join(patchStateDir, "does-not-exist"))).toBe(0);
   });
 });
 

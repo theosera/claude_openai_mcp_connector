@@ -186,12 +186,19 @@ describe("startup env boundary (spawned entrypoint)", () => {
     // other setting in the operator's own file.
     const result = await runServer({ KNOWLEDGE_ROOT: vault, MCP_ENV_FILE: envFile });
 
-    // `reserved-only`, not `on`: MCP_AUDIT_SUBDIR turns the INV-9 reservation on
-    // (which is what operators are told to set it for) WITHOUT registering the
-    // two single-call audit writes. Registering those needs its own opt-in — see
-    // the next two cases.
+    // `reserved-only` on BOTH, not `on`: the two subdir settings turn the INV-8
+    // and INV-9 reservations on (which is what operators are told to set them
+    // for) WITHOUT registering either write surface. Each needs its own opt-in —
+    // see the next cases.
+    //
+    // `skills` read `on` here until the Skill half was split from its subdir the
+    // way the audit half already had been. The startup line was accurate about
+    // the code at the time and wrong about the intent, which is the reason it
+    // prints three states rather than two: an on/off can only ever name one of
+    // "the subtree is reserved" and "the tools are registered".
     expect(result.stderr).toContain(
-      "MCP stdio transport ready (write=on, documents=on, legacy_create=off, skills=on, audit=reserved-only)"
+      "MCP stdio transport ready (write=on, documents=on, legacy_create=off, " +
+        "skills=reserved-only, audit=reserved-only)"
     );
     expect(result.code).toBe(0);
   }, 30_000);
@@ -239,6 +246,44 @@ describe("startup env boundary (spawned entrypoint)", () => {
     expect(result.stderr).toMatch(/MCP_STDIO_ALLOW_AUDIT_WRITE requires MCP_AUDIT_SUBDIR/);
     expect(result.code).not.toBe(0);
   }, 30_000);
+
+  it("refuses to start when the Skill write flag names no subtree to write into", async () => {
+    // Same contradiction, same fail-closed answer. Asserted separately rather
+    // than folded into the audit case because the two flags are independent —
+    // a shared assertion would stay green if one of them stopped being checked.
+    const result = await runServer({
+      KNOWLEDGE_ROOT: vault,
+      MCP_PATCH_STATE_DIR: path.join(stateDir, "patches"),
+      MCP_STDIO_ALLOW_SKILL_WRITE: "1"
+    });
+
+    expect(result.stderr).toMatch(/MCP_STDIO_ALLOW_SKILL_WRITE requires MCP_SKILLS_SUBDIR/);
+    expect(result.code).not.toBe(0);
+  }, 30_000);
+
+  it("registers the stdio Skill write tools only when their own flag is set", async () => {
+    await fs.mkdir(path.join(vault, "_skills"), { recursive: true });
+    const base = {
+      KNOWLEDGE_ROOT: vault,
+      MCP_SKILLS_SUBDIR: "_skills",
+      MCP_PATCH_STATE_DIR: path.join(stateDir, "patches")
+    };
+
+    const reservedOnly = await runServer(base);
+    expect(reservedOnly.stderr).toContain("skills=reserved-only,");
+    expect(reservedOnly.code).toBe(0);
+
+    const on = await runServer({ ...base, MCP_STDIO_ALLOW_SKILL_WRITE: "1" });
+    expect(on.stderr).toContain("skills=on,");
+    expect(on.code).toBe(0);
+
+    // The third state needs the subdir gone entirely: `off` means the INV-8
+    // reservation is not in effect at all, which is a different claim from
+    // "reserved but not writable" and the reason this line prints three values.
+    const off = await runServer({ KNOWLEDGE_ROOT: vault, MCP_PATCH_STATE_DIR: path.join(stateDir, "patches") });
+    expect(off.stderr).toContain("skills=off,");
+    expect(off.code).toBe(0);
+  }, 60_000);
 
   it("refuses to start on a relative or unreadable MCP_ENV_FILE", async () => {
     const relative = await runServer({ KNOWLEDGE_ROOT: vault, MCP_ENV_FILE: CWD_ENV_FILE });

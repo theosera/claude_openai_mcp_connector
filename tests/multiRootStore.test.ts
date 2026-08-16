@@ -112,9 +112,12 @@ describe("MultiRootStore", () => {
     knowledgeRoots: roots,
     writeMode: "two_step" as const,
     patchStateDir,
-    // Transport-level flag; the store never reads it. Set explicitly rather
-    // than made optional so a future surface flag cannot be forgotten here.
+    // Transport-level flags; the store never reads them. Set explicitly rather
+    // than made optional so a future surface flag cannot be forgotten here —
+    // which is exactly what happened when MCP_STDIO_ALLOW_SKILL_WRITE was added:
+    // the compiler named every construction site instead of defaulting them on.
     stdioAllowAuditWrite: false,
+    stdioAllowSkillWrite: false,
     allowLegacyCreateDocument: false
   });
 

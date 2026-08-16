@@ -1,8 +1,15 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { normalizeMetadata, parseMarkdown, parseMarkdownSafe, serializeMarkdown } from "../src/frontmatter.js";
+import {
+  assertEmittedFrontmatterWithinLimit,
+  normalizeMetadata,
+  parseMarkdown,
+  parseMarkdownSafe,
+  serializeMarkdown
+} from "../src/frontmatter.js";
 import { KnowledgeStore } from "../src/knowledgeStore.js";
 import { toPublicDocument } from "../src/server.js";
 
@@ -523,5 +530,282 @@ describe("KnowledgeStore with expansion-bomb and repeated content", () => {
     expect(reread.frontmatter.source_refs).toHaveLength(90);
     expect(reread.frontmatter.id).toBe("cc-session-index-2026-08");
     expect(reread.title).toBe("Session archive index");
+  });
+});
+
+describe("a write may not emit a note the read path will refuse (INV-2, write side)", () => {
+  let root: string;
+  let patchStateDir: string;
+  let store: KnowledgeStore;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-fm-emit-"));
+    patchStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-fm-emitpatch-"));
+    store = new KnowledgeStore({ knowledgeRoot: root, writeMode: "two_step", patchStateDir });
+    await store.init();
+  });
+
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(patchStateDir, { recursive: true, force: true });
+  });
+
+  /** Allowlisted key, correct value type — INV-2 has nothing to object to. */
+  const hugeTagPatch = { tags: Array.from({ length: 4000 }, (_, index) => `tag-${index}`) };
+
+  it("refuses at PLAN time, so the target is untouched and no approved diff is shown", async () => {
+    await fs.writeFile(path.join(root, "note.md"), "---\ntitle: Keep Me\n---\n\nbody\n", "utf8");
+    const before = await fs.readFile(path.join(root, "note.md"), "utf8");
+
+    await expect(
+      store.planUpdate({
+        id_or_path: "note.md",
+        new_body: "body\n",
+        frontmatter_patch: hugeTagPatch,
+        reason: "oversize"
+      })
+    ).rejects.toThrow(/Refusing to write.*over the 8192-byte limit/s);
+
+    // Rejecting at plan rather than apply is the point: apply-time refusal would
+    // stop only AFTER the user had been shown a diff to approve. Same placement
+    // reason as INV-8's validateFileSet.
+    expect(await fs.readFile(path.join(root, "note.md"), "utf8")).toBe(before);
+    expect(await fs.readdir(patchStateDir)).toHaveLength(0);
+  });
+
+  it("blocks the create paths too, leaving no note behind", async () => {
+    await expect(
+      store.createDocument({
+        client: "acme",
+        project: "p",
+        title: "T",
+        body: "b\n",
+        tags: hugeTagPatch.tags
+      })
+    ).rejects.toThrow(/Refusing to write/);
+
+    await expect(
+      store.planDocumentCreate({
+        relative_path: "projects/new.md",
+        client: "acme",
+        project: "p",
+        title: "T",
+        body: "b\n",
+        tags: hugeTagPatch.tags,
+        reason: "oversize"
+      })
+    ).rejects.toThrow(/Refusing to write/);
+
+    // The guard sits in serializeMarkdown, the one function all three writers
+    // pass through, so this is coverage of the choke rather than of three
+    // separate call sites — and a fourth writer inherits it.
+    //
+    // Asserted on NOTES, not on directory entries: `createDocument` creates the
+    // routed parent before it serializes, so a refusal leaves an empty directory
+    // behind. That is cosmetic — no content, no metadata, nothing a later read
+    // can return — and claiming "no file behind" would have been false. Moving
+    // the check ahead of the mkdir would tidy it at the cost of validating in a
+    // second place, which is the trade this guard's placement exists to avoid.
+    const notesUnderRoot = async (dir: string): Promise<string[]> => {
+      const entries = await fs.readdir(dir, { withFileTypes: true, recursive: true }).catch(() => []);
+      return entries.filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => entry.name);
+    };
+    expect(await notesUnderRoot(root)).toHaveLength(0);
+  });
+
+  it("is what stops a note from becoming unreadable AND unrepairable", async () => {
+    // The shape being prevented, written out by hand: bytes on disk whose
+    // frontmatter block is over the cap. This is what the write path used to
+    // produce, and it is reachable only by bypassing the writer now.
+    const oversized = `---\ntitle: Doomed\nid: doomed-uuid\ntags:\n${hugeTagPatch.tags
+      .map((tag) => `  - ${tag}`)
+      .join("\n")}\n---\n\nSTILLINDEXED\n`;
+    await fs.writeFile(path.join(root, "doomed.md"), oversized, "utf8");
+
+    // Read degrades: the note is still returned (read has that obligation), but
+    // body-only — its title falls back to the basename and its frontmatter id is
+    // gone, moving its identity to its path, which is the handle INV-2 says
+    // content can squat.
+    const degraded = await store.fetch("doomed.md");
+    expect(degraded.title).toBe("doomed");
+    expect(degraded.frontmatter.id).toBeUndefined();
+    expect((await store.search({ query: "STILLINDEXED" })).results).toHaveLength(1);
+
+    // ...and it cannot be repaired through this server, because planUpdate parses
+    // with parseMarkdown, which refuses exactly this input. Writing the note was
+    // the only reversible moment, which is why the guard is on the write.
+    await expect(store.planUpdate({ id_or_path: "doomed.md", new_body: "fixed\n", reason: "repair" })).rejects.toThrow(
+      /over the 8192-byte limit/
+    );
+  });
+
+  it("still writes frontmatter that is merely large (the false-positive direction)", async () => {
+    await fs.writeFile(path.join(root, "ok.md"), "---\ntitle: Fine\n---\n\nbody\n", "utf8");
+    const plan = await store.planUpdate({
+      id_or_path: "ok.md",
+      new_body: "body\n",
+      // ~4 KiB of tags: comfortably under the cap, and above anything the real
+      // vault holds (measured median 225 B, max 1,042 B).
+      frontmatter_patch: { tags: Array.from({ length: 300 }, (_, index) => `t-${index}`) },
+      reason: "large but legal"
+    });
+    const applied = await store.applyPlannedUpdate(plan.patch_id);
+    expect(applied.document.frontmatter.tags).toHaveLength(300);
+    expect((await store.fetch("ok.md")).frontmatter.tags).toHaveLength(300);
+  });
+});
+
+describe("apply re-checks the cap, so a stale plan cannot carry a write past it", () => {
+  let root: string;
+  let patchStateDir: string;
+  let store: KnowledgeStore;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-fm-stale-"));
+    patchStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-fm-stalepatch-"));
+    store = new KnowledgeStore({ knowledgeRoot: root, writeMode: "two_step", patchStateDir });
+    await store.init();
+  });
+
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(patchStateDir, { recursive: true, force: true });
+  });
+
+  const oversizedContent = (title: string): string => {
+    const tags = Array.from({ length: 4000 }, (_, index) => `  - tag-${index}`).join("\n");
+    return `---\ntitle: ${title}\ntags:\n${tags}\n---\n\nbody\n`;
+  };
+
+  /**
+   * Stage a plan the way a server WITHOUT the emit cap would have: by writing
+   * the patch file directly. Going through planUpdate is impossible now, which
+   * is the whole point — the bytes predate the guard, and nothing expires them.
+   */
+  async function stagePlanFile(patch: Record<string, unknown>): Promise<string> {
+    const patchId = crypto.randomUUID();
+    await fs.writeFile(path.join(patchStateDir, `${patchId}.json`), JSON.stringify({ ...patch, patch_id: patchId }));
+    return patchId;
+  }
+
+  it("refuses an update whose staged content predates the guard", async () => {
+    const before = "---\ntitle: Keep Me\n---\n\nbody\n";
+    await fs.writeFile(path.join(root, "note.md"), before, "utf8");
+    const patchId = await stagePlanFile({
+      target_path: "note.md",
+      reason: "staged by an older server",
+      expected_sha256: crypto.createHash("sha256").update(before).digest("hex"),
+      created_at: new Date().toISOString(),
+      new_content: oversizedContent("Doomed"),
+      diff: "(elided)"
+    });
+
+    await expect(store.applyPlannedUpdate(patchId)).rejects.toThrow(/Refusing to write.*over the 8192-byte limit/s);
+    // The note is untouched, and still readable — the failure mode being closed
+    // is "the vault now holds a note this server cannot parse or repair".
+    expect(await fs.readFile(path.join(root, "note.md"), "utf8")).toBe(before);
+    expect((await store.fetch("note.md")).frontmatter.title).toBe("Keep Me");
+  });
+
+  it("refuses an exact-path create whose staged content predates the guard", async () => {
+    const content = oversizedContent("New");
+    const patchId = await stagePlanFile({
+      operation: "document_create",
+      target_path: "projects/new.md",
+      reason: "staged by an older server",
+      content_sha256: crypto.createHash("sha256").update(content).digest("hex"),
+      created_at: new Date().toISOString(),
+      new_content: content,
+      diff: "(elided)"
+    });
+
+    await expect(store.applyPlannedDocumentCreate(patchId, "projects/new.md")).rejects.toThrow(/Refusing to write/);
+    await expect(fs.readFile(path.join(root, "projects", "new.md"), "utf8")).rejects.toThrow();
+  });
+
+  it("refuses staged content whose oversize block hides behind a BOM", async () => {
+    // Found by review, and the third instance in one branch of the same mistake:
+    // this guard's comment claimed "the same first step as
+    // assertBoundedFrontmatterBlock" while copying only half of it. The sibling
+    // strips U+FEFF before looking for the delimiter; this one did not, so
+    // BOM + `---` + an oversize block did not look like frontmatter here, took
+    // the early return unchecked, and was written -- while the READ path, which
+    // does strip the BOM, then refused the file.
+    //
+    // Reachable through the same door as the rest of the apply-time check:
+    // staged new_content is not re-derived from serializeMarkdown (which never
+    // emits a BOM), and an update plan carries no hash of its own payload --
+    // expected_sha256 binds the TARGET's prior bytes.
+    const before = "---\ntitle: Keep Me\n---\n\nbody\n";
+    await fs.writeFile(path.join(root, "bom.md"), before, "utf8");
+    const patchId = await stagePlanFile({
+      target_path: "bom.md",
+      reason: "staged with a BOM",
+      expected_sha256: crypto.createHash("sha256").update(before).digest("hex"),
+      created_at: new Date().toISOString(),
+      new_content: "\uFEFF" + oversizedContent("Hidden"),
+      diff: "(elided)"
+    });
+
+    await expect(store.applyPlannedUpdate(patchId)).rejects.toThrow(/Refusing to write/);
+    expect(await fs.readFile(path.join(root, "bom.md"), "utf8")).toBe(before);
+  });
+
+  it("agrees with the read path byte for byte across the cap boundary", async () => {
+    // The single strongest thing to assert about this guard is not a threshold
+    // but an AGREEMENT: whatever bytes exist, the writer must refuse exactly what
+    // the reader refuses. A boundary picked as one number can be off by three and
+    // still pass; a sweep cannot.
+    //
+    // Three bytes is the exact size of the discrepancy review found here, where
+    // `close` was located in the BOM-stripped string while the length was
+    // measured on the original -- so emit and read disagreed by the BOM, in the
+    // direction that lets a write through.
+    const pad = (bytes: number): string => "x".repeat(Math.max(0, bytes));
+    for (const bom of ["", "\uFEFF"]) {
+      for (const delta of [-8, -4, -1, 0, 1, 4, 8]) {
+        // "---\ntitle: " + pad + "\n" lands the block length on the cap + delta.
+        const overhead = Buffer.byteLength("---\ntitle: \n", "utf8");
+        const content = `${bom}---\ntitle: ${pad(8192 - overhead + delta)}\n---\n\nbody\n`;
+
+        const writerRefused = (() => {
+          try {
+            assertEmittedFrontmatterWithinLimit(content);
+            return false;
+          } catch {
+            return true;
+          }
+        })();
+        const readerRefused = (() => {
+          try {
+            parseMarkdown(content);
+            return false;
+          } catch {
+            return true;
+          }
+        })();
+
+        expect({ bom: bom === "" ? "none" : "bom", delta, writerRefused }).toEqual({
+          bom: bom === "" ? "none" : "bom",
+          delta,
+          writerRefused: readerRefused
+        });
+      }
+    }
+  });
+
+  it("still applies a staged plan whose frontmatter is within the cap", async () => {
+    // The false-positive direction: re-checking at apply must not break the
+    // ordinary path, where the same bytes already passed at plan time.
+    await fs.writeFile(path.join(root, "ok.md"), "---\ntitle: Fine\n---\n\nbody\n", "utf8");
+    const plan = await store.planUpdate({
+      id_or_path: "ok.md",
+      new_body: "rewritten\n",
+      frontmatter_patch: { tags: ["a", "b"] },
+      reason: "normal edit"
+    });
+    const applied = await store.applyPlannedUpdate(plan.patch_id);
+    expect(applied.document.body.trim()).toBe("rewritten");
+    expect(applied.document.frontmatter.tags).toEqual(["a", "b"]);
   });
 });
