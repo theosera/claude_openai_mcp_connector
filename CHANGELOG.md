@@ -8,6 +8,43 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`get_project_state` — where a project stands, derived rather than summarized.**
+  Returns the notes the owner designated as state (in full, against a budget),
+  the most recently touched documents (metadata and a snippet), the session
+  archives that exist, and pointers to ops-log entries naming the project.
+
+  **The shape follows from one fact about this vault**: a session archive runs
+  to megabytes while an ordinary note runs to kilobytes, so "return the
+  project's documents" is not one behaviour. `recent_sessions` therefore carries
+  **metadata, size and — for the newest — a heading outline, and never a body**;
+  inlining one would spend the whole budget on the document the caller asked
+  about least. Session archives are kept out of `recent_docs` for the same
+  reason: a snippet of a megabyte is its least useful 240 characters.
+
+  **There is deliberately no `summary` prose, no `blockers`, no `next_steps`.**
+  A server emitting those has synthesized, and synthesis here would be either a
+  second model — which this one does not have, by design — or a template
+  pretending to be one. The seat for a conclusion is a state document a human or
+  an offline pipeline wrote, which this returns verbatim. The tag naming that
+  seat is `MCP_PROJECT_STATE_TAG` (default `project-state`).
+
+  `ops_recent` reaches ops logs through their existing `target_repo` frontmatter
+  with no change to the capture hook, and returns **pointers only** — that field
+  is self-declared, so any note can join the list, and what it joins is a set of
+  paths the same caller could already enumerate.
+
+- **`fetch_document` can return part of a document.** `outline: true` returns
+  the heading structure with each section's size and token estimate *instead of*
+  a body; `sections` keeps only the named ones (matching a heading's text or a
+  `/`-joined prefix of its path, case-insensitively, bringing subsections with
+  it, and reporting `sections_matched` so a mistyped heading is visible);
+  `max_chars` truncates. Extended rather than joined by a `fetch_section`
+  sibling, because asking for part of a document is the same question as asking
+  for it. **Every parameter is optional and omitting all of them reproduces the
+  previous response exactly** — pinned by a test, not by intent. `total_chars`
+  always reports the whole document, never the slice, for the same reason
+  `get_context` returns `omitted[]`.
+
 - **`get_context` — one call where clients were running a search → fetch loop.**
   It seeds from a search over the usual filters, expands one or two hops through
   the link graph, drops duplicates, splits long notes at their headings, and
