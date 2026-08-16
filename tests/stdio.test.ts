@@ -225,7 +225,9 @@ describe("stdio dual-era serving", () => {
     //
     // The next two tests drive this same env and show both reservations still
     // refuse a general write, so this is withholding tools, not disabling
-    // protection.
+    // protection. (Only the audit one existed when this comment was first
+    // written — the Skill one was added after an external review caught the
+    // claim being false.)
     const env = await operatorEnv();
     const client = new ModernClient(
       { name: "modern-reserved-only", version: "0.0.0" },
@@ -261,6 +263,51 @@ describe("stdio dual-era serving", () => {
     expect(tools).toEqual(expect.arrayContaining(["plan_skill_create", "apply_planned_skill_create"]));
     expect(tools).not.toContain("append_audit_report");
     expect(tools).not.toContain("compare_and_swap_audit_state");
+  }, 60_000);
+
+  it("refuses a general document write into the reserved Skill subtree, on the wire", async () => {
+    // The INV-8 counterpart of the INV-9 test below, and it did not exist. The
+    // withhold test above claimed it did — "the next two tests ... show both
+    // reservations still refuse a general write" — while only the audit one was
+    // ever written. A comment is not a test, and this one asserted coverage that
+    // would have made its own absence invisible.
+    //
+    // It matters more now than it did before: withholding the Skill tools by
+    // default means the reservation is the ONLY thing standing between a general
+    // document write and the Skill subtree on a default stdio session.
+    const env = await operatorEnv();
+    const client = new ModernClient(
+      { name: "modern-skill-reserved", version: "0.0.0" },
+      { versionNegotiation: { mode: { pin: "2026-07-28" } } }
+    );
+    await client.connect(new ModernStdioClientTransport({ ...spawnArgs, env }));
+
+    const refused = await client.callTool({
+      name: "plan_document_create",
+      arguments: {
+        relative_path: "_skills/forged/SKILL.md",
+        title: "forged",
+        body: "forged",
+        reason: "INV-8 regression probe"
+      }
+    });
+    expect(refused.isError).toBe(true);
+    expect(JSON.stringify(refused.content)).toMatch(/reserved/);
+
+    // Same control as the audit case: a write one directory outside still plans,
+    // so the refusal is the reservation and not a dead write surface.
+    const allowed = await client.callTool({
+      name: "plan_document_create",
+      arguments: {
+        relative_path: "projects/inv8-control.md",
+        title: "control",
+        body: "control",
+        reason: "INV-8 regression probe control"
+      }
+    });
+    expect(allowed.isError).toBeFalsy();
+
+    await client.close();
   }, 60_000);
 
   it("refuses a general document write into the reserved audit subtree, on the wire", async () => {

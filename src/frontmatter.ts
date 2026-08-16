@@ -488,12 +488,24 @@ export function parseMarkdownSafe(raw: string): {
  * obligation" was already the rule — it was just applied to the parse of the
  * writer's INPUT and not to its OUTPUT.
  *
- * The check lives here rather than at the three call sites because this is the
- * one function every writer passes through, so a fourth writer added later is
- * covered without anyone remembering to add it (the same reason
- * `assertWritableText` is the shared choke for the audit surface).
+ * Called from `serializeMarkdown` so every writer that BUILDS content is covered
+ * at the moment it builds it, which is also early enough to refuse before a diff
+ * is shown for approval.
+ *
+ * ⚠️ That is not sufficient on its own, and believing it was is how this shipped
+ * with a hole. The two apply paths write `patch.new_content` — bytes serialized
+ * during an EARLIER call, possibly by an earlier build of this server — so they
+ * never re-enter `serializeMarkdown`. A plan staged before this guard existed
+ * therefore applied straight past it, and with staged plans having no TTL that
+ * window does not close by itself.
+ *
+ * So the applies assert it again on the bytes they are about to write. The
+ * general rule this is an instance of: **a write-side invariant enforced only at
+ * plan time can always be bypassed with a stale plan.** INV-9 already says the
+ * same thing in the other direction — `applyPlannedUpdate` is the authority and
+ * the plan-time check is a UX courtesy — and this guard had them backwards.
  */
-function assertEmittedFrontmatterWithinLimit(serialized: string): void {
+export function assertEmittedFrontmatterWithinLimit(serialized: string): void {
   // Same first step as assertBoundedFrontmatterBlock, and for the same reason:
   // with no opening delimiter there is no block to measure, and scanning for a
   // closing one anyway would find the first `\n---` in the BODY and refuse a

@@ -451,9 +451,12 @@ the OAuth flow. The URL to register in the client is
 
 - [ ] `MCP_HTTP_ALLOW_WRITE` is **unset** (read-only) unless you have a specific,
       audited need. Writes also require a `vault.write`-scoped token.
-- [ ] `MCP_HTTP_ALLOW_SKILL_WRITE` is unset unless constrained Skill creation is
-      needed; when enabled, `MCP_SKILLS_SUBDIR` is the narrow intended directory
-      and general `MCP_HTTP_ALLOW_WRITE` remains unset unless separately needed.
+- [ ] `MCP_HTTP_ALLOW_SKILL_WRITE` **and `MCP_STDIO_ALLOW_SKILL_WRITE`** are unset
+      unless constrained Skill creation is needed on that transport; when enabled,
+      `MCP_SKILLS_SUBDIR` is the narrow intended directory and general
+      `MCP_HTTP_ALLOW_WRITE` remains unset unless separately needed. Setting the
+      subdir alone is the intended state for a session you type into: it reserves
+      the subtree without registering the tools.
 - [ ] `MCP_OAUTH_PASSWORD` is a strong, unique passphrase; secrets are in an
       `EnvironmentFile` (mode `600`), not committed anywhere.
 - [ ] `MCP_AUTH_TOKEN` is a 32-byte random value (`openssl rand -hex 32`).
@@ -667,8 +670,15 @@ MCP_SKILLS_SUBDIR=path/to/skills
 
 ### Enabling the surface
 
-- **stdio (local Claude Code / Codex / Claude Desktop):** the two Skill tools are
-  available whenever `MCP_SKILLS_SUBDIR` is set — no HTTP flag involved.
+- **stdio (local Claude Code / Codex / Claude Desktop):** additionally set
+  `MCP_STDIO_ALLOW_SKILL_WRITE=1`. Setting `MCP_SKILLS_SUBDIR` alone **reserves**
+  the subtree against general document writes (INV-8) and registers nothing —
+  which is what you want on a session you type into, since a Skill is loaded by
+  later sessions as instructions. This used to be a single decision, and the
+  guidance above ("set the subdir on every write-capable process") therefore
+  armed every interactive session with the write tools; the audit surface had
+  already been split the same way. Setting the flag without the subdir refuses to
+  boot.
 - **HTTP (ChatGPT / Claude.ai web):** additionally set
   `MCP_HTTP_ALLOW_SKILL_WRITE=1`. This is **independent** of
   `MCP_HTTP_ALLOW_WRITE` (general document writes): a connector can be allowed to
@@ -749,6 +759,13 @@ no hands). Run **two** connector processes:
 > permission for both, so following the advice above also armed every local
 > session; the stdio startup line now distinguishes the two states
 > (`audit=reserved-only` vs `audit=on`).
+>
+> **The same split now applies to `MCP_SKILLS_SUBDIR` / `MCP_STDIO_ALLOW_SKILL_WRITE`**,
+> and `skills=` reports the same three states. That half was left conflated for a
+> release after the audit half was fixed. Skill creation is two-step, so it was
+> never the single-call exposure described above — but a Skill is loaded by later
+> sessions **as instructions**, so an interactive session should hold those tools
+> even less readily than an audit writer.
 >
 > **Since the working-directory `.env` was removed, "sets it" means: in the
 > process's real environment, or in its own `MCP_ENV_FILE`** (Step 2). This

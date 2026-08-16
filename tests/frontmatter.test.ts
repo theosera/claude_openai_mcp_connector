@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -645,5 +646,89 @@ describe("a write may not emit a note the read path will refuse (INV-2, write si
     const applied = await store.applyPlannedUpdate(plan.patch_id);
     expect(applied.document.frontmatter.tags).toHaveLength(300);
     expect((await store.fetch("ok.md")).frontmatter.tags).toHaveLength(300);
+  });
+});
+
+describe("apply re-checks the cap, so a stale plan cannot carry a write past it", () => {
+  let root: string;
+  let patchStateDir: string;
+  let store: KnowledgeStore;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-fm-stale-"));
+    patchStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-fm-stalepatch-"));
+    store = new KnowledgeStore({ knowledgeRoot: root, writeMode: "two_step", patchStateDir });
+    await store.init();
+  });
+
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(patchStateDir, { recursive: true, force: true });
+  });
+
+  const oversizedContent = (title: string): string => {
+    const tags = Array.from({ length: 4000 }, (_, index) => `  - tag-${index}`).join("\n");
+    return `---\ntitle: ${title}\ntags:\n${tags}\n---\n\nbody\n`;
+  };
+
+  /**
+   * Stage a plan the way a server WITHOUT the emit cap would have: by writing
+   * the patch file directly. Going through planUpdate is impossible now, which
+   * is the whole point — the bytes predate the guard, and nothing expires them.
+   */
+  async function stagePlanFile(patch: Record<string, unknown>): Promise<string> {
+    const patchId = crypto.randomUUID();
+    await fs.writeFile(path.join(patchStateDir, `${patchId}.json`), JSON.stringify({ ...patch, patch_id: patchId }));
+    return patchId;
+  }
+
+  it("refuses an update whose staged content predates the guard", async () => {
+    const before = "---\ntitle: Keep Me\n---\n\nbody\n";
+    await fs.writeFile(path.join(root, "note.md"), before, "utf8");
+    const patchId = await stagePlanFile({
+      target_path: "note.md",
+      reason: "staged by an older server",
+      expected_sha256: crypto.createHash("sha256").update(before).digest("hex"),
+      created_at: new Date().toISOString(),
+      new_content: oversizedContent("Doomed"),
+      diff: "(elided)"
+    });
+
+    await expect(store.applyPlannedUpdate(patchId)).rejects.toThrow(/Refusing to write.*over the 8192-byte limit/s);
+    // The note is untouched, and still readable — the failure mode being closed
+    // is "the vault now holds a note this server cannot parse or repair".
+    expect(await fs.readFile(path.join(root, "note.md"), "utf8")).toBe(before);
+    expect((await store.fetch("note.md")).frontmatter.title).toBe("Keep Me");
+  });
+
+  it("refuses an exact-path create whose staged content predates the guard", async () => {
+    const content = oversizedContent("New");
+    const patchId = await stagePlanFile({
+      operation: "document_create",
+      target_path: "projects/new.md",
+      reason: "staged by an older server",
+      content_sha256: crypto.createHash("sha256").update(content).digest("hex"),
+      created_at: new Date().toISOString(),
+      new_content: content,
+      diff: "(elided)"
+    });
+
+    await expect(store.applyPlannedDocumentCreate(patchId, "projects/new.md")).rejects.toThrow(/Refusing to write/);
+    await expect(fs.readFile(path.join(root, "projects", "new.md"), "utf8")).rejects.toThrow();
+  });
+
+  it("still applies a staged plan whose frontmatter is within the cap", async () => {
+    // The false-positive direction: re-checking at apply must not break the
+    // ordinary path, where the same bytes already passed at plan time.
+    await fs.writeFile(path.join(root, "ok.md"), "---\ntitle: Fine\n---\n\nbody\n", "utf8");
+    const plan = await store.planUpdate({
+      id_or_path: "ok.md",
+      new_body: "rewritten\n",
+      frontmatter_patch: { tags: ["a", "b"] },
+      reason: "normal edit"
+    });
+    const applied = await store.applyPlannedUpdate(plan.patch_id);
+    expect(applied.document.body.trim()).toBe("rewritten");
+    expect(applied.document.frontmatter.tags).toEqual(["a", "b"]);
   });
 });
