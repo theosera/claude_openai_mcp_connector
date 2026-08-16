@@ -64,14 +64,12 @@ const TRANSIENT_FS_CODES = new Set(["EAGAIN", "EMFILE", "ENFILE"]);
  * `ino` catches the other shape — a replace-by-rename (which is how this server
  * now writes, see src/atomicWrite.ts) swaps in a different inode entirely.
  *
- * `dev` pairs with `ino` and carries a second job (INV-1). `(dev, ino)` is what
- * makes the signature an IDENTITY and not merely a freshness token: a match says
- * the path still resolves to the exact inode whose containment was verified when
- * the entry was cached, which is what lets `readDocument` skip re-resolving it.
- * `ino` alone is unique only within one filesystem, so dropping `dev` would let
- * a path re-pointed at a different device collide by inode number. The same
- * `(dev, ino)` identity argument is why `config.ts` compares roots that way
- * instead of by spelling.
+ * `dev` pairs with `ino` so the identity is unique across filesystems, not only
+ * within one: `ino` alone would let a path re-pointed at a different device
+ * collide by inode number. It is a freshness field only. It does NOT stand in
+ * for the containment check — #108 tried resting containment on `(dev, ino)` and
+ * reverted, because a parent directory moved out of the root leaves every one of
+ * these fields untouched (see readDocument).
  */
 type StatSignature = { mtimeNs: bigint; ctimeNs: bigint; dev: bigint; ino: bigint; sizeBytes: bigint };
 
@@ -122,11 +120,10 @@ export async function mapWithConcurrency<T, R>(
 export class KnowledgeStore implements VaultStore {
   private readonly config: StoreConfig;
   private rootRealPath?: string;
-  // Parse cache keyed by the path as handed to readDocument. Parsing every
-  // Markdown file on every query is the search bottleneck for large vaults; we
-  // re-parse a file only when its stat signature changes. That signature carries
-  // (dev, ino), so a hit still names the same inode — but it does NOT re-prove
-  // containment, which is the caller's job on every call. See readDocument.
+  // Parse cache keyed by real path. Parsing every Markdown file on every query
+  // is the search bottleneck for large vaults; we re-parse a file only when its
+  // stat signature changes. Path-containment checks still run on every access —
+  // see readDocument for why that stayed after #108 tried removing it.
   private readonly documentCache = new Map<string, { signature: StatSignature; document: MarkdownDocument }>();
 
   // Promise-chain serializer for the overwriting write path. Each apply awaits
@@ -545,60 +542,40 @@ export class KnowledgeStore implements VaultStore {
   }
 
   private async readDocument(absolutePath: string): Promise<MarkdownDocument> {
-    // Fast path: ONE stat, on the path exactly as given. `fs.stat` follows
-    // symlinks, so a signature match says this path still resolves to the very
-    // inode that was read before — see StatSignature on why (dev, ino) makes that
-    // an identity claim and not merely a freshness one. The bytes handed back are
-    // therefore the ones already validated, never a different file.
+    // ★ Containment is re-proven HERE, on every read, before the cache is even
+    // consulted. It is tempting to skip it — the callers (walkMarkdownFiles,
+    // resolveForWrite, resolveForExistingRead) all run the guard chain on the
+    // same call, so this looks like a second resolution of a resolved path, and
+    // dropping it removes thousands of realpath calls per tool call on a vault
+    // where syscalls, not bytes, are the entire cost.
     //
-    // ★ That is NOT the same as re-proving containment, and the difference is
-    // where the guarantee lives. Move a directory out of the root and symlink it
-    // back: the file's own dev, ino, ctime and mtime are all untouched — a
-    // parent's rename does not move a child's ctime — so the signature matches
-    // across a genuine escape. Containment is the CALLER's: `walkMarkdownFiles`
-    // realpaths and containment-checks every directory it descends and every
-    // symlink it meets, and `resolveForWrite` / `resolveForExistingRead` do the
-    // same per call. The resolution skipped here was a second resolution of a
-    // path already resolved on the same call.
+    // It was tried on #108 and reverted, so the reason is recorded rather than
+    // rediscovered: "validated on the same call" is not "validated at the same
+    // instant". The walk collects paths and the reads happen afterwards. Move a
+    // directory out of the root in that window and symlink it back, and the
+    // child file's own dev, ino, ctime and mtime are ALL untouched — a parent's
+    // rename does not move a child's ctime — so a stat-signature check matches
+    // across a genuine escape and returns Markdown for a path that no longer
+    // resolves inside KNOWLEDGE_ROOT. Two independent reviewers found it.
     //
-    // ★★ "On the same call" is not "at the same instant", and that gap is real:
-    // the walk collects paths, then the reads happen. Swap a directory for an
-    // escaping symlink in between and the old realpath here would have dropped
-    // that document, where a cache hit now returns it. What bounds it is that a
-    // hit requires the SAME (dev, ino) — so the bytes returned are always the
-    // ones already validated and already cached, never a file the server had not
-    // read. The window changes how long a document keeps appearing after its
-    // directory leaves the vault; it cannot make a new file readable. And no
-    // client-reachable write moves a directory: every write surface creates or
-    // replaces files within an already-contained parent. Raised as P1 by an
-    // external review on #108; the mechanism is exactly right and is why this
-    // paragraph exists, but it does not carry content across the boundary.
-    //
-    // So the rule for anyone adding a call site: run the guard chain BEFORE
-    // calling readDocument. It no longer does that for you, and a signature match
-    // will not catch the difference.
-    //
-    // Keyed by the path as given rather than by its realpath, because that is the
-    // string whose meaning has to be re-checked; two references to one file cost
-    // two entries and stay independently validated.
-    //
-    // The cost this removes is not incidental: every read tool walks the vault
-    // through listDocuments(), so the per-file realpath ran thousands of times
-    // per call, and on an iCloud-backed vault the syscalls — not the bytes — are
-    // what a search spends its time on.
-    const cached = this.documentCache.get(absolutePath);
-    if (cached) {
-      // A vanished path is not an error here; let the resolution below produce
-      // the failure so its message stays the one callers already handle.
-      const meta = await fs.stat(absolutePath, { bigint: true }).catch(() => undefined);
-      if (meta && sameSignature(cached.signature, statSignature(meta))) {
-        return cached.document;
-      }
-    }
-
+    // The bytes served in that window are ones the server had already validated
+    // and cached, so nothing new is disclosed — but INV-1 says every file access
+    // stays under the root, and "true except during a window" is a weaker
+    // invariant than the one this repo committed to. Closing the window properly
+    // needs fd-based containment (openat / O_NOFOLLOW per component) that Node
+    // does not portably expose; until that exists, the cheap check stays.
     const root = await this.root();
     const realPath = await fs.realpath(absolutePath);
     const relativePath = relativeToRoot(root, realPath);
+
+    // Fast path: a pure metadata stat decides cache validity (see StatSignature).
+    const cached = this.documentCache.get(realPath);
+    if (cached) {
+      const meta = await fs.stat(realPath, { bigint: true });
+      if (sameSignature(cached.signature, statSignature(meta))) {
+        return cached.document;
+      }
+    }
 
     // Cache miss: read the content and stat it through a single file handle so
     // the stored mtime/size always describe exactly the bytes we parsed — a
@@ -639,7 +616,7 @@ export class KnowledgeStore implements VaultStore {
           modifiedAt: stats.mtime.toISOString()
         }
       };
-      this.documentCache.set(absolutePath, { signature: statSignature(stats), document });
+      this.documentCache.set(realPath, { signature: statSignature(stats), document });
       return document;
     } finally {
       await handle.close();

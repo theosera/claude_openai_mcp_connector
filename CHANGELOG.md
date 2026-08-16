@@ -23,14 +23,13 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   more than that. **The cost is per-file syscalls, not bytes** — which is why the
   narrowing is on file count, and why the parse cache alone never removed it.
 
-- **A cached note is no longer re-resolved on every read.** `readDocument` ran
-  `realpath` before consulting its parse cache, thousands of times per tool call.
-  Every caller — the walk, `resolveForWrite`, `resolveForExistingRead` — already
-  runs the full INV-1 guard chain on that same call, so this was a second
-  resolution of an already-resolved path. It is now one `stat`, compared against
-  a signature that gained **`dev`** alongside `ino`: a match says the path still
-  names the exact inode whose containment was verified, the same `(dev, ino)`
-  identity argument `config.ts` uses for roots rather than comparing spellings.
+- **The parse cache's stat signature gained `dev`** alongside `ino`, so the
+  inode identity it watches is unique across filesystems rather than only within
+  one. Freshness only: containment is still re-proven by `realpath` on every
+  read. Removing that per-read resolution was attempted here and **reverted
+  before merge** — a directory moved out of the root and symlinked back leaves a
+  child's `dev`, `ino`, `ctime` and `mtime` all untouched, so the signature
+  matches across a real escape. See `readDocument` for the recorded reason.
 
 ### Fixed
 

@@ -37,27 +37,22 @@ injection」「③ 既存ノートの破壊的/stale 上書き」「④ public r
    set を持ち、再訪したら `[]` を返して打ち切る (`loop → root` で無限再帰させない)。escape
    照合 (7) は**温存** — cycle 対策の都合で root 外 symlink を通してはならない。
 
-9. **`readDocument` は cache hit 時に再解決しない。封じ込めを保証するのは呼び出し側である。**
-   signature 一致が言えるのは「同じ inode = 前に読んだのと同じ bytes」までで、`dev` はその同一性を
-   1 filesystem 内に閉じないために要る (落とさない)。
-   ⚠️ **signature 一致は「今も root 内」を意味しない。** ディレクトリを root の外へ移して
-   symlink で戻すと、**子ファイル自身の dev/ino/ctime/mtime は全て不変**なので (親の rename は
-   子の ctime を動かさない)、**本物の escape をまたいで signature が一致する**。
-   それでも安全なのは、そういうパスが `readDocument` に**到達しない**からで、到達させないのは
-   `walkMarkdownFiles` (降りる全ディレクトリと出会う全 symlink を realpath + 照合) と
-   `resolveForWrite` / `resolveForExistingRead` (呼び出しごとに照合) である。
-   → **新しい呼び出し側を足すときは、呼ぶ前に自分でガードを通す。`readDocument` はもう
-   肩代わりしないし、signature 一致はその差を検出しない。**
-   ⚠️ **「同じ呼び出しで」は「同じ瞬間に」ではない。** walk がパスを集めてから読むまでに
-   ディレクトリを escaping symlink に差し替えると、**旧コードの realpath はその文書を落としたが、
-   cache hit は返す**。境界を越えないのは **hit が同一 `(dev, ino)` を要求する**からで、
-   返るのは常に**既に検証済み・既にキャッシュ済みの bytes** — サーバが読んでいないファイルには
-   決してならない。窓が変えるのは「ディレクトリが vault を出た後どれだけ出続けるか」であって、
-   新しいファイルが読めるようになることではない。**client が到達できる write でディレクトリを
-   動かせるものは無い** (全 write surface は封じ込め済みの親の中でファイルを作る/置換するだけ)。
-   #108 で外部レビューが P1 として提起 — **機序の記述は正しい**ので、退けずにここに残す。
-   **測定 (2,880 ノート / iCloud Drive)**: 全 stat 0.864 s に対し全 47.4 MB の読み込みは +0.23 s —
-   **コストは byte でなく per-file syscall** なので、この二重解決は read tool 1 回あたり数千回分の実費だった。
+9. **`readDocument` は cache を見る前に毎回 realpath + `relativeToRoot` を通す。外さない。**
+   ⚠️ **#108 で外した。マージ前に戻した。** 経緯を残すのは、外したくなる理由が強いから:
+   呼び出し側 (`walkMarkdownFiles` / `resolveForWrite` / `resolveForExistingRead`) は
+   同じ呼び出しでガードを通しており、**解決済みパスの二重解決に見える**。しかも
+   **測定 (2,880 ノート / iCloud Drive) では全 stat 0.864 s に対し全 47.4 MB の読み込みは +0.23 s** —
+   **コストは byte でなく per-file syscall** なので、外すと read tool 1 回あたり数千回分が浮く。
+   ⚠️ **それでも外せない理由**: 「**同じ呼び出しで**」は「**同じ瞬間に**」ではない。walk がパスを
+   集めてから読むまでの窓でディレクトリを root の外へ移して symlink で戻すと、**子ファイル自身の
+   dev/ino/ctime/mtime は全て不変**なので (親の rename は子の ctime を動かさない)、
+   **stat signature は本物の escape をまたいで一致し、root 外に解決されるパスの Markdown を返す**。
+   独立した 2 者が検出 (Codex = P1 / CodeRabbit = マージ阻止)。
+   その窓で返る bytes は**既に検証済み・キャッシュ済み**なので新規の開示は無い — しかし
+   **INV-1 は「全ファイルアクセスが root 配下」と述べており、「窓の間だけ例外」は不変条件の弱体化**である。
+   正しく塞ぐには fd ベースの封じ込め (`openat` / component ごとの `O_NOFOLLOW`) が要るが
+   Node は移植可能な形で公開していない。**それができるまで、この安価な検査を残す。**
+   `dev` は signature に残っているが**鮮度用**であり、封じ込めの代わりではない。
 
 - 違反は**例外で fail-closed** (sentinel fallback しない = MCP は黙って別物を返さない)。
 - **新しい read/write 経路を足したら必ずこのガードを通す**。root 外の生パスで `fs` を

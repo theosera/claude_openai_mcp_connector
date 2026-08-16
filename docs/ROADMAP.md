@@ -769,9 +769,11 @@ the guard removed. It now freezes the mtime to a whole second on both sides.
 
 ### The scan costs syscalls, not bytes — _measured, then narrowed_ ✅
 
-Every read tool walks the whole vault through `listDocuments()`. What that costs
-was argued from operation counts for a long time and finally measured, on the
-real 2,880-note vault (47.4 MB of Markdown, iCloud Drive, macOS):
+Every read tool walks the whole vault through `listDocuments()` — still true
+after this change for `fetch` / `trace_sources` / `list_projects` and for an
+**unprefixed** `search_documents`; a prefixed search now prunes (see below).
+What that costs was argued from operation counts for a long time and finally
+measured, on the real 2,880-note vault (47.4 MB of Markdown, iCloud Drive, macOS):
 
 | | measured |
 | --- | --- |
@@ -802,15 +804,30 @@ Two changes followed, neither of which narrows anything by default:
   short, when computed over a subset.
 - **A cache hit no longer re-resolves the path.** `readDocument` ran `realpath`
   before consulting its cache, thousands of times per call; every caller already
-  runs the full INV-1 chain on the same call, so it was a second resolution of an
-  already-resolved path. It is one `stat` now, against a signature that gained
-  `dev` beside `ino` — the `(dev, ino)` identity argument `config.ts` already
-  uses for roots.
+  runs the full INV-1 chain on the same call, so it looked like a second
+  resolution of an already-resolved path. **Tried, then reverted before merge**
+  — see below. The signature did keep `dev` beside `ino`, as a freshness field.
 
 **No new tool, no new env flag, no changed default.** The rejected alternative —
 making one folder the default scan target with a prompt to widen it — bought the
-same speed by making 6 notes in 10 unfindable, and would have made unattended
-scans depend on an interactive answer.
+same speed by hiding **about 94 %** of the notes (the folder that absorbs nearly
+every edit holds 6.3 % of them), and would have made unattended scans depend on
+an interactive answer.
+
+**Why the cache half was reverted.** "Validated on the same call" is not
+"validated at the same instant": the walk collects paths and the reads happen
+afterwards. Move a directory out of the root in that window and symlink it back,
+and the child file's own `dev`, `ino`, `ctime` and `mtime` are **all untouched**
+— a parent's rename does not move a child's ctime — so a stat-signature check
+matches across a genuine escape and returns Markdown for a path that no longer
+resolves inside `KNOWLEDGE_ROOT`. Two independent reviewers found it (Codex as a
+P1, CodeRabbit as merge-blocking). The bytes served in that window were ones the
+server had already validated and cached, so nothing new was disclosed — but
+INV-1 says every file access stays under the root, and "true except during a
+window" is a weaker invariant than the one this repo committed to. Closing it
+properly needs fd-based containment (`openat` / `O_NOFOLLOW` per component) that
+Node does not portably expose, so the per-read `realpath` stays until that
+exists. **The prune, which is the larger measured win, was never in question.**
 
 Reverse-verified per guard: removing the cache-hit signature check fails four
 tests including both freshness tests; dropping `subtreeMayMatch`'s
@@ -872,7 +889,7 @@ _team / enterprise_ adoption rather than the core individual use case.
 | **Audit log**                                                | No after-the-fact record of who searched / fetched / wrote what.                                                                                                                                                                                                                                                                                                   | near-term 🔭                                                                                                                                                                                                                        |
 | **macOS CI**                                                 | The primary deployment target is macOS, and CI runs only on Linux. Case-insensitive-filesystem behaviour is therefore **asserted nowhere**: the `(dev, ino)` root-containment comparison exists precisely because `/vault` and `/Vault` are one directory on APFS, and a test for that shape is vacuous on ext4. NFD normalisation (HFS+) is in the same position. | near-term 🔭                                                                                                                                                                                                                        |
 | **Coverage thresholds**                                      | 374 tests is a count, not a floor. Nothing fails when a new branch arrives untested, which is the condition the reverse-verification rule exists to catch by hand — a threshold makes the cheap half automatic.                                                                                                                                                    | near-term 🔭                                                                                                                                                                                                                        |
-| **No connection or request limits on the HTTP endpoint**     | `http.createServer` is left at its defaults: no `maxConnections`, no `requestTimeout` / `headersTimeout` / `keepAliveTimeout`, and no rate limit on `/mcp` (the two limiters cover only the public OAuth endpoints). The ceiling on concurrent agents is therefore the process file-descriptor limit, not anything this repo chooses — and every read tool walks the whole vault at `MCP_SCAN_CONCURRENCY` handles, so it is that limit divided by the scan width. | near-term 🔭                                                                                                                                                                                                                        |
+| **No connection limit or rate limit on the HTTP endpoint**   | `http.createServer` is left at its defaults, and this repo sets nothing: no `maxConnections`, and no rate limit on `/mcp` (the two limiters cover only the public OAuth endpoints). ⚠️ **Node's own timeout defaults DO apply** — `requestTimeout` 300 s, `headersTimeout` min(60 s, requestTimeout), `keepAliveTimeout` 5 s; the one genuinely unset is `server.timeout` (socket inactivity, default 0). The ceiling on concurrent agents is therefore the process file-descriptor limit, not anything this repo chooses — and an unprefixed read still walks the whole vault at `MCP_SCAN_CONCURRENCY` handles, so it is that limit divided by the scan width. | near-term 🔭                                                                                                                                                                                                                        |
 | **Filesystem fault injection**                               | Write paths are now atomic, but no test exercises `ENOSPC`, `EIO`, or a kill between temp write and rename. The recovery behaviour is argued in comments and unverified in CI.                                                                                                                                                                                     | mid-term 💭                                                                                                                                                                                                                         |
 | **Fuzz / property tests**                                    | `pathSafety` and the frontmatter parser take adversarial input and are pinned by enumerated cases only, so they are strong exactly where someone already thought to look. Property tests would search the space the enumeration misses.                                                                                                                            | mid-term 💭                                                                                                                                                                                                                         |
 | **Multi-user RBAC**                                          | Currently single-user by design; teams need per-user roles & scoping.                                                                                                                                                                                                                                                                                              | larger bet 💭                                                                                                                                                                                                                       |
@@ -977,9 +994,12 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       at `/authorize` instead of `/mcp`). Cheap; needs its own red-green test.
 - [ ] **Give the HTTP server explicit connection and request limits** — measured
       at `e91c1c8`: `src/httpServer.ts` calls `http.createServer` and `listen`
-      without setting `maxConnections`, `requestTimeout`, `headersTimeout` or
-      `keepAliveTimeout`, and the only rate limiters in the process are the OAuth
-      ones (`authorize` 20/5min, `register` 20/10min). `/mcp` itself has neither.
+      without setting `maxConnections` or `server.timeout`, and the only rate
+      limiters in the process are the OAuth ones (`authorize` 20/5min,
+      `register` 20/10min). `/mcp` itself has neither. ⚠️ **Node's `requestTimeout`
+      (300 s), `headersTimeout` (min 60 s) and `keepAliveTimeout` (5 s) defaults
+      DO apply** — an earlier draft of this item said otherwise; only
+      `server.timeout` (socket inactivity) is genuinely 0.
       What _is_ bounded is request memory (`MAX_BODY_BYTES` = 4 MiB) and scan
       width (`MCP_SCAN_CONCURRENCY`, default 24).
 
@@ -991,17 +1011,18 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       `ulimit -n` divided by the scan width rather than a number this repo picked.
       Exhaustion degrades rather than crashes — `EAGAIN` / `EMFILE` / `ENFILE`
       are retried with backoff and unreadable notes are skipped — but that is
-      resilience arrived at from below, not a limit chosen from above. An idle
-      connection also currently has no deadline at all.
+      resilience arrived at from below, not a limit chosen from above. What is
+      genuinely unbounded is socket inactivity (`server.timeout` = 0) and the
+      number of concurrent connections, not request or header time.
 
       **Scope note:** this is availability, not confidentiality — bearer/OAuth
       still gates every request, and the per-request tool surface is unaffected.
       Pair it with the walk itself: a cap that merely rations a full-vault scan
       per call is treating the symptom, so this belongs near the retrieval work,
       not on its own. 🚧 The scan half moved first (see the section below): a
-      prefixed search no longer scans the whole vault, and a cached note is no
-      longer re-resolved. The unprefixed scan is unchanged, so the ceiling this
-      item describes still stands — it is just no longer the only lever.
+      prefixed search no longer scans the whole vault. (The cache-hit half was
+      tried and reverted before merge — see that section.) The unprefixed scan is
+      unchanged, so the ceiling this item describes still stands.
 
       **What is _not_ in scope here:** a plan is looked up by `patch_id` alone
       and is not bound to the principal that staged it, so on a shared endpoint

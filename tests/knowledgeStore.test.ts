@@ -552,14 +552,9 @@ describe("KnowledgeStore", () => {
     expect((await store.fetch("chatgpt-research-001")).body).toContain(marker);
   });
 
-  // INV-1, read path. `readDocument` no longer re-resolves a path it already
-  // holds a cache entry for. That is safe because every caller — the walk,
-  // `resolveForWrite`, `resolveForExistingRead` — runs the full guard chain on
-  // the same call, so the resolution inside `readDocument` was a SECOND
-  // resolution of an already-resolved path; the containment check itself still
-  // happens on every read. What the cache entry has to keep guaranteeing is that
-  // the parse it hands back belongs to the file that was validated, which is the
-  // job of (dev, ino) in the stat signature.
+  // The parse cache must notice a replace-by-rename: same path, same byte length,
+  // mtime restored, different inode. `ino` in the stat signature is what catches
+  // it, and this is the read-path counterpart of the apply-path inode assertion.
   //
   // Known gap: `dev` cannot be exercised portably — separating two devices needs
   // a mount, so a single-filesystem test can never distinguish it from `ino`.
