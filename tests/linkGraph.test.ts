@@ -4,7 +4,8 @@ import {
   HUB_DEGREE_THRESHOLD,
   MAX_EXPANSION_FANOUT,
   MAX_LINK_GRAPH_DEPTH,
-  MAX_RELATED_NODES
+  MAX_RELATED_NODES,
+  traceThroughGraph
 } from "../src/linkGraph.js";
 import type { MarkdownDocument } from "../src/types.js";
 
@@ -216,6 +217,99 @@ describe("linkGraph resolution (P2-D0: path facts only)", () => {
       resolved: true,
       target_id: "self-declared",
       target_path: "notes/alpha.md"
+    });
+  });
+
+  it("keeps both edges when the two syntaxes disagree about the same text", () => {
+    // Written in `dir/source.md`, `[[foo]]` names the root-relative `foo.md`
+    // while `[x](foo)` names `dir/foo.md`. Deduplicating the raw string before
+    // resolving it took whichever leg ran first and dropped the other note's
+    // backlink entirely — the missing-edge failure this module exists to remove.
+    const graph = buildLinkGraph([note("dir/source.md", "[[foo]]\n[x](foo)"), note("foo.md"), note("dir/foo.md")]);
+
+    const targets = graph
+      .outgoing("dir/source.md")
+      .filter((link) => link.raw === "foo")
+      .map((link) => link.target_path);
+    expect(targets).toEqual(["dir/foo.md", "foo.md"]);
+
+    // Both halves: it is the backlinks that were being lost.
+    expect(graph.incoming("foo.md").map((node) => node.path)).toEqual(["dir/source.md"]);
+    expect(graph.incoming("dir/foo.md").map((node) => node.path)).toEqual(["dir/source.md"]);
+  });
+
+  it("collapses the two syntaxes into one entry when they agree", () => {
+    // The common case: two entries per link would be noise, not information.
+    const graph = buildLinkGraph([note("index.md", "[[notes/alpha]]\n[x](notes/alpha)"), note("notes/alpha.md")]);
+
+    const links = graph.outgoing("index.md").filter((link) => link.raw === "notes/alpha");
+    expect(links).toHaveLength(1);
+    expect(links[0].target_path).toBe("notes/alpha.md");
+  });
+
+  it("matches a decomposed wikilink against a composed filename", () => {
+    // Enumerated paths are NFC (`relativeToRoot`); an editor on a decomposing
+    // filesystem writes the link decomposed. Markdown links already normalized
+    // via resolveRelativeLink, so leaving wikilinks raw made the SAME target
+    // resolve one way and miss the other — on macOS, the primary deployment.
+    const composed = "ガイド".normalize("NFC");
+    const decomposed = "ガイド".normalize("NFD");
+    expect(composed).not.toBe(decomposed);
+
+    const graph = buildLinkGraph([
+      note("index.md", `[[${decomposed}]]\n[[notes/${decomposed}]]`),
+      note(`notes/${composed}.md`)
+    ]);
+
+    expect(linkNamed(graph, "index.md", decomposed).target_path).toBe(`notes/${composed}.md`);
+    expect(linkNamed(graph, "index.md", `notes/${decomposed}`).target_path).toBe(`notes/${composed}.md`);
+  });
+
+  // `title` and `aliases` are never canonicalized upstream, so unlike paths the
+  // INDEX side and the LOOKUP side are two separate normalizations — and each
+  // only matters when the OTHER side is the decomposed one. Pinning a single
+  // direction reaches only one of them: the first draft of this test fixed the
+  // title as NFC, so removing the index-side normalize changed nothing and the
+  // test stayed green with the guard gone.
+  it("normalizes both sides of a frontmatter title comparison", () => {
+    const composedLink = buildLinkGraph([
+      note("index.md", `[[${"ガイド".normalize("NFC")}]]`),
+      note("notes/alpha.md", "", { title: "ガイド".normalize("NFD") })
+    ]);
+    // Composed link vs decomposed title: only the INDEX-side normalize can meet.
+    expect(linkNamed(composedLink, "index.md", "ガイド".normalize("NFC")).candidates?.[0]).toMatchObject({
+      path: "notes/alpha.md",
+      via: "title"
+    });
+
+    const decomposedLink = buildLinkGraph([
+      note("index.md", `[[${"ガイド".normalize("NFD")}]]`),
+      note("notes/alpha.md", "", { title: "ガイド".normalize("NFC") })
+    ]);
+    // ...and the mirror image, which only the LOOKUP-side normalize can meet.
+    expect(linkNamed(decomposedLink, "index.md", "ガイド".normalize("NFD")).candidates?.[0]).toMatchObject({
+      path: "notes/alpha.md",
+      via: "title"
+    });
+  });
+
+  it("normalizes both sides of an alias comparison", () => {
+    const composedLink = buildLinkGraph([
+      note("index.md", `[[${"ガード".normalize("NFC")}]]`),
+      note("notes/beta.md", "", { aliases: ["ガード".normalize("NFD")] })
+    ]);
+    expect(linkNamed(composedLink, "index.md", "ガード".normalize("NFC")).candidates?.[0]).toMatchObject({
+      path: "notes/beta.md",
+      via: "alias"
+    });
+
+    const decomposedLink = buildLinkGraph([
+      note("index.md", `[[${"ガード".normalize("NFD")}]]`),
+      note("notes/beta.md", "", { aliases: ["ガード".normalize("NFC")] })
+    ]);
+    expect(linkNamed(decomposedLink, "index.md", "ガード".normalize("NFD")).candidates?.[0]).toMatchObject({
+      path: "notes/beta.md",
+      via: "alias"
     });
   });
 
@@ -464,6 +558,31 @@ describe("linkGraph direction and provenance", () => {
       { id: "downstream.md", path: "downstream.md", title: "downstream", distance: 1, via: "origin.md" },
       { id: "leaf.md", path: "leaf.md", title: "leaf", distance: 2, via: "downstream.md" }
     ]);
+  });
+
+  it("keeps the two link fields describing the same body", () => {
+    // `traceThroughGraph` is handed a document from an earlier `fetch` and a
+    // listing from a later full scan. Simulate the note changing in between:
+    // the fetched snapshot says `[[old]]`, the listing says `[[new]]`. Reading
+    // `outgoing_links` off the fetched body while labelling the listed one let
+    // the two arrays describe different text — the one correspondence the
+    // response promises. They are now derived from the same place.
+    const fetched = note("index.md", "[[old]]");
+    const listed = note("index.md", "[[new]]");
+    const traced = traceThroughGraph(fetched, [listed, note("old.md"), note("new.md")]);
+
+    expect(traced.outgoing_links).toEqual([...new Set(traced.resolved_outgoing.map((link) => link.raw))].sort());
+    expect(traced.outgoing_links).toEqual(["new"]);
+  });
+
+  it("reports no links at all when the traced note left the vault mid-call", () => {
+    const fetched = note("index.md", "[[old]]");
+    const traced = traceThroughGraph(fetched, [note("old.md")]);
+
+    expect(traced.outgoing_links).toEqual([]);
+    expect(traced.resolved_outgoing).toEqual([]);
+    // The header still describes what was fetched, which is what was asked for.
+    expect(traced.document.relativePath).toBe("index.md");
   });
 
   it("returns nothing for a path the graph does not hold", () => {

@@ -56,6 +56,11 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   own root** — only the explicit `<root>:<path>` form crosses, because root
   names come from configuration and a note cannot claim one for itself.
 
+  Matching is NFC-canonical on both sides, so a link written decomposed still
+  finds a composed filename (and the reverse) — relevant on macOS, where an
+  editor may write either form. It is not case-folded: paths elsewhere in this
+  server compare exactly, and the measurement above was taken that way.
+
 - **A search that declares a `path_prefix` no longer scans the whole vault.**
   Every read tool walks the vault through `listDocuments()`, and the filter used
   to run after the walk had already read every note. The prefix is now handed to

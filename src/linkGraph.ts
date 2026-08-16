@@ -95,7 +95,7 @@ import type {
   ResolvedOutgoingLink,
   TraceResult
 } from "./types.js";
-import { extractAllLocalLinks, extractMarkdownLinks, extractWikiLinks, resolveRelativeLink } from "./markdownLinks.js";
+import { extractMarkdownLinks, extractWikiLinks, resolveRelativeLink } from "./markdownLinks.js";
 
 /**
  * Traversal bounds (D-4). Exported so tests pin the numbers rather than
@@ -139,6 +139,23 @@ interface GraphNode {
 /** Drop one trailing `.md` so index keys and lookups meet in the middle. */
 function stripMarkdownExtension(value: string): string {
   return value.replace(/\.md$/i, "");
+}
+
+/**
+ * The single form every path-shaped index key and lookup is built in.
+ *
+ * Enumerated paths arrive NFC-canonical (`relativeToRoot`), and an editor on a
+ * decomposing filesystem writes the same name decomposed — so matching raw link
+ * text against them misses a canonically identical file. `resolveRelativeLink`
+ * already normalizes, which is precisely why doing it only there was worse than
+ * not doing it at all: the same non-ASCII target resolved as a Markdown link and
+ * missed as a wikilink, on macOS, which is this project's primary deployment.
+ *
+ * NFC, not the search path's NFKC: half-width and full-width names are
+ * genuinely different files, and these keys stand in for real ones.
+ */
+function lookupForm(value: string): string {
+  return stripMarkdownExtension(value).normalize("NFC");
 }
 
 function localPathOf(document: MarkdownDocument): string {
@@ -234,16 +251,22 @@ class MarkdownLinkGraph implements LinkGraph {
         continue;
       }
       this.nodes.set(node.key, node);
+      // Both sides of every comparison go through the same normalizer; a key
+      // built one way and looked up another is the defect `lookupForm` exists
+      // to stop, so there is deliberately no second spelling of it here.
       if (node.root) {
-        this.byPrefixedPath.set(stripMarkdownExtension(node.key), node);
+        this.byPrefixedPath.set(lookupForm(node.key), node);
       }
-      this.byLocalPath.set(scoped(node.root, stripMarkdownExtension(node.localPath)), node);
-      pushInto(this.byName, scoped(node.root, stripMarkdownExtension(basenameOf(node.localPath))), node);
+      this.byLocalPath.set(scoped(node.root, lookupForm(node.localPath)), node);
+      pushInto(this.byName, scoped(node.root, lookupForm(basenameOf(node.localPath))), node);
+      // `title` and `aliases` are frontmatter, so unlike paths they have never
+      // been canonicalized by anything upstream — normalize both sides here or
+      // a decomposed title silently stops even being offered as a candidate.
       if (document.title) {
-        pushInto(this.byTitle, scoped(node.root, document.title), node);
+        pushInto(this.byTitle, scoped(node.root, document.title.normalize("NFC")), node);
       }
       for (const alias of aliasesOf(document)) {
-        pushInto(this.byAlias, scoped(node.root, alias), node);
+        pushInto(this.byAlias, scoped(node.root, alias.normalize("NFC")), node);
       }
     }
 
@@ -376,49 +399,82 @@ class MarkdownLinkGraph implements LinkGraph {
   private resolveDocumentLinks(document: MarkdownDocument, from: GraphNode): ResolvedOutgoingLink[] {
     // Extraction rides the parse cache when the store filled it in; a
     // hand-built document (tests, fixtures) simply extracts here instead.
-    const wiki = new Set(document.linksDerived?.wiki ?? extractWikiLinks(document.body));
-    const markdown = new Set(document.linksDerived?.markdown ?? extractMarkdownLinks(document.body));
-    const raws = [...new Set([...wiki, ...markdown])].sort();
-    return raws.map((raw) => this.resolveLink(raw, from, wiki.has(raw), markdown.has(raw)));
+    const wiki = document.linksDerived?.wiki ?? extractWikiLinks(document.body);
+    const markdown = document.linksDerived?.markdown ?? extractMarkdownLinks(document.body);
+
+    // ⚠️ Resolved PER SYNTAX, not once per distinct target string. The two
+    // syntaxes genuinely disagree about what the same text means: written in
+    // `dir/source.md`, `[[foo]]` asks for the root-relative `foo.md` while
+    // `[x](foo)` asks for `dir/foo.md`. Deduplicating the raw strings first and
+    // resolving the survivor took whichever leg ran first and silently dropped
+    // the other note's backlink — a missing edge, which is the failure class
+    // this module exists to remove rather than reintroduce.
+    const links: ResolvedOutgoingLink[] = [];
+    const seen = new Set<string>();
+    const add = (link: ResolvedOutgoingLink): void => {
+      // Identical outcomes from the two syntaxes collapse — overwhelmingly the
+      // common case — so only a real disagreement produces two entries.
+      const key = JSON.stringify([link.raw, link.target_path ?? null, link.candidates?.map((c) => c.path) ?? null]);
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      links.push(link);
+    };
+
+    for (const raw of new Set(wiki)) {
+      add(this.resolveWikiLink(raw, from));
+    }
+    for (const raw of new Set(markdown)) {
+      add(this.resolveMarkdownLink(raw, from));
+    }
+
+    return links.sort((a, b) => a.raw.localeCompare(b.raw) || (a.target_path ?? "").localeCompare(b.target_path ?? ""));
   }
 
-  private resolveLink(raw: string, from: GraphNode, isWiki: boolean, isMarkdown: boolean): ResolvedOutgoingLink {
-    const bare = stripMarkdownExtension(raw);
+  /** The explicit `<root>:<path>` leg, shared by both syntaxes: root names come
+   *  from configuration, so it is a path fact however the link was written. */
+  private crossRootTarget(raw: string): GraphNode | undefined {
+    return this.byPrefixedPath.get(lookupForm(raw));
+  }
 
-    // 1. Explicit `<root>:<path>`. Empty unless the deployment has named roots,
-    //    so a single-root vault never takes this leg.
-    const crossRoot = this.byPrefixedPath.get(bare);
+  private resolveMarkdownLink(raw: string, from: GraphNode): ResolvedOutgoingLink {
+    const crossRoot = this.crossRootTarget(raw);
     if (crossRoot) {
       return resolvedTo(raw, crossRoot);
     }
 
-    // 2. A Markdown link is written relative to the linking note's directory.
-    if (isMarkdown) {
-      const target = resolveRelativeLink(raw, from.localPath);
-      if (target !== null) {
-        const node = this.byLocalPath.get(scoped(from.root, stripMarkdownExtension(target)));
-        if (node) {
-          return resolvedTo(raw, node);
-        }
+    // Written relative to the linking note's own directory. `resolveRelativeLink`
+    // percent-decodes and canonicalizes; `lookupForm` then only has to agree.
+    const target = resolveRelativeLink(raw, from.localPath);
+    if (target !== null) {
+      const node = this.byLocalPath.get(scoped(from.root, lookupForm(target)));
+      if (node) {
+        return resolvedTo(raw, node);
       }
     }
+    return { raw, resolved: false };
+  }
 
-    if (!isWiki) {
-      return { raw, resolved: false };
+  private resolveWikiLink(raw: string, from: GraphNode): ResolvedOutgoingLink {
+    const crossRoot = this.crossRootTarget(raw);
+    if (crossRoot) {
+      return resolvedTo(raw, crossRoot);
     }
+    const bare = lookupForm(raw);
 
-    // 3a. Wikilink, exact root-relative path. This is the leg that keeps a
-    //     folder-qualified `[[projects/a/note]]` resolving when the basename
-    //     `note` is ambiguous — unambiguous without consulting any field the
-    //     note declares about itself, so there is no reason to drop it.
+    // Exact root-relative path first. This is the leg that keeps a
+    // folder-qualified `[[projects/a/note]]` resolving when the basename `note`
+    // is ambiguous — unambiguous without consulting any field the note declares
+    // about itself, so there is no reason to drop it.
     const exact = this.byLocalPath.get(scoped(from.root, bare));
     if (exact) {
       return resolvedTo(raw, exact);
     }
 
-    // 3b. Wikilink as a name (Obsidian semantics). The WHOLE link text is the
-    //     name, so a path-qualified link that missed 3a does not fall through
-    //     to some unrelated folder's file with the same basename.
+    // Then the WHOLE link text as a name (Obsidian semantics), so a
+    // path-qualified link that missed the leg above does not fall through to
+    // some unrelated folder's file with the same basename.
     const named = this.byName.get(scoped(from.root, bare)) ?? [];
     if (named.length === 1) {
       return resolvedTo(raw, named[0]);
@@ -427,10 +483,11 @@ class MarkdownLinkGraph implements LinkGraph {
     // Unresolved. Everything below is a HINT, never a resolution: an ambiguous
     // name, or a self-declared `title` / `aliases` match. The last two never
     // resolve even when unique — see the header, and INV-2 on frontmatter `id`.
+    const declared = raw.normalize("NFC");
     const candidates = collectCandidates([
       ...named.map((node) => ({ node, via: "basename" as const })),
-      ...(this.byTitle.get(scoped(from.root, raw)) ?? []).map((node) => ({ node, via: "title" as const })),
-      ...(this.byAlias.get(scoped(from.root, raw)) ?? []).map((node) => ({ node, via: "alias" as const }))
+      ...(this.byTitle.get(scoped(from.root, declared)) ?? []).map((node) => ({ node, via: "title" as const })),
+      ...(this.byAlias.get(scoped(from.root, declared)) ?? []).map((node) => ({ node, via: "alias" as const }))
     ]);
 
     return candidates.length > 0 ? { raw, resolved: false, candidates } : { raw, resolved: false };
@@ -483,16 +540,6 @@ export function buildLinkGraph(documents: readonly MarkdownDocument[]): LinkGrap
   return new MarkdownLinkGraph(documents);
 }
 
-/** Every local link a note writes, deduplicated and sorted — the long-standing
- *  `outgoing_links` shape, served from the parse cache when it is populated. */
-export function localLinksOf(document: MarkdownDocument): string[] {
-  const derived = document.linksDerived;
-  if (!derived) {
-    return extractAllLocalLinks(document.body);
-  }
-  return [...new Set([...derived.wiki, ...derived.markdown])].sort();
-}
-
 /**
  * The whole of `trace_sources`, once the caller has produced the document and
  * an UNPREFIXED listing of the vault.
@@ -512,13 +559,23 @@ export function traceThroughGraph(
   const key = document.relativePath;
   const depth = options.depth ?? 1;
 
+  // ⚠️ Both link fields come from the GRAPH — never one from the graph and one
+  // from `document`. The caller produced `document` with an earlier `fetch` and
+  // `documents` with a later full listing, so a note edited between those two
+  // scans has two different bodies available right here; extracting
+  // `outgoing_links` from the fetched body while labelling the listed one made
+  // the two arrays describe different text, which is the one correspondence the
+  // response promises. Deriving the raw strings from the labelled links makes
+  // them line up by construction instead of by timing.
+  const resolvedOutgoing = graph.outgoing(key);
+
   const result: TraceResult = {
     document: { id: document.id, relativePath: key, title: document.title },
     source_refs: document.frontmatter.source_refs ?? [],
-    outgoing_links: localLinksOf(document),
+    outgoing_links: [...new Set(resolvedOutgoing.map((link) => link.raw))].sort(),
     // Complete, never capped: this is the inventory the field has always been.
     backlinks: graph.incoming(key).map((node) => ({ id: node.id, relativePath: node.path, title: node.title })),
-    resolved_outgoing: graph.outgoing(key)
+    resolved_outgoing: resolvedOutgoing
   };
 
   // Only a caller that asked to expand pays for an expansion, and a caller that
