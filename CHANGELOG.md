@@ -6,6 +6,8 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-08-16
+
 ### Added
 
 - **`get_project_state` — where a project stands, derived rather than summarized.**
@@ -352,32 +354,6 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   now skipped only when the temp already carries the target's ids, and a failure
   aborts before the rename, leaving the note's contents _and_ owner untouched.
 
-### Security
-
-- **The legacy one-step `create_document` is now off by default on every
-  transport**, behind **`MCP_ALLOW_LEGACY_CREATE_DOCUMENT`**. It was the only
-  document write with no plan/apply pair, so "the current user approved this
-  exact target and content" was enforced by the server instructions asking the
-  model — whose other input is untrusted vault content (INV-5). On stdio it was
-  registered unconditionally.
-
-  Path containment, the frontmatter allowlist and `flag: "wx"` always applied,
-  and the frontmatter (including `id`) is server-built, so the tool could never
-  escape the vault, overwrite a note, or capture another document's identity.
-  What it could do without approval is **persist** attacker-chosen body text
-  under `projects/`, which every later session reads back as an ordinary note.
-
-  `scripts/check-http.mjs` scores it as its own category, so an endpoint that
-  exposes it without the flag now **fails** the operator check instead of being
-  permitted under general write. Both startup lines report `legacy_create=`.
-
-  **Migration:** set `MCP_ALLOW_LEGACY_CREATE_DOCUMENT=1` to keep the routed
-  `projects/<client>/<project>/<slug>.md` capture, or move to
-  `plan_document_create` → `apply_planned_document_create`, which takes an exact
-  path and requires confirmation.
-
-### Fixed
-
 - **`apply_planned_update` replaced a note in place, and was not strictly
   compare-and-swap.** It read the target, hashed it, compared against the plan,
   then wrote over the file — truncate-then-write, so an interrupted apply (crash,
@@ -410,6 +386,30 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `mtimeNs` + `ctimeNs` + `ino` + size. `plan_document_update` additionally
   derives the planned frontmatter from the bytes `expected_sha256` covers, so a
   stale parse cannot re-serialize frontmatter an external editor already changed.
+
+### Security
+
+- **The legacy one-step `create_document` is now off by default on every
+  transport**, behind **`MCP_ALLOW_LEGACY_CREATE_DOCUMENT`**. It was the only
+  document write with no plan/apply pair, so "the current user approved this
+  exact target and content" was enforced by the server instructions asking the
+  model — whose other input is untrusted vault content (INV-5). On stdio it was
+  registered unconditionally.
+
+  Path containment, the frontmatter allowlist and `flag: "wx"` always applied,
+  and the frontmatter (including `id`) is server-built, so the tool could never
+  escape the vault, overwrite a note, or capture another document's identity.
+  What it could do without approval is **persist** attacker-chosen body text
+  under `projects/`, which every later session reads back as an ordinary note.
+
+  `scripts/check-http.mjs` scores it as its own category, so an endpoint that
+  exposes it without the flag now **fails** the operator check instead of being
+  permitted under general write. Both startup lines report `legacy_create=`.
+
+  **Migration:** set `MCP_ALLOW_LEGACY_CREATE_DOCUMENT=1` to keep the routed
+  `projects/<client>/<project>/<slug>.md` capture, or move to
+  `plan_document_create` → `apply_planned_document_create`, which takes an exact
+  path and requires confirmation.
 
 ## [0.8.0] — 2026-08-10
 
@@ -1831,7 +1831,8 @@ First tagged release. MCP server exposing a private Markdown vault
   frontmatter allowlist, two-step stale-safe writes, HTTP auth + read-only
   surface, and the full OAuth flow.
 
-[Unreleased]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.5.0...v0.6.0
