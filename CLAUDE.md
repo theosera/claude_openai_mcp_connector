@@ -203,9 +203,7 @@ CAS は読んだ版一致時のみ更新、append/CAS は in-process mutex で�
 
 ## Secrets / sensitive files — never commit
 
-- 除外済み (`.gitignore`): `.env` / `.env.*` (`.env.example` のみ allow) / `*.key` /
-  `*.pem` / `credentials*.json` / `service-account*.json` / `*token*.json` / `secrets/` /
-  `vault/` / `knowledge/` / `data/` / `.mcp-state/`。
+- 除外パターンの正典は `.gitignore` (ここに写しを置かない — 写しは腐る)。
 - `.claude/settings.json` の `permissions.deny[]` が Read + Bash(`cat`/`grep`/…) 経由の
   secret 読取を物理ブロックする (deny は allow に勝つ / 即拒否)。加えて
   `Edit(./.claude/settings.json|settings.local.json|plugins/**)` で **Claude 自身による
@@ -219,15 +217,12 @@ CAS は読んだ版一致時のみ更新、append/CAS は in-process mutex で�
 - `pnpm typecheck` (tsc strict、`tsconfig.json` = src + `tsconfig.test.json` = src+tests。
   **build config は src しか見ないので、tests を型検査する第 2 config が要る**) → `pnpm build` →
   `pnpm test` (vitest)。
-- **★ ただしこれは CI の全部ではない。** CI の検査 step は **8 つ、うち落ちうるのは 7 つ**:
-  `pnpm audit --prod --audit-level high` (**blocking**) → `pnpm audit --audit-level moderate`
-  (**advisory / `continue-on-error` なので絶対に落ちない**) → `lint:ox` → `format:check` →
-  `lint` → `typecheck` → `build` → `test`。
+- **★ ただしこれは CI の全部ではない。** 検査 step の正典は `.github/workflows/node.js.yml`
+  の step 列で、**ここに写しを置かない** (写しは腐り、腐った写しは緑の誤認を生む)。そのうち 1 つは
+  `continue-on-error` の advisory なので**絶対に落ちない**。
   ⚠️ **advisory の方を「1 step 分の保証」と数えない** — 落ちない検査は何も証明しない
   (これを数えていたことが本番 CVE を 1 件見逃した原因)。**上の 3 つだけ回して緑を確認したせいで、`format:check` で
-  CI を落としたことが実際にある**。ローカルで通すなら
-  `.github/workflows/node.js.yml` の step 列を正典として全部回す (ここの列挙は写しであり、
-  食い違ったら workflow が正しい)。
+  CI を落としたことが実際にある**。ローカルで通すなら workflow の step 列を全部回す。
 - **セキュリティ挙動は規約でなくテストで pin** する: path traversal / symlink escape /
   frontmatter allowlist / stale patch / exact-path確認・patch完全性 / overwrite collision / Skill bundle containment・
   create-only・atomic publish (`tests/`)。挙動を変える
