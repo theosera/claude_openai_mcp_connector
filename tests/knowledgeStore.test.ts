@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PLAN_MAX_AGE_MS, prunePatchState } from "../src/patchState.js";
 import {
   isTransientFsError,
   KnowledgeStore,
@@ -1442,5 +1443,71 @@ describe("frontmatter id squatting (INV-2)", () => {
     // containment error on the branch that still resolves references strictly.
     await expect(single.fetch("../outside.md")).rejects.toThrow(/escapes|Relative/);
     await expect(single.fetch("missing/note.md")).rejects.toThrow(/not found/i);
+  });
+});
+
+describe("staged plans expire instead of accumulating forever", () => {
+  let root: string;
+  let patchStateDir: string;
+  let store: KnowledgeStore;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-ttl-vault-"));
+    patchStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-ttl-patches-"));
+    await fs.writeFile(path.join(root, "note.md"), "---\ntitle: Note\n---\n\nbody\n", "utf8");
+    store = new KnowledgeStore({ knowledgeRoot: root, writeMode: "two_step", patchStateDir });
+    await store.init();
+  });
+
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(patchStateDir, { recursive: true, force: true });
+  });
+
+  const age = async (file: string, ms: number): Promise<void> => {
+    const when = new Date(Date.now() - ms);
+    await fs.utimes(file, when, when);
+  };
+
+  it("deletes a plan older than the window and keeps a fresh one", async () => {
+    const stale = path.join(patchStateDir, "11111111-1111-4111-8111-111111111111.json");
+    const fresh = path.join(patchStateDir, "22222222-2222-4222-8222-222222222222.json");
+    await fs.writeFile(stale, "{}", "utf8");
+    await fs.writeFile(fresh, "{}", "utf8");
+    await age(stale, PLAN_MAX_AGE_MS + 60_000);
+
+    expect(await prunePatchState(patchStateDir)).toBe(1);
+    await expect(fs.access(stale)).rejects.toThrow();
+    await expect(fs.access(fresh)).resolves.toBeUndefined();
+  });
+
+  it("sweeps when a new plan is staged, not only at start-up", async () => {
+    // The deployment that accumulates most is the one that never restarts, so an
+    // init-only sweep would miss it entirely.
+    const stale = path.join(patchStateDir, "33333333-3333-4333-8333-333333333333.json");
+    await fs.writeFile(stale, "{}", "utf8");
+    await age(stale, PLAN_MAX_AGE_MS + 60_000);
+
+    const plan = await store.planUpdate({ id_or_path: "note.md", new_body: "edited\n", reason: "edit" });
+
+    await expect(fs.access(stale)).rejects.toThrow();
+    // ...and the plan just staged is still there and still applies.
+    const applied = await store.applyPlannedUpdate(plan.patch_id);
+    expect(applied.document.body.trim()).toBe("edited");
+  });
+
+  it("leaves files it does not own alone", async () => {
+    // The sweep is scoped to plan JSON. Anything else in the directory is not
+    // this server's to delete — the false-positive direction.
+    const other = path.join(patchStateDir, "notes.txt");
+    await fs.writeFile(other, "keep me", "utf8");
+    await age(other, PLAN_MAX_AGE_MS * 10);
+
+    expect(await prunePatchState(patchStateDir)).toBe(0);
+    expect(await fs.readFile(other, "utf8")).toBe("keep me");
+  });
+
+  it("does not fail a start-up when the directory cannot be listed", async () => {
+    expect(await prunePatchState(path.join(patchStateDir, "does-not-exist"))).toBe(0);
   });
 });

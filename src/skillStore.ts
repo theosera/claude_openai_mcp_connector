@@ -105,6 +105,12 @@ export class SkillStore {
       diff
     };
 
+    // Matches both document plan writers, which already call this immediately
+    // before staging. It is idempotent, and it is where expired plans are swept
+    // — so a Skill plan staged on a server that never restarts now ages out the
+    // same way a document plan does. Without it this store would have been the
+    // one writer the sweep did not reach.
+    await ensurePatchStateDir(this.config.patchStateDir);
     await fs.writeFile(this.patchPath(patchId), JSON.stringify(plan, null, 2), {
       encoding: "utf8",
       flag: "wx",

@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 
 // Two-step plan files are the one place vault plaintext is copied outside the
 // vault: a planned update carries the pre-edit text (inside `diff`) and the
@@ -29,6 +30,17 @@ export const PATCH_STATE_FILE_MODE = 0o600;
  */
 export async function ensurePatchStateDir(dir: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true, mode: PATCH_STATE_DIR_MODE });
+  // Swept here rather than from each plan writer on purpose. This is the one
+  // function every store that stages a plan already calls, so a fourth writer
+  // added later inherits the sweep instead of needing someone to remember it —
+  // and a rule applied to some of its call sites and not others is the shape
+  // this codebase has been bitten by repeatedly.
+  //
+  // It runs at init AND before each plan is staged (the callers invoke this
+  // first, and it is idempotent), because a long-running HTTP server may not
+  // restart for months — an init-only sweep would never fire on the deployment
+  // that accumulates the most.
+  await prunePatchState(dir);
   if (process.platform === "win32") {
     return; // POSIX mode bits are not meaningful here.
   }
@@ -75,4 +87,64 @@ export async function ensurePatchStateDir(dir: string): Promise<void> {
   } finally {
     await handle.close();
   }
+}
+
+/**
+ * How long an unapplied plan stays on disk.
+ *
+ * A plan is only deleted when it is APPLIED, so one the user declined — or one
+ * whose conversation simply ended — used to sit there for the life of the
+ * machine, holding the pre-edit text and the full proposed text of a note
+ * outside the vault. There is no MCP tool to discard one either: the only way to
+ * remove a plan was to perform the very operation that was refused.
+ *
+ * Seven days rather than something tight: a plan is meant to be approved inside
+ * the conversation that produced it, but "planned on Friday, approved on Monday"
+ * is a real workflow and expiring that would be a worse failure than keeping the
+ * file. Nothing depends on the exact value — this bounds accumulation, it is not
+ * a security boundary. The window a stale plan could once use to carry content
+ * past a newer guard is closed at apply, where the checks belong.
+ */
+export const PLAN_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Delete plan files older than PLAN_MAX_AGE_MS.
+ *
+ * Age comes from the file's own mtime. Content freshness must never rest on
+ * mtime — a checkout or a copy moves it while the bytes stay old — but nothing
+ * here reads the plan: this asks how long the FILE has existed, and these files
+ * are written once, never modified, and never checked into anything.
+ *
+ * Failure is not fatal in either direction. A directory that cannot be listed,
+ * or a file that vanished between the listing and the unlink (two servers
+ * sharing a state directory), leaves the sweep incomplete and the server
+ * running. Refusing to serve a vault because old plans could not be tidied would
+ * be the wrong trade — the same reasoning the chmod above already applies.
+ */
+export async function prunePatchState(dir: string, now: number = Date.now()): Promise<number> {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) {
+      continue;
+    }
+    const file = path.join(dir, entry);
+    try {
+      const stats = await fs.stat(file);
+      if (now - stats.mtimeMs > PLAN_MAX_AGE_MS) {
+        await fs.unlink(file);
+        removed += 1;
+      }
+    } catch {
+      // Gone already, or not ours to remove. Either way the next sweep will see
+      // the truth; nothing here is worth failing a start-up over.
+    }
+  }
+  return removed;
 }
