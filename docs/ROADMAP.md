@@ -1447,6 +1447,40 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       as the `MCP_ENV_FILE` item above. Details in
       [`policy-provenance.md`](./policy-provenance.md).
 
+- [ ] **`assertOutsideKnowledgeRoots` does not see hard links** —
+      `isInsideRoot` (`src/config.ts`) walks the target's **ancestor
+      directories** and compares each against the **root directory**'s
+      `(dev, ino)`. A hard link is a second name for a *file* inode, so an
+      external policy-source path hard-linked to a note inside a root has
+      ancestors that are all outside it, reads as outside, and is accepted —
+      while remaining editable through its vault alias, which is exactly what the
+      check exists to prevent. Bind mounts and case-insensitive aliases **are**
+      caught, because those alias a directory and the walk compares directory
+      identity; directory hard links are not creatable by ordinary means, so the
+      walk is not bypassable that way.
+
+      **Scope, honestly**: this is a **boot-time misconfiguration guard**, not an
+      attacker-facing boundary — creating the link takes local filesystem write
+      access, and anything holding that can edit the policy source directly. It
+      is recorded because the guard silently under-delivers, not because a remote
+      caller can reach it.
+
+      **Shape of a fix**, if taken: compare the target file's own `(dev, ino)`
+      against the inodes reachable under each root, or refuse a policy source
+      whose `st_nlink > 1`. The second is cheap and fails closed, but it also
+      refuses legitimate multi-linked files, so it is a decision rather than an
+      obvious win.
+
+      **Measured, not reasoned**: with a root at inode `1884217`, a note inside
+      it at `1884219`, and an external hard link to that note, the alias reports
+      the *same* inode (`1884219`, `nlink=2`) while its ancestor chain runs
+      `outside → … → /` without ever meeting `1884217`. The walk returns
+      **false**, so the path is accepted as outside the root.
+
+      Found by review on the PR that added
+      [`policy-provenance.md`](./policy-provenance.md), which had claimed hard
+      links were caught.
+
 - [ ] **Audit log** — append-only, content-free events (who searched / fetched /
       wrote what, no note bodies) — the largest security follow-up, and still the
       one that most improves the posture; it now sits **second** because the

@@ -28,6 +28,17 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Measured while assessing: **zero** subprocess and **zero** outbound-network call
   sites in `src/`, so two of the proposed policy domains have nothing to govern.
 
+- **A new ROADMAP entry: `assertOutsideKnowledgeRoots` does not see hard links.**
+  `isInsideRoot` compares each *ancestor directory* of the target against the
+  *root directory*'s `(dev, ino)`, so an external policy-source path hard-linked
+  to a note inside a root reads as outside and is accepted — while staying
+  editable through its vault alias. Measured: the alias reports the note's inode
+  with `nlink=2`, and its ancestor chain never meets the root's inode. Bind
+  mounts and case-insensitive aliases **are** caught, because those alias a
+  directory. Scope is stated plainly in the entry: this is a boot-time
+  **misconfiguration** guard that under-delivers, not a surface a remote caller
+  can reach.
+
 - **`docs/threat-model.md` gained a fail-closed posture table** (§5), organized by
   operation class rather than by threat, because "does it fail closed?" is asked
   per operation and the answer here is deliberately not uniform. Three of seven

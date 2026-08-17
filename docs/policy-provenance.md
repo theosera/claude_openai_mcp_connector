@@ -219,8 +219,27 @@ now carries in the document itself.
 than the documentation claims.** `canonicalizeForRootComparison` walks from the
 filesystem root one component at a time, `lstat`-ing each and following symlinks
 by re-splicing the remaining segments (bounded by `MAX_SYMLINK_HOPS`), and
-`isInsideRoot` compares `(dev, ino)` identity rather than path spelling — so
-hardlinks, bind mounts and case-insensitive aliases are all caught.
+`isInsideRoot` compares `(dev, ino)` identity rather than path spelling — so a
+bind mount of a root, or a case-insensitive filesystem's alternate spelling of
+one, is caught where a `startsWith` check would miss it.
+
+⚠️ **Hard links are not caught, and an earlier draft of this paragraph claimed
+they were.** The walk compares each *ancestor directory* of the target against
+the *root directory*'s identity. A hard link is a second name for a **file**
+inode, so an external path hard-linked to a note inside a root has ancestors that
+are all outside it and reads as outside: `assertOutsideKnowledgeRoots` would
+accept a policy source that is, in fact, editable through its vault alias.
+Directory hard links are not creatable by ordinary means, so the
+directory-identity walk itself is not bypassable that way — the gap is
+file-level, and it takes local filesystem access to open, which is the same
+access the boot-time check assumes it is protecting against *misconfiguration*
+rather than an attacker. Recorded in [`ROADMAP.md`](./ROADMAP.md); not fixed
+here, because this change touches no `src/`.
+
+★ **That is the third correction in this document with the same shape** — the
+conclusion survives, a specific description was overstated. It is worth naming
+here in particular, because this paragraph exists to *calibrate* a claim, and an
+overstatement inside a calibration costs more than one anywhere else in the file.
 
 When the root does not exist yet there is no identity to compare against, and it
 falls back to spelling — written to avoid the `..state` false positive rather
