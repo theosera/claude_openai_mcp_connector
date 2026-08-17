@@ -613,7 +613,11 @@ in code and pinned by tests:
   `/mcp` resource and **scope-gated** (`vault.read` / `vault.write`): a
   read-scoped token's session never registers write tools. A write needs the
   matching server-side flag and a `vault.write` token; document and constrained
-  Skill surfaces are gated independently. The consent page
+  Skill surfaces are gated independently. ⚠️ **Read-scoped means an OAuth token**
+  — the static `MCP_AUTH_TOKEN` bearer is granted both scopes unconditionally, so
+  on that path the server-side flag is the only gate (tracked in
+  [`ROADMAP.md`](docs/ROADMAP.md), analysed in
+  [`docs/policy-provenance.md`](docs/policy-provenance.md)). The consent page
   sends `Content-Security-Policy: frame-ancestors 'none'`, `X-Frame-Options:
 DENY`, and `Referrer-Policy: no-referrer`.
 
