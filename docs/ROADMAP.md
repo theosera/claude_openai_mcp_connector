@@ -1302,6 +1302,19 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       the second vault with byte-identical pre-edit content. Raised by CodeRabbit
       on #86, which withdrew its CWE-639 classification — both instances run as
       the same user, so this is vault confusion, not an authorization bypass.
+
+      **Two notes from the policy/provenance review** (see
+      [`policy-provenance.md`](./policy-provenance.md)):
+
+      - **This item is the vault half only.** The principal half — a plan is not
+        bound to whoever staged it — is the separate item above, and the two
+        should stay separate: same invariant, different boundary.
+      - ⚠️ **Do not justify rejecting an unrecorded plan with "the seven-day TTL
+        drains them anyway."** The sweep is **staging-driven**: `patchState.ts`
+        says in as many words that a server which stays up and stages nothing
+        more never sweeps again. The conclusion (reject) is right and the TTL
+        argument would make it *look* time-bounded when it is not — **a window
+        that does not close on its own is a reason to reject, not to warn.**
 - [x] **Frontmatter `id` can no longer impersonate another document (INV-2)** —
       ✅ `fetch` fails closed when a reference names more than one document
       across the id and path namespaces, at **both** `KnowledgeStore.fetch` and
@@ -1395,6 +1408,45 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
           deadline for answering it — but the observation should be re-taken, and
           widened to every endpoint, before it is leaned on again.
 
+      **★ The rule this item is the last exception to** (from
+      [`policy-provenance.md`](./policy-provenance.md)): *a policy source must not
+      live inside the data plane it governs.* That is not a proposal — it is
+      already enforced for `MCP_OAUTH_STATE_FILE`, for `MCP_PATCH_STATE_DIR`
+      including its derived default, and for `MCP_CONTEXT_TYPE_RULES`, whose
+      `.env.example` entry states the reasoning plainly: a root is synced and
+      writable, so a file inside one is a file anything able to write a note gets
+      to edit. **`MCP_ENV_FILE` is the one place the rule has not reached**, and
+      the reason is ordering rather than disagreement. Framing it that way also
+      fixes the priority: this is finishing a rule, not opening a question.
+
+- [ ] **Scope the static bearer, instead of granting it everything** —
+      `authenticate()` (`src/httpServer.ts`) returns
+      `{scopes: [vault.read, vault.write]}` **unconditionally** once
+      `MCP_AUTH_TOKEN` matches, so `surfaceFor`'s scope half is a constant on that
+      path and the server-side `MCP_HTTP_ALLOW_*` flag is the only thing gating a
+      write. An OAuth token is scope-bound (`record.scope`); the static bearer is
+      not scopeable at all. There is no way to hold a **read-only** static token,
+      or to run write-enabled for the web client while the bearer stays read-only.
+
+      **Shape of the fix**: an optional `MCP_AUTH_TOKEN_SCOPES` that can only
+      **narrow** — default unchanged (`vault.read vault.write`), never widening
+      beyond what the flags already permit, so no existing deployment changes.
+
+      ⚠️ **Reverse-verifying this is not free.** Because the default is unchanged,
+      **every test that runs the default path stays green with the guard removed** —
+      the same shape as the scan prune that survived `subtreeMayMatch` being
+      flattened to `return true`. The red has to be driven through a **narrowed**
+      `MCP_AUTH_TOKEN_SCOPES` observing write tools disappear from `tools/list`,
+      **and the capture itself asserted** so the test cannot pass vacuously.
+
+      ⚠️ **This is a write-surface gate change**, so the pre-commit security
+      review fires on it — which is easy to miss, since the change reads as one
+      line in `authenticate()`. Do not let it ride along in a docs PR.
+
+      **Not a design gap, a rule that has not reached one spot** — the same shape
+      as the `MCP_ENV_FILE` item above. Details in
+      [`policy-provenance.md`](./policy-provenance.md).
+
 - [ ] **Audit log** — append-only, content-free events (who searched / fetched /
       wrote what, no note bodies) — the largest security follow-up, and still the
       one that most improves the posture; it now sits **second** because the
@@ -1405,6 +1457,38 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       [appendix on authenticated-client_id use cases](#appendix--future-uses-of-the-authenticated-client_id).
       (Distinct from the shipped **constrained audit write surface** above — that
       is the scanner's own vault-side output; this is a server-side event log.)
+
+      **Four constraints settled up front** (from
+      [`policy-provenance.md`](./policy-provenance.md), so the design does not
+      re-derive them):
+
+      - **It adds no tool.** `registerTool` is at 17 against a documented cap of
+        17, so a tool would be a decision to exceed the cap — see the
+        `discard_plan` item for the same arithmetic. This is a server-side log,
+        not a surface.
+      - **Call it an event log and give it `MCP_EVENT_LOG_*`, never
+        `MCP_AUDIT_*`.** Three `MCP_AUDIT_*` variables already exist for the
+        INV-9 vault-side surface, which is a different thing writing to a
+        different place. Documentation saying "these are different" does not
+        survive a startup line and a runbook; a distinct prefix does. If the
+        startup line reports it, report **three** states from the start —
+        "a destination is configured" and "recording is on" are separate
+        decisions, and one token naming two of them is exactly what #121 fixed.
+      - **The startup line is not the check.** It states a claim; the tool
+        surface is the fact. #113 measured the gap: restoring the Skill gate
+        turned **one wire test** red while the startup-line test stayed green.
+      - **The reverse verification is a negative assert.** The requirement is
+        less "events appear" than "note bodies and PII never do" — and a test
+        that asserts an append still passes when a body leaks into it. Assert
+        that a known vault string is **absent**, the same way
+        `assertNoServerOwnedFrontmatter` is pinned on what content *cannot claim*
+        rather than on what it can write.
+
+      **Whose repudiation this closes**: the semi-trusted agent's, not the
+      operator's. The point is reconstructing what an injected session did — the
+      threat model's adversaries (1) and (3) — which is why it does not conflict
+      with this project declining to build tamper-resistance against its own
+      single operator.
 - [ ] **One-command install / npx packaging** — remove the `pnpm build` step so
       the 🟢 non-engineer path needs no toolchain (see Onboarding above).
 - [x] **Migrate to `@modelcontextprotocol/server`/`core` v2 with dual-era

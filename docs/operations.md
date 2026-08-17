@@ -451,6 +451,13 @@ the OAuth flow. The URL to register in the client is
 
 - [ ] `MCP_HTTP_ALLOW_WRITE` is **unset** (read-only) unless you have a specific,
       audited need. Writes also require a `vault.write`-scoped token.
+      ⚠️ **That second condition is real for OAuth clients and vacuous for the
+      static bearer**, which is granted `vault.read vault.write` unconditionally
+      (`authenticate()` in `src/httpServer.ts`). On a bearer-only endpoint this
+      flag is the **only** thing standing between a caller and a write — treat it
+      as a single gate, not two. Tracked in
+      [`ROADMAP.md`](./ROADMAP.md) ("scope the static bearer") and analysed in
+      [`policy-provenance.md`](./policy-provenance.md).
 - [ ] `MCP_HTTP_ALLOW_SKILL_WRITE` **and `MCP_STDIO_ALLOW_SKILL_WRITE`** are unset
       unless constrained Skill creation is needed on that transport; when enabled,
       `MCP_SKILLS_SUBDIR` is the narrow intended directory and general

@@ -77,6 +77,16 @@ client tool args → server (input validation), (c) server → filesystem (path
 containment), (d) vault content → LLM/agent (untrusted-data boundary), (e)
 repo/CI → public (secret hygiene).
 
+> ⚠️ **`read-only unless allowWrite + vault.write` reads as two independent
+> conditions, and for the static bearer it is one.** `authenticate()` returns
+> `{scopes: [vault.read, vault.write]}` unconditionally once the token matches
+> (`src/httpServer.ts`), so on that path the second half is always true and the
+> only thing gating a write is the server-side flag. The two conditions are
+> genuinely independent for an **OAuth** token, whose scopes come from its grant.
+> Tracked as a gap in [`ROADMAP.md`](./ROADMAP.md) ("scope the static bearer");
+> the same caveat is attached wherever this document states the pair as a
+> current protection.
+
 ---
 
 ## 4. STRIDE analysis
@@ -116,7 +126,7 @@ repo/CI → public (secret hygiene).
 | Reading files outside the vault                                     | Path containment, fail-closed (`INV-1`).                                                                                     | —                                                                                    |
 | Serving the vault over HTTP with no auth                            | `MCP_AUTH_TOKEN` required or startup refused; loopback bind by default (`INV-6`).                                            | Public exposure only via explicit HTTPS tunnel.                                      |
 | Token/code/password leaking via logs                                | No secrets in logs; secrets via env only (`INV-6`, `INV-7`, `INV-4`).                                                        | —                                                                                    |
-| Over-broad remote capability                                        | Read-only by default; write tools are **not even registered** without `allowWrite` + `vault.write` scope (`INV-6`, `INV-7`). | —                                                                                    |
+| Over-broad remote capability                                        | Read-only by default; write tools are **not even registered** without `allowWrite` + `vault.write` scope (`INV-6`, `INV-7`). | ⚠️ For the **static bearer** the scope half is unconditional (see §3), so the flag is the only gate. Independent for OAuth tokens. |
 | OAuth open-redirect leaking a code                                  | `redirect_uri` exact-match + https/loopback only; bad client/redirect → 400, not redirected (`INV-7`).                       | —                                                                                    |
 | Secret/vault committed to the public repo                           | `.gitignore` + synthetic-only fixtures + per-file `git add` (`INV-4`).                                                       | ⚠️ Relies on discipline; **harder secret-scanning is a gap** (ROADMAP).              |
 | Exfiltration of vault content by an authorized-but-malicious client | —                                                                                                                            | ⚠️ **No DLP / exfiltration detection** (known gap, ROADMAP). Out of scope for 0.1.0. |
@@ -135,7 +145,7 @@ repo/CI → public (secret hygiene).
 
 | Threat                                                                                            | Mitigation                                                                                                                                                                                                                                                                                                                                                                           | Residual                                                                                                                                                                                                                                                                             |
 | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Read-scoped web token performing writes                                                           | Session registers write tools only when `allowWrite && token has vault.write`; otherwise undiscoverable (`INV-7`, `INV-6`).                                                                                                                                                                                                                                                          | —                                                                                                                                                                                                                                                                                    |
+| Read-scoped web token performing writes                                                           | Session registers write tools only when `allowWrite && token has vault.write`; otherwise undiscoverable (`INV-7`, `INV-6`).                                                                                                                                                                                                                                                          | ⚠️ Holds for **web (OAuth) tokens**, which is what this row is about. A **static bearer** carries `vault.write` unconditionally, so it is not read-scopeable at all — see §3 and the ROADMAP item. |
 | Unattended write-enabled connector steered into general writes by a malicious note (confused deputy) | Run the unattended scan on a dedicated endpoint with general write **off** and only `MCP_HTTP_ALLOW_AUDIT_WRITE` on — the general document-write tools are then **not registered** for that session (`INV-6`, endpoint separation); any injected write is confined to the audit subtree (`INV-9`). | The scanner can still append junk into the audit subtree; the blast radius is that subtree only, and reports are create-only (never overwrite existing files). |
 | Authorization-code replay / injection                                                             | Codes are single-use, short-TTL, CSPRNG, bound to client/redirect/PKCE challenge (`INV-7`).                                                                                                                                                                                                                                                                                          | —                                                                                                                                                                                                                                                                                    |
 | `plain` PKCE downgrade                                                                            | S256 only; `plain` rejected (`INV-7`, `pkce.ts`).                                                                                                                                                                                                                                                                                                                                    | —                                                                                                                                                                                                                                                                                    |
@@ -145,7 +155,41 @@ repo/CI → public (secret hygiene).
 
 ---
 
-## 5. Assurance
+## 5. Fail-closed posture by operation class
+
+STRIDE above is organized by threat. This table is organized by **operation
+class**, because "does it fail closed?" is asked per operation and the answer is
+deliberately not uniform. Three of the seven classes are empty, and that is the
+most useful thing the table says.
+
+| Operation class          | Posture | Where, and what happens                                                                                                                                                                                                                 |
+| ------------------------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **read**                 | mixed — deliberately | Containment failures throw (`INV-1`); an unreadable or unparseable **individual note** degrades instead, because the read path has an obligation to keep serving the rest of the vault. Both directions are argued in the D-section rows above; see them rather than a restatement here. |
+| **write**                | **closed** | No plan → no apply; stale `expected_sha256` → refuse; `wx` on every create; unparseable frontmatter on a write path throws where the read path degrades (`INV-2`, `INV-3`).                                                            |
+| **delete**               | **n/a — the operation does not exist** | No tool deletes a vault document. The only unlinks in the process are the staged-plan sweep (`prunePatchState`) and temp-file cleanup, neither of which is client-reachable.                                                            |
+| **execute**              | **n/a — the operation does not exist** | Measured at `6897747`: **zero** `child_process` / `spawn` / `execFile` call sites in `src/`. There is no subprocess surface to gate.                                                                                                    |
+| **network (outbound)**   | **n/a — the operation does not exist** | Measured at `6897747`: **zero** outbound `fetch` / `http(s).request` call sites in `src/`. The server accepts connections; it does not make them.                                                                                       |
+| **credential**           | **closed** | `MCP_AUTH_TOKEN` missing → refuse to start rather than serve unauthenticated (`INV-6`); OAuth issuer/password missing → refuse to start (`INV-7`); tampered or unreadable OAuth state → load as **empty** rather than trusting it.       |
+| **external side effect** | **n/a** | Follows from the three empty rows: with no subprocess and no outbound network, the only externally visible effect is the HTTP response itself.                                                                                          |
+
+**Two rules this table follows, both learned the hard way:**
+
+1. **A cell that says "degrades" owes a measurement.** A design note claiming
+   graceful degradation is not evidence that the degradation is graceful. The
+   parse-cache bound shipped in 0.9.0 described itself as degrading into
+   re-parsing; measured, the mis-sized version ran a warm scan at 689 ms against
+   91 ms with essentially unchanged heap — closer to a stop than a degrade, and
+   only a measurement could tell the two apart. **In prose, degradation and
+   breakage look identical; the burden of proof is on whoever claims the former.**
+2. **A cell that says "closed" may still owe a cost, and the cost is paid
+   outside the mechanism.** `MCP_CONTEXT_TYPE_RULES` refusing to boot on an
+   unreadable path is correct — and it is the wrong thing to hand someone who
+   copied a template, because the template's placeholder path is unreadable by
+   construction. The fix ships the variable **commented out**: the refusal is not
+   weakened, only the way it is handed over changes. **Mitigating the cost of a
+   fail-closed rule must not mean relaxing the rule.**
+
+## 6. Assurance
 
 Security behaviors are **pinned by tests** (`pnpm test`, vitest), not just by
 convention — see `tests/pathSafety.test.ts`, `tests/knowledgeStore.test.ts`,
@@ -167,7 +211,7 @@ CodeQL are enabled.
 
 ---
 
-## 6. Known gaps & residual risk
+## 7. Known gaps & residual risk
 
 These are **not** mitigated in v0.1.0 and are tracked in
 [`ROADMAP.md`](./ROADMAP.md#security--enterprise-maturity-gaps-not-yet-addressed):
