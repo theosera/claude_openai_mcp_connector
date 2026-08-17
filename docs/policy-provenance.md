@@ -175,10 +175,45 @@ Several documents state the protection as two conditions. That phrasing is
 **accurate for OAuth tokens and misleading for the static bearer**, so a caveat
 now sits next to the places that state it as a current protection —
 `threat-model.md` (the data-flow diagram and two STRIDE rows), `README.md`'s
-scope-gating paragraph, the `operations.md` hardening checklist, and both PRFAQ
-files. Places that are already explicit about OAuth (`operations.md`'s "Over HTTP
-the tools are also OAuth scope-gated") were **left alone**: they are correct, and
-annotating correct text is its own kind of error.
+scope-gating paragraph, and the `operations.md` hardening checklist. Three files,
+five places.
+
+Everywhere else the two conditions appear, the passage limits itself, and those
+were **left alone**: annotating correct text is its own kind of error. What makes
+each one correct is a phrase, so the phrase is recorded here instead of the
+verdict:
+
+| Left alone | What limits it, verbatim |
+| --- | --- |
+| `operations.md`, Skill-write section | "Over HTTP the tools are also **OAuth scope-gated**" |
+| `README.md`, cloudflared/OAuth section | "a **connector** only receives `vault.write` when at least one explicitly enabled write surface exists" |
+| `PRFAQ.en.md` | "Writes **over the web path** are enabled only when **both** …" |
+| `PRFAQ.md` | 「**web 経由**の write は … 両方が揃ったときだけ」 |
+
+The first two name OAuth outright. The last two lean on their surrounding
+question, which is about the Chat-connector path and introduces it a few lines
+earlier as the OAuth surface — weaker, and sufficient. Env-var listings and
+configuration examples were left alone as well: they name flags without claiming
+a protection.
+
+**The sites were classified by reading them, and the direction of that matters.**
+A grep for `MCP_HTTP_ALLOW_WRITE|vault\.write` is structurally a superset, so
+reading can only remove sites: eleven hits became eight became five. The
+shrinkage is the shape of the method, not a bias in it. It is not symmetric,
+though. Over-inclusion — annotating a passage that was already correct — is
+caught by anyone who reads the passage. **Under-inclusion catches nothing**: a
+misleading passage filed as correct stays misleading, and the filing leaves
+nothing behind to check. Quoting the limiting phrase is what gives
+under-inclusion a check of its own — if a quoted phrase turns out not to limit
+the claim, that is visible without redoing the survey.
+
+The check found something before it was in place. This paragraph previously said
+the caveat also sits next to "both PRFAQ files"; it does not, and never did. The
+two were reclassified while the work was underway, the reclassification was
+right, and the sentence describing it was not updated to match — **a document
+went stale about its own scope inside a single change.** It surfaced because a
+review asked what the judgements rested on, which is the question the table above
+now carries in the document itself.
 
 **For contrast, on the containment side the same repo goes considerably further
 than the documentation claims.** `canonicalizeForRootComparison` walks from the

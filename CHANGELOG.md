@@ -42,8 +42,12 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   protection.** `read-only unless allowWrite + vault.write` reads as two
   independent conditions and is one for the static bearer, whose scope half is a
   constant. The caveat is attached in `threat-model.md`, `README.md` and the
-  `operations.md` checklist; passages already explicit about OAuth were left
-  unchanged, because annotating correct text is its own kind of error.
+  `operations.md` checklist; passages that limit the claim themselves were left
+  unchanged, because annotating correct text is its own kind of error. For each
+  of those, `policy-provenance.md` quotes the phrase doing the limiting — reading
+  a grep's output can only remove sites, so over-inclusion is caught by anyone
+  who reads the passage while under-inclusion leaves nothing behind to check, and
+  the quoted phrase is that check.
 
 ## [0.9.0] — 2026-08-16
 
