@@ -54,6 +54,9 @@ HTTP は **opt-in の OAuth 2.1 authorization server** (`src/oauth/`、PKCE S256
 | 複数の Claude セッション (Web/CLI) が同じ文書群・同じリポを分担編集する体制を組む / 参加する前、他セッションの成果物に帰属や評価を書く前、/compact の前後 | `multi-session-collab` |
 | **★ ここだけ「着手前」でなく「commit する前」** — **`fs` に書く経路を新設/変更した** (`src/atomicWrite.ts` / `knowledgeStore` の write・apply / `skillStore` / `auditStore` / `oauth/store` の永続化)、または **write tool・write surface の gate を足した/変えた**変更を commit する前                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | **(a) `/claude-security` の change scan** — 使えなければ **(b) `/security-review`** |
 
+> ⚠️ **`claim-freshness` の詳細な手順は、下の「状態鮮度の発火表」が正典**。上の行は発火の入口で、
+> skill 本体は携行版である — 矛盾したらそちらが勝つ (`GD-NO-DUPLICATION`: 同じ規則を 2 枚持つと片方が腐る)。
+
 > **発火が「commit する前」なのは、探す対象が設計ではなく実装だから** (着手前に回しても
 > 差分が無い)。**(a) が本命** — 脅威モデルを作り**全指摘を別エージェントが独立検証**する。
 > **(b) はその弱い部分集合** (単一パス) だが、**プラグインの前提を満たさない環境でも必ず走る**
