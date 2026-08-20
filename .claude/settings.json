@@ -45,7 +45,9 @@
       "Bash(sed * .env*)",
       "Edit(./.claude/settings.json)",
       "Edit(./.claude/settings.local.json)",
-      "Edit(./.claude/plugins/**)"
+      "Edit(./.claude/plugins/**)",
+      "Edit(./.claude/skills/**/*.sh)",
+      "Edit(./.claude/hooks/**)"
     ]
   },
   "hooks": {
