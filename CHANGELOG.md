@@ -6,6 +6,60 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Documentation
+
+- **A policy-enforcement and provenance assessment**, in
+  `docs/policy-provenance.md`. It was asked to evaluate applying OS-style ideas —
+  a policy layer privileged components cannot argue past, artifact provenance,
+  tamper detection, fail-closed degradation — and the useful answer turned out to
+  be narrower than the question. The layer already exists, distributed across
+  `pathSafety`, `surfaceFor` and a choke point per store; what does not exist is
+  the last mile of two rules the repo already enforces everywhere else.
+  **A policy source must not live in the data plane it governs** — held for
+  `MCP_OAUTH_STATE_FILE`, `MCP_PATCH_STATE_DIR` and `MCP_CONTEXT_TYPE_RULES`, not
+  for `MCP_ENV_FILE`. **Authority comes from the presented principal's scopes** —
+  held for OAuth tokens, not for the static bearer, which `authenticate()` grants
+  `vault.read vault.write` unconditionally. Both are now ROADMAP items. The
+  document also records what was **refused**: watermarking or hidden markers in
+  user content, tamper-resistance aimed at the operator, identity-based runtime
+  routing, runtime self-hashing, and a centralized policy engine — that last one
+  because registering a tool and then refusing the call is strictly weaker than
+  never registering it, so the layer would lower the property it exists to raise.
+  Measured while assessing: **zero** subprocess and **zero** outbound-network call
+  sites in `src/`, so two of the proposed policy domains have nothing to govern.
+
+- **A new ROADMAP entry: `assertOutsideKnowledgeRoots` does not see hard links.**
+  `isInsideRoot` compares each *ancestor directory* of the target against the
+  *root directory*'s `(dev, ino)`, so an external policy-source path hard-linked
+  to a note inside a root reads as outside and is accepted — while staying
+  editable through its vault alias. Measured: the alias reports the note's inode
+  with `nlink=2`, and its ancestor chain never meets the root's inode. Bind
+  mounts and case-insensitive aliases **are** caught, because those alias a
+  directory. Scope is stated plainly in the entry: this is a boot-time
+  **misconfiguration** guard that under-delivers, not a surface a remote caller
+  can reach.
+
+- **`docs/threat-model.md` gained a fail-closed posture table** (§5), organized by
+  operation class rather than by threat, because "does it fail closed?" is asked
+  per operation and the answer here is deliberately not uniform. Three of seven
+  classes are empty — delete, execute and outbound network are operations this
+  server does not have — which is the most useful thing the table says. It also
+  carries two rules learned from shipped defects: a cell claiming *degradation*
+  owes a measurement, since prose cannot distinguish a degrade from a stop; and a
+  cell claiming *fail-closed* may still owe a cost, which must be paid outside the
+  mechanism rather than by relaxing it.
+
+- **The two-condition write gate is annotated where it is stated as a current
+  protection.** `read-only unless allowWrite + vault.write` reads as two
+  independent conditions and is one for the static bearer, whose scope half is a
+  constant. The caveat is attached in `threat-model.md`, `README.md` and the
+  `operations.md` checklist; passages that limit the claim themselves were left
+  unchanged, because annotating correct text is its own kind of error. For each
+  of those, `policy-provenance.md` quotes the phrase doing the limiting — reading
+  a grep's output can only remove sites, so over-inclusion is caught by anyone
+  who reads the passage while under-inclusion leaves nothing behind to check, and
+  the quoted phrase is that check.
+
 ## [0.9.0] — 2026-08-16
 
 ### Added
