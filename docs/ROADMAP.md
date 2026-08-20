@@ -319,7 +319,8 @@ decision rather than two.
   inlining one session note would spend the whole budget on the document the
   caller asked about least.
 
-  **There is deliberately no `summary`, `blockers` or `next_steps` field.** A
+  **The `summary` field is derived counters only (doc_count / latest_ts / roots);
+  there is deliberately no prose, no `blockers`, no `next_steps`.** A
   server that emits prose has synthesized, and synthesis here would be either a
   second model — which this one does not have, by design — or a template
   pretending to be one. The seat for a conclusion is a `state_docs` note that a

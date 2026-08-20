@@ -526,8 +526,9 @@ client entirely; nothing here depends on where that client keeps its logs.
   budget), recently touched documents (metadata + snippet), the session archives
   that exist (metadata, size, and a heading outline for the newest — **never a
   body**, because these run to megabytes), and pointers to ops-log entries whose
-  `target_repo` names the project. There is deliberately no `summary`,
-  `blockers` or `next_steps` field: a server that emits prose has synthesized,
+  `target_repo` names the project. The `summary` field is derived counters only
+  (doc_count / latest_ts / roots); there is deliberately no synthesized prose,
+  no `blockers`, no `next_steps`: a server that emits prose has synthesized,
   and a summary you cannot check is worse than a dossier you can. Put the
   conclusion in a note tagged `project-state` (configurable with
   `MCP_PROJECT_STATE_TAG`) and this returns it verbatim.

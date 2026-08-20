@@ -9,8 +9,9 @@
  *
  * ## What this deliberately does NOT return
  *
- * There is no `summary`, no `blockers`, no `next_steps` — no free-text field of
- * any kind. That is the honesty boundary and it is load-bearing: a server that
+ * The `summary` field is derived counters only; there is no prose, no
+ * `blockers`, no `next_steps` — no free-text field of any kind. That is the
+ * honesty boundary and it is load-bearing: a server that
  * emits prose has synthesized, and synthesis here would be either a second
  * model (which this server does not have and does not want — local-first,
  * deterministic, no vault content leaving the process) or a template pretending
