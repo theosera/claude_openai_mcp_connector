@@ -187,15 +187,28 @@ verdict:
 | Left alone | What limits it, verbatim |
 | --- | --- |
 | `operations.md`, Skill-write section | "Over HTTP the tools are also **OAuth scope-gated**" |
-| `README.md`, cloudflared/OAuth section | "a **connector** only receives `vault.write` when at least one explicitly enabled write surface exists" |
-| `PRFAQ.en.md` | "Writes **over the web path** are enabled only when **both** …" |
-| `PRFAQ.md` | 「**web 経由**の write は … 両方が揃ったときだけ」 |
+| `README.md`, cloudflared/OAuth section | "a connector only receives `vault.write` when at least one explicitly enabled write surface exists" |
+| `PRFAQ.en.md` | "Writes by an **OAuth-issued token** are enabled only when **both** …" |
+| `PRFAQ.md` | 「**OAuth 発行トークン**による write は … 両方が揃ったときだけ」 |
 
-The first two name OAuth outright. The last two lean on their surrounding
-question, which is about the Chat-connector path and introduces it a few lines
-earlier as the OAuth surface — weaker, and sufficient. Env-var listings and
-configuration examples were left alone as well: they name flags without claiming
-a protection.
+All four name OAuth outright. The last two did not, until #138: they leaned on
+their surrounding question, which introduces the Chat-connector path as the
+OAuth surface a few lines earlier — "weaker, and sufficient" was the verdict,
+and it held only for a reader who mapped "the web path" to that path rather
+than to the HTTP transport, which static-bearer clients also use. The passages
+now name OAuth themselves, so the classification no longer rests on that
+mapping. They were not reclassified; the phrase carrying the classification was
+made to say what it was already relied on to say.
+
+⚠️ **Three of the four quotes above were not verbatim, and the discrepancy ran
+one way.** Each had added `**` emphasis to exactly the words doing the limiting
+— `connector`, "over the web path", 「web 経由」 — so the record showed the
+limitation more prominently than its source did, in a table whose purpose is to
+let the classification be re-checked without re-reading the source. The quotes
+are exact now.
+
+Env-var listings and configuration examples were left alone as well: they name
+flags without claiming a protection.
 
 **The sites were classified by reading them, and the direction of that matters.**
 A grep for `MCP_HTTP_ALLOW_WRITE|vault\.write` is structurally a superset, so
