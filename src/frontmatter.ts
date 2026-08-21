@@ -496,8 +496,9 @@ export function parseMarkdownSafe(raw: string): {
  * with a hole. The two apply paths write `patch.new_content` — bytes serialized
  * during an EARLIER call, possibly by an earlier build of this server — so they
  * never re-enter `serializeMarkdown`. A plan staged before this guard existed
- * therefore applied straight past it, and with staged plans having no TTL that
- * window does not close by itself.
+ * therefore applied straight past it. Plans do age out (`PLAN_MAX_AGE_MS`,
+ * seven days), but the sweep is staging-driven, so on a server that stages
+ * nothing more that window does not close by itself.
  *
  * So the applies assert it again on the bytes they are about to write. The
  * general rule this is an instance of: **a write-side invariant enforced only at

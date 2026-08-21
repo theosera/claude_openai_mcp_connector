@@ -116,8 +116,9 @@ export class SkillStore {
 
     // Matches both document plan writers, which already call this immediately
     // before staging. It is idempotent, and it is where expired plans are swept
-    // — so a Skill plan staged on a server that never restarts now ages out the
-    // same way a document plan does. Without it this store would have been the
+    // — so a Skill plan ages out the same way a document plan does, on the same
+    // terms: the sweep is staging-driven, so a server that stays up and stages
+    // nothing more sweeps neither kind. Without it this store would have been the
     // one writer the sweep did not reach.
     await ensurePatchStateDir(this.config.patchStateDir);
     if (vaultId !== (await vaultIdentityTag(await this.root()))) {
