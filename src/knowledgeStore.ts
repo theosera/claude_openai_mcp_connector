@@ -672,7 +672,9 @@ export class KnowledgeStore implements VaultStore {
 
     // Re-asserted on the STAGED bytes, not just when they were built. A plan
     // carries content serialized in an earlier call — possibly by an earlier
-    // build of this server, since nothing expires a plan — so the plan-time
+    // build of this server. Plans do age out (PLAN_MAX_AGE_MS, 7 days), but the
+    // sweep is staging-driven, so on a quiet server a plan can outlive it by
+    // however long the quiet lasts — the TTL bounds nothing here. The plan-time
     // check in serializeMarkdown cannot speak for what is written here.
     assertEmittedFrontmatterWithinLimit(patch.new_content);
     const absolutePath = await this.resolveForWrite(await this.validateCreateTarget(patch.target_path));
