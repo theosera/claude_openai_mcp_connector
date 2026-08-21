@@ -107,6 +107,23 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   window, and widening the window far enough to reach a wrapped juxtaposition
   starts pairing terms that are merely adjacent — so the raw count is not a
   bound in either direction until the hits are read and classified.
+- **The exact-path write runbook in `docs/operations.md` no longer tells a
+  static-bearer operator to authorize a scope.** It said to set
+  `MCP_HTTP_ALLOW_WRITE=1`, restart, "and authorize a `vault.write` scope". The
+  flag exists on every deployment; the authorize step exists only for OAuth,
+  because a static bearer's scopes come from configuration and there is no
+  consent flow to visit. The instruction now branches on the credential, and the
+  OAuth branch again on whether that client's token already carries the scope.
+  Three conditions decide it — the client asked for `vault.write`, the scope was
+  grantable when it authorized, and a credential outlived the restart — and
+  rather than have an operator reconstruct all three, the runbook tells them to
+  ask the endpoint: list that credential's tools, and re-authorize only if the
+  document-write tools are absent. It points at the §5 checklist, which already
+  carried the same asymmetry as a caveat — the right description and the wrong
+  procedure were in one file. This
+  is a different defect from the caveat sweep's: not a reader misled about being
+  protected, but one sent looking for a step that is not there, and
+  `policy-provenance.md` records why the two criteria stay apart.
 
 ## [0.9.0] — 2026-08-16
 
