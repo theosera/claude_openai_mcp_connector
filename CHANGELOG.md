@@ -98,8 +98,10 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   consent flow to visit. The instruction now branches on the credential, and the
   OAuth branch again on whether that client's token already carries the scope:
   grantable is not granted — `grantScope` intersects the request with what is
-  grantable — and a token only survives the restart the section orders when
-  `MCP_OAUTH_STATE_FILE` is set. It points at the §5 checklist, which already
+  grantable — and surviving the restart the section orders needs both
+  `MCP_OAUTH_STATE_FILE` and a credential that has not aged out, which after any
+  real interval means the refresh token rather than the access token. It points
+  at the §5 checklist, which already
   carried the same asymmetry as a caveat — the right description and the wrong
   procedure were in one file. This
   is a different defect from the caveat sweep's: not a reader misled about being
