@@ -426,6 +426,33 @@ function assertOutsideKnowledgeRoots(
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const knowledgeRoots = parseKnowledgeRoots(env);
 
+  // The last place the rule "a policy source must not live inside the data plane
+  // it governs" had not reached, and the reason was ordering rather than
+  // disagreement: `loadEnvFile` runs before any root exists, because the file is
+  // one of the things that can supply them. A check placed there has nothing to
+  // compare against. It has one here — the roots are resolved on the line above,
+  // and no store has been built yet, so nothing has been served.
+  //
+  // Be exact about what this buys, because it is weaker than its three siblings.
+  // By now the file has been read and its secrets are in `process.env`, and a
+  // file sitting in an indexed root may already have been read by anything with
+  // vault access. This does not prevent that exposure and cannot. What it
+  // refuses is to keep serving on credentials a vault reader may already know.
+  // `MCP_OAUTH_STATE_FILE` fails before a write; this fails after a read.
+  //
+  // Placed first among the containment checks so the ordering argument reads in
+  // one piece, not because it outranks them.
+  const rawEnvFile = env.MCP_ENV_FILE?.trim();
+  if (rawEnvFile) {
+    assertOutsideKnowledgeRoots(
+      `MCP_ENV_FILE="${rawEnvFile}"`,
+      "It carries MCP_AUTH_TOKEN and MCP_OAUTH_PASSWORD, so inside a root it is readable through search / fetch and rewritable by anything that can write a note. " +
+        "Move it outside the vault, and treat the secrets it held as disclosed: rotate them rather than reusing them at the new location.",
+      path.resolve(rawEnvFile),
+      knowledgeRoots
+    );
+  }
+
   const writeMode = env.MCP_WRITE_MODE?.trim() || "two_step";
   if (writeMode !== "two_step") {
     throw new Error("Only MCP_WRITE_MODE=two_step is supported for existing document edits.");

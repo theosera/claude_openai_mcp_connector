@@ -390,7 +390,11 @@ launchctl load -w ~/Library/LaunchAgents/local.mcp-connector.plist
 > file and name it with **`MCP_ENV_FILE`** (an absolute path, in
 > `EnvironmentVariables`) — the launchd analogue of the systemd `EnvironmentFile`
 > advice above. The connector reads that file and nothing else; it does **not**
-> read a `.env` from its working directory.
+> read a `.env` from its working directory. **Put it outside every knowledge
+> root**: the server refuses to start if it resolves inside one, since a root is
+> walked, indexed and readable through `search` / `fetch`. That check can only
+> run after the file has been read, so if it fires on a running deployment,
+> rotate the secrets rather than moving the file and reusing them.
 
 > **Use a STABLE `node` path.** Version-manager shims are often **per-shell** and
 > disappear after a reboot, which breaks `KeepAlive` (launchd can no longer find
@@ -856,6 +860,16 @@ Give each process **its own env file** and point the process at it with the
 **absolute** path in `MCP_ENV_FILE`. Keep the shared settings identical; differ
 only on the marked lines. **The OAuth state file must NOT be shared between the
 two processes** — give each its own.
+
+**Put both env files outside every knowledge root.** The server checks this at
+startup and refuses to run if either resolves inside one — the same rule that
+already applies to `MCP_OAUTH_STATE_FILE`, `MCP_PATCH_STATE_DIR` and
+`MCP_CONTEXT_TYPE_RULES`, and for the same reason: a root is walked, indexed and
+readable through `search` / `fetch`. Unlike those three, this check can only run
+*after* the file has been read, because the file is one of the things that can
+supply the roots. **If it fires on a deployment that was previously running,
+rotate `MCP_AUTH_TOKEN` and `MCP_OAUTH_PASSWORD`** rather than moving the file
+and restarting with the same values.
 
 > 🚨 **MIGRATION — REQUIRED BEFORE YOU RESTART EITHER ENDPOINT.** Up to v0.7.0
 > the connector loaded `.env` from its **working directory** (`dotenv.config()`
