@@ -90,8 +90,8 @@ conditions. A list does not.
 **A finding can be right about the defect and wrong about the fix.** One review
 correctly identified a missing distinction, then prescribed an action the
 operator has no way to perform — which was the defect under repair, arriving
-from the other side. Accepting a finding is not accepting its remedy; say which part
-you took, and why the other part was not it.
+from the other side. Accepting a finding is not accepting its remedy; say which
+part you took, and why the other part was not it.
 
 **And a fix reaches only the copy you edited** — the seam section above, applied
 to one rule living in two files.
