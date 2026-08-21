@@ -2364,6 +2364,45 @@ describe("KnowledgeStore INV-3 cross-vault plan binding", () => {
     expect(applied.document.body.trim()).toBe("rewritten by the plan staged for vault A");
   });
 
+  it("refuses a foreign update before it validates the target, not after", async () => {
+    // Both foreign-vault tests above use a target this store could resolve, so
+    // they would stay green if the vault check ever moved below the resolution.
+    // This one cannot: the persisted target is unresolvable here, so whichever
+    // guard runs first is the one that speaks. Raised by CodeRabbit on #142.
+    const plan = await storeA.planUpdate({
+      id_or_path: "projects/shared.md",
+      new_body: "ordering probe",
+      reason: "ordering probe"
+    });
+    const planPath = path.join(sharedPatchStateDir, `${plan.patch_id}.json`);
+    const staged = JSON.parse(await fs.readFile(planPath, "utf8")) as Record<string, unknown>;
+    staged.vault_id = vaultTag(await fs.realpath(vaultB));
+    staged.target_path = "../escaped.md";
+    await fs.writeFile(planPath, JSON.stringify(staged), "utf8");
+
+    await expect(storeA.applyPlannedUpdate(plan.patch_id)).rejects.toThrow(/staged for a different vault/);
+  });
+
+  it("refuses a foreign exact-path create before it validates the confirmed path", async () => {
+    const plan = await storeA.planDocumentCreate({
+      relative_path: "projects/ordering.md",
+      title: "Ordering",
+      body: "ordering probe",
+      reason: "ordering probe"
+    });
+    const planPath = path.join(sharedPatchStateDir, `${plan.patch_id}.json`);
+    const staged = JSON.parse(await fs.readFile(planPath, "utf8")) as Record<string, unknown>;
+    staged.vault_id = vaultTag(await fs.realpath(vaultB));
+    staged.target_path = "../escaped.md";
+    await fs.writeFile(planPath, JSON.stringify(staged), "utf8");
+
+    // The confirmed path matches the plan, so the equality check cannot be what
+    // refuses this; `assertRelativePath` would, if it ran first.
+    await expect(storeA.applyPlannedDocumentCreate(plan.patch_id, "../escaped.md")).rejects.toThrow(
+      /staged for a different vault/
+    );
+  });
+
   it("refuses to apply an exact-path create planned against another vault", async () => {
     const plan = await storeA.planDocumentCreate({
       relative_path: "projects/new-note.md",

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
-import { PLAN_MAX_AGE_MS } from "../src/patchState.js";
+import { PLAN_MAX_AGE_MS, vaultTag } from "../src/patchState.js";
 import { SkillStore, type PlanSkillCreateInput } from "../src/skillStore.js";
 
 const SKILL_MD = `---
@@ -302,12 +302,29 @@ describe("SkillStore INV-3 cross-vault plan binding", () => {
 
   it("refuses to publish a Skill planned against another vault, and creates nothing there", async () => {
     const plan = await storeA.planCreate(input());
+    // The response boundary, pinned here as it is for document plans: returning
+    // `staged` instead of `plan` would hand the caller a hash of the vault's
+    // absolute root and leave every other assertion in this file green.
+    expect(plan).not.toHaveProperty("vault_id");
 
     await expect(storeB.applyPlannedCreate(plan.patch_id)).rejects.toThrow(/staged for a different vault/);
     await expect(fs.stat(path.join(vaultB, "knowledge", "skills", "improve-ai-harness"))).rejects.toThrow();
     // Refused, not consumed.
     const applied = await storeA.applyPlannedCreate(plan.patch_id);
     expect(applied.skill_name).toBe("improve-ai-harness");
+  });
+
+  it("refuses a foreign Skill plan before it validates the bundle, not after", async () => {
+    // A valid skill_name would let this pass even if the vault check moved below
+    // `validatePlannedFiles`. An invalid one makes the order observable.
+    const plan = await storeA.planCreate(input());
+    const planPath = path.join(sharedPatchStateDir, `skill-create-${plan.patch_id}.json`);
+    const staged = JSON.parse(await fs.readFile(planPath, "utf8")) as Record<string, unknown>;
+    staged.vault_id = vaultTag(await fs.realpath(vaultB));
+    staged.skill_name = "Not A Valid Name";
+    await fs.writeFile(planPath, JSON.stringify(staged), "utf8");
+
+    await expect(storeA.applyPlannedCreate(plan.patch_id)).rejects.toThrow(/staged for a different vault/);
   });
 
   it("refuses a Skill plan that does not record a vault", async () => {
