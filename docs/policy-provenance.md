@@ -179,6 +179,16 @@ scope-gating paragraph, the `operations.md` hardening checklist, and the
 `ROADMAP.md` bullet under the shipped "Exact-path document creation" heading.
 Four files, six places.
 
+The `operations.md` exact-path runbook (§7) names the same asymmetry, but as a
+procedure rather than as a caveat on a protection claim, so it is not a seventh
+place. It is there because this survey's criterion — does the passage claim a
+protection — put it on the left-alone side while its instruction was telling a
+static-bearer operator to authorize a scope no such deployment can authorize.
+That is a second kind of defect: not a reader misled about being protected, but
+a reader sent looking for a step that is not there. The two are worth keeping
+apart — merged, the criterion would sweep in every procedural line in the docs
+and stop being usable.
+
 Everywhere else the two conditions appear, the passage limits itself, and those
 were **left alone**: annotating correct text is its own kind of error. What makes
 each one correct is a phrase, so the phrase is recorded here instead of the
