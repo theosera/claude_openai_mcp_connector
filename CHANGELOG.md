@@ -30,6 +30,19 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Measured while assessing: **zero** subprocess and **zero** outbound-network call
   sites in `src/`, so two of the proposed policy domains have nothing to govern.
 
+- **The PRFAQ write answers name OAuth now, instead of leaning on "the web
+  path".** `docs/policy-provenance.md` files both PRFAQ files as *left alone* on
+  the strength of a quoted limiting phrase, but "over the web path" / 「web 経由」
+  also reads as the HTTP transport, which static-bearer clients use too — and
+  under that reading the two-condition sentence describes a boundary where one
+  condition is vacuous. The passages now say "Writes by an **OAuth-issued
+  token**", so the classification no longer depends on how a reader maps that
+  phrase. Nothing was reclassified. Three of the four quotes in the left-alone
+  table also turned out not to be verbatim: each added emphasis to exactly the
+  words doing the limiting, so the record showed the limitation more prominently
+  than its source did — in the one table meant to let that judgement be
+  re-checked without re-reading the source. The quotes are exact now.
+
 ### Security
 
 - **`MCP_ENV_FILE` is now checked for containment, closing the last exception to

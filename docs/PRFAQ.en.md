@@ -117,9 +117,9 @@ gating**).
 **Q. Can it write?**
 Yes, but it is **read-only by default**. Edits go through `plan_document_update`
 → (your approval) → `apply_planned_update` in two steps; a hash mismatch rejects
-the apply (stale protection); creates never overwrite. Writes over the web path
-are enabled only when **both** `MCP_HTTP_ALLOW_WRITE=1` **and** a `vault.write`
-scope are present.
+the apply (stale protection); creates never overwrite. Writes by an
+**OAuth-issued token** are enabled only when **both** `MCP_HTTP_ALLOW_WRITE=1`
+**and** a `vault.write` scope are present.
 
 **Q. Where is data stored?**
 Notes exist **only under `KNOWLEDGE_ROOT` on your machine**, and the connector
