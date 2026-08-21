@@ -224,6 +224,14 @@ every hit was re-classified, rather than only the recorded sites re-checked —
 re-checking a list cannot find what the list omits. The "eleven became eight
 became five" sentence describes the original survey and is left as written.
 
+**A second passage is in neither list, and it is not a caveat site either.** The
+exact-path runbook in `operations.md` states the same two conditions, but as an
+instruction rather than as a claim about protection: it tells an operator to
+authorize a scope that a static-bearer deployment has no way to authorize. That
+is a different defect answering to a different criterion, so it is tracked in
+#131 rather than caveated here. Counting it as a seventh caveat site would merge
+the two criteria, and merging them sweeps in every procedural line in the docs.
+
 ⚠️ **Counting the passages is a different search from finding the hits, and it
 has parameters the sweep does not.** The pattern above is an alternation, so a
 line-oriented `grep` returns every line carrying either term and misses nothing:
@@ -234,7 +242,8 @@ it may cross a newline. Both have to be wide enough before a given site appears.
 Measured on `e256b54`: at an 80-character window the per-line and whole-file
 forms return the same four passages, and at 120 the whole-file form returns a
 fifth — that checklist entry, where 98 characters and a line break separate the
-two terms. It is the caveat itself, so nothing was left uncovered. The point is
+two terms. It is the caveat itself, so that particular miss left nothing
+uncovered. The point is
 that a denominator quoted without both parameters says less than it looks like
 it does.
 
