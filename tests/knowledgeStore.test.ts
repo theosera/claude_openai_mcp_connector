@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ensurePatchStateDir, PLAN_MAX_AGE_MS, prunePatchState, vaultTag } from "../src/patchState.js";
+import { ensurePatchStateDir, PLAN_MAX_AGE_MS, prunePatchState, vaultIdentityTag } from "../src/patchState.js";
 import {
   DEFAULT_DOCUMENT_CACHE_MAX_CHARS,
   isTransientFsError,
@@ -1099,7 +1099,7 @@ describe("KnowledgeStore INV-9 audit-subtree reservation", () => {
       // first and the guard under test would never be reached. `realpath`
       // because the store hashes the RESOLVED root, and a temp directory is
       // reached through a symlink on macOS.
-      vault_id: vaultTag(await fs.realpath(root)),
+      vault_id: await vaultIdentityTag(await fs.realpath(root)),
       created_at: new Date().toISOString(),
       new_content: "tampered",
       diff: ""
@@ -1164,7 +1164,7 @@ Created by the constrained Skill surface.
       // first and the guard under test would never be reached. `realpath`
       // because the store hashes the RESOLVED root, and a temp directory is
       // reached through a symlink on macOS.
-      vault_id: vaultTag(await fs.realpath(root)),
+      vault_id: await vaultIdentityTag(await fs.realpath(root)),
       created_at: new Date().toISOString(),
       new_content: HIJACKED,
       diff: ""
@@ -1295,7 +1295,7 @@ Created by the constrained Skill surface.
       // first and the guard under test would never be reached. `realpath`
       // because the store hashes the RESOLVED root, and a temp directory is
       // reached through a symlink on macOS.
-      vault_id: vaultTag(await fs.realpath(root)),
+      vault_id: await vaultIdentityTag(await fs.realpath(root)),
       diff: ""
     };
     await fs.writeFile(path.join(patchStateDir, `${patchId}.json`), JSON.stringify(patch), "utf8");
@@ -2376,7 +2376,7 @@ describe("KnowledgeStore INV-3 cross-vault plan binding", () => {
     });
     const planPath = path.join(sharedPatchStateDir, `${plan.patch_id}.json`);
     const staged = JSON.parse(await fs.readFile(planPath, "utf8")) as Record<string, unknown>;
-    staged.vault_id = vaultTag(await fs.realpath(vaultB));
+    staged.vault_id = await vaultIdentityTag(await fs.realpath(vaultB));
     staged.target_path = "../escaped.md";
     await fs.writeFile(planPath, JSON.stringify(staged), "utf8");
 
@@ -2392,7 +2392,7 @@ describe("KnowledgeStore INV-3 cross-vault plan binding", () => {
     });
     const planPath = path.join(sharedPatchStateDir, `${plan.patch_id}.json`);
     const staged = JSON.parse(await fs.readFile(planPath, "utf8")) as Record<string, unknown>;
-    staged.vault_id = vaultTag(await fs.realpath(vaultB));
+    staged.vault_id = await vaultIdentityTag(await fs.realpath(vaultB));
     staged.target_path = "../escaped.md";
     await fs.writeFile(planPath, JSON.stringify(staged), "utf8");
 
@@ -2471,7 +2471,7 @@ describe("KnowledgeStore INV-3 cross-vault plan binding", () => {
     const onDisk = JSON.parse(
       await fs.readFile(path.join(sharedPatchStateDir, `${plan.patch_id}.json`), "utf8")
     ) as Record<string, unknown>;
-    expect(onDisk.vault_id).toBe(vaultTag(await fs.realpath(vaultA)));
+    expect(onDisk.vault_id).toBe(await vaultIdentityTag(await fs.realpath(vaultA)));
   });
 
   it("still applies a plan in the vault that staged it", async () => {
@@ -2564,5 +2564,92 @@ describe("KnowledgeStore INV-3 plan binding follows the resolved vault, not its 
     const viaPath = storeFor(await fs.realpath(vaultA));
     const applied = await viaPath.applyPlannedUpdate(plan.patch_id);
     expect(applied.document.body.trim()).toBe("staged through the link, applied through the path");
+  });
+});
+
+describe("KnowledgeStore INV-3 plan binding survives the directory being replaced", () => {
+  const NOTE = "---\ntitle: Shared\n---\n\nidentical in both vaults\n";
+
+  let parent: string;
+  let vaultPath: string;
+  let patchStateDir: string;
+
+  const storeFor = (root: string): KnowledgeStore =>
+    new KnowledgeStore({ knowledgeRoot: root, writeMode: "two_step", patchStateDir });
+
+  const populate = async (root: string): Promise<void> => {
+    await fs.mkdir(path.join(root, "projects"), { recursive: true });
+    await fs.writeFile(path.join(root, "projects", "shared.md"), NOTE, "utf8");
+  };
+
+  beforeEach(async () => {
+    parent = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-inv3-swap-"));
+    patchStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-inv3-swap-state-"));
+    vaultPath = path.join(parent, "vault");
+    await populate(vaultPath);
+  });
+
+  afterEach(async () => {
+    for (const dir of [parent, patchStateDir]) {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Swapping the directory at a fixed path — a restore, a redeploy — leaves the
+  // resolved path and the default patch-state directory identical, so a tag made
+  // only of the pathname still matches. The create path is the sharp end of it:
+  // there is no stale-content check to fall back on, so the plan just publishes.
+  const replaceVaultDirectory = async (): Promise<void> => {
+    await fs.rename(vaultPath, path.join(parent, "vault.old"));
+    await populate(vaultPath);
+  };
+
+  it("refuses an exact-path create staged before the directory at that path was replaced", async () => {
+    const before = storeFor(vaultPath);
+    const plan = await before.planDocumentCreate({
+      relative_path: "projects/new-note.md",
+      title: "New",
+      body: "planned for the vault that used to be here",
+      reason: "replacement probe"
+    });
+
+    await replaceVaultDirectory();
+
+    const after = storeFor(vaultPath);
+    await expect(after.applyPlannedDocumentCreate(plan.patch_id, "projects/new-note.md")).rejects.toThrow(
+      /staged for a different vault/
+    );
+    await expect(fs.stat(path.join(vaultPath, "projects", "new-note.md"))).rejects.toThrow();
+  });
+
+  it("refuses an update staged before the replacement, which the stale check cannot catch", async () => {
+    const before = storeFor(vaultPath);
+    const plan = await before.planUpdate({
+      id_or_path: "projects/shared.md",
+      new_body: "planned for the vault that used to be here",
+      reason: "replacement probe"
+    });
+    // The replacement carries the same bytes at the same relative path, so the
+    // hash the plan recorded still matches what apply reads.
+    expect(crypto.createHash("sha256").update(NOTE).digest("hex")).toBe(plan.expected_sha256);
+
+    await replaceVaultDirectory();
+
+    const after = storeFor(vaultPath);
+    await expect(after.applyPlannedUpdate(plan.patch_id)).rejects.toThrow(/staged for a different vault/);
+    expect(await fs.readFile(path.join(vaultPath, "projects", "shared.md"), "utf8")).toBe(NOTE);
+  });
+
+  it("still applies a plan when nothing was replaced", async () => {
+    // The false-positive half: an identity strict enough to refuse everything
+    // would pass both tests above.
+    const store = storeFor(vaultPath);
+    const plan = await store.planUpdate({
+      id_or_path: "projects/shared.md",
+      new_body: "same directory throughout",
+      reason: "control"
+    });
+    const applied = await store.applyPlannedUpdate(plan.patch_id);
+    expect(applied.document.body.trim()).toBe("same directory throughout");
   });
 });

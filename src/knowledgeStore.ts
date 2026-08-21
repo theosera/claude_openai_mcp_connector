@@ -14,7 +14,7 @@ import {
 } from "./frontmatter.js";
 import { extractMarkdownLinks, extractWikiLinks } from "./markdownLinks.js";
 import { traceThroughGraph } from "./linkGraph.js";
-import { ensurePatchStateDir, PATCH_ID_PATTERN, PATCH_STATE_FILE_MODE, vaultTag } from "./patchState.js";
+import { ensurePatchStateDir, PATCH_ID_PATTERN, PATCH_STATE_FILE_MODE, vaultIdentityTag } from "./patchState.js";
 import { compactWhitespace, normalizePathPrefix, searchDocuments, type SearchFilters } from "./search.js";
 import { normalizeForMatch } from "./searchText.js";
 import type { StoreConfig } from "./config.js";
@@ -1171,7 +1171,11 @@ export class KnowledgeStore implements VaultStore {
     // `realpath` needs it to. The two tags are therefore allowed to differ; the
     // directory name only has to be stable and per-vault, while this one has to
     // say which vault the writes went to. Raised as a P1 by Codex on #142.
-    return vaultTag(await this.root());
+    //
+    // The resolved path is still not the whole identity — the directory AT that
+    // path can be replaced — so `vaultIdentityTag` adds `(dev, ino)`. Its header
+    // carries that reasoning and the cost that comes with it.
+    return vaultIdentityTag(await this.root());
   }
 
   /**

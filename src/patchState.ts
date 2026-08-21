@@ -18,12 +18,11 @@ export const PATCH_STATE_FILE_MODE = 0o600;
  * `KnowledgeStore.vaultId` / `SkillStore` record a tag in each staged plan so
  * `apply` can refuse a plan staged for a different vault (INV-3).
  *
- * ★ They pass DIFFERENT roots on purpose, and that is not a drift to repair.
- * `defaultPatchStateDir` runs inside `loadConfig`, before anything guarantees
- * the directory exists, so it can only hash the configured spelling. The plan
- * check runs after `init`, so it hashes the RESOLVED root — see the symlink note
- * below for why it must. A directory name only has to be stable and per-vault; a
- * plan check has to name the directory the writes actually land in.
+ * ★ ONE caller uses this directly now: `defaultPatchStateDir`, which runs inside
+ * `loadConfig` before anything guarantees the directory exists and so has only a
+ * spelling to hash. The plan check needs more than a spelling and goes through
+ * `vaultIdentityTag` below. A directory name only has to be stable and
+ * per-vault; a plan check has to name the directory the writes land in.
  *
  * The normalisation rules and their reasons, which is why this is a function
  * rather than an inline hash at each site:
@@ -46,7 +45,7 @@ export const PATCH_STATE_FILE_MODE = 0o600;
  * vault together, and it separates one spelling whose target has been moved to
  * another vault. Leaving them unresolved is what fails OPEN, because the tag
  * then follows the operator's spelling rather than the directory the writes land
- * in. Raised as a P1 by Codex on #142; the plan check now passes a resolved root.
+ * in. Raised as a P1 by Codex on #142; the plan check resolves before hashing.
  *
  * Truncated to 64 bits: this is an equality check between values this server
  * wrote, not a signature. A collision needs two distinct root paths whose
@@ -57,6 +56,45 @@ export const PATCH_STATE_FILE_MODE = 0o600;
  */
 export function vaultTag(primaryRoot: string): string {
   return crypto.createHash("sha256").update(primaryRoot.normalize("NFC")).digest("hex").slice(0, 16);
+}
+
+/**
+ * The identity a staged plan records, and the one `apply` re-checks (INV-3).
+ *
+ * A pathname is not an identity. Resolving symlinks fixed the case where one
+ * spelling was pointed at a second vault, but left the case where the DIRECTORY
+ * at a fixed path is replaced — a restore, a redeploy, `mv vault vault.old &&
+ * mv restored vault`. The resolved string is identical across that, and so is
+ * the default patch-state directory, so a fresh store accepted plans staged for
+ * the directory that used to be there. **A planned create is the sharp end: it
+ * has no stale-content check to fall back on**, so the old plan simply publishes
+ * into the replacement. Raised as a second P1 by Codex on #142.
+ *
+ * So the tag covers both what the directory IS — `(dev, ino)`, the same identity
+ * `assertOutsideKnowledgeRoots` compares in `config.ts` rather than trusting
+ * `path.relative` — and the resolved path it was reached BY. Either one changing
+ * refuses the plan. That is one rule with no case analysis, and it fails closed
+ * in every direction.
+ *
+ * ⚠️ **State the cost rather than discovering it in an incident.** `(dev, ino)`
+ * is stable for a living directory and NOT stable across a restore from backup,
+ * a copy, or a remount that renumbers the device — and including the path means
+ * renaming the vault refuses too, even though the inode is the same. In all of
+ * those the vault is arguably "the same vault" and its staged plans are refused
+ * anyway. That is the direction to be wrong in: a plan is cheap to stage again,
+ * and the alternative is a write landing in a vault nobody approved it for. The
+ * refusal message says to re-plan.
+ *
+ * Stat'ed per call rather than cached at `init`, so a directory swapped under a
+ * running server is caught at the apply rather than at the next restart.
+ */
+export async function vaultIdentityTag(resolvedRoot: string): Promise<string> {
+  const stats = await fs.stat(resolvedRoot);
+  return crypto
+    .createHash("sha256")
+    .update(`${resolvedRoot.normalize("NFC")}\0${stats.dev}\0${stats.ino}`)
+    .digest("hex")
+    .slice(0, 16);
 }
 
 /**

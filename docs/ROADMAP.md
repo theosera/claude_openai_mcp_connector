@@ -1314,16 +1314,23 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       division of labour the firing table describes: reverse verification checks
       the guard you wrote, review looks for the one you did not.
 
-      **The identity is the resolved root, not the configured spelling.** The
+      **A pathname is not an identity, and it took two rounds to say so.** The
       first version hashed `KNOWLEDGE_ROOT` as written, which reads the same
-      before and after a symlinked root is retargeted at another vault — so a
-      plan staged for the old vault still matched while every target resolved
-      into the new one, and byte-identical content at the same relative path
-      carried the stale check too. Raised as a P1 by Codex. Resolving fixes the
-      harmless direction as well: one vault reached by two spellings now keeps a
-      single tag. `defaultPatchStateDir` still hashes the spelling, because it
-      runs before the directory is known to exist; the two tags are allowed to
-      differ.
+      before and after a symlinked root is retargeted at another vault. The
+      second resolved symlinks, which reads the same before and after the
+      DIRECTORY at a fixed path is replaced — a restore, a redeploy. Both were
+      raised as P1s by Codex, on consecutive heads of the same pull request, and
+      the second is sharper: a planned create has no stale-content check to fall
+      back on, so the old plan simply publishes into the replacement.
+
+      The tag now covers what the directory is (`(dev, ino)`, the identity
+      `assertOutsideKnowledgeRoots` already compares instead of trusting a
+      string) and the resolved path it was reached by. Either changing refuses.
+      **The cost is that `(dev, ino)` does not survive a restore, a copy or a
+      remount**, so plans of an arguably unchanged vault are refused there too —
+      the direction to be wrong in, since re-planning is cheap.
+      `defaultPatchStateDir` still hashes the spelling alone, because it runs
+      before the directory is known to exist.
 
       **What still limits a crossing, unchanged:** apply is stale-safe, so it
       needed the same relative path in the second vault with byte-identical

@@ -11,7 +11,7 @@ import {
   serializeMarkdown
 } from "../src/frontmatter.js";
 import { KnowledgeStore } from "../src/knowledgeStore.js";
-import { vaultTag } from "../src/patchState.js";
+import { vaultIdentityTag } from "../src/patchState.js";
 import { toPublicDocument } from "../src/server.js";
 
 const MARKER = "__grayMatterFrontmatterExecuted__";
@@ -691,7 +691,7 @@ describe("apply re-checks the cap, so a stale plan cannot carry a write past it"
     // they would go green without ever reaching it.
     await fs.writeFile(
       path.join(patchStateDir, `${patchId}.json`),
-      JSON.stringify({ vault_id: vaultTag(await fs.realpath(root)), ...patch, patch_id: patchId })
+      JSON.stringify({ vault_id: await vaultIdentityTag(await fs.realpath(root)), ...patch, patch_id: patchId })
     );
     return patchId;
   }

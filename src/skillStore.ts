@@ -5,7 +5,7 @@ import { createTwoFilesPatch } from "diff";
 import matter from "gray-matter";
 import { z } from "zod";
 import { assertNoServerOwnedFrontmatter, SAFE_MATTER_OPTIONS } from "./frontmatter.js";
-import { ensurePatchStateDir, PATCH_ID_PATTERN, SKILL_PLAN_PREFIX, vaultTag } from "./patchState.js";
+import { ensurePatchStateDir, PATCH_ID_PATTERN, SKILL_PLAN_PREFIX, vaultIdentityTag } from "./patchState.js";
 import { relativeToRoot, resolveExistingRoot, resolveInsideRoot, toPosixPath } from "./pathSafety.js";
 
 const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -117,7 +117,7 @@ export class SkillStore {
     await ensurePatchStateDir(this.config.patchStateDir);
     // vault_id goes in the FILE only, never in the record returned to the client
     // — see StagedPlan in types.ts for why.
-    const staged = { ...plan, vault_id: vaultTag(await this.root()) };
+    const staged = { ...plan, vault_id: await vaultIdentityTag(await this.root()) };
     await fs.writeFile(this.patchPath(patchId), JSON.stringify(staged, null, 2), {
       encoding: "utf8",
       flag: "wx",
@@ -161,7 +161,7 @@ export class SkillStore {
           "Re-plan the Skill against this server."
       );
     }
-    if (plan.vault_id !== vaultTag(await this.root())) {
+    if (plan.vault_id !== (await vaultIdentityTag(await this.root()))) {
       throw new Error(
         "Skill plan was staged for a different vault and will not be applied here. " +
           "Re-plan the Skill against this server."

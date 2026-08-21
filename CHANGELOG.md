@@ -66,12 +66,20 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   path. The persisted and returned records are separate types so that split
   stays visible.
 
-  The tag is derived from the **resolved** root, not the configured spelling. A
-  symlinked `KNOWLEDGE_ROOT` retargeted at another vault keeps its spelling, so
-  a tag hashed from that string would still match while every target resolves
-  somewhere else — the one direction this check must not fail in. Resolving also
-  keeps one vault reached by two spellings on a single tag, so its own plans
-  still apply.
+  The tag covers both what the vault directory **is** — its `(dev, ino)`, the
+  same filesystem identity `assertOutsideKnowledgeRoots` compares rather than
+  trusting a string — and the resolved path it was reached **by**. Neither alone
+  is enough: a symlinked `KNOWLEDGE_ROOT` retargeted at another vault keeps its
+  spelling, and the directory at a fixed path can be replaced by a restore or a
+  redeploy while the path stays identical. A planned create is the sharp end of
+  the second case, having no stale-content check to fall back on.
+
+  **The cost, stated rather than discovered later:** `(dev, ino)` is not stable
+  across a restore from backup, a copy, or a remount, and including the path
+  means renaming the vault refuses too. In all of those the staged plans of an
+  arguably unchanged vault are refused and need re-planning. That is the
+  direction to be wrong in — a plan is cheap to stage again, and the alternative
+  is a write landing in a vault nobody approved it for.
 
   Existing deployments are unaffected unless they share a plan directory between
   vaults; plans staged before this change are refused and need re-planning. So

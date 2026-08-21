@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
-import { PLAN_MAX_AGE_MS, vaultTag } from "../src/patchState.js";
+import { PLAN_MAX_AGE_MS, vaultIdentityTag } from "../src/patchState.js";
 import { SkillStore, type PlanSkillCreateInput } from "../src/skillStore.js";
 
 const SKILL_MD = `---
@@ -320,7 +320,7 @@ describe("SkillStore INV-3 cross-vault plan binding", () => {
     const plan = await storeA.planCreate(input());
     const planPath = path.join(sharedPatchStateDir, `skill-create-${plan.patch_id}.json`);
     const staged = JSON.parse(await fs.readFile(planPath, "utf8")) as Record<string, unknown>;
-    staged.vault_id = vaultTag(await fs.realpath(vaultB));
+    staged.vault_id = await vaultIdentityTag(await fs.realpath(vaultB));
     staged.skill_name = "Not A Valid Name";
     await fs.writeFile(planPath, JSON.stringify(staged), "utf8");
 
@@ -393,5 +393,47 @@ describe("SkillStore INV-3 plan binding follows the resolved vault, not its spel
     const after = storeFor(link);
     await expect(after.applyPlannedCreate(plan.patch_id)).rejects.toThrow(/staged for a different vault/);
     await expect(fs.stat(path.join(vaultB, "knowledge", "skills", "improve-ai-harness"))).rejects.toThrow();
+  });
+});
+
+describe("SkillStore INV-3 plan binding survives the directory being replaced", () => {
+  let parent: string;
+  let vaultPath: string;
+  let patchStateDir: string;
+
+  const storeFor = (root: string): SkillStore =>
+    new SkillStore({ knowledgeRoot: root, skillsSubdir: "knowledge/skills", patchStateDir });
+
+  beforeEach(async () => {
+    parent = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-skill-swap-"));
+    patchStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-skill-swap-state-"));
+    vaultPath = path.join(parent, "vault");
+    await fs.mkdir(path.join(vaultPath, "knowledge", "skills"), { recursive: true });
+  });
+
+  afterEach(async () => {
+    for (const dir of [parent, patchStateDir]) {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a Skill plan staged before the directory at that path was replaced", async () => {
+    // Like the create path above, a Skill has no stale-content check — and it is
+    // read by later sessions as instructions, so publishing one into a vault
+    // whose owner never saw the bundle is the worst of the three plan kinds.
+    const before = storeFor(vaultPath);
+    const plan = await before.planCreate({
+      skill_name: "improve-ai-harness",
+      skill_md: SKILL_MD,
+      references: [],
+      reason: "replacement probe"
+    });
+
+    await fs.rename(vaultPath, path.join(parent, "vault.old"));
+    await fs.mkdir(path.join(vaultPath, "knowledge", "skills"), { recursive: true });
+
+    const after = storeFor(vaultPath);
+    await expect(after.applyPlannedCreate(plan.patch_id)).rejects.toThrow(/staged for a different vault/);
+    await expect(fs.stat(path.join(vaultPath, "knowledge", "skills", "improve-ai-harness"))).rejects.toThrow();
   });
 });
