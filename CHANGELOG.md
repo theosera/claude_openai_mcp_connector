@@ -66,8 +66,16 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   path. The persisted and returned records are separate types so that split
   stays visible.
 
+  The tag is derived from the **resolved** root, not the configured spelling. A
+  symlinked `KNOWLEDGE_ROOT` retargeted at another vault keeps its spelling, so
+  a tag hashed from that string would still match while every target resolves
+  somewhere else — the one direction this check must not fail in. Resolving also
+  keeps one vault reached by two spellings on a single tag, so its own plans
+  still apply.
+
   Existing deployments are unaffected unless they share a plan directory between
-  vaults; plans staged before this change are refused and need re-planning.
+  vaults; plans staged before this change are refused and need re-planning. So
+  are plans staged before the vault's root was moved or re-linked.
 
 - **`MCP_ENV_FILE` is now checked for containment, closing the last exception to
   "a policy source must not live in the data plane it governs."** `loadConfig`

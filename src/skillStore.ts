@@ -117,7 +117,7 @@ export class SkillStore {
     await ensurePatchStateDir(this.config.patchStateDir);
     // vault_id goes in the FILE only, never in the record returned to the client
     // — see StagedPlan in types.ts for why.
-    const staged = { ...plan, vault_id: vaultTag(this.config.knowledgeRoot) };
+    const staged = { ...plan, vault_id: vaultTag(await this.root()) };
     await fs.writeFile(this.patchPath(patchId), JSON.stringify(staged, null, 2), {
       encoding: "utf8",
       flag: "wx",
@@ -161,7 +161,7 @@ export class SkillStore {
           "Re-plan the Skill against this server."
       );
     }
-    if (plan.vault_id !== vaultTag(this.config.knowledgeRoot)) {
+    if (plan.vault_id !== vaultTag(await this.root())) {
       throw new Error(
         "Skill plan was staged for a different vault and will not be applied here. " +
           "Re-plan the Skill against this server."

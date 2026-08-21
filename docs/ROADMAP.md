@@ -1314,6 +1314,17 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       division of labour the firing table describes: reverse verification checks
       the guard you wrote, review looks for the one you did not.
 
+      **The identity is the resolved root, not the configured spelling.** The
+      first version hashed `KNOWLEDGE_ROOT` as written, which reads the same
+      before and after a symlinked root is retargeted at another vault — so a
+      plan staged for the old vault still matched while every target resolved
+      into the new one, and byte-identical content at the same relative path
+      carried the stale check too. Raised as a P1 by Codex. Resolving fixes the
+      harmless direction as well: one vault reached by two spellings now keeps a
+      single tag. `defaultPatchStateDir` still hashes the spelling, because it
+      runs before the directory is known to exist; the two tags are allowed to
+      differ.
+
       **What still limits a crossing, unchanged:** apply is stale-safe, so it
       needed the same relative path in the second vault with byte-identical
       pre-edit content. The tests use exactly that shape — a version where the

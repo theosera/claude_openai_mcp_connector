@@ -626,7 +626,7 @@ export class KnowledgeStore implements VaultStore {
     await ensurePatchStateDir(this.config.patchStateDir);
     // vault_id is added HERE, not on `patch`: it belongs in the file the apply
     // reads, and not in the record handed back to the client (see StagedPlan).
-    const staged: StagedPlan<typeof patch> = { ...patch, vault_id: this.vaultId() };
+    const staged: StagedPlan<typeof patch> = { ...patch, vault_id: await this.vaultId() };
     await fs.writeFile(this.patchPath(patch.patch_id), JSON.stringify(staged, null, 2), {
       encoding: "utf8",
       flag: "wx",
@@ -658,7 +658,7 @@ export class KnowledgeStore implements VaultStore {
     // the note inside THIS root (INV-3). The confirmed-path check below cannot
     // catch it — the user confirms a vault-relative path, which matches in both
     // vaults.
-    this.assertPlanStagedForThisVault(patch.vault_id);
+    await this.assertPlanStagedForThisVault(patch.vault_id);
 
     const confirmedPath = toPosixPath(assertRelativePath(confirmedTargetPath));
     if (confirmedPath !== patch.target_path) {
@@ -745,7 +745,7 @@ export class KnowledgeStore implements VaultStore {
     await ensurePatchStateDir(this.config.patchStateDir);
     // vault_id is added HERE, not on `patch`: it belongs in the file the apply
     // reads, and not in the record handed back to the client (see StagedPlan).
-    const staged: StagedPlan<typeof patch> = { ...patch, vault_id: this.vaultId() };
+    const staged: StagedPlan<typeof patch> = { ...patch, vault_id: await this.vaultId() };
     await fs.writeFile(this.patchPath(patch.patch_id), JSON.stringify(staged, null, 2), {
       encoding: "utf8",
       mode: PATCH_STATE_FILE_MODE
@@ -777,7 +777,7 @@ export class KnowledgeStore implements VaultStore {
     // Before the target is resolved, because resolution is the crossing: the
     // path is vault-relative and this store would happily resolve it inside
     // whichever root it was started against (INV-3).
-    this.assertPlanStagedForThisVault(patch.vault_id);
+    await this.assertPlanStagedForThisVault(patch.vault_id);
     const absolutePath = await this.resolveForExistingRead(patch.target_path);
     // INV-9: a general update must never touch the reserved audit subtree
     // (authoritative gate — this is where the actual overwrite happens).
@@ -1149,14 +1149,29 @@ export class KnowledgeStore implements VaultStore {
   }
 
   /** This store's vault identity, as recorded in a staged plan (INV-3). */
-  private vaultId(): string {
-    // The CONFIGURED root, matching what `defaultPatchStateDir` hashes, so the
-    // plan directory a vault gets and the tag its plans carry always agree.
-    // Deliberately not `this.root()` (the realpath): resolving would make the
-    // tag depend on whether the link chain was in place at that moment, so a
-    // vault reached through a symlink today and directly tomorrow would stop
-    // matching its own staged plans.
-    return vaultTag(this.config.knowledgeRoot);
+  private async vaultId(): Promise<string> {
+    // The RESOLVED root, not the configured spelling. Hashing the spelling ties
+    // the tag to a string the operator controls rather than to the directory the
+    // writes land in, and those come apart in the direction that matters: a
+    // symlinked KNOWLEDGE_ROOT retargeted at another vault keeps its spelling,
+    // so a plan staged before the change carries a tag this check still accepts
+    // — while `this.root()`, re-resolved at each init, now points somewhere else
+    // and is what every target below is resolved against. Byte-identical content
+    // at the same relative path also carries the stale check, so nothing else in
+    // the apply path notices.
+    //
+    // It fixes the harmless direction too: one vault reached through a symlink
+    // today and by its own path tomorrow resolves to the same realpath, so its
+    // staged plans keep matching. An earlier version of this comment claimed
+    // resolving would BREAK that case, which had it exactly backwards — not
+    // resolving is what makes two spellings of one vault read as two vaults.
+    //
+    // `defaultPatchStateDir` still hashes the configured spelling, because it
+    // runs in `loadConfig` before anything guarantees the directory exists and
+    // `realpath` needs it to. The two tags are therefore allowed to differ; the
+    // directory name only has to be stable and per-vault, while this one has to
+    // say which vault the writes went to. Raised as a P1 by Codex on #142.
+    return vaultTag(await this.root());
   }
 
   /**
@@ -1172,14 +1187,14 @@ export class KnowledgeStore implements VaultStore {
    * Neither message names a path or a root. The tags are opaque by construction
    * and the client has no use for them beyond "these two differ".
    */
-  private assertPlanStagedForThisVault(planVaultId: string | undefined): void {
+  private async assertPlanStagedForThisVault(planVaultId: string | undefined): Promise<void> {
     if (!planVaultId) {
       throw new Error(
         "Plan does not record which vault it was staged for, so it cannot be applied. " +
           "Re-plan the change against this server."
       );
     }
-    if (planVaultId !== this.vaultId()) {
+    if (planVaultId !== (await this.vaultId())) {
       throw new Error(
         "Plan was staged for a different vault and will not be applied here. " +
           "Re-plan the change against this server."

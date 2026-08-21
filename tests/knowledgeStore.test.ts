@@ -1096,8 +1096,10 @@ describe("KnowledgeStore INV-9 audit-subtree reservation", () => {
       expected_sha256: crypto.createHash("sha256").update(original).digest("hex"),
       // Staged for THIS vault, so the reservation gate below is what refuses
       // this plan. Without it the cross-vault check (INV-3) would refuse it
-      // first and the guard under test would never be reached.
-      vault_id: vaultTag(root),
+      // first and the guard under test would never be reached. `realpath`
+      // because the store hashes the RESOLVED root, and a temp directory is
+      // reached through a symlink on macOS.
+      vault_id: vaultTag(await fs.realpath(root)),
       created_at: new Date().toISOString(),
       new_content: "tampered",
       diff: ""
@@ -1159,8 +1161,10 @@ Created by the constrained Skill surface.
       expected_sha256: crypto.createHash("sha256").update(currentContent).digest("hex"),
       // Staged for THIS vault, so the reservation gate below is what refuses
       // this plan. Without it the cross-vault check (INV-3) would refuse it
-      // first and the guard under test would never be reached.
-      vault_id: vaultTag(root),
+      // first and the guard under test would never be reached. `realpath`
+      // because the store hashes the RESOLVED root, and a temp directory is
+      // reached through a symlink on macOS.
+      vault_id: vaultTag(await fs.realpath(root)),
       created_at: new Date().toISOString(),
       new_content: HIJACKED,
       diff: ""
@@ -1288,8 +1292,10 @@ Created by the constrained Skill surface.
       content_sha256: crypto.createHash("sha256").update(newContent).digest("hex"),
       // Staged for THIS vault, so the reservation gate below is what refuses
       // this plan. Without it the cross-vault check (INV-3) would refuse it
-      // first and the guard under test would never be reached.
-      vault_id: vaultTag(root),
+      // first and the guard under test would never be reached. `realpath`
+      // because the store hashes the RESOLVED root, and a temp directory is
+      // reached through a symlink on macOS.
+      vault_id: vaultTag(await fs.realpath(root)),
       diff: ""
     };
     await fs.writeFile(path.join(patchStateDir, `${patchId}.json`), JSON.stringify(patch), "utf8");
@@ -2426,7 +2432,7 @@ describe("KnowledgeStore INV-3 cross-vault plan binding", () => {
     const onDisk = JSON.parse(
       await fs.readFile(path.join(sharedPatchStateDir, `${plan.patch_id}.json`), "utf8")
     ) as Record<string, unknown>;
-    expect(onDisk.vault_id).toBe(vaultTag(vaultA));
+    expect(onDisk.vault_id).toBe(vaultTag(await fs.realpath(vaultA)));
   });
 
   it("still applies a plan in the vault that staged it", async () => {
@@ -2450,5 +2456,74 @@ describe("KnowledgeStore INV-3 cross-vault plan binding", () => {
     expect(await fs.readFile(path.join(vaultA, "projects", "control.md"), "utf8")).toContain(
       "created in the staging vault"
     );
+  });
+});
+
+describe("KnowledgeStore INV-3 plan binding follows the resolved vault, not its spelling", () => {
+  const NOTE = "---\ntitle: Shared\n---\n\nidentical in both vaults\n";
+
+  let vaultA: string;
+  let vaultB: string;
+  let linkParent: string;
+  let link: string;
+  let patchStateDir: string;
+
+  const storeFor = (root: string): KnowledgeStore =>
+    new KnowledgeStore({ knowledgeRoot: root, writeMode: "two_step", patchStateDir });
+
+  beforeEach(async () => {
+    vaultA = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-inv3-link-a-"));
+    vaultB = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-inv3-link-b-"));
+    patchStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-inv3-link-state-"));
+    linkParent = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-inv3-link-"));
+    for (const root of [vaultA, vaultB]) {
+      await fs.mkdir(path.join(root, "projects"), { recursive: true });
+      await fs.writeFile(path.join(root, "projects", "shared.md"), NOTE, "utf8");
+    }
+    link = path.join(linkParent, "vault");
+    await fs.symlink(vaultA, link);
+  });
+
+  afterEach(async () => {
+    for (const dir of [vaultA, vaultB, patchStateDir, linkParent]) {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a plan staged before the root symlink was retargeted at another vault", async () => {
+    // The crossing the configured spelling cannot see: KNOWLEDGE_ROOT is one
+    // string throughout, so a tag hashed from it is identical on both sides of
+    // the retarget, while every target below resolves into the new vault.
+    const before = storeFor(link);
+    const plan = await before.planUpdate({
+      id_or_path: "projects/shared.md",
+      new_body: "staged while the link pointed at vault A",
+      reason: "retarget probe"
+    });
+    expect(crypto.createHash("sha256").update(NOTE).digest("hex")).toBe(plan.expected_sha256);
+
+    await fs.unlink(link);
+    await fs.symlink(vaultB, link);
+
+    // A fresh store, as after a restart: `init` re-resolves the link.
+    const after = storeFor(link);
+    await expect(after.applyPlannedUpdate(plan.patch_id)).rejects.toThrow(/staged for a different vault/);
+    expect(await fs.readFile(path.join(vaultB, "projects", "shared.md"), "utf8")).toBe(NOTE);
+  });
+
+  it("still applies a plan when the same vault is reached by a different spelling", async () => {
+    // The other half, and the direction an earlier comment had backwards:
+    // hashing the spelling made one vault read as two, so this apply was
+    // refused. Resolving is what keeps the two spellings together.
+    const viaLink = storeFor(link);
+    const plan = await viaLink.planUpdate({
+      id_or_path: "projects/shared.md",
+      new_body: "staged through the link, applied through the path",
+      reason: "spelling control"
+    });
+
+    const viaPath = storeFor(await fs.realpath(vaultA));
+    const applied = await viaPath.applyPlannedUpdate(plan.patch_id);
+    expect(applied.document.body.trim()).toBe("staged through the link, applied through the path");
   });
 });

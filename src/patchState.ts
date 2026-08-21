@@ -13,12 +13,17 @@ export const PATCH_STATE_FILE_MODE = 0o600;
 /**
  * A stable, opaque identifier for the primary knowledge root.
  *
- * Two things need to agree on "which vault is this", and they must not each
- * grow their own answer. `defaultPatchStateDir` uses it to give every vault its
- * own plan directory; a staged plan records it so `apply` can refuse a plan that
- * was staged for a different vault (INV-3). Those are the same question asked at
- * two moments, and `PATCH_ID_PATTERN` below records what happens when one naming
- * rule is written twice: the writers and the sweep drift apart.
+ * Two callers hash a root with this, and they must not each grow their own
+ * hashing rule. `defaultPatchStateDir` gives every vault its own plan directory;
+ * `KnowledgeStore.vaultId` / `SkillStore` record a tag in each staged plan so
+ * `apply` can refuse a plan staged for a different vault (INV-3).
+ *
+ * ★ They pass DIFFERENT roots on purpose, and that is not a drift to repair.
+ * `defaultPatchStateDir` runs inside `loadConfig`, before anything guarantees
+ * the directory exists, so it can only hash the configured spelling. The plan
+ * check runs after `init`, so it hashes the RESOLVED root — see the symlink note
+ * below for why it must. A directory name only has to be stable and per-vault; a
+ * plan check has to name the directory the writes actually land in.
  *
  * The normalisation rules and their reasons, which is why this is a function
  * rather than an inline hash at each site:
@@ -30,14 +35,18 @@ export const PATCH_STATE_FILE_MODE = 0o600;
  * - **Case is NOT folded**, because folding is wrong on a case-sensitive
  *   filesystem — it would merge two genuinely different vaults into one tag,
  *   and for the plan check that means accepting a cross-vault apply.
- * - **Symlinks are NOT resolved**: `realpath` needs the directory to exist, and
- *   `loadConfig` runs before anything guarantees that.
+ * - **Symlinks are resolved by the CALLER, not here**, because only the caller
+ *   knows whether it can. This function hashes the string it is given.
  *
- * The last two widen what counts as the same path. For the directory name that
- * is harmless. For the plan check it is the conservative direction as well: a
- * vault spelled two ways reads as two vaults and the apply is refused, which
- * fails closed. What it must never do is the reverse, and folding case would
- * have been exactly that.
+ * Case folding and symlink resolution are not two versions of one choice, and an
+ * earlier revision of this comment treated them as one — it said both "widen
+ * what counts as the same path" and that both therefore fail closed. Folding
+ * case does merge two genuinely different vaults into one tag, so it is refused
+ * here. Resolving symlinks does the OPPOSITE: it keeps two spellings of one
+ * vault together, and it separates one spelling whose target has been moved to
+ * another vault. Leaving them unresolved is what fails OPEN, because the tag
+ * then follows the operator's spelling rather than the directory the writes land
+ * in. Raised as a P1 by Codex on #142; the plan check now passes a resolved root.
  *
  * Truncated to 64 bits: this is an equality check between values this server
  * wrote, not a signature. A collision needs two distinct root paths whose

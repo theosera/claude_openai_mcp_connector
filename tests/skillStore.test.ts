@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { PLAN_MAX_AGE_MS } from "../src/patchState.js";
 import { SkillStore, type PlanSkillCreateInput } from "../src/skillStore.js";
@@ -327,5 +327,54 @@ describe("SkillStore INV-3 cross-vault plan binding", () => {
     // `files` are target-relative paths, not bare names.
     expect(applied.files).toContain("knowledge/skills/improve-ai-harness/SKILL.md");
     expect(await fs.stat(path.join(vaultA, "knowledge", "skills", "improve-ai-harness"))).toBeTruthy();
+  });
+});
+
+describe("SkillStore INV-3 plan binding follows the resolved vault, not its spelling", () => {
+  let vaultA: string;
+  let vaultB: string;
+  let linkParent: string;
+  let link: string;
+  let patchStateDir: string;
+
+  const storeFor = (root: string): SkillStore =>
+    new SkillStore({ knowledgeRoot: root, skillsSubdir: "knowledge/skills", patchStateDir });
+
+  beforeEach(async () => {
+    vaultA = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-skill-link-a-"));
+    vaultB = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-skill-link-b-"));
+    patchStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-skill-link-state-"));
+    linkParent = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-skill-link-"));
+    for (const root of [vaultA, vaultB]) {
+      await fs.mkdir(path.join(root, "knowledge", "skills"), { recursive: true });
+    }
+    link = path.join(linkParent, "vault");
+    await fs.symlink(vaultA, link);
+  });
+
+  afterEach(async () => {
+    for (const dir of [vaultA, vaultB, patchStateDir, linkParent]) {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a Skill plan staged before the root symlink was retargeted at another vault", async () => {
+    // A Skill is the heaviest of the three plan kinds: later sessions load it as
+    // instructions, so publishing one into a vault nobody approved it for is the
+    // crossing worth the most to an attacker.
+    const before = storeFor(link);
+    const plan = await before.planCreate({
+      skill_name: "improve-ai-harness",
+      skill_md: SKILL_MD,
+      references: [],
+      reason: "retarget probe"
+    });
+
+    await fs.unlink(link);
+    await fs.symlink(vaultB, link);
+
+    const after = storeFor(link);
+    await expect(after.applyPlannedCreate(plan.patch_id)).rejects.toThrow(/staged for a different vault/);
+    await expect(fs.stat(path.join(vaultB, "knowledge", "skills", "improve-ai-harness"))).rejects.toThrow();
   });
 });

@@ -691,7 +691,7 @@ describe("apply re-checks the cap, so a stale plan cannot carry a write past it"
     // they would go green without ever reaching it.
     await fs.writeFile(
       path.join(patchStateDir, `${patchId}.json`),
-      JSON.stringify({ vault_id: vaultTag(root), ...patch, patch_id: patchId })
+      JSON.stringify({ vault_id: vaultTag(await fs.realpath(root)), ...patch, patch_id: patchId })
     );
     return patchId;
   }
