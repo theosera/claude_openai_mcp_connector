@@ -603,10 +603,13 @@ grantable), and only if it **survived the restart this section just told you to
 do**, which requires `MCP_OAUTH_STATE_FILE`: without it every token is dropped
 on restart (§1.B). Where both hold, the document-write tools appear for that
 token as soon as the process is back up. Otherwise the client must
-**re-authorize, requesting `vault.write`** — turning a flag on never widens a
-token that already exists, and refresh rotation reissues the recorded scope
-unchanged. To tell the two apart, list that credential's tools: the
-document-write tools are simply absent without the scope
+**re-authorize, requesting `vault.read vault.write`** — both of them, because a
+token without `vault.read` is refused with `insufficient_scope` before any tool
+surface is computed, so asking for the write scope alone yields a credential
+that cannot even read. Turning a flag on never widens a token that already
+exists, and refresh rotation reissues the recorded scope unchanged. To tell the
+two cases apart, list that credential's tools: for a read-scoped token the
+document-write tools are simply absent
 ([§9 Step 5](#step-5--verify-each-endpoints-surface)). Either way, no
 additional flag is required — the asymmetry is the one the checklist in
 [§5](#5-operational-security-checklist) flags, and it is analysed in
