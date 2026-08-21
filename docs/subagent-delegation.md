@@ -37,8 +37,9 @@ Splitting a change — into two PRs, two commits, two agents — makes each half
 locally complete and the seam invisible from inside either one. Both halves pass
 their own review. What breaks lives between them, and nothing turns red.
 
-**A split creates an investigation, not just two smaller tasks.** Four things to
-look for, each of them observed on this repository's own split:
+**A split creates an investigation, not just two smaller tasks.** What to look
+for, each of it observed on this repository's own split — and the list is stated
+without a count on purpose, having already gone stale twice as it grew:
 
 - **What each half stopped saying.** A statement that was true of the combined
   change can be false of one half alone. Splitting a documentation fix by defect
@@ -197,7 +198,16 @@ A delegated investigation returns **evidence, not conclusions alone**:
   whose every hit must be re-verified by hand is not a gate. The tell is cheap:
   measure one flagged case both ways;
 - and, before asking what any check found, whether the instrument can answer the
-  question at all. That is not the same as a check that did not reach: asking a
-  pull request's *reviews* whether a particular bot had reviewed it can never
-  return yes, because that bot posts comments and never a review. A negative
-  from such a check is not weak evidence. It is none.
+  question at all. That is not the same as a check that did not reach, and
+  telling them apart is harder than it sounds. **This document got it wrong
+  here, and the wrong version survived two commits.** It said that asking a pull
+  request's *reviews* whether a particular bot had reviewed it "can never return
+  yes, because that bot posts comments and never a review". The empty result
+  that produced that sentence was real. The reason given for it was invented:
+  the bot posts an edited issue comment while it is declining or queueing, and
+  submits an ordinary review when it actually reviews — which it then did, on
+  this pull request, and the query that supposedly could never return yes
+  returned it. **An empty result plus a plausible mechanism is still an empty
+  result.** Promote it to "the instrument cannot answer" only after making the
+  instrument return a positive at least once; until then it is the weaker claim,
+  that this check did not reach.
