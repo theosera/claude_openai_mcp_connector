@@ -55,10 +55,46 @@ look for, each of them observed on this repository's own split:
   of a shared rule leaves the other copy stating the uncorrected version. That
   happened here inside a single pull request's lifetime, to the fix for this
   file's own missing base case.
+- **Instructions queued for later.** A scheduled check-in, a brief handed to an
+  agent, a note left for the next session: each is a half that stops matching
+  the other the moment the state moves. Three check-ins fired here carrying
+  branch heads and lists of open work that had changed since they were
+  written. When the state moves, the queued instructions move with it, or
+  they arrive wrong and are followed anyway.
 
 The check that finds these is not a diff of either half. It is the **merged
 tree, read** — produce it before either half lands (`git merge-tree`) and read
 the result, because the merge that hides the problem is the one that succeeds.
+
+## Correcting is where the next defect comes from
+
+Every correction made to the write-boundary work was itself stated more broadly
+than it held, and the next reviewer found the overreach — six times on one pull
+request, none of them caught by the person writing the fix. The pattern is
+specific enough to plan around.
+
+**A correction over-asserts.** The finding that prompted it was hedged — "may
+already carry", "when X is configured" — and the fix hardened the hedge into an
+assertion. Write the correction with the finding's qualifiers still attached,
+and check that removing the error did not also remove one of them.
+
+**Enumerating conditions loses one, and never the same one twice.** Three
+consecutive reviews of a single paragraph each found a different missing
+condition, each time after the paragraph had listed the conditions its author
+knew about. Listing them a fourth time is the same bet again. **Replace the
+enumeration with something the reader can observe**: instead of "the tools
+appear when A and B and C hold", say "list the tools — if they are there, you
+are done". An observable test stays correct as the implementation grows
+conditions. A list does not.
+
+**A finding can be right about the defect and wrong about the fix.** One review
+correctly identified a missing distinction, then prescribed an action the
+operator has no way to perform — which was the defect under repair, arriving
+from the other side. Accepting a finding is not accepting its remedy; say which part
+you took, and why the other part was not it.
+
+**And a fix reaches only the copy you edited** — the seam section above, applied
+to one rule living in two files.
 
 ## Choosing the model tier
 
@@ -118,4 +154,15 @@ A delegated investigation returns **evidence, not conclusions alone**:
   find a different subset, and the denominator is their union;
 - an explicit distinction between "the check found nothing" and "the check never
   reached the thing". An empty result is not evidence of absence until the same
-  pattern has been shown to match something else.
+  pattern has been shown to match something else;
+- a positive control for every empty result, because **"nothing matched" is more
+  often a broken check than an absent thing**. Three checks in a row misreported
+  here — twice because the text wrapped across the line the pattern searched,
+  once because a backtick was missing from the pattern — and each time the thing
+  being checked was fine. Stopping at any of them would have raised a false
+  alarm about the work rather than the instrument;
+- and, before either of those, whether the instrument can answer the question at
+  all. That is not the same as a check that did not reach: asking a pull
+  request's *reviews* whether a particular bot had reviewed it can never return
+  yes, because that bot posts comments and never a review. A negative from such
+  a check is not weak evidence. It is none.
