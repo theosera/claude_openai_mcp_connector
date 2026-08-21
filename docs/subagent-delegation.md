@@ -36,6 +36,15 @@ matches", "the two agree", "nothing else is outstanding" — is not safe there,
 because an omission from it is invisible to everyone downstream, including the
 person who asked for it.
 
+A worked example: **"merge is blocked" belongs to the right-hand column.** The
+phrase names a state, not a cause, and the causes do not resolve to one lookup —
+a missing approval, a required check that never ran, a code-owner rule, a
+protected-branch setting, an unresolved review thread, a conflict with the base.
+Answering it means reconciling several sources that each describe one part of
+the state, and the characteristic failure is reporting the first cause found as
+though it were the only one. That is an absence claim wearing a diagnosis, and
+it leaves nothing behind when it is wrong.
+
 The asymmetry is not a preference.
 [`policy-provenance.md`](./policy-provenance.md) states it directly:
 over-inclusion "is caught by anyone who reads the passage", while
