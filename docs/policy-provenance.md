@@ -175,8 +175,9 @@ Several documents state the protection as two conditions. That phrasing is
 **accurate for OAuth tokens and misleading for the static bearer**, so a caveat
 now sits next to the places that state it as a current protection —
 `threat-model.md` (the data-flow diagram and two STRIDE rows), `README.md`'s
-scope-gating paragraph, and the `operations.md` hardening checklist. Three files,
-five places.
+scope-gating paragraph, the `operations.md` hardening checklist, and the
+`ROADMAP.md` bullet under the shipped "Exact-path document creation" heading.
+Four files, six places.
 
 Everywhere else the two conditions appear, the passage limits itself, and those
 were **left alone**: annotating correct text is its own kind of error. What makes
@@ -227,6 +228,55 @@ right, and the sentence describing it was not updated to match — **a document
 went stale about its own scope inside a single change.** It surfaced because a
 review asked what the judgements rested on, which is the question the table above
 now carries in the document itself.
+
+**The sixth place was added later, and by the other route.** The `ROADMAP.md`
+bullet appeared in neither list — not caveated, not recorded as left alone —
+which is exactly the residue the paragraph above says under-inclusion leaves:
+none. It surfaced when the sweep pattern was re-run against a later revision and
+every hit was re-classified, rather than only the recorded sites re-checked —
+re-checking a list cannot find what the list omits. The "eleven became eight
+became five" sentence describes the original survey and is left as written.
+
+**A second passage is in neither list, and it is not a caveat site either.** The
+exact-path runbook in `operations.md` states the same two conditions, but as an
+instruction rather than as a claim about protection: at `e256b54` it told an
+operator to authorize a scope that a static-bearer deployment has no way to
+authorize. That is a different defect answering to a different criterion, so it
+is tracked in #131 rather than caveated here. Counting it as a seventh caveat
+site would merge the two criteria, and merging them sweeps in every procedural
+line in the docs.
+
+⚠️ **Counting the passages is a different search from finding the hits, and the
+instrument for counting is narrower than it looks.** The pattern above is an
+alternation, so a line-oriented `grep` returns every line carrying either term
+and misses nothing: the `operations.md` checklist entry comes back as two hits,
+one per line. Narrowing to *passages that state both conditions together* takes
+a proximity match, and that match is bounded three ways — how wide the window
+is, whether it may cross a newline, and which spellings it knows.
+
+The first two are measurable and small. On `e256b54`, at an 80-character window
+the per-line and whole-file forms return the same four passages; at 120 the
+whole-file form returns a fifth, the checklist entry where 98 characters and a
+line break separate the two terms. That fifth is the caveat itself, so that
+particular miss left nothing uncovered.
+
+The third bound is the one that hurts, and this document is the evidence. **Four
+of the six places counted above are unreachable at any window**, because they do
+not spell the flag the way the pattern does: the three `threat-model.md` sites
+write `allowWrite`, and `MCP_HTTP_ALLOW_WRITE` does not occur in that file at
+all, while `README.md` writes "the matching server-side flag". The instrument
+sees two of the six sites this survey declares, and the same blindness applies
+again to any passage stating the relationship in words neither pattern knows.
+
+None of which makes the raw count a bound in either direction — the correction
+this section needed itself. Widening the window far enough to reach a wrapped
+juxtaposition also starts pairing terms that are merely near each other: at 500
+characters on `e256b54` the match joins `CHANGELOG.md`'s HTTP-transport bullet
+to the OAuth bullet four lines below, two separate list items, neither stating
+the two conditions together. The instrument under-reports by vocabulary and
+over-reports by proximity at the same time. A number from it means something
+only after the hits are read and classified, which is how the six places above
+were arrived at — not by counting matches.
 
 **For contrast, on the containment side the same repo goes considerably further
 than the documentation claims.** `canonicalizeForRootComparison` walks from the
