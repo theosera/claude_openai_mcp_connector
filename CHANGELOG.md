@@ -60,6 +60,31 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   who reads the passage while under-inclusion leaves nothing behind to check, and
   the quoted phrase is that check.
 
+- **The shipped write-boundary passage in `docs/ROADMAP.md` now carries the
+  static-bearer caveat.** Under the shipped "Exact-path document creation"
+  heading the boundary was stated as `MCP_HTTP_ALLOW_WRITE` + `vault.write`, but
+  `authenticate()` grants a static bearer both scopes as soon as the header
+  matches, so on that deployment only the flag gates anything. The caveat is
+  reused from the `operations.md` checklist rather than reworded, and
+  `docs/policy-provenance.md` now reads four files and six places, naming the new
+  site instead of only counting it. Two records go with it: the passage was in
+  neither the caveat list nor the left-alone table, which is the nothing that
+  under-inclusion leaves behind; and the sweep pattern is a lower bound, because
+  a line-oriented `grep` cannot see a juxtaposition split across a line break —
+  one such site exists, and it is the caveat itself.
+
+- **The exact-path write runbook in `docs/operations.md` no longer tells a
+  static-bearer operator to authorize a scope.** It said to set
+  `MCP_HTTP_ALLOW_WRITE=1`, restart, "and authorize a `vault.write` scope". The
+  flag exists on every deployment; the authorize step exists only for OAuth,
+  because a static bearer's scopes come from configuration and there is no
+  consent flow to visit. The instruction now branches on the credential and
+  points at the §5 checklist, which already carried the same asymmetry as a
+  caveat — the right description and the wrong procedure were in one file. This
+  is a different defect from the caveat sweep's: not a reader misled about being
+  protected, but one sent looking for a step that is not there, and
+  `policy-provenance.md` records why the two criteria stay apart.
+
 ## [0.9.0] — 2026-08-16
 
 ### Added
