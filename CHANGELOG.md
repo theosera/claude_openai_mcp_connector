@@ -74,7 +74,9 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the passages is a different search from finding the hits, bounded by window
   width, by whether the match may cross a newline, and by which spellings it
   knows. Four of the six places counted are unreachable by that pattern at any
-  window, so every count from it is a lower bound.
+  window, and widening the window far enough to reach a wrapped juxtaposition
+  starts pairing terms that are merely adjacent — so the raw count is not a
+  bound in either direction until the hits are read and classified.
 
 ## [0.9.0] — 2026-08-16
 

@@ -252,9 +252,18 @@ of the six places counted above are unreachable at any window**, because they do
 not spell the flag the way the pattern does: the three `threat-model.md` sites
 write `allowWrite`, and `MCP_HTTP_ALLOW_WRITE` does not occur in that file at
 all, while `README.md` writes "the matching server-side flag". The instrument
-sees two of the six sites this survey declares. Every count it produces is a
-lower bound, and the same limit applies again to any passage that states the
-relationship in words neither pattern knows.
+sees two of the six sites this survey declares, and the same blindness applies
+again to any passage stating the relationship in words neither pattern knows.
+
+None of which makes the raw count a bound in either direction — the correction
+this section needed itself. Widening the window far enough to reach a wrapped
+juxtaposition also starts pairing terms that are merely near each other: at 500
+characters on `e256b54` the match joins `CHANGELOG.md`'s HTTP-transport bullet
+to the OAuth bullet four lines below, two separate list items, neither stating
+the two conditions together. The instrument under-reports by vocabulary and
+over-reports by proximity at the same time. A number from it means something
+only after the hits are read and classified, which is how the six places above
+were arrived at — not by counting matches.
 
 **For contrast, on the containment side the same repo goes considerably further
 than the documentation claims.** `canonicalizeForRootComparison` walks from the
