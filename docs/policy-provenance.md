@@ -175,8 +175,9 @@ Several documents state the protection as two conditions. That phrasing is
 **accurate for OAuth tokens and misleading for the static bearer**, so a caveat
 now sits next to the places that state it as a current protection —
 `threat-model.md` (the data-flow diagram and two STRIDE rows), `README.md`'s
-scope-gating paragraph, and the `operations.md` hardening checklist. Three files,
-five places.
+scope-gating paragraph, the `operations.md` hardening checklist, and the
+`ROADMAP.md` bullet under the shipped "Exact-path document creation" heading.
+Four files, six places.
 
 Everywhere else the two conditions appear, the passage limits itself, and those
 were **left alone**: annotating correct text is its own kind of error. What makes
@@ -214,6 +215,28 @@ right, and the sentence describing it was not updated to match — **a document
 went stale about its own scope inside a single change.** It surfaced because a
 review asked what the judgements rested on, which is the question the table above
 now carries in the document itself.
+
+**The sixth place was added later, and by the other route.** The `ROADMAP.md`
+bullet appeared in neither list — not caveated, not recorded as left alone —
+which is exactly the residue the paragraph above says under-inclusion leaves:
+none. It surfaced when the sweep pattern was re-run against a later revision and
+every hit was re-classified, rather than only the recorded sites re-checked —
+re-checking a list cannot find what the list omits. The "eleven became eight
+became five" sentence describes the original survey and is left as written.
+
+⚠️ **Counting the passages is a different search from finding the hits, and it
+has parameters the sweep does not.** The pattern above is an alternation, so a
+line-oriented `grep` returns every line carrying either term and misses nothing:
+the `operations.md` checklist entry comes back as two hits, one per line.
+Narrowing to *passages that state both conditions together* takes a proximity
+match, and that match has two parameters — how wide the window is, and whether
+it may cross a newline. Both have to be wide enough before a given site appears.
+Measured on `e256b54`: at an 80-character window the per-line and whole-file
+forms return the same four passages, and at 120 the whole-file form returns a
+fifth — that checklist entry, where 98 characters and a line break separate the
+two terms. It is the caveat itself, so nothing was left uncovered. The point is
+that a denominator quoted without both parameters says less than it looks like
+it does.
 
 **For contrast, on the containment side the same repo goes considerably further
 than the documentation claims.** `canonicalizeForRootComparison` walks from the
