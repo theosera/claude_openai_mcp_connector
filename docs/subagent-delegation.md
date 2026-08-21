@@ -61,6 +61,14 @@ look for, each of them observed on this repository's own split:
   branch heads and lists of open work that had changed since they were
   written. When the state moves, the queued instructions move with it, or
   they arrive wrong and are followed anyway.
+- **A gate that lives in one session.** A width check run on this file was
+  described, in the commit that acted on it, as exiting non-zero "so the next
+  commit cannot step over it the same way". It was a shell command in one
+  session's scrollback. The next commit arrived from another session four
+  minutes later and the check never ran; that commit happened to conform, so
+  nothing broke. That is why the claim survives — a run of luck is
+  indistinguishable from a working gate, and a control binds the future only if
+  it is committed where the future will run it.
 
 The check that finds these is not a diff of either half. It is the **merged
 tree, read** — produce it before either half lands (`git merge-tree`) and read
@@ -181,8 +189,15 @@ A delegated investigation returns **evidence, not conclusions alone**:
   trustworthy than one without. **An unmeasured as-of is worse than none**: it
   invites the reader to trust a window that was never observed. Take the
   timestamp immediately before writing it, from the clock, every time;
-- and, before either of those, whether the instrument can answer the question at
-  all. That is not the same as a check that did not reach: asking a pull
-  request's *reviews* whether a particular bot had reviewed it can never return
-  yes, because that bot posts comments and never a review. A negative from such
-  a check is not weak evidence. It is none.
+- **the unit the check counts, written next to the number.** A width check here
+  counted bytes while the limit it enforced was in characters, and against prose
+  full of em-dashes the two part company. Of the ten lines it flagged, seven
+  were inside the limit and two were table rows that cannot wrap — leaving one
+  real defect that looked exactly like the other nine in the output. A check
+  whose every hit must be re-verified by hand is not a gate. The tell is cheap:
+  measure one flagged case both ways;
+- and, before asking what any check found, whether the instrument can answer the
+  question at all. That is not the same as a check that did not reach: asking a
+  pull request's *reviews* whether a particular bot had reviewed it can never
+  return yes, because that bot posts comments and never a review. A negative
+  from such a check is not weak evidence. It is none.
