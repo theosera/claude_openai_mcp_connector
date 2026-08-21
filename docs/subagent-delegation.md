@@ -129,6 +129,19 @@ the state, and the characteristic failure is reporting the first cause found as
 though it were the only one. That is an absence claim wearing a diagnosis, and
 it leaves nothing behind when it is wrong.
 
+That example stopped being hypothetical while this file was open. Four sibling
+pull requests were read one at a time. The first said `clean`; the second,
+`unstable`; a conclusion drawn from those two — that the field tracks conflicts
+and checks — went into a pull request body, and the third said `blocked` and
+contradicted it inside the hour. The actual cause was two review threads that
+had been answered hours earlier and never marked resolved, and it was
+settled not by a fourth reading but by **intervening**: resolving them flipped
+that pull request to `clean` on the next fetch, with no commit, no check and no
+review in between. Two lookups produced a confident wrong answer, four produced
+a correlation, and one intervention produced the cause. **A state assembled
+from several sources is not done being read when the readings agree** — the
+agreeing ones had simply not yet met the case that separates them.
+
 The asymmetry is not a preference.
 [`policy-provenance.md`](./policy-provenance.md) states it directly:
 over-inclusion "is caught by anyone who reads the passage", while
