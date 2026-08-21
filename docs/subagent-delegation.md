@@ -37,9 +37,9 @@ Splitting a change — into two PRs, two commits, two agents — makes each half
 locally complete and the seam invisible from inside either one. Both halves pass
 their own review. What breaks lives between them, and nothing turns red.
 
-**A split creates an investigation, not just two smaller tasks.** What to look
-for, each of it observed on this repository's own split — and the list is stated
-without a count on purpose, having already gone stale twice as it grew:
+**A split creates an investigation, not just two smaller tasks.** Every item
+below was observed on this repository's own split. The list carries no count on
+purpose: it has already gone stale twice as it grew.
 
 - **What each half stopped saying.** A statement that was true of the combined
   change can be false of one half alone. Splitting a documentation fix by defect
@@ -221,6 +221,14 @@ A delegated investigation returns **evidence, not conclusions alone**:
   submits an ordinary review when it actually reviews — which it then did, on
   this pull request, and the query that supposedly could never return yes
   returned it. **An empty result plus a plausible mechanism is still an empty
-  result.** Promote it to "the instrument cannot answer" only after making the
-  instrument return a positive at least once; until then it is the weaker claim,
-  that this check did not reach.
+  result** — and the mechanism is the part that feels like evidence. Three
+  different claims sit behind one silent check, and each needs its own work.
+  *This check did not reach* is what an empty result gives you by itself.
+  *The thing is genuinely absent* needs a positive control: the same check,
+  returning a hit on a case known to be present. *The instrument cannot answer
+  this at all* needs more than either — its documented contract, or a case where
+  the thing is known present and the instrument still says nothing. **A positive
+  control cannot establish that last claim; it establishes the opposite.** The
+  sentence this bullet replaced said to reach for one before claiming it, which
+  had the logic backwards and was caught by a reviewer rather than by its
+  author, again.
