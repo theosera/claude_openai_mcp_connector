@@ -174,7 +174,6 @@ A delegated investigation returns **evidence, not conclusions alone**:
   methods were run carefully over one denominator while the other was never
   enumerated at all, and review found it. **Ask how many sets the change touches
   before asking how to search one of them**;
-
 - **an as-of that was measured, not carried forward.** State timestamps go stale
   the ordinary way, and a report can also be wrong about *when it is* — times
   extrapolated from a reading taken earlier in the same session were off by
@@ -182,7 +181,6 @@ A delegated investigation returns **evidence, not conclusions alone**:
   trustworthy than one without. **An unmeasured as-of is worse than none**: it
   invites the reader to trust a window that was never observed. Take the
   timestamp immediately before writing it, from the clock, every time;
-
 - and, before either of those, whether the instrument can answer the question at
   all. That is not the same as a check that did not reach: asking a pull
   request's *reviews* whether a particular bot had reviewed it can never return
