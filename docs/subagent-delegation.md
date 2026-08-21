@@ -160,7 +160,29 @@ A delegated investigation returns **evidence, not conclusions alone**:
   here — twice because the text wrapped across the line the pattern searched,
   once because a backtick was missing from the pattern — and each time the thing
   being checked was fine. Stopping at any of them would have raised a false
-  alarm about the work rather than the instrument;
+  alarm about the work rather than the instrument. Two more of the same kind,
+  from a session working alongside this one: a pattern written in lower case
+  against text written in upper case, and a check keyed to line numbers that the
+  very edit it was checking had already moved. Both reported the fixed thing as
+  unfixed. **Anchor a check on content, and normalise case and whitespace before
+  matching** — the instrument has to survive the edit it is measuring;
+- **whether the question has one denominator or two.** A change that closes an
+  exception has to reach the places that *state the exception* — they become
+  false — and separately the places that *tell someone what to do* — they gain a
+  requirement. Those are different sets, and a sweep aimed at the first is not
+  short, it is answering a different question. That happened here: three search
+  methods were run carefully over one denominator while the other was never
+  enumerated at all, and review found it. **Ask how many sets the change touches
+  before asking how to search one of them**;
+
+- **an as-of that was measured, not carried forward.** State timestamps go stale
+  the ordinary way, and a report can also be wrong about *when it is* — times
+  extrapolated from a reading taken earlier in the same session were off by
+  hours here, in a report that carried an as-of and therefore looked more
+  trustworthy than one without. **An unmeasured as-of is worse than none**: it
+  invites the reader to trust a window that was never observed. Take the
+  timestamp immediately before writing it, from the clock, every time;
+
 - and, before either of those, whether the instrument can answer the question at
   all. That is not the same as a check that did not reach: asking a pull
   request's *reviews* whether a particular bot had reviewed it can never return
