@@ -39,7 +39,7 @@ one last spot.**
 
 | | The rule | Enforced for | Not reached |
 | --- | --- | --- | --- |
-| **GAP-3** | A policy source must not live inside the data plane it governs | `MCP_OAUTH_STATE_FILE`, `MCP_PATCH_STATE_DIR` (incl. its derived default), `MCP_CONTEXT_TYPE_RULES` | **`MCP_ENV_FILE`** |
+| **GAP-3** | A policy source must not live inside the data plane it governs | `MCP_OAUTH_STATE_FILE`, `MCP_PATCH_STATE_DIR` (incl. its derived default), `MCP_CONTEXT_TYPE_RULES`, **`MCP_ENV_FILE`** (A1) | — closed |
 | **GAP-4** | Authority is derived from the presented principal's scopes | OAuth tokens (`record.scope`) | **the static bearer** (unconditional full scope) |
 
 Neither is a design gap. In both cases the principle is stated, implemented, and
@@ -147,7 +147,7 @@ asking.
 | **GAP-1** | No server-side event log: who searched, fetched or wrote what cannot be reconstructed. | ROADMAP 🔭; the threat model's Repudiation row already flags it. |
 | **GAP-2** | A staged plan is not bound to the **vault** it was staged for. | ROADMAP, open. |
 | **GAP-2′** | A staged plan is not bound to the **principal** that staged it. | ROADMAP, open — a **different** boundary; see §G. |
-| **GAP-3** | `MCP_ENV_FILE` is outside the containment rule its three siblings follow. | ROADMAP, open and explicitly marked *unevaluated, not rejected*. |
+| **GAP-3** | ~~`MCP_ENV_FILE` is outside the containment rule its three siblings follow.~~ | **Closed by A1.** `loadConfig` checks it against every root after they resolve. The option this row called *unevaluated, not rejected* is the one that shipped — see the ROADMAP item for what it does and does not buy. |
 | **GAP-4** | The static bearer receives full scope unconditionally. | **Not recorded anywhere before this document.** |
 | **GAP-5** | stdio has no declared-vs-live check; HTTP has `check-http.mjs`. | Partial. |
 | **GAP-6** | Fail-closed behaviour is implemented but not written down per operation class. | Nothing. |
@@ -269,7 +269,7 @@ inside choke points that already exist:
 ```
 Agent → MCP interface → Connector
    ├─ Capability check  surfaceFor                unchanged  + scope the static bearer   [GAP-4]
-   ├─ Resource boundary pathSafety / reservations unchanged  + MCP_ENV_FILE              [GAP-3]
+   ├─ Resource boundary pathSafety / reservations unchanged  ✅ MCP_ENV_FILE              [GAP-3 closed]
    ├─ Integrity check   sha256 CAS                unchanged  + bind a plan to its vault  [GAP-2]
    └─ Provenance        —                         new: an out-of-vault event log         [GAP-1]
 → External resource
@@ -299,7 +299,7 @@ this item from contradicting each other.
 
 | | Change | Priority |
 | --- | --- | --- |
-| **A1** | Re-check `MCP_ENV_FILE` for containment once the roots are known, and refuse to keep serving if it is inside one. | P2 |
+| **A1** ✅ | Re-check `MCP_ENV_FILE` for containment once the roots are known, and refuse to keep serving if it is inside one. **Shipped.** | P2 |
 | **A2** | Record the originating primary root in a staged plan; verify it at apply. | P1 |
 | **A3** | A content-free, append-only, out-of-vault event log. | P1 |
 
@@ -383,7 +383,7 @@ would key on `client_id`.
 | **B2** | Low — observability | Low | Low | None | None |
 | **B3** | Low — documentation | Low | Low | None | None |
 
-**Sequencing.** A1 → A2 → A3 → B1/B2, one boundary per change. A2, A3 and B1 are
+**Sequencing.** A1 → A2 → A3 → B1/B2, one boundary per change. **A1 is done; A2 is next.** A2, A3 and B1 are
 each a security-boundary change and each fires the pre-commit security review;
 A1 does not, since it only adds a refusal to start. **B1 firing is the
 non-obvious one** — the scope `authenticate()` returns decides `surfaceFor`'s
