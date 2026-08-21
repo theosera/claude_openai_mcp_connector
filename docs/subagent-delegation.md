@@ -21,6 +21,13 @@ the context is.
 same ground from the same expectations do not cross-check each other. They
 agree, which reads like confirmation and is not.
 
+**An agent that has received a delegated investigation carries it out.** The
+first rule is for deciding what to do with work that arrives without a scope. An
+agent already holding one is where the fresh context was supposed to land, so
+passing it on again spends the advantage instead of using it — and because the
+rule would apply just as well to the next agent, there is no depth at which it
+stops on its own. The same scope is never delegated twice.
+
 ## Choosing the model tier
 
 The axis is **not difficulty**. It is whether a miss leaves a trace.
