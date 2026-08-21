@@ -45,6 +45,30 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **A staged two-step plan is now bound to the vault it was staged for.**
+  `apply` looked a plan up by `patch_id` alone and resolved its vault-relative
+  `target_path` against whichever root the running store had, so two servers
+  sharing an explicit `MCP_PATCH_STATE_DIR` could apply each other's plans.
+  Every plan now records the primary root's tag and each apply refuses a plan
+  naming a different vault, or naming none.
+
+  **All three plan kinds**, not just the one the ROADMAP entry named: planned
+  updates, planned exact-path creates, and planned Skill bundles share that
+  directory and cross the same way. A Skill is the heaviest of the three, since
+  later sessions load it as instructions.
+
+  An unrecorded plan is rejected rather than warned about. The seven-day sweep
+  does not make it a bounded window — the sweep is staging-driven, so a server
+  that stays up and stages nothing more never runs it again.
+
+  The tag is **not** returned to the client: it is a hash of the vault's
+  absolute root path, and handing it back would let a caller confirm a guessed
+  path. The persisted and returned records are separate types so that split
+  stays visible.
+
+  Existing deployments are unaffected unless they share a plan directory between
+  vaults; plans staged before this change are refused and need re-planning.
+
 - **`MCP_ENV_FILE` is now checked for containment, closing the last exception to
   "a policy source must not live in the data plane it governs."** `loadConfig`
   tests it against every knowledge root with the same `(dev, ino)` walk its three

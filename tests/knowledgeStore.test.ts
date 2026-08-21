@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ensurePatchStateDir, PLAN_MAX_AGE_MS, prunePatchState } from "../src/patchState.js";
+import { ensurePatchStateDir, PLAN_MAX_AGE_MS, prunePatchState, vaultTag } from "../src/patchState.js";
 import {
   DEFAULT_DOCUMENT_CACHE_MAX_CHARS,
   isTransientFsError,
@@ -1094,6 +1094,10 @@ describe("KnowledgeStore INV-9 audit-subtree reservation", () => {
       target_path: "90_Audit/vault-scan/reports/planted.md",
       reason: "x",
       expected_sha256: crypto.createHash("sha256").update(original).digest("hex"),
+      // Staged for THIS vault, so the reservation gate below is what refuses
+      // this plan. Without it the cross-vault check (INV-3) would refuse it
+      // first and the guard under test would never be reached.
+      vault_id: vaultTag(root),
       created_at: new Date().toISOString(),
       new_content: "tampered",
       diff: ""
@@ -1153,6 +1157,10 @@ Created by the constrained Skill surface.
       target_path: targetPath,
       reason: "x",
       expected_sha256: crypto.createHash("sha256").update(currentContent).digest("hex"),
+      // Staged for THIS vault, so the reservation gate below is what refuses
+      // this plan. Without it the cross-vault check (INV-3) would refuse it
+      // first and the guard under test would never be reached.
+      vault_id: vaultTag(root),
       created_at: new Date().toISOString(),
       new_content: HIJACKED,
       diff: ""
@@ -1278,6 +1286,10 @@ Created by the constrained Skill surface.
       created_at: new Date().toISOString(),
       new_content: newContent,
       content_sha256: crypto.createHash("sha256").update(newContent).digest("hex"),
+      // Staged for THIS vault, so the reservation gate below is what refuses
+      // this plan. Without it the cross-vault check (INV-3) would refuse it
+      // first and the guard under test would never be reached.
+      vault_id: vaultTag(root),
       diff: ""
     };
     await fs.writeFile(path.join(patchStateDir, `${patchId}.json`), JSON.stringify(patch), "utf8");
@@ -2282,5 +2294,161 @@ describe("the parse cache is bounded, and evicts least-recently-used", () => {
     await store.listDocuments();
 
     expect(await countOpens(() => store.listDocuments())).toBe(0);
+  });
+});
+
+/**
+ * INV-3: a staged plan is bound to the vault it was staged for.
+ *
+ * `apply` looks a plan up by `patch_id` alone and resolves `target_path` against
+ * whichever root the RUNNING store has, so two servers sharing a
+ * `MCP_PATCH_STATE_DIR` could apply each other's plans. The default plan
+ * directory is per-vault, so they no longer share one by accident — an
+ * explicitly shared one still can.
+ *
+ * The setup below is the realistic shape rather than the convenient one: the
+ * same relative path exists in both vaults with byte-identical content. That is
+ * what makes the stale check pass, and the stale check passing is precisely why
+ * this guard has to exist. A test where the second vault lacks the file would go
+ * green on "not found" and prove nothing.
+ */
+describe("KnowledgeStore INV-3 cross-vault plan binding", () => {
+  const NOTE = "---\ntitle: Shared\n---\n\nidentical in both vaults\n";
+
+  let vaultA: string;
+  let vaultB: string;
+  let sharedPatchStateDir: string;
+  let storeA: KnowledgeStore;
+  let storeB: KnowledgeStore;
+
+  beforeEach(async () => {
+    vaultA = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-inv3-a-"));
+    vaultB = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-inv3-b-"));
+    // The misconfiguration this guard is about: one directory, two vaults.
+    sharedPatchStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-inv3-shared-"));
+    for (const root of [vaultA, vaultB]) {
+      await fs.mkdir(path.join(root, "projects"), { recursive: true });
+      await fs.writeFile(path.join(root, "projects", "shared.md"), NOTE, "utf8");
+    }
+    storeA = new KnowledgeStore({ knowledgeRoot: vaultA, writeMode: "two_step", patchStateDir: sharedPatchStateDir });
+    storeB = new KnowledgeStore({ knowledgeRoot: vaultB, writeMode: "two_step", patchStateDir: sharedPatchStateDir });
+  });
+
+  afterEach(async () => {
+    for (const dir of [vaultA, vaultB, sharedPatchStateDir]) {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to apply an update planned against another vault, and leaves that vault untouched", async () => {
+    const plan = await storeA.planUpdate({
+      id_or_path: "projects/shared.md",
+      new_body: "rewritten by the plan staged for vault A",
+      reason: "cross-vault probe"
+    });
+
+    // The stale check cannot catch this: vault B holds the same bytes at the
+    // same relative path, so the hash matches there too.
+    expect(crypto.createHash("sha256").update(NOTE).digest("hex")).toBe(plan.expected_sha256);
+
+    await expect(storeB.applyPlannedUpdate(plan.patch_id)).rejects.toThrow(/staged for a different vault/);
+    expect(await fs.readFile(path.join(vaultB, "projects", "shared.md"), "utf8")).toBe(NOTE);
+    // Refused, not consumed: the plan is still applicable where it belongs.
+    const applied = await storeA.applyPlannedUpdate(plan.patch_id);
+    expect(applied.document.body.trim()).toBe("rewritten by the plan staged for vault A");
+  });
+
+  it("refuses to apply an exact-path create planned against another vault", async () => {
+    const plan = await storeA.planDocumentCreate({
+      relative_path: "projects/new-note.md",
+      title: "New",
+      body: "planned for vault A",
+      reason: "cross-vault probe"
+    });
+
+    await expect(storeB.applyPlannedDocumentCreate(plan.patch_id, "projects/new-note.md")).rejects.toThrow(
+      /staged for a different vault/
+    );
+    await expect(fs.stat(path.join(vaultB, "projects", "new-note.md"))).rejects.toThrow();
+    // The confirmed-path check could never have caught this: the user confirms a
+    // VAULT-RELATIVE path, which is the same string in both vaults.
+    expect(plan.target_path).toBe("projects/new-note.md");
+  });
+
+  it("refuses a plan that does not record a vault at all, rather than warning", async () => {
+    // A plan written before the field existed, or by anything else that can
+    // reach the directory. Rejected, not warned about: the sweep that would
+    // eventually remove it is staging-driven, so a server that stays up and
+    // stages nothing more never runs it again — the window does not close on
+    // its own, and a warning would need an end date.
+    const patchId = crypto.randomUUID();
+    await fs.writeFile(
+      path.join(sharedPatchStateDir, `${patchId}.json`),
+      JSON.stringify({
+        patch_id: patchId,
+        target_path: "projects/shared.md",
+        reason: "staged by an older server",
+        expected_sha256: crypto.createHash("sha256").update(NOTE).digest("hex"),
+        created_at: new Date().toISOString(),
+        new_content: "would have been written",
+        diff: ""
+      }),
+      "utf8"
+    );
+
+    await expect(storeA.applyPlannedUpdate(patchId)).rejects.toThrow(/does not record which vault/);
+    expect(await fs.readFile(path.join(vaultA, "projects", "shared.md"), "utf8")).toBe(NOTE);
+  });
+
+  it("keeps vault_id out of the record returned to the client, while writing it to the plan file", async () => {
+    // A negative primary assertion, because the requirement is that something is
+    // NOT emitted: a test that only checks the file would stay green if the tag
+    // were also handed to the caller. vault_id is a hash of the vault's ABSOLUTE
+    // root path, so returning it would let a caller confirm a guessed path —
+    // the layout toPublicDocument drops absolutePath to withhold.
+    const plan = await storeA.planUpdate({
+      id_or_path: "projects/shared.md",
+      new_body: "x",
+      reason: "surface check"
+    });
+    expect(plan).not.toHaveProperty("vault_id");
+
+    const created = await storeA.planDocumentCreate({
+      relative_path: "projects/surface.md",
+      title: "S",
+      body: "y",
+      reason: "surface check"
+    });
+    expect(created).not.toHaveProperty("vault_id");
+
+    // ...and the capture itself: the tag IS in the file, so the check above is
+    // about the surface rather than about the field never being written.
+    const onDisk = JSON.parse(
+      await fs.readFile(path.join(sharedPatchStateDir, `${plan.patch_id}.json`), "utf8")
+    ) as Record<string, unknown>;
+    expect(onDisk.vault_id).toBe(vaultTag(vaultA));
+  });
+
+  it("still applies a plan in the vault that staged it", async () => {
+    // The false-positive half. Without this, tightening the check to refuse
+    // everything would pass every test above.
+    const plan = await storeA.planUpdate({
+      id_or_path: "projects/shared.md",
+      new_body: "same-vault apply",
+      reason: "control"
+    });
+    const applied = await storeA.applyPlannedUpdate(plan.patch_id);
+    expect(applied.document.body.trim()).toBe("same-vault apply");
+
+    const created = await storeA.planDocumentCreate({
+      relative_path: "projects/control.md",
+      title: "Control",
+      body: "created in the staging vault",
+      reason: "control"
+    });
+    await storeA.applyPlannedDocumentCreate(created.patch_id, "projects/control.md");
+    expect(await fs.readFile(path.join(vaultA, "projects", "control.md"), "utf8")).toContain(
+      "created in the staging vault"
+    );
   });
 });

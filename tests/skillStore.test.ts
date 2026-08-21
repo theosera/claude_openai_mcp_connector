@@ -262,3 +262,70 @@ describe("loadConfig skills subtree disjointness (INV-8)", () => {
     expect(() => loadConfig({ KNOWLEDGE_ROOT: "/tmp/vault", MCP_SKILLS_SUBDIR: "_skills" })).not.toThrow();
   });
 });
+
+/**
+ * INV-3 for the third plan kind. A Skill is loaded by later sessions AS
+ * INSTRUCTIONS (INV-8), so a plan crossing vaults plants agent instructions in a
+ * vault whose owner never saw the bundle — the heaviest of the three crossings,
+ * and the one most easily forgotten because the ROADMAP entry names only
+ * `applyPlannedUpdate`.
+ */
+describe("SkillStore INV-3 cross-vault plan binding", () => {
+  let vaultA: string;
+  let vaultB: string;
+  let sharedPatchStateDir: string;
+  let storeA: SkillStore;
+  let storeB: SkillStore;
+
+  const input = (): PlanSkillCreateInput => ({
+    skill_name: "improve-ai-harness",
+    skill_md: SKILL_MD,
+    references: [],
+    reason: "cross-vault probe"
+  });
+
+  beforeEach(async () => {
+    vaultA = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-skill-inv3-a-"));
+    vaultB = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-skill-inv3-b-"));
+    sharedPatchStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-skill-inv3-shared-"));
+    for (const root of [vaultA, vaultB]) {
+      await fs.mkdir(path.join(root, "knowledge", "skills"), { recursive: true });
+    }
+    const config = (root: string) => ({
+      knowledgeRoot: root,
+      skillsSubdir: "knowledge/skills",
+      patchStateDir: sharedPatchStateDir
+    });
+    storeA = new SkillStore(config(vaultA));
+    storeB = new SkillStore(config(vaultB));
+  });
+
+  it("refuses to publish a Skill planned against another vault, and creates nothing there", async () => {
+    const plan = await storeA.planCreate(input());
+
+    await expect(storeB.applyPlannedCreate(plan.patch_id)).rejects.toThrow(/staged for a different vault/);
+    await expect(fs.stat(path.join(vaultB, "knowledge", "skills", "improve-ai-harness"))).rejects.toThrow();
+    // Refused, not consumed.
+    const applied = await storeA.applyPlannedCreate(plan.patch_id);
+    expect(applied.skill_name).toBe("improve-ai-harness");
+  });
+
+  it("refuses a Skill plan that does not record a vault", async () => {
+    const plan = await storeA.planCreate(input());
+    const planPath = path.join(sharedPatchStateDir, `skill-create-${plan.patch_id}.json`);
+    const stripped = JSON.parse(await fs.readFile(planPath, "utf8")) as Record<string, unknown>;
+    delete stripped.vault_id;
+    await fs.writeFile(planPath, JSON.stringify(stripped), "utf8");
+
+    await expect(storeA.applyPlannedCreate(plan.patch_id)).rejects.toThrow(/does not record which vault/);
+    await expect(fs.stat(path.join(vaultA, "knowledge", "skills", "improve-ai-harness"))).rejects.toThrow();
+  });
+
+  it("still publishes a Skill in the vault that staged it", async () => {
+    const plan = await storeA.planCreate(input());
+    const applied = await storeA.applyPlannedCreate(plan.patch_id);
+    // `files` are target-relative paths, not bare names.
+    expect(applied.files).toContain("knowledge/skills/improve-ai-harness/SKILL.md");
+    expect(await fs.stat(path.join(vaultA, "knowledge", "skills", "improve-ai-harness"))).toBeTruthy();
+  });
+});

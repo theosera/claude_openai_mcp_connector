@@ -112,6 +112,24 @@ export interface PlannedPatch {
   diff: string;
 }
 
+/**
+ * A staged plan as it is written to disk: the client-facing record plus the vault
+ * it was staged for (INV-3).
+ *
+ * `vault_id` is deliberately NOT part of the record returned to the client. The
+ * client has no use for it — `apply` reads it from the plan file, never from the
+ * caller — and it is a hash of the vault's ABSOLUTE root path, so returning it
+ * would let a caller confirm a guessed path. That is the layout
+ * `toPublicDocument` drops `absolutePath` to withhold and `clientSafeError`
+ * strips system errors to withhold; a 64-bit oracle for the same string is the
+ * same disclosure by a slower route.
+ *
+ * Modelled as a separate type rather than an optional field so the split is
+ * visible at every use: what is persisted and what is returned are different
+ * shapes, and a future field has to choose one.
+ */
+export type StagedPlan<T> = T & { vault_id: string };
+
 export interface PlannedDocumentCreate {
   operation: "document_create";
   patch_id: string;

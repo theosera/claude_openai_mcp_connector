@@ -5,7 +5,7 @@ import { createTwoFilesPatch } from "diff";
 import matter from "gray-matter";
 import { z } from "zod";
 import { assertNoServerOwnedFrontmatter, SAFE_MATTER_OPTIONS } from "./frontmatter.js";
-import { ensurePatchStateDir, PATCH_ID_PATTERN, SKILL_PLAN_PREFIX } from "./patchState.js";
+import { ensurePatchStateDir, PATCH_ID_PATTERN, SKILL_PLAN_PREFIX, vaultTag } from "./patchState.js";
 import { relativeToRoot, resolveExistingRoot, resolveInsideRoot, toPosixPath } from "./pathSafety.js";
 
 const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -56,6 +56,10 @@ const plannedSkillCreateSchema = z.object({
   target_path: z.string(),
   reason: z.string(),
   created_at: z.string(),
+  // Optional in the SCHEMA so that a plan written before this field existed
+  // fails with the explicit refusal below rather than a parse error that says
+  // nothing about vaults. It is not optional in behaviour: absent is rejected.
+  vault_id: z.string().optional(),
   files: z.array(z.object({ path: z.string(), content: z.string() })),
   diff: z.string()
 });
@@ -111,7 +115,10 @@ export class SkillStore {
     // same way a document plan does. Without it this store would have been the
     // one writer the sweep did not reach.
     await ensurePatchStateDir(this.config.patchStateDir);
-    await fs.writeFile(this.patchPath(patchId), JSON.stringify(plan, null, 2), {
+    // vault_id goes in the FILE only, never in the record returned to the client
+    // — see StagedPlan in types.ts for why.
+    const staged = { ...plan, vault_id: vaultTag(this.config.knowledgeRoot) };
+    await fs.writeFile(this.patchPath(patchId), JSON.stringify(staged, null, 2), {
       encoding: "utf8",
       flag: "wx",
       mode: 0o600
@@ -139,9 +146,26 @@ export class SkillStore {
       }
       throw error;
     }
-    const plan = plannedSkillCreateSchema.parse(JSON.parse(raw)) as PlannedSkillCreate;
+    const plan = plannedSkillCreateSchema.parse(JSON.parse(raw)) as PlannedSkillCreate & { vault_id?: string };
     if (plan.patch_id !== patchId) {
       throw new Error("Skill plan id does not match the requested patch_id.");
+    }
+    // Before `targetPath()` resolves the bundle inside THIS root. A Skill is
+    // loaded by later sessions as INSTRUCTIONS, so a cross-vault apply plants
+    // them in a vault whose owner never approved the bundle (INV-3, INV-8).
+    // Absent is refused, not warned about: the sweep that would eventually
+    // remove an orphaned plan is staging-driven and may never run again.
+    if (!plan.vault_id) {
+      throw new Error(
+        "Skill plan does not record which vault it was staged for, so it cannot be applied. " +
+          "Re-plan the Skill against this server."
+      );
+    }
+    if (plan.vault_id !== vaultTag(this.config.knowledgeRoot)) {
+      throw new Error(
+        "Skill plan was staged for a different vault and will not be applied here. " +
+          "Re-plan the Skill against this server."
+      );
     }
 
     const files = validatePlannedFiles(plan.skill_name, plan.files);

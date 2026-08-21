@@ -145,7 +145,7 @@ asking.
 | ID | Gap | Status elsewhere |
 | --- | --- | --- |
 | **GAP-1** | No server-side event log: who searched, fetched or wrote what cannot be reconstructed. | ROADMAP 🔭; the threat model's Repudiation row already flags it. |
-| **GAP-2** | A staged plan is not bound to the **vault** it was staged for. | ROADMAP, open. |
+| **GAP-2** | ~~A staged plan is not bound to the **vault** it was staged for.~~ | **Closed by A2.** Every plan records the primary root's tag; each apply refuses a foreign or unrecorded plan. GAP-2′ (principal) is untouched. |
 | **GAP-2′** | A staged plan is not bound to the **principal** that staged it. | ROADMAP, open — a **different** boundary; see §G. |
 | **GAP-3** | ~~`MCP_ENV_FILE` is outside the containment rule its three siblings follow.~~ | **Closed by A1.** `loadConfig` checks it against every root after they resolve. The option this row called *unevaluated, not rejected* is the one that shipped — see the ROADMAP item for what it does and does not buy. |
 | **GAP-4** | The static bearer receives full scope unconditionally. | **Not recorded anywhere before this document.** |
@@ -363,7 +363,7 @@ this item from contradicting each other.
 | | Change | Priority |
 | --- | --- | --- |
 | **A1** ✅ | Re-check `MCP_ENV_FILE` for containment once the roots are known, and refuse to keep serving if it is inside one. **Shipped.** | P2 |
-| **A2** | Record the originating primary root in a staged plan; verify it at apply. | P1 |
+| **A2** ✅ | Record the originating primary root in a staged plan; verify it at apply. **Shipped**, across all three plan kinds. | P1 |
 | **A3** | A content-free, append-only, out-of-vault event log. | P1 |
 
 **A1 is a graduation of an existing ROADMAP item, and it is weaker than it
@@ -446,7 +446,8 @@ would key on `client_id`.
 | **B2** | Low — observability | Low | Low | None | None |
 | **B3** | Low — documentation | Low | Low | None | None |
 
-**Sequencing.** A1 → A2 → A3 → B1/B2, one boundary per change. **A1 is done; A2 is next.** A2, A3 and B1 are
+**Sequencing.** A1 → A2 → A3 → B1/B2, one boundary per change. **A1 and A2 are
+done; A3 is next.** A2, A3 and B1 are
 each a security-boundary change and each fires the pre-commit security review;
 A1 does not, since it only adds a refusal to start. **B1 firing is the
 non-obvious one** — the scope `authenticate()` returns decides `surfaceFor`'s

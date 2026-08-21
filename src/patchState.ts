@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -8,6 +9,46 @@ import path from "node:path";
 // owner-only, matching the Skill / audit / OAuth state stores.
 export const PATCH_STATE_DIR_MODE = 0o700;
 export const PATCH_STATE_FILE_MODE = 0o600;
+
+/**
+ * A stable, opaque identifier for the primary knowledge root.
+ *
+ * Two things need to agree on "which vault is this", and they must not each
+ * grow their own answer. `defaultPatchStateDir` uses it to give every vault its
+ * own plan directory; a staged plan records it so `apply` can refuse a plan that
+ * was staged for a different vault (INV-3). Those are the same question asked at
+ * two moments, and `PATCH_ID_PATTERN` below records what happens when one naming
+ * rule is written twice: the writers and the sweep drift apart.
+ *
+ * The normalisation rules and their reasons, which is why this is a function
+ * rather than an inline hash at each site:
+ *
+ * - **NFC first**, for the reason `src/pathSafety.ts` normalises: macOS hands
+ *   back NFD for non-ASCII components, so one vault reaches us spelled two ways
+ *   depending on whether the value was typed, pasted from Finder, or completed
+ *   by a shell. Both callers need the same spelling to produce the same tag.
+ * - **Case is NOT folded**, because folding is wrong on a case-sensitive
+ *   filesystem — it would merge two genuinely different vaults into one tag,
+ *   and for the plan check that means accepting a cross-vault apply.
+ * - **Symlinks are NOT resolved**: `realpath` needs the directory to exist, and
+ *   `loadConfig` runs before anything guarantees that.
+ *
+ * The last two widen what counts as the same path. For the directory name that
+ * is harmless. For the plan check it is the conservative direction as well: a
+ * vault spelled two ways reads as two vaults and the apply is refused, which
+ * fails closed. What it must never do is the reverse, and folding case would
+ * have been exactly that.
+ *
+ * Truncated to 64 bits: this is an equality check between values this server
+ * wrote, not a signature. A collision needs two distinct root paths whose
+ * SHA-256 shares a 16-hex prefix, and finding one is not a capability the threat
+ * model grants anybody — the attacker in scope is a second server started
+ * against a different vault with a shared `MCP_PATCH_STATE_DIR`, which is a
+ * misconfiguration, not a chosen-prefix search.
+ */
+export function vaultTag(primaryRoot: string): string {
+  return crypto.createHash("sha256").update(primaryRoot.normalize("NFC")).digest("hex").slice(0, 16);
+}
 
 /**
  * What a plan id may look like. The single definition — both stores validate

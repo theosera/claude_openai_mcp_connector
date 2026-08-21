@@ -1296,9 +1296,33 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       the same revision deprecates DCR for CIMD, which makes `client_id` a
       _stable_ identity — revisit the `client_id` appendix **before** building
       the audit log's attribution on it.
-- [ ] **Bind a two-step plan to the vault that staged it** — `applyPlannedUpdate`
+- [x] **Bind a two-step plan to the vault that staged it** — ✅ every staged plan
+      records the primary root's `vaultTag`, and each apply refuses a plan that
+      names a different vault or names none.
+
+      **Three plan kinds share the directory, not one.** This entry named
+      `applyPlannedUpdate`; planned exact-path creates and planned Skill bundles
+      cross the same way, so fixing only the named one would have been coverage
+      1/3. All three are covered — still one boundary, asked at each writer.
+
+      **The tag is not returned to the client.** It is a hash of the vault's
+      absolute root path, so handing it back would let a caller confirm a
+      guessed path — the layout `toPublicDocument` drops `absolutePath` to
+      withhold. The persisted record and the returned record are separate types
+      (`StagedPlan<T>`) so the split is visible at every use. **This was found
+      by the pre-commit security review, not by the tests**, which is the
+      division of labour the firing table describes: reverse verification checks
+      the guard you wrote, review looks for the one you did not.
+
+      **What still limits a crossing, unchanged:** apply is stale-safe, so it
+      needed the same relative path in the second vault with byte-identical
+      pre-edit content. The tests use exactly that shape — a version where the
+      second vault lacks the file would go green on "not found" and prove
+      nothing.
+
+      Original analysis, kept because it set the shape: `applyPlannedUpdate`
       looks a plan up by `patch_id` alone and resolves its `target_path` against
-      whichever root the running store has; the plan record does not say which
+      whichever root the running store has; the plan record did not say which
       vault it was staged for. Two servers sharing a plan directory can therefore
       cross over. The default directory is now derived per primary root, so they
       no longer share one by accident, but an explicitly shared

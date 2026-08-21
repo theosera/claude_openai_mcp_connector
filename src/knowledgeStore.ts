@@ -14,7 +14,7 @@ import {
 } from "./frontmatter.js";
 import { extractMarkdownLinks, extractWikiLinks } from "./markdownLinks.js";
 import { traceThroughGraph } from "./linkGraph.js";
-import { ensurePatchStateDir, PATCH_ID_PATTERN, PATCH_STATE_FILE_MODE } from "./patchState.js";
+import { ensurePatchStateDir, PATCH_ID_PATTERN, PATCH_STATE_FILE_MODE, vaultTag } from "./patchState.js";
 import { compactWhitespace, normalizePathPrefix, searchDocuments, type SearchFilters } from "./search.js";
 import { normalizeForMatch } from "./searchText.js";
 import type { StoreConfig } from "./config.js";
@@ -25,6 +25,7 @@ import type {
   PlanDocumentCreateInput,
   PlannedDocumentCreate,
   PlannedPatch,
+  StagedPlan,
   ProjectSummary,
   SearchDefaults,
   SearchResponse,
@@ -623,7 +624,10 @@ export class KnowledgeStore implements VaultStore {
     };
 
     await ensurePatchStateDir(this.config.patchStateDir);
-    await fs.writeFile(this.patchPath(patch.patch_id), JSON.stringify(patch, null, 2), {
+    // vault_id is added HERE, not on `patch`: it belongs in the file the apply
+    // reads, and not in the record handed back to the client (see StagedPlan).
+    const staged: StagedPlan<typeof patch> = { ...patch, vault_id: this.vaultId() };
+    await fs.writeFile(this.patchPath(patch.patch_id), JSON.stringify(staged, null, 2), {
       encoding: "utf8",
       flag: "wx",
       mode: PATCH_STATE_FILE_MODE
@@ -636,7 +640,7 @@ export class KnowledgeStore implements VaultStore {
     confirmedTargetPath: string
   ): Promise<{ document: MarkdownDocument; diff: string }> {
     const patchRaw = await this.readPatchFile(patchId);
-    const patch = JSON.parse(patchRaw) as Partial<PlannedDocumentCreate>;
+    const patch = JSON.parse(patchRaw) as Partial<PlannedDocumentCreate> & { vault_id?: string };
     if (
       patch.operation !== "document_create" ||
       typeof patch.target_path !== "string" ||
@@ -649,6 +653,12 @@ export class KnowledgeStore implements VaultStore {
     if (sha256(patch.new_content) !== patch.content_sha256) {
       throw new Error("Planned document content failed integrity validation.");
     }
+    // Same crossing as applyPlannedUpdate, and checked here for the same reason:
+    // `target_path` is vault-relative, so a plan staged elsewhere would create
+    // the note inside THIS root (INV-3). The confirmed-path check below cannot
+    // catch it — the user confirms a vault-relative path, which matches in both
+    // vaults.
+    this.assertPlanStagedForThisVault(patch.vault_id);
 
     const confirmedPath = toPosixPath(assertRelativePath(confirmedTargetPath));
     if (confirmedPath !== patch.target_path) {
@@ -733,7 +743,10 @@ export class KnowledgeStore implements VaultStore {
     };
 
     await ensurePatchStateDir(this.config.patchStateDir);
-    await fs.writeFile(this.patchPath(patch.patch_id), JSON.stringify(patch, null, 2), {
+    // vault_id is added HERE, not on `patch`: it belongs in the file the apply
+    // reads, and not in the record handed back to the client (see StagedPlan).
+    const staged: StagedPlan<typeof patch> = { ...patch, vault_id: this.vaultId() };
+    await fs.writeFile(this.patchPath(patch.patch_id), JSON.stringify(staged, null, 2), {
       encoding: "utf8",
       mode: PATCH_STATE_FILE_MODE
     });
@@ -757,10 +770,14 @@ export class KnowledgeStore implements VaultStore {
 
   private async applyPlannedUpdateSerialized(patchId: string): Promise<{ document: MarkdownDocument; diff: string }> {
     const patchRaw = await this.readPatchFile(patchId);
-    const patch = JSON.parse(patchRaw) as PlannedPatch & { operation?: string };
+    const patch = JSON.parse(patchRaw) as PlannedPatch & { operation?: string; vault_id?: string };
     if (patch.operation === "document_create") {
       throw new Error("Patch is not a planned document update.");
     }
+    // Before the target is resolved, because resolution is the crossing: the
+    // path is vault-relative and this store would happily resolve it inside
+    // whichever root it was started against (INV-3).
+    this.assertPlanStagedForThisVault(patch.vault_id);
     const absolutePath = await this.resolveForExistingRead(patch.target_path);
     // INV-9: a general update must never touch the reserved audit subtree
     // (authoritative gate — this is where the actual overwrite happens).
@@ -1129,6 +1146,45 @@ export class KnowledgeStore implements VaultStore {
       await this.init();
     }
     return this.rootRealPath!;
+  }
+
+  /** This store's vault identity, as recorded in a staged plan (INV-3). */
+  private vaultId(): string {
+    // The CONFIGURED root, matching what `defaultPatchStateDir` hashes, so the
+    // plan directory a vault gets and the tag its plans carry always agree.
+    // Deliberately not `this.root()` (the realpath): resolving would make the
+    // tag depend on whether the link chain was in place at that moment, so a
+    // vault reached through a symlink today and directly tomorrow would stop
+    // matching its own staged plans.
+    return vaultTag(this.config.knowledgeRoot);
+  }
+
+  /**
+   * Refuse a plan staged for a different vault, or one that does not say (INV-3).
+   *
+   * An unrecorded plan is REJECTED, not warned about. The obvious argument for
+   * warning — "the seven-day sweep drains them anyway" — is false: the sweep is
+   * staging-driven, and `patchState.ts` says outright that a server which stays
+   * up and stages nothing more never sweeps again. A window that does not close
+   * on its own is a reason to reject, because a warning would need an end date
+   * and there is none.
+   *
+   * Neither message names a path or a root. The tags are opaque by construction
+   * and the client has no use for them beyond "these two differ".
+   */
+  private assertPlanStagedForThisVault(planVaultId: string | undefined): void {
+    if (!planVaultId) {
+      throw new Error(
+        "Plan does not record which vault it was staged for, so it cannot be applied. " +
+          "Re-plan the change against this server."
+      );
+    }
+    if (planVaultId !== this.vaultId()) {
+      throw new Error(
+        "Plan was staged for a different vault and will not be applied here. " +
+          "Re-plan the change against this server."
+      );
+    }
   }
 
   private patchPath(patchId: string): string {
