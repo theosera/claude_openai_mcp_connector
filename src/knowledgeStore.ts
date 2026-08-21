@@ -14,7 +14,7 @@ import {
 } from "./frontmatter.js";
 import { extractMarkdownLinks, extractWikiLinks } from "./markdownLinks.js";
 import { traceThroughGraph } from "./linkGraph.js";
-import { ensurePatchStateDir, PATCH_ID_PATTERN, PATCH_STATE_FILE_MODE } from "./patchState.js";
+import { ensurePatchStateDir, PATCH_ID_PATTERN, PATCH_STATE_FILE_MODE, vaultIdentityTag } from "./patchState.js";
 import { compactWhitespace, normalizePathPrefix, searchDocuments, type SearchFilters } from "./search.js";
 import { normalizeForMatch } from "./searchText.js";
 import type { StoreConfig } from "./config.js";
@@ -25,6 +25,7 @@ import type {
   PlanDocumentCreateInput,
   PlannedDocumentCreate,
   PlannedPatch,
+  StagedPlan,
   ProjectSummary,
   SearchDefaults,
   SearchResponse,
@@ -594,6 +595,10 @@ export class KnowledgeStore implements VaultStore {
   }
 
   async planDocumentCreate(input: PlanDocumentCreateInput): Promise<PlannedDocumentCreate> {
+    // Before the target is validated, for the reason given in `planUpdate`. A
+    // create has no stale-content check at apply, so a plan tagged for a vault it
+    // was not derived against simply publishes there.
+    const vaultId = await this.vaultId();
     const targetPath = await this.validateCreateTarget(input.relative_path);
     const metadata: DocumentMetadata = {
       id: crypto.randomUUID(),
@@ -623,7 +628,11 @@ export class KnowledgeStore implements VaultStore {
     };
 
     await ensurePatchStateDir(this.config.patchStateDir);
-    await fs.writeFile(this.patchPath(patch.patch_id), JSON.stringify(patch, null, 2), {
+    await this.assertVaultUnchangedWhilePlanning(vaultId);
+    // vault_id is added HERE, not on `patch`: it belongs in the file the apply
+    // reads, and not in the record handed back to the client (see StagedPlan).
+    const staged: StagedPlan<typeof patch> = { ...patch, vault_id: vaultId };
+    await fs.writeFile(this.patchPath(patch.patch_id), JSON.stringify(staged, null, 2), {
       encoding: "utf8",
       flag: "wx",
       mode: PATCH_STATE_FILE_MODE
@@ -636,7 +645,7 @@ export class KnowledgeStore implements VaultStore {
     confirmedTargetPath: string
   ): Promise<{ document: MarkdownDocument; diff: string }> {
     const patchRaw = await this.readPatchFile(patchId);
-    const patch = JSON.parse(patchRaw) as Partial<PlannedDocumentCreate>;
+    const patch = JSON.parse(patchRaw) as Partial<PlannedDocumentCreate> & { vault_id?: string };
     if (
       patch.operation !== "document_create" ||
       typeof patch.target_path !== "string" ||
@@ -649,6 +658,12 @@ export class KnowledgeStore implements VaultStore {
     if (sha256(patch.new_content) !== patch.content_sha256) {
       throw new Error("Planned document content failed integrity validation.");
     }
+    // Same crossing as applyPlannedUpdate, and checked here for the same reason:
+    // `target_path` is vault-relative, so a plan staged elsewhere would create
+    // the note inside THIS root (INV-3). The confirmed-path check below cannot
+    // catch it — the user confirms a vault-relative path, which matches in both
+    // vaults.
+    await this.assertPlanStagedForThisVault(patch.vault_id);
 
     const confirmedPath = toPosixPath(assertRelativePath(confirmedTargetPath));
     if (confirmedPath !== patch.target_path) {
@@ -661,6 +676,10 @@ export class KnowledgeStore implements VaultStore {
     // check in serializeMarkdown cannot speak for what is written here.
     assertEmittedFrontmatterWithinLimit(patch.new_content);
     const absolutePath = await this.resolveForWrite(await this.validateCreateTarget(patch.target_path));
+    // Again, immediately before the write: the check above ran before the target
+    // was resolved, and resolution walks the pathname afresh. See the note on
+    // `assertPlanStagedForThisVault` for what this narrows and what it cannot.
+    await this.assertPlanStagedForThisVault(patch.vault_id);
     try {
       await fs.writeFile(absolutePath, patch.new_content, { encoding: "utf8", flag: "wx" });
     } catch (error) {
@@ -680,6 +699,12 @@ export class KnowledgeStore implements VaultStore {
     frontmatter_patch?: Record<string, unknown>;
     reason: string;
   }): Promise<PlannedPatch> {
+    // Captured BEFORE anything is read, and re-checked before the plan is
+    // persisted. Deriving first and tagging afterwards lets a root replaced in
+    // between produce a plan whose CONTENT came from the old vault and whose tag
+    // names the new one — every apply-time check then passes. See
+    // `assertVaultUnchangedWhilePlanning`.
+    const vaultId = await this.vaultId();
     const document = await this.fetch(input.id_or_path);
     // INV-9: refuse to stage an update against the reserved audit subtree (early
     // reject; applyPlannedUpdate re-checks authoritatively at write time).
@@ -733,7 +758,11 @@ export class KnowledgeStore implements VaultStore {
     };
 
     await ensurePatchStateDir(this.config.patchStateDir);
-    await fs.writeFile(this.patchPath(patch.patch_id), JSON.stringify(patch, null, 2), {
+    await this.assertVaultUnchangedWhilePlanning(vaultId);
+    // vault_id is added HERE, not on `patch`: it belongs in the file the apply
+    // reads, and not in the record handed back to the client (see StagedPlan).
+    const staged: StagedPlan<typeof patch> = { ...patch, vault_id: vaultId };
+    await fs.writeFile(this.patchPath(patch.patch_id), JSON.stringify(staged, null, 2), {
       encoding: "utf8",
       mode: PATCH_STATE_FILE_MODE
     });
@@ -757,10 +786,14 @@ export class KnowledgeStore implements VaultStore {
 
   private async applyPlannedUpdateSerialized(patchId: string): Promise<{ document: MarkdownDocument; diff: string }> {
     const patchRaw = await this.readPatchFile(patchId);
-    const patch = JSON.parse(patchRaw) as PlannedPatch & { operation?: string };
+    const patch = JSON.parse(patchRaw) as PlannedPatch & { operation?: string; vault_id?: string };
     if (patch.operation === "document_create") {
       throw new Error("Patch is not a planned document update.");
     }
+    // Before the target is resolved, because resolution is the crossing: the
+    // path is vault-relative and this store would happily resolve it inside
+    // whichever root it was started against (INV-3).
+    await this.assertPlanStagedForThisVault(patch.vault_id);
     const absolutePath = await this.resolveForExistingRead(patch.target_path);
     // INV-9: a general update must never touch the reserved audit subtree
     // (authoritative gate — this is where the actual overwrite happens).
@@ -791,6 +824,10 @@ export class KnowledgeStore implements VaultStore {
     // because this is the authoritative gate and the plan-time one is only an
     // early refusal. INV-9 draws that line the same way for the audit surface.
     assertEmittedFrontmatterWithinLimit(patch.new_content);
+    // Again, immediately before the write. Between the check at the top and this
+    // line the target was resolved, read and hashed, all by pathname — see the
+    // note on `assertPlanStagedForThisVault`.
+    await this.assertPlanStagedForThisVault(patch.vault_id);
     // Same-directory temp + rename: an interrupted apply must leave the note
     // whole (old or new), never truncated. See src/atomicWrite.ts.
     await replaceFileAtomically(absolutePath, patch.new_content, original);
@@ -1129,6 +1166,105 @@ export class KnowledgeStore implements VaultStore {
       await this.init();
     }
     return this.rootRealPath!;
+  }
+
+  /** This store's vault identity, as recorded in a staged plan (INV-3). */
+  private async vaultId(): Promise<string> {
+    // The RESOLVED root, not the configured spelling. Hashing the spelling ties
+    // the tag to a string the operator controls rather than to the directory the
+    // writes land in, and those come apart in the direction that matters: a
+    // symlinked KNOWLEDGE_ROOT retargeted at another vault keeps its spelling,
+    // so a plan staged before the change carries a tag this check still accepts
+    // — while `this.root()`, re-resolved at each init, now points somewhere else
+    // and is what every target below is resolved against. Byte-identical content
+    // at the same relative path also carries the stale check, so nothing else in
+    // the apply path notices.
+    //
+    // It fixes the harmless direction too: one vault reached through a symlink
+    // today and by its own path tomorrow resolves to the same realpath, so its
+    // staged plans keep matching. An earlier version of this comment claimed
+    // resolving would BREAK that case, which had it exactly backwards — not
+    // resolving is what makes two spellings of one vault read as two vaults.
+    //
+    // `defaultPatchStateDir` still hashes the configured spelling, because it
+    // runs in `loadConfig` before anything guarantees the directory exists and
+    // `realpath` needs it to. The two tags are therefore allowed to differ; the
+    // directory name only has to be stable and per-vault, while this one has to
+    // say which vault the writes went to. Raised as a P1 by Codex on #142.
+    //
+    // The resolved path is still not the whole identity — the directory AT that
+    // path can be replaced — so `vaultIdentityTag` adds `(dev, ino)`. Its header
+    // carries that reasoning and the cost that comes with it.
+    return vaultIdentityTag(await this.root());
+  }
+
+  /**
+   * Refuse a plan staged for a different vault, or one that does not say (INV-3).
+   *
+   * An unrecorded plan is REJECTED, not warned about. The obvious argument for
+   * warning — "the seven-day sweep drains them anyway" — is false: the sweep is
+   * staging-driven, and `patchState.ts` says outright that a server which stays
+   * up and stages nothing more never sweeps again. A window that does not close
+   * on its own is a reason to reject, because a warning would need an end date
+   * and there is none.
+   *
+   * Neither message names a path or a root. The tags are opaque by construction
+   * and the client has no use for them beyond "these two differ".
+   *
+   * ⚠️ **Called TWICE per apply, and the second call is not redundant.** This
+   * check stats the root; everything after it — target validation, resolution,
+   * the stale read — walks the pathname again, so a directory swapped in that
+   * window is verified in its old incarnation and written in its new one. Codex
+   * raised that as a fourth P1 on #142. Calling it again immediately before the
+   * mutation narrows the window from "check → validate → resolve → read → hash →
+   * write" to "check → write".
+   *
+   * ⚠️ **It does not close it, and no arrangement of stats can.** Closing it
+   * needs the write anchored to the directory that was verified — fd-based
+   * containment, `openat` with `O_NOFOLLOW` per component — which Node does not
+   * expose portably. `src/knowledgeStore.ts`'s `readDocument` records the same
+   * wall for INV-1 and reaches the same conclusion: keep the cheap check, and do
+   * not describe it as containment. The residual is a ROADMAP item.
+   */
+  /**
+   * Refuse to STAGE a plan whose vault changed while it was being derived.
+   *
+   * The apply-side check answers "is this the vault the plan was staged for".
+   * It cannot answer "is this the vault the plan was derived FROM", because a
+   * root replaced between the read and the tag produces a plan that truthfully
+   * names the replacement while carrying content from its predecessor — and
+   * every apply-time check then passes. An update needs the replacement to hold
+   * byte-identical content at the same path; a create needs nothing at all.
+   * Raised as a fifth P1 by Codex on #142, and distinct from the apply-side
+   * window: this one opens before the identity is captured.
+   *
+   * Same shape as the apply side, and the same limit: capture first, verify
+   * before persisting, and do not call it closed. A replacement landing between
+   * this check and the write of the plan file still slips through, for the
+   * fd-containment reason `assertPlanStagedForThisVault` records.
+   */
+  private async assertVaultUnchangedWhilePlanning(capturedVaultId: string): Promise<void> {
+    if (capturedVaultId !== (await this.vaultId())) {
+      throw new Error(
+        "The vault changed while this plan was being prepared, so nothing was staged. " +
+          "Re-plan the change against this server."
+      );
+    }
+  }
+
+  private async assertPlanStagedForThisVault(planVaultId: string | undefined): Promise<void> {
+    if (!planVaultId) {
+      throw new Error(
+        "Plan does not record which vault it was staged for, so it cannot be applied. " +
+          "Re-plan the change against this server."
+      );
+    }
+    if (planVaultId !== (await this.vaultId())) {
+      throw new Error(
+        "Plan was staged for a different vault and will not be applied here. " +
+          "Re-plan the change against this server."
+      );
+    }
   }
 
   private patchPath(patchId: string): string {

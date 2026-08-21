@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -8,6 +9,120 @@ import path from "node:path";
 // owner-only, matching the Skill / audit / OAuth state stores.
 export const PATCH_STATE_DIR_MODE = 0o700;
 export const PATCH_STATE_FILE_MODE = 0o600;
+
+/**
+ * A stable, opaque identifier for the primary knowledge root.
+ *
+ * Two callers hash a root with this, and they must not each grow their own
+ * hashing rule. `defaultPatchStateDir` gives every vault its own plan directory;
+ * `KnowledgeStore.vaultId` / `SkillStore` record a tag in each staged plan so
+ * `apply` can refuse a plan staged for a different vault (INV-3).
+ *
+ * ★ ONE caller uses this directly now: `defaultPatchStateDir`, which runs inside
+ * `loadConfig` before anything guarantees the directory exists and so has only a
+ * spelling to hash. The plan check needs more than a spelling and goes through
+ * `vaultIdentityTag` below. A directory name only has to be stable and
+ * per-vault; a plan check has to name the directory the writes land in.
+ *
+ * The normalisation rules and their reasons, which is why this is a function
+ * rather than an inline hash at each site:
+ *
+ * - **NFC first**, for the reason `src/pathSafety.ts` normalises: macOS hands
+ *   back NFD for non-ASCII components, so one vault reaches us spelled two ways
+ *   depending on whether the value was typed, pasted from Finder, or completed
+ *   by a shell. Both callers need the same spelling to produce the same tag.
+ * - **Case is NOT folded**, because folding is wrong on a case-sensitive
+ *   filesystem — it would merge two genuinely different vaults into one tag,
+ *   and for the plan check that means accepting a cross-vault apply.
+ * - **Symlinks are resolved by the CALLER, not here**, because only the caller
+ *   knows whether it can. This function hashes the string it is given.
+ *
+ * Case folding and symlink resolution are not two versions of one choice, and an
+ * earlier revision of this comment treated them as one — it said both "widen
+ * what counts as the same path" and that both therefore fail closed. Folding
+ * case does merge two genuinely different vaults into one tag, so it is refused
+ * here. Resolving symlinks does the OPPOSITE: it keeps two spellings of one
+ * vault together, and it separates one spelling whose target has been moved to
+ * another vault. Leaving them unresolved is what fails OPEN, because the tag
+ * then follows the operator's spelling rather than the directory the writes land
+ * in. Raised as a P1 by Codex on #142; the plan check resolves before hashing.
+ *
+ * Truncated to 64 bits: this is an equality check between values this server
+ * wrote, not a signature. A collision needs two distinct root paths whose
+ * SHA-256 shares a 16-hex prefix, and finding one is not a capability the threat
+ * model grants anybody — the attacker in scope is a second server started
+ * against a different vault with a shared `MCP_PATCH_STATE_DIR`, which is a
+ * misconfiguration, not a chosen-prefix search.
+ */
+export function vaultTag(primaryRoot: string): string {
+  return crypto.createHash("sha256").update(primaryRoot.normalize("NFC")).digest("hex").slice(0, 16);
+}
+
+/**
+ * The identity a staged plan records, and the one `apply` re-checks (INV-3).
+ *
+ * A pathname is not an identity. Resolving symlinks fixed the case where one
+ * spelling was pointed at a second vault, but left the case where the DIRECTORY
+ * at a fixed path is replaced — a restore, a redeploy, `mv vault vault.old &&
+ * mv restored vault`. The resolved string is identical across that, and so is
+ * the default patch-state directory, so a fresh store accepted plans staged for
+ * the directory that used to be there. **A planned create is the sharp end: it
+ * has no stale-content check to fall back on**, so the old plan simply publishes
+ * into the replacement. Raised as a second P1 by Codex on #142.
+ *
+ * `(dev, ino)` was the answer to that, and it was not enough either. **Inode
+ * numbers are recycled**: `rm -rf vault && mkdir vault` hands the new directory
+ * the number the old one just released. Measured on this repository's own Linux
+ * filesystem, by Codex and then again here — the replacement came back with the
+ * identical `(dev, ino)`, the tag was unchanged, and a planned create published
+ * into it. `rename` gets a fresh inode, which is why the tests written for the
+ * previous round went green: they exercised one flow of the property, not the
+ * property. Raised as a third P1 by Codex on #142.
+ *
+ * So the tuple also carries the directory's **birth time**, which a recreated
+ * directory cannot inherit. What the tag hashes, and what each part answers:
+ *
+ * - the resolved path — which vault was named
+ * - `(dev, ino)` — which directory that named
+ * - `birthtimeNs` — which INCARNATION of that directory
+ *
+ * Any of the three changing refuses the plan. One rule, no case analysis.
+ *
+ * ⚠️ **This is not the persistent identifier the finding asked for, and saying
+ * so is the point.** A truly non-recyclable identity has to be STORED, and the
+ * only place that travels with a vault is inside it — a write into the data
+ * plane that no user approved, which is the one thing the two-step rule exists
+ * to prevent. Between the two, this closes the measured flow without opening a
+ * write path. The residual is on the ROADMAP rather than in a comment that
+ * implies it is settled; the previous two rounds each read that way and each
+ * was wrong.
+ *
+ * ⚠️ **It degrades silently on a filesystem that does not record a birth time.**
+ * Node reports `0n` there and the tuple falls back to what it was before this
+ * round — no worse, but no better, and nothing announces it. Linux ext4/xfs,
+ * APFS and NTFS all record one.
+ *
+ * ⚠️ **State the cost rather than discovering it in an incident.** None of the
+ * three parts survives a restore from backup, a copy, or a remount that
+ * renumbers the device, and including the path means renaming the vault refuses
+ * too. In all of those the vault is arguably "the same vault" and its staged
+ * plans are refused anyway. That is the direction to be wrong in: a plan is
+ * cheap to stage again, and the alternative is a write landing in a vault
+ * nobody approved it for. The refusal message says to re-plan.
+ *
+ * Stat'ed per call rather than cached at `init`, so a directory swapped under a
+ * running server is caught at the apply rather than at the next restart.
+ */
+export async function vaultIdentityTag(resolvedRoot: string): Promise<string> {
+  // `bigint: true` for `birthtimeNs`: the millisecond field is a float, and a
+  // float is a formatting decision inside a value that has to compare exactly.
+  const stats = await fs.stat(resolvedRoot, { bigint: true });
+  return crypto
+    .createHash("sha256")
+    .update(`${resolvedRoot.normalize("NFC")}\0${stats.dev}\0${stats.ino}\0${stats.birthtimeNs}`)
+    .digest("hex")
+    .slice(0, 16);
+}
 
 /**
  * What a plan id may look like. The single definition — both stores validate

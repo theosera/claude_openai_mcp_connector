@@ -1,10 +1,10 @@
-import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import dotenv from "dotenv";
 import type { OAuthConfig } from "./oauth/provider.js";
+import { vaultTag } from "./patchState.js";
 import { assertRelativePath, posixContains, toPosixPath } from "./pathSafety.js";
 import { parseTypeRules } from "./typeRules.js";
 import type { TypeRules } from "./typeRules.js";
@@ -259,18 +259,13 @@ function defaultPatchStateDir(primaryRoot: string): string {
   // parent that nothing checks. Same depth as before keeps that guard's reach
   // unchanged.
   //
-  // NFC first, for the reason `src/pathSafety.ts` normalises: macOS hands back
-  // NFD for non-ASCII components, so one vault reaches us spelled two ways
-  // depending on whether the value was typed, pasted from Finder, or completed
-  // by a shell. The tag only has to be stable for a given vault — a spelling
-  // that moved it would leave already-staged plans unreachable (`patch_id` not
-  // found) with their plaintext orphaned in the old directory. Case and symlinks
-  // are deliberately NOT folded: case-folding is wrong on a case-sensitive
-  // filesystem, and `realpath` needs the directory to exist, which `loadConfig`
-  // cannot assume. This widens what counts as the same path; it can never merge
-  // two different ones.
-  const tag = crypto.createHash("sha256").update(primaryRoot.normalize("NFC")).digest("hex").slice(0, 16);
-  return path.join(home, ".mcp-state", `patches-${tag}`);
+  // The same identifier a staged plan records, from the one definition in
+  // `patchState.ts` — the normalisation rules and why each one is chosen live
+  // there. What matters here and not there: the tag has to be STABLE for a given
+  // vault, because a spelling that moved it would leave already-staged plans
+  // unreachable (`patch_id` not found) with their plaintext orphaned in the old
+  // directory.
+  return path.join(home, ".mcp-state", `patches-${vaultTag(primaryRoot)}`);
 }
 
 /** Bound on symlink hops while canonicalizing, so a link cycle fails instead of spinning. */

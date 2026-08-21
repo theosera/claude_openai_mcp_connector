@@ -1296,9 +1296,96 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       the same revision deprecates DCR for CIMD, which makes `client_id` a
       _stable_ identity — revisit the `client_id` appendix **before** building
       the audit log's attribution on it.
-- [ ] **Bind a two-step plan to the vault that staged it** — `applyPlannedUpdate`
+- [x] **Bind a two-step plan to the vault that staged it** — ✅ every staged plan
+      records the primary root's `vaultTag`, and each apply refuses a plan that
+      names a different vault or names none.
+
+      **Three plan kinds share the directory, not one.** This entry named
+      `applyPlannedUpdate`; planned exact-path creates and planned Skill bundles
+      cross the same way, so fixing only the named one would have been coverage
+      1/3. All three are covered — still one boundary, asked at each writer.
+
+      **The tag is not returned to the client.** It is a hash of the vault's
+      absolute root path, so handing it back would let a caller confirm a
+      guessed path — the layout `toPublicDocument` drops `absolutePath` to
+      withhold. The persisted record and the returned record are separate types
+      (`StagedPlan<T>`) so the split is visible at every use. **This was found
+      by the pre-commit security review, not by the tests**, which is the
+      division of labour the firing table describes: reverse verification checks
+      the guard you wrote, review looks for the one you did not.
+
+      **A pathname is not an identity, and it took two rounds to say so.** The
+      first version hashed `KNOWLEDGE_ROOT` as written, which reads the same
+      before and after a symlinked root is retargeted at another vault. The
+      second resolved symlinks, which reads the same before and after the
+      DIRECTORY at a fixed path is replaced — a restore, a redeploy. Both were
+      raised as P1s by Codex, on consecutive heads of the same pull request, and
+      the second is sharper: a planned create has no stale-content check to fall
+      back on, so the old plan simply publishes into the replacement.
+
+      **A third P1 followed, on the head that fixed the second.** `(dev, ino)`
+      identifies a live inode, not a directory generation, and inode numbers are
+      recycled: `rm -rf vault && mkdir vault` gave the replacement the identical
+      pair on this repository's own filesystem, so the tag was unchanged and a
+      create published into it. The tests written for the previous round used
+      `rename`, which gets a fresh inode — they exercised one flow of the
+      property, not the property.
+
+      The tag now covers the resolved path (which vault was named), `(dev, ino)`
+      (which directory that named) and the root's birth time (which incarnation
+      of it). Any one changing refuses. **It is still not the persistent
+      identifier the finding asked for** — that has to be stored, and the only
+      place that travels with a vault is inside it, which is an unapproved write
+      into the data plane. Left as a follow-up rather than described as
+      settled, since the previous two rounds each read that way and each was
+      wrong. It also degrades silently on a filesystem with no birth time.
+
+      **And a fourth, which is the honest end of this line.** Verifying an
+      identity and then resolving the target by pathname leaves a check-to-use
+      window: replace the directory in between and the check passes against the
+      vault that is already gone. The identity is now re-checked immediately
+      before each of the three writes, which narrows the window to the write
+      itself and is pinned by a test that drives the swap rather than racing for
+      it. **No arrangement of `stat` calls closes it.** That needs the write
+      anchored to the verified directory — fd-based containment, `openat` with
+      per-component `O_NOFOLLOW` — which Node does not expose portably. INV-1
+      item 9 reached this same wall for `readDocument` and settled the same way.
+
+      **A fifth, at the other end of the two-step.** The apply-side checks
+      answer "is this the vault the plan was staged for" and cannot answer "is
+      this the vault it was derived FROM": a root replaced between the read and
+      the tag yields a plan that truthfully names the replacement while carrying
+      its predecessor's content. All three writers now capture the identity
+      before deriving and verify it before persisting — the same capture-verify
+      shape as the apply side, with the same limit.
+
+      One of the three tests for it went **green against a guard that never
+      ran** on the first attempt: the spy's first `fs.stat` was `init`'s, not
+      the capture's, so the swap landed before the identity was taken. Forcing
+      resolution before installing the spy is what made it reach.
+
+      🔭 **Follow-up, not closed by this item:** a vault identity that is
+      persistent and anchored to the verified directory. Both halves need
+      something this repository does not have yet — somewhere to store an
+      identifier that is not the vault's own data plane, and fd-relative
+      filesystem calls. Four consecutive P1s on one pull request found four
+      different ways for a derived identity to be handed back by the
+      filesystem; the fifth is not worth guessing at.
+      **The cost is that `(dev, ino)` does not survive a restore, a copy or a
+      remount**, so plans of an arguably unchanged vault are refused there too —
+      the direction to be wrong in, since re-planning is cheap.
+      `defaultPatchStateDir` still hashes the spelling alone, because it runs
+      before the directory is known to exist.
+
+      **What still limits a crossing, unchanged:** apply is stale-safe, so it
+      needed the same relative path in the second vault with byte-identical
+      pre-edit content. The tests use exactly that shape — a version where the
+      second vault lacks the file would go green on "not found" and prove
+      nothing.
+
+      Original analysis, kept because it set the shape: `applyPlannedUpdate`
       looks a plan up by `patch_id` alone and resolves its `target_path` against
-      whichever root the running store has; the plan record does not say which
+      whichever root the running store has; the plan record did not say which
       vault it was staged for. Two servers sharing a plan directory can therefore
       cross over. The default directory is now derived per primary root, so they
       no longer share one by accident, but an explicitly shared

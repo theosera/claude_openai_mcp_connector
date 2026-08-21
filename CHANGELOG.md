@@ -45,6 +45,74 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **A staged two-step plan is now bound to the vault it was staged for.**
+  `apply` looked a plan up by `patch_id` alone and resolved its vault-relative
+  `target_path` against whichever root the running store had, so two servers
+  sharing an explicit `MCP_PATCH_STATE_DIR` could apply each other's plans.
+  Every plan now records the primary root's tag and each apply refuses a plan
+  naming a different vault, or naming none.
+
+  **All three plan kinds**, not just the one the ROADMAP entry named: planned
+  updates, planned exact-path creates, and planned Skill bundles share that
+  directory and cross the same way. A Skill is the heaviest of the three, since
+  later sessions load it as instructions.
+
+  An unrecorded plan is rejected rather than warned about. The seven-day sweep
+  does not make it a bounded window — the sweep is staging-driven, so a server
+  that stays up and stages nothing more never runs it again.
+
+  The tag is **not** returned to the client: it is a hash of the vault's
+  absolute root path, and handing it back would let a caller confirm a guessed
+  path. The persisted and returned records are separate types so that split
+  stays visible.
+
+  The tag covers three things, because each of the first two turned out to be
+  insufficient on its own: the **resolved path** (which vault was named), the
+  root's **`(dev, ino)`** (which directory that named — the same filesystem
+  identity `assertOutsideKnowledgeRoots` compares rather than trusting a
+  string), and its **birth time** (which incarnation of that directory). A
+  symlinked `KNOWLEDGE_ROOT` retargeted at another vault keeps its spelling;
+  the directory
+  at a fixed path can be replaced by a restore or redeploy while the path stays
+  identical; and **inode numbers are recycled**, so `rm -rf vault && mkdir
+  vault` hands the replacement the number the original just released — measured
+  on this repository's own filesystem. A planned create is the sharp end of the
+  last two, having no stale-content check to fall back on.
+
+  **This is not a persistent vault identifier**, which would have to be stored
+  inside the vault — an unapproved write into the data plane. It closes the
+  measured flows without opening a write path. On a filesystem that records no
+  birth time the tuple silently falls back to path and inode.
+
+  **The identity is re-checked immediately before each write**, because
+  everything between the first check and the write — target validation,
+  resolution, the stale read — walks the pathname again, so a directory replaced
+  in that window would be verified in its old incarnation and written in its
+  new one. The second check narrows that window to the write itself. **It does
+  not close it**, and no arrangement of `stat` calls can: closing it needs the
+  write anchored to the directory that was verified, which is fd-based
+  containment (`openat`, per-component `O_NOFOLLOW`) that Node does not expose
+  portably. `readDocument` records the same wall for INV-1 and reaches the same
+  conclusion — keep the cheap check, do not call it containment.
+
+  **The same capture-then-verify runs at plan time**, and it is a different
+  window: deriving a plan first and tagging it afterwards lets a root replaced
+  in between produce a plan whose content came from the old vault and whose tag
+  truthfully names the new one, so every apply-time check passes. Each writer
+  now captures the identity before it reads anything and refuses to stage if it
+  changed. A refused plan leaves no file behind.
+
+  **The cost, stated rather than discovered later:** `(dev, ino)` is not stable
+  across a restore from backup, a copy, or a remount, and including the path
+  means renaming the vault refuses too. In all of those the staged plans of an
+  arguably unchanged vault are refused and need re-planning. That is the
+  direction to be wrong in — a plan is cheap to stage again, and the alternative
+  is a write landing in a vault nobody approved it for.
+
+  Existing deployments are unaffected unless they share a plan directory between
+  vaults; plans staged before this change are refused and need re-planning. So
+  are plans staged before the vault's root was moved or re-linked.
+
 - **`MCP_ENV_FILE` is now checked for containment, closing the last exception to
   "a policy source must not live in the data plane it governs."** `loadConfig`
   tests it against every knowledge root with the same `(dev, ino)` walk its three
