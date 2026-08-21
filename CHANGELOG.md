@@ -69,9 +69,10 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `docs/policy-provenance.md` now reads four files and six places, naming the new
   site instead of only counting it. Two records go with it: the passage was in
   neither the caveat list nor the left-alone table, which is the nothing that
-  under-inclusion leaves behind; and the sweep pattern is a lower bound, because
-  a line-oriented `grep` cannot see a juxtaposition split across a line break —
-  one such site exists, and it is the caveat itself.
+  under-inclusion leaves behind; and counting the passages is a different search
+  from finding the hits, since the sweep is an alternation that misses nothing
+  per line, while a proximity match needs both a wide enough window and leave to
+  cross a newline before a wrapped juxtaposition shows up at all.
 
 - **The exact-path write runbook in `docs/operations.md` no longer tells a
   static-bearer operator to authorize a scope.** It said to set

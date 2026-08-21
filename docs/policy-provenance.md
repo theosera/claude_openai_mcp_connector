@@ -234,13 +234,19 @@ every hit was re-classified, rather than only the recorded sites re-checked —
 re-checking a list cannot find what the list omits. The "eleven became eight
 became five" sentence describes the original survey and is left as written.
 
-⚠️ **The sweep pattern is a lower bound, and one of its misses is structural.** A
-line-oriented `grep` cannot see a juxtaposition that a line break splits. Run
-over whole file contents instead of single lines, the same pattern also returns
-the `operations.md` checklist entry, where `MCP_HTTP_ALLOW_WRITE` and
-`vault.write` sit on either side of a wrap. That site is the caveat itself, so
-nothing was left uncovered by the miss — but a re-run should scan across
-newlines before reporting a denominator.
+⚠️ **Counting the passages is a different search from finding the hits, and it
+has parameters the sweep does not.** The pattern above is an alternation, so a
+line-oriented `grep` returns every line carrying either term and misses nothing:
+the `operations.md` checklist entry comes back as two hits, one per line.
+Narrowing to *passages that state both conditions together* takes a proximity
+match, and that match has two parameters — how wide the window is, and whether
+it may cross a newline. Both have to be wide enough before a given site appears.
+Measured on `e256b54`: at an 80-character window the per-line and whole-file
+forms return the same four passages, and at 120 the whole-file form returns a
+fifth — that checklist entry, where 98 characters and a line break separate the
+two terms. It is the caveat itself, so nothing was left uncovered. The point is
+that a denominator quoted without both parameters says less than it looks like
+it does.
 
 **For contrast, on the containment side the same repo goes considerably further
 than the documentation claims.** `canonicalizeForRootComparison` walks from the
