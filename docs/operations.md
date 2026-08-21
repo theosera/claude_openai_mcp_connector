@@ -593,16 +593,21 @@ the credential the caller presents. A **static bearer** already carries
 `vault.read vault.write` unconditionally (`authenticate()` in
 `src/httpServer.ts`), so the flag alone opens the write — there is no scope to
 authorize, and none to withhold. An **OAuth client needs a token that already
-carries `vault.write`**, and whether it does depends on when it authorized:
-the scope is grantable whenever *any* of the three HTTP write flags is set
-(`loadHttpConfig` passes `allowWrite || allowSkillWrite || allowAuditWrite`),
-and `surfaceFor` gates all three surfaces on that one generic scope. A client
-that authorized while Skill or audit writes were enabled therefore holds it
-already, and the document-write tools appear for it the moment
-`MCP_HTTP_ALLOW_WRITE` goes on. A client that authorized while every write flag
-was off has to **re-authorize**: turning a flag on never widens a token that
-already exists, and that token survives the restart via `MCP_OAUTH_STATE_FILE`
-and keeps its recorded scope through refresh rotation. Either way, no
+carries `vault.write`**, and usually it will not have one. The scope is
+*grantable* whenever any of the three HTTP write flags is set (`loadHttpConfig`
+passes `allowWrite || allowSkillWrite || allowAuditWrite`), and `surfaceFor`
+gates all three surfaces on that one generic scope — but grantable is not
+granted. An existing token carries `vault.write` only if the client **asked for
+it** when it authorized (`grantScope` intersects the request with what is
+grantable), and only if it **survived the restart this section just told you to
+do**, which requires `MCP_OAUTH_STATE_FILE`: without it every token is dropped
+on restart (§1.B). Where both hold, the document-write tools appear for that
+token as soon as the process is back up. Otherwise the client must
+**re-authorize, requesting `vault.write`** — turning a flag on never widens a
+token that already exists, and refresh rotation reissues the recorded scope
+unchanged. To tell the two apart, list that credential's tools: the
+document-write tools are simply absent without the scope
+([§9 Step 5](#step-5--verify-each-endpoints-surface)). Either way, no
 additional flag is required — the asymmetry is the one the checklist in
 [§5](#5-operational-security-checklist) flags, and it is analysed in
 [`policy-provenance.md`](./policy-provenance.md).

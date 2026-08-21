@@ -65,9 +65,13 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `MCP_HTTP_ALLOW_WRITE=1`, restart, "and authorize a `vault.write` scope". The
   flag exists on every deployment; the authorize step exists only for OAuth,
   because a static bearer's scopes come from configuration and there is no
-  consent flow to visit. The instruction now branches on the credential and
-  points at the §5 checklist, which already carried the same asymmetry as a
-  caveat — the right description and the wrong procedure were in one file. This
+  consent flow to visit. The instruction now branches on the credential, and the
+  OAuth branch again on whether that client's token already carries the scope:
+  grantable is not granted — `grantScope` intersects the request with what is
+  grantable — and a token only survives the restart the section orders when
+  `MCP_OAUTH_STATE_FILE` is set. It points at the §5 checklist, which already
+  carried the same asymmetry as a caveat — the right description and the wrong
+  procedure were in one file. This
   is a different defect from the caveat sweep's: not a reader misled about being
   protected, but one sent looking for a step that is not there, and
   `policy-provenance.md` records why the two criteria stay apart.
