@@ -26,7 +26,39 @@ first rule is for deciding what to do with work that arrives without a scope. An
 agent already holding one is where the fresh context was supposed to land, so
 passing it on again spends the advantage instead of using it — and because the
 rule would apply just as well to the next agent, there is no depth at which it
-stops on its own. The same scope is never delegated twice.
+stops on its own. **A recipient never passes its scope onward** — which is
+narrower than "never delegated twice", deliberately: the *caller* may hand the
+same scope out again, to retry after an agent fails, or to two agents at once
+when the point is to check one against the other.
+
+## When work is split, investigate the seam
+
+Splitting a change — into two PRs, two commits, two agents — makes each half
+locally complete and the seam invisible from inside either one. Both halves pass
+their own review. What breaks lives between them, and nothing turns red.
+
+**A split creates an investigation, not just two smaller tasks.** Four things to
+look for, each of them observed on this repository's own split:
+
+- **What each half stopped saying.** A statement that was true of the combined
+  change can be false of one half alone. Splitting a documentation fix by defect
+  kind left one PR silent about a passage the other one owned — correct while
+  they were one change, an omission the moment they were two.
+- **What both halves now say.** Two independently written passages about the
+  same thing merge *without conflicting* when they do not overlap textually, so
+  version control surfaces nothing. Whoever resolves the one conflict that is
+  surfaced gets no signal that the prose needs reconciling.
+- **Tense and cross-reference.** A sentence describing the state the other half
+  fixes is true until that half lands. Anchor it to a revision, or word it so it
+  holds whichever order they land in.
+- **Whether a correction reached every copy.** A fix applied to one half's copy
+  of a shared rule leaves the other copy stating the uncorrected version. That
+  happened here inside a single pull request's lifetime, to the fix for this
+  file's own missing base case.
+
+The check that finds these is not a diff of either half. It is the **merged
+tree, read** — produce it before either half lands (`git merge-tree`) and read
+the result, because the merge that hides the problem is the one that succeeds.
 
 ## Choosing the model tier
 
@@ -55,12 +87,14 @@ it leaves nothing behind when it is wrong.
 The asymmetry is not a preference.
 [`policy-provenance.md`](./policy-provenance.md) states it directly:
 over-inclusion "is caught by anyone who reads the passage", while
-"**under-inclusion catches nothing**". Every significant defect found in the
-write-boundary caveat work was of the second kind — a passage filed in neither
+"**Under-inclusion catches nothing**". The write-boundary caveat work produced
+defects of the second kind repeatedly — among them a passage filed in neither
 list, a denominator quoted from an instrument that could not reach four of the
-six sites it counted, an instruction written unconditionally that held only
-conditionally. None of them turned anything red. Each was found by a reader who
-did not already believe the claim.
+six sites it counted, and an instruction written unconditionally that held only
+conditionally. None of them turned anything red, and none was caught by whoever
+wrote it. No count is given here on purpose: the tally was still moving while
+this file was being written, and a number without an as-of goes stale faster
+than the point it is supporting.
 
 ## What cannot be set, and do not pretend otherwise
 
