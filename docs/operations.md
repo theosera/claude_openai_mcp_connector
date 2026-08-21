@@ -601,23 +601,27 @@ carries `vault.write`**, and usually it will not have one. The scope is
 *grantable* whenever any of the three HTTP write flags is set (`loadHttpConfig`
 passes `allowWrite || allowSkillWrite || allowAuditWrite`), and `surfaceFor`
 gates all three surfaces on that one generic scope — but grantable is not
-granted. An existing token carries `vault.write` only if the client **asked for
-it** when it authorized (`grantScope` intersects the request with what is
-grantable), and only if it still has a **usable credential** after the restart
-this section just told you to perform. That needs `MCP_OAUTH_STATE_FILE` —
-without it every token is dropped (§1.B) — and it needs something unexpired to
-restore, because persistence keeps only records that have not aged out. The
-access token's default life is an hour against the refresh token's thirty days,
-so after any real interval it is the refresh token that survives, and a live one
-is enough: rotating it mints a new access token carrying the same recorded
-scope. Only when neither is usable must the client **re-authorize, requesting
+granted. Three things all have to have gone right for an existing token to
+carry it: the client **asked** for `vault.write`, the scope was **grantable at
+that moment** — `grantScope` intersects the request with what the flags then in
+force permitted, so a client that authorized while every write flag was off
+holds `vault.read` whatever it requested — and the credential **outlived the
+restart** this section just told you to perform, which needs
+`MCP_OAUTH_STATE_FILE` (without it every token is dropped, §1.B) and something
+unexpired to restore. On that last point the defaults matter: an access token
+lives an hour and a refresh token thirty days, so after any real interval it is
+the refresh token that survives — and a live one is enough, since rotating it
+mints a new access token carrying the same recorded scope.
+
+**Do not reconstruct that history — ask the endpoint.** With the flag set and
+the service back up, list that credential's tools
+([§9 Step 5](#step-5--verify-each-endpoints-surface)). If the document-write
+tools are there, nothing further is needed. If they are absent, the token does
+not carry `vault.write` and the client must **re-authorize, requesting
 `vault.read vault.write`** — both of them, because a token without `vault.read`
 is refused with `insufficient_scope` before any tool surface is computed, so
 asking for the write scope alone yields a credential that cannot even read.
-Turning a flag on never widens a token that already exists. To tell the cases
-apart, list that credential's tools: for a read-scoped token the document-write
-tools are simply absent
-([§9 Step 5](#step-5--verify-each-endpoints-surface)). Either way, no
+Turning a flag on never widens a token that already exists. Either way, no
 additional flag is required — the asymmetry is the one the checklist in
 [§5](#5-operational-security-checklist) flags, and it is analysed in
 [`policy-provenance.md`](./policy-provenance.md).
