@@ -143,7 +143,12 @@ MCP_ENV_FILE=/abs/path/to/claude_openai_mcp_connector/.env node dist/index.js
 
 Variables already present in the real environment always win over the file, and
 a relative or unreadable `MCP_ENV_FILE` is a startup error rather than a silent
-skip. Setting everything directly in the environment (systemd `Environment=`,
+skip. **It must also resolve outside every knowledge root** — a root is walked,
+indexed and readable through `search` / `fetch`, so an env file inside one is a
+bearer token and an OAuth password readable through the vault and rewritable by
+anything that can write a note. The server refuses to start in that case. The
+check necessarily runs *after* the file has been read, so if it fires, rotate
+the secrets rather than reusing them at the new location. Setting everything directly in the environment (systemd `Environment=`,
 a launchd `EnvironmentVariables` dict, an MCP client's `env` block) works
 exactly as before and needs no file at all.
 
