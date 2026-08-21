@@ -226,26 +226,35 @@ became five" sentence describes the original survey and is left as written.
 
 **A second passage is in neither list, and it is not a caveat site either.** The
 exact-path runbook in `operations.md` states the same two conditions, but as an
-instruction rather than as a claim about protection: it tells an operator to
-authorize a scope that a static-bearer deployment has no way to authorize. That
-is a different defect answering to a different criterion, so it is tracked in
-#131 rather than caveated here. Counting it as a seventh caveat site would merge
-the two criteria, and merging them sweeps in every procedural line in the docs.
+instruction rather than as a claim about protection: at `e256b54` it told an
+operator to authorize a scope that a static-bearer deployment has no way to
+authorize. That is a different defect answering to a different criterion, so it
+is tracked in #131 rather than caveated here. Counting it as a seventh caveat
+site would merge the two criteria, and merging them sweeps in every procedural
+line in the docs.
 
-⚠️ **Counting the passages is a different search from finding the hits, and it
-has parameters the sweep does not.** The pattern above is an alternation, so a
-line-oriented `grep` returns every line carrying either term and misses nothing:
-the `operations.md` checklist entry comes back as two hits, one per line.
-Narrowing to *passages that state both conditions together* takes a proximity
-match, and that match has two parameters — how wide the window is, and whether
-it may cross a newline. Both have to be wide enough before a given site appears.
-Measured on `e256b54`: at an 80-character window the per-line and whole-file
-forms return the same four passages, and at 120 the whole-file form returns a
-fifth — that checklist entry, where 98 characters and a line break separate the
-two terms. It is the caveat itself, so that particular miss left nothing
-uncovered. The point is
-that a denominator quoted without both parameters says less than it looks like
-it does.
+⚠️ **Counting the passages is a different search from finding the hits, and the
+instrument for counting is narrower than it looks.** The pattern above is an
+alternation, so a line-oriented `grep` returns every line carrying either term
+and misses nothing: the `operations.md` checklist entry comes back as two hits,
+one per line. Narrowing to *passages that state both conditions together* takes
+a proximity match, and that match is bounded three ways — how wide the window
+is, whether it may cross a newline, and which spellings it knows.
+
+The first two are measurable and small. On `e256b54`, at an 80-character window
+the per-line and whole-file forms return the same four passages; at 120 the
+whole-file form returns a fifth, the checklist entry where 98 characters and a
+line break separate the two terms. That fifth is the caveat itself, so that
+particular miss left nothing uncovered.
+
+The third bound is the one that hurts, and this document is the evidence. **Four
+of the six places counted above are unreachable at any window**, because they do
+not spell the flag the way the pattern does: the three `threat-model.md` sites
+write `allowWrite`, and `MCP_HTTP_ALLOW_WRITE` does not occur in that file at
+all, while `README.md` writes "the matching server-side flag". The instrument
+sees two of the six sites this survey declares. Every count it produces is a
+lower bound, and the same limit applies again to any passage that states the
+relationship in words neither pattern knows.
 
 **For contrast, on the containment side the same repo goes considerably further
 than the documentation claims.** `canonicalizeForRootComparison` walks from the

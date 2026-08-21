@@ -67,12 +67,14 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   matches, so on that deployment only the flag gates anything. The caveat is
   reused from the `operations.md` checklist rather than reworded, and
   `docs/policy-provenance.md` now reads four files and six places, naming the new
-  site instead of only counting it. Two records go with it: the passage was in
+  site instead of only counting it. Three records go with it: the passage was in
   neither the caveat list nor the left-alone table, which is the nothing that
-  under-inclusion leaves behind; and counting the passages is a different search
-  from finding the hits, since the sweep is an alternation that misses nothing
-  per line, while a proximity match needs both a wide enough window and leave to
-  cross a newline before a wrapped juxtaposition shows up at all.
+  under-inclusion leaves behind; a second passage is in neither list either — the
+  exact-path runbook, a different kind of defect tracked separately; and counting
+  the passages is a different search from finding the hits, bounded by window
+  width, by whether the match may cross a newline, and by which spellings it
+  knows. Four of the six places counted are unreachable by that pattern at any
+  window, so every count from it is a lower bound.
 
 ## [0.9.0] — 2026-08-16
 
