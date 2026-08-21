@@ -17,7 +17,9 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the last mile of two rules the repo already enforces everywhere else.
   **A policy source must not live in the data plane it governs** — held for
   `MCP_OAUTH_STATE_FILE`, `MCP_PATCH_STATE_DIR` and `MCP_CONTEXT_TYPE_RULES`, not
-  for `MCP_ENV_FILE`. **Authority comes from the presented principal's scopes** —
+  for `MCP_ENV_FILE` *at the time of the assessment*; that last exception has
+  since been closed, in the entry below. **Authority comes from the presented
+  principal's scopes** —
   held for OAuth tokens, not for the static bearer, which `authenticate()` grants
   `vault.read vault.write` unconditionally. Both are now ROADMAP items. The
   document also records what was **refused**: watermarking or hidden markers in
@@ -27,6 +29,34 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   never registering it, so the layer would lower the property it exists to raise.
   Measured while assessing: **zero** subprocess and **zero** outbound-network call
   sites in `src/`, so two of the proposed policy domains have nothing to govern.
+
+### Security
+
+- **`MCP_ENV_FILE` is now checked for containment, closing the last exception to
+  "a policy source must not live in the data plane it governs."** `loadConfig`
+  tests it against every knowledge root with the same `(dev, ino)` walk its three
+  siblings use — symlinks followed component by component, so a dangling link
+  into the vault is caught before its destination exists — and refuses to start
+  if it resolves inside one.
+
+  The reason it was exempt was ordering, not disagreement: `loadEnvFile()` runs
+  before `KNOWLEDGE_ROOT` exists, because the file is one of the things that can
+  supply it, so a check placed at the read has nothing to compare against. The
+  check runs one step later instead, after the roots resolve and before any store
+  is built. The 0.8.0 entry that recorded this as unhandled was accurate when
+  written and is left as it stands.
+
+  **What it does not buy.** By the time it fires the file has been read and its
+  secrets are in `process.env`, and a file that sat inside an indexed root may
+  already have been read by anything with vault access. `MCP_OAUTH_STATE_FILE`
+  fails *before a write*; this fails *after a read*. It refuses to keep serving on
+  credentials a vault reader may already know — so the error tells the operator to
+  move the file **and rotate what it carried**, rather than to relocate and reuse.
+
+  No behaviour changes for a deployment that does not set `MCP_ENV_FILE`, or that
+  already keeps it outside the vault.
+
+### Documentation
 
 - **A new ROADMAP entry: `assertOutsideKnowledgeRoots` does not see hard links.**
   `isInsideRoot` compares each *ancestor directory* of the target against the

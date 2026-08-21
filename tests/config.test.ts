@@ -751,4 +751,85 @@ describe("server state must live outside the knowledge root", () => {
       loadConfig({ KNOWLEDGE_ROOT: root, MCP_PATCH_STATE_DIR: path.join(outside, "patches") }).contextTypeRules
     ).toBeUndefined();
   });
+
+  // MCP_ENV_FILE joins the same list last, and for a reason worth stating in the
+  // tests rather than only in the entry it closes: the check could not be placed
+  // where the file is READ, because the roots it is compared against can come
+  // out of the file itself. It runs one step later, after loadConfig has
+  // resolved them and before any store exists.
+  //
+  // What that changes is narrower than the three siblings. By the time this
+  // fires, the file has been read and its secrets are in the environment — so
+  // these tests pin a refusal to KEEP SERVING, not a prevention of exposure.
+  const envFileEnv = (rootPath: string, envFilePath: string): NodeJS.ProcessEnv => ({
+    KNOWLEDGE_ROOT: rootPath,
+    MCP_PATCH_STATE_DIR: path.join(outside, "patches"),
+    MCP_ENV_FILE: envFilePath
+  });
+
+  it("rejects an env file inside the vault and names the root", () => {
+    const inside = path.join(root, "config", "vault.env");
+    expect(() => loadConfig(envFileEnv(root, inside))).toThrow(/MCP_ENV_FILE/);
+    expect(() => loadConfig(envFileEnv(root, inside))).toThrow(/knowledge root "vault"/);
+    // The remedy has to say more than "move it": the secrets in that file were
+    // readable through search / fetch for as long as it sat there, so reusing
+    // them at the new location carries the exposure across.
+    expect(() => loadConfig(envFileEnv(root, inside))).toThrow(/rotate them/);
+  });
+
+  it("accepts an env file outside the vault", () => {
+    // The false-positive guard. Config must still load, not merely not-throw.
+    const target = path.join(outside, "vault.env");
+    expect(loadConfig(envFileEnv(root, target)).knowledgeRoots[0].path).toBe(root);
+  });
+
+  it("rejects an env file reached through a symlink into the vault", async () => {
+    // The spelling-comparison miss, same shape as the OAuth and type-rules cases.
+    await fs.mkdir(path.join(root, "secrets"), { recursive: true });
+    const link = path.join(outside, "env-link");
+    await fs.symlink(path.join(root, "secrets"), link);
+
+    const through = path.join(link, "vault.env");
+    expect(through.startsWith(root)).toBe(false);
+    expect(() => loadConfig(envFileEnv(root, through))).toThrow(/knowledge root "vault"/);
+  });
+
+  it("rejects an env file behind a symlink whose destination does not exist yet", async () => {
+    // realpath() reports ENOENT for a dangling link, so a resolver that only
+    // resolves the existing prefix calls this outside. Creating the destination
+    // afterwards would put the secrets in the vault with boot already passed.
+    const link = path.join(outside, "env-link-to-future");
+    await fs.symlink(path.join(root, "not-created-yet"), link);
+    await expect(fs.realpath(link)).rejects.toThrow();
+
+    expect(() => loadConfig(envFileEnv(root, path.join(link, "vault.env")))).toThrow(/knowledge root "vault"/);
+  });
+
+  it("rejects an env file inside a read-only secondary root, naming that root", async () => {
+    // A secondary root is read-only for WRITES; it is fully readable, which is
+    // the property that matters here.
+    //
+    // The patch-state directory needs its own location rather than the usual
+    // `outside`, which this test promotes to the PRIMARY root. Reusing it made
+    // the removal-of-guard run fail on the patch-state message instead of on a
+    // missing throw — a red that does not attribute to the guard under test is
+    // the failure this repo's reverse-verification rule is about, and it showed
+    // up here rather than in review.
+    const elsewhere = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-state-elsewhere-")));
+    const inside = path.join(root, "vault.env");
+    const env = envFileEnv(root, inside);
+    delete env.KNOWLEDGE_ROOT;
+    env.KNOWLEDGE_ROOTS = `primary=${outside},archive=${root}`;
+    env.MCP_PATCH_STATE_DIR = path.join(elsewhere, "patches");
+    expect(() => loadConfig(env)).toThrow(/knowledge root "archive"/);
+  });
+
+  it("checks nothing when MCP_ENV_FILE is unset", () => {
+    // The default path is unchanged, which is exactly why it proves nothing
+    // about the guard: every test above has to name a file to reach it. This one
+    // pins the other half — that adding the check did not make an ordinary
+    // deployment refuse to start.
+    const env = { KNOWLEDGE_ROOT: root, MCP_PATCH_STATE_DIR: path.join(outside, "patches") };
+    expect(loadConfig(env).knowledgeRoots[0].path).toBe(root);
+  });
 });

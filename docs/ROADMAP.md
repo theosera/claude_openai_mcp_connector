@@ -1373,36 +1373,43 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       `MCP_OAUTH_STATE_FILE` and `MCP_PATCH_STATE_DIR` (**including the derived
       default**) are checked at boot by `(dev, ino)` identity, with symlinks
       followed component by component so a dangling link into the vault is caught
-      before its destination exists. `MCP_ENV_FILE` is deliberately **not**
-      covered: it is read before the roots are known, so the same mechanism
-      cannot reach it. Recorded as unhandled rather than half-handled. See the
-      OAuth-persistence section above.
-- [ ] **Bring `MCP_ENV_FILE` under the same containment rule** — needs a
-      different mechanism than the other two, since the roots it would be checked
-      against come from the file itself.
+      before its destination exists. `MCP_ENV_FILE` was deliberately **not**
+      covered by this change: it is read before the roots are known, so the same
+      mechanism could not reach it, and it was recorded as unhandled rather than
+      half-handled. **That exception is now closed** — the item below carries the
+      later check, which runs after the roots resolve rather than at the read.
+      See the OAuth-persistence section above.
+- [x] **Bring `MCP_ENV_FILE` under the same containment rule** — ✅ `loadConfig`
+      checks it against every root with the same `(dev, ino)` walk the three
+      siblings use, and refuses to start if it resolves inside one. The rule *a
+      policy source must not live inside the data plane it governs* now holds
+      everywhere it applies.
 
-      **What is settled:** a check that runs **before the file is read** cannot
-          reach it. `loadEnvFile()` runs before `KNOWLEDGE_ROOT` exists, so at the
-          moment of the read there is nothing to compare against. That is an
-          ordering fact, not a design preference — and it is narrower than "no
-          startup check is possible", which would be false. Refusing to start is
-          still on the table; see below.
+      **The option this entry recorded as "unevaluated, not rejected" is the one
+      that shipped.** A check placed where the file is READ still cannot work —
+      `loadEnvFile()` runs before `KNOWLEDGE_ROOT` exists, because the file is one
+      of the things that can supply it — so the check runs one step later, after
+      `loadConfig` resolves the roots and before any store is built.
 
-          **What was NOT considered when this entry was first written** (v0.8.0):
-          a check *after* the roots are known. Once `loadConfig()` has resolved
-          them — still during startup, before the stores exist and before anything
-          is served — `MCP_ENV_FILE` can be tested with the same `(dev, ino)` walk
-          and the server refused if it lands inside a root. This does not undo the
-          exposure: the secrets are already in `process.env` by then, and a file in
-          an indexed root may already have been read by anything with vault access.
-          What it buys is refusing to keep serving on credentials that a vault
-          reader may already know. `MCP_OAUTH_STATE_FILE` fails *before the write*;
-          this would fail *after the read*, which is a materially weaker guarantee
-          and belongs to a separate decision rather than the same mechanism.
-          Recorded here so the next person does not re-derive it: this option is
-          **unevaluated, not rejected**.
+      **What it does not buy, stated because the difference is material.** By the
+      time it fires the file has been read and its secrets are in `process.env`,
+      and a file sitting in an indexed root may already have been read by anything
+      with vault access. `MCP_OAUTH_STATE_FILE` fails *before a write*; this fails
+      *after a read*. It refuses to keep serving on credentials a vault reader may
+      already know — it does not prevent the disclosure, which is why the error
+      tells the operator to rotate rather than to relocate and reuse.
 
-          **Priority input:** no deployment is *known* to set `MCP_ENV_FILE`, and
+      **Reverse-verified**, and the first attempt was not clean: with the guard
+      disabled, three of the four rejection tests failed on "did not throw" while
+      the fourth failed on a *message mismatch* — its patch-state directory sat
+      inside the root that test promotes to primary, so a different guard was
+      throwing. Fixed by giving that test its own directory; all four now attribute
+      to this guard. The two remaining tests (a file outside the vault, and the
+      variable unset) stay green under the mutation, which is what makes them the
+      false-positive half rather than more of the same.
+
+      **Priority input, as recorded before the change and still worth keeping:**
+          no deployment was *known* to set `MCP_ENV_FILE`, and
           the evidence behind that covers **one host, as of 2026-08-10** — the
           unattended scan endpoint, whose launchd plist carries an empty
           `EnvironmentVariables`, whose `launchctl getenv` reports every relevant
@@ -1416,16 +1423,17 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
           deadline for answering it — but the observation should be re-taken, and
           widened to every endpoint, before it is leaned on again.
 
-      **★ The rule this item is the last exception to** (from
+      **★ The rule this item was the last exception to** (from
       [`policy-provenance.md`](./policy-provenance.md)): *a policy source must not
-      live inside the data plane it governs.* That is not a proposal — it is
+      live inside the data plane it governs.* It was never a proposal — it was
       already enforced for `MCP_OAUTH_STATE_FILE`, for `MCP_PATCH_STATE_DIR`
       including its derived default, and for `MCP_CONTEXT_TYPE_RULES`, whose
       `.env.example` entry states the reasoning plainly: a root is synced and
       writable, so a file inside one is a file anything able to write a note gets
-      to edit. **`MCP_ENV_FILE` is the one place the rule has not reached**, and
-      the reason is ordering rather than disagreement. Framing it that way also
-      fixes the priority: this is finishing a rule, not opening a question.
+      to edit. `MCP_ENV_FILE` was the one place it had not reached, and the reason
+      was ordering rather than disagreement. Framing it that way is what set the
+      priority: this was finishing a rule, not opening a question. **With this
+      item the rule has no remaining exceptions.**
 
 - [ ] **Scope the static bearer, instead of granting it everything** —
       `authenticate()` (`src/httpServer.ts`) returns
@@ -1452,7 +1460,8 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       line in `authenticate()`. Do not let it ride along in a docs PR.
 
       **Not a design gap, a rule that has not reached one spot** — the same shape
-      as the `MCP_ENV_FILE` item above. Details in
+      as the `MCP_ENV_FILE` item above, which has since been closed and is the
+      worked precedent for this one. Details in
       [`policy-provenance.md`](./policy-provenance.md).
 
 - [ ] **`assertOutsideKnowledgeRoots` does not see hard links** —
