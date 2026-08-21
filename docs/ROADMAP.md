@@ -1323,9 +1323,22 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       the second is sharper: a planned create has no stale-content check to fall
       back on, so the old plan simply publishes into the replacement.
 
-      The tag now covers what the directory is (`(dev, ino)`, the identity
-      `assertOutsideKnowledgeRoots` already compares instead of trusting a
-      string) and the resolved path it was reached by. Either changing refuses.
+      **A third P1 followed, on the head that fixed the second.** `(dev, ino)`
+      identifies a live inode, not a directory generation, and inode numbers are
+      recycled: `rm -rf vault && mkdir vault` gave the replacement the identical
+      pair on this repository's own filesystem, so the tag was unchanged and a
+      create published into it. The tests written for the previous round used
+      `rename`, which gets a fresh inode — they exercised one flow of the
+      property, not the property.
+
+      The tag now covers the resolved path (which vault was named), `(dev, ino)`
+      (which directory that named) and the root's birth time (which incarnation
+      of it). Any one changing refuses. **It is still not the persistent
+      identifier the finding asked for** — that has to be stored, and the only
+      place that travels with a vault is inside it, which is an unapproved write
+      into the data plane. Left as a follow-up rather than described as
+      settled, since the previous two rounds each read that way and each was
+      wrong. It also degrades silently on a filesystem with no birth time.
       **The cost is that `(dev, ino)` does not survive a restore, a copy or a
       remount**, so plans of an arguably unchanged vault are refused there too —
       the direction to be wrong in, since re-planning is cheap.

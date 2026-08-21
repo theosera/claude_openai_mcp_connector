@@ -66,13 +66,23 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   path. The persisted and returned records are separate types so that split
   stays visible.
 
-  The tag covers both what the vault directory **is** — its `(dev, ino)`, the
-  same filesystem identity `assertOutsideKnowledgeRoots` compares rather than
-  trusting a string — and the resolved path it was reached **by**. Neither alone
-  is enough: a symlinked `KNOWLEDGE_ROOT` retargeted at another vault keeps its
-  spelling, and the directory at a fixed path can be replaced by a restore or a
-  redeploy while the path stays identical. A planned create is the sharp end of
-  the second case, having no stale-content check to fall back on.
+  The tag covers three things, because each of the first two turned out to be
+  insufficient on its own: the **resolved path** (which vault was named), the
+  root's **`(dev, ino)`** (which directory that named — the same filesystem
+  identity `assertOutsideKnowledgeRoots` compares rather than trusting a
+  string), and its **birth time** (which incarnation of that directory). A
+  symlinked `KNOWLEDGE_ROOT` retargeted at another vault keeps its spelling;
+  the directory
+  at a fixed path can be replaced by a restore or redeploy while the path stays
+  identical; and **inode numbers are recycled**, so `rm -rf vault && mkdir
+  vault` hands the replacement the number the original just released — measured
+  on this repository's own filesystem. A planned create is the sharp end of the
+  last two, having no stale-content check to fall back on.
+
+  **This is not a persistent vault identifier**, which would have to be stored
+  inside the vault — an unapproved write into the data plane. It closes the
+  measured flows without opening a write path. On a filesystem that records no
+  birth time the tuple silently falls back to path and inode.
 
   **The cost, stated rather than discovered later:** `(dev, ino)` is not stable
   across a restore from backup, a copy, or a remount, and including the path

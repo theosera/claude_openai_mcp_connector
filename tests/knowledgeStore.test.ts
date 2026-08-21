@@ -2604,6 +2604,17 @@ describe("KnowledgeStore INV-3 plan binding survives the directory being replace
     await populate(vaultPath);
   };
 
+  // ★ Renaming the old tree away gets the replacement a FRESH inode, so the two
+  // tests above pass on `(dev, ino)` alone. Deleting it first does not: the
+  // number is released and handed straight back. Measured here — one run gave
+  // both directories ino 1885114 — which is why this flow needs its own test
+  // rather than being read as a variant of the one above. The tests written for
+  // the previous round exercised one flow of the property, not the property.
+  const deleteAndRecreateVaultDirectory = async (): Promise<void> => {
+    await fs.rm(vaultPath, { recursive: true, force: true });
+    await populate(vaultPath);
+  };
+
   it("refuses an exact-path create staged before the directory at that path was replaced", async () => {
     const before = storeFor(vaultPath);
     const plan = await before.planDocumentCreate({
@@ -2638,6 +2649,36 @@ describe("KnowledgeStore INV-3 plan binding survives the directory being replace
     const after = storeFor(vaultPath);
     await expect(after.applyPlannedUpdate(plan.patch_id)).rejects.toThrow(/staged for a different vault/);
     expect(await fs.readFile(path.join(vaultPath, "projects", "shared.md"), "utf8")).toBe(NOTE);
+  });
+
+  it("refuses a create when the vault was deleted and recreated, recycling its inode", async () => {
+    const before = storeFor(vaultPath);
+    const identityBefore = await fs.stat(vaultPath, { bigint: true });
+    const plan = await before.planDocumentCreate({
+      relative_path: "projects/new-note.md",
+      title: "New",
+      body: "planned for the vault that was deleted",
+      reason: "inode recycling probe"
+    });
+
+    await deleteAndRecreateVaultDirectory();
+
+    // Inode reuse is LIKELY here, not guaranteed, so it is not asserted — a test
+    // that required it would be flaky. It is announced instead, because a run
+    // where the number was not reused proves nothing this file does not already
+    // prove with `rename`: the reuse is the whole point of the case.
+    const identityAfter = await fs.stat(vaultPath, { bigint: true });
+    if (identityBefore.dev !== identityAfter.dev || identityBefore.ino !== identityAfter.ino) {
+      console.warn("[test] inode was not recycled this run; this case degenerated into the rename case");
+    }
+    // Birth time is the part that must differ, and the part the guard rests on.
+    expect(identityBefore.birthtimeNs).not.toBe(identityAfter.birthtimeNs);
+
+    const after = storeFor(vaultPath);
+    await expect(after.applyPlannedDocumentCreate(plan.patch_id, "projects/new-note.md")).rejects.toThrow(
+      /staged for a different vault/
+    );
+    await expect(fs.stat(path.join(vaultPath, "projects", "new-note.md"))).rejects.toThrow();
   });
 
   it("still applies a plan when nothing was replaced", async () => {

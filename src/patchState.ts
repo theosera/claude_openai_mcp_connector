@@ -70,29 +70,56 @@ export function vaultTag(primaryRoot: string): string {
  * has no stale-content check to fall back on**, so the old plan simply publishes
  * into the replacement. Raised as a second P1 by Codex on #142.
  *
- * So the tag covers both what the directory IS — `(dev, ino)`, the same identity
- * `assertOutsideKnowledgeRoots` compares in `config.ts` rather than trusting
- * `path.relative` — and the resolved path it was reached BY. Either one changing
- * refuses the plan. That is one rule with no case analysis, and it fails closed
- * in every direction.
+ * `(dev, ino)` was the answer to that, and it was not enough either. **Inode
+ * numbers are recycled**: `rm -rf vault && mkdir vault` hands the new directory
+ * the number the old one just released. Measured on this repository's own Linux
+ * filesystem, by Codex and then again here — the replacement came back with the
+ * identical `(dev, ino)`, the tag was unchanged, and a planned create published
+ * into it. `rename` gets a fresh inode, which is why the tests written for the
+ * previous round went green: they exercised one flow of the property, not the
+ * property. Raised as a third P1 by Codex on #142.
  *
- * ⚠️ **State the cost rather than discovering it in an incident.** `(dev, ino)`
- * is stable for a living directory and NOT stable across a restore from backup,
- * a copy, or a remount that renumbers the device — and including the path means
- * renaming the vault refuses too, even though the inode is the same. In all of
- * those the vault is arguably "the same vault" and its staged plans are refused
- * anyway. That is the direction to be wrong in: a plan is cheap to stage again,
- * and the alternative is a write landing in a vault nobody approved it for. The
- * refusal message says to re-plan.
+ * So the tuple also carries the directory's **birth time**, which a recreated
+ * directory cannot inherit. What the tag hashes, and what each part answers:
+ *
+ * - the resolved path — which vault was named
+ * - `(dev, ino)` — which directory that named
+ * - `birthtimeNs` — which INCARNATION of that directory
+ *
+ * Any of the three changing refuses the plan. One rule, no case analysis.
+ *
+ * ⚠️ **This is not the persistent identifier the finding asked for, and saying
+ * so is the point.** A truly non-recyclable identity has to be STORED, and the
+ * only place that travels with a vault is inside it — a write into the data
+ * plane that no user approved, which is the one thing the two-step rule exists
+ * to prevent. Between the two, this closes the measured flow without opening a
+ * write path. The residual is on the ROADMAP rather than in a comment that
+ * implies it is settled; the previous two rounds each read that way and each
+ * was wrong.
+ *
+ * ⚠️ **It degrades silently on a filesystem that does not record a birth time.**
+ * Node reports `0n` there and the tuple falls back to what it was before this
+ * round — no worse, but no better, and nothing announces it. Linux ext4/xfs,
+ * APFS and NTFS all record one.
+ *
+ * ⚠️ **State the cost rather than discovering it in an incident.** None of the
+ * three parts survives a restore from backup, a copy, or a remount that
+ * renumbers the device, and including the path means renaming the vault refuses
+ * too. In all of those the vault is arguably "the same vault" and its staged
+ * plans are refused anyway. That is the direction to be wrong in: a plan is
+ * cheap to stage again, and the alternative is a write landing in a vault
+ * nobody approved it for. The refusal message says to re-plan.
  *
  * Stat'ed per call rather than cached at `init`, so a directory swapped under a
  * running server is caught at the apply rather than at the next restart.
  */
 export async function vaultIdentityTag(resolvedRoot: string): Promise<string> {
-  const stats = await fs.stat(resolvedRoot);
+  // `bigint: true` for `birthtimeNs`: the millisecond field is a float, and a
+  // float is a formatting decision inside a value that has to compare exactly.
+  const stats = await fs.stat(resolvedRoot, { bigint: true });
   return crypto
     .createHash("sha256")
-    .update(`${resolvedRoot.normalize("NFC")}\0${stats.dev}\0${stats.ino}`)
+    .update(`${resolvedRoot.normalize("NFC")}\0${stats.dev}\0${stats.ino}\0${stats.birthtimeNs}`)
     .digest("hex")
     .slice(0, 16);
 }
