@@ -67,7 +67,7 @@ AI ごとに同じ背景をコピペし直す必要がなくなります。Claud
 HTTP は認証必須（fail-closed）。Claude Desktop / Claude Code（remote）/ Claude API は**静的 bearer**（`MCP_AUTH_TOKEN`）。ChatGPT・Claude.ai web は静的 bearer を受け付けないため、内蔵の **OAuth 2.1 認可サーバ**（PKCE S256、単回使用の短命コード、scrypt ログインゲート、RFC 8707 の **audience バインド**、`vault.read`/`vault.write` の **scope ゲート**）を使います。
 
 **Q. write はできますか？**
-できますが、**既定は read-only** です。編集は `plan_document_update` →（承認）→ `apply_planned_update` の二段階で、ハッシュ不一致なら適用拒否（stale 保護）、新規作成は上書き禁止。web 経由の write は `MCP_HTTP_ALLOW_WRITE=1` **かつ** `vault.write` スコープの両方が揃ったときだけ有効になります。
+できますが、**既定は read-only** です。編集は `plan_document_update` →（承認）→ `apply_planned_update` の二段階で、ハッシュ不一致なら適用拒否（stale 保護）、新規作成は上書き禁止。**OAuth 発行トークン**による write は `MCP_HTTP_ALLOW_WRITE=1` **かつ** `vault.write` スコープの両方が揃ったときだけ有効になります。
 
 **Q. データはどこに保存されますか？**
 ノートは**あなたのマシンの `KNOWLEDGE_ROOT` 配下にのみ**存在し、コネクタはそこを参照するだけです。vault の実体・パス・本文はリポジトリにコミットされません。OAuth のトークンや登録クライアントは**プロセスメモリ上の一時状態**で、永続保存されません（再起動すると再認証が必要）。
