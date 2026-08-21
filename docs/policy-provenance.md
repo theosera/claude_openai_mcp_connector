@@ -196,6 +196,16 @@ earlier as the OAuth surface — weaker, and sufficient. Env-var listings and
 configuration examples were left alone as well: they name flags without claiming
 a protection.
 
+The `operations.md` exact-path runbook names the same asymmetry, but as a
+procedure rather than as a caveat on a protection claim, so it is not one of the
+caveat sites counted above. It is there because this survey's criterion — does
+the passage claim a protection — put it on the left-alone side while its
+instruction was telling a static-bearer operator to authorize a scope no such
+deployment can authorize. That is a second kind of defect: not a reader misled
+about being protected, but a reader sent looking for a step that is not there.
+The two are worth keeping apart — merged, the criterion would sweep in every
+procedural line in the docs and stop being usable.
+
 **The sites were classified by reading them, and the direction of that matters.**
 A grep for `MCP_HTTP_ALLOW_WRITE|vault\.write` is structurally a superset, so
 reading can only remove sites: eleven hits became eight became five. The

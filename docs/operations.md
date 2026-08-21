@@ -588,8 +588,18 @@ before any diff existed to approve. Re-enable it with
 route; the flow below replaces it.
 
 The exact-path tools share the normal document-write boundary. For HTTP, enable
-`MCP_HTTP_ALLOW_WRITE=1`, restart the service, and authorize a `vault.write`
-scope. No additional flag is required.
+`MCP_HTTP_ALLOW_WRITE=1` and restart the service. What that leaves depends on
+the credential the caller presents. A **static bearer** already carries
+`vault.read vault.write` unconditionally (`authenticate()` in
+`src/httpServer.ts`), so the flag alone opens the write — there is no scope to
+authorize, and none to withhold. An **OAuth client has to re-authorize,
+requesting `vault.write`**: a token issued before the flag went on keeps the
+scope it was granted, `MCP_OAUTH_STATE_FILE` carries it across the restart, and
+refresh rotation reissues the same recorded scope. Turning the flag on does not
+widen a token that already exists. Either way, no
+additional flag is required — the asymmetry is the one the checklist in
+[§5](#5-operational-security-checklist) flags, and it is analysed in
+[`policy-provenance.md`](./policy-provenance.md).
 
 ### Plan without touching the target
 
