@@ -919,6 +919,13 @@ write back into an existing vault taxonomy. The exact-path flow is now complete:
   containment, and publishes with `wx` so an existing note is never overwritten.
 - Multi-root deployments allow the primary root only. HTTP remains off by
   default and uses the existing `MCP_HTTP_ALLOW_WRITE` + `vault.write` boundary.
+  ⚠️ **That second condition is real for OAuth clients and vacuous for the
+  static bearer**, which is granted `vault.read vault.write` unconditionally
+  (`authenticate()` in `src/httpServer.ts`). On a bearer-only endpoint this
+  flag is the **only** thing standing between a caller and a write — treat it
+  as a single gate, not two. Tracked below under "Scope the static bearer,
+  instead of granting it everything" and analysed in
+  [`policy-provenance.md`](./policy-provenance.md).
 - Synthetic store tests and an in-memory MCP E2E pin the confirmation payload,
   no-plan-side-effects rule, traversal/symlink/collision failures, and read-back.
 

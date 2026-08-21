@@ -90,6 +90,23 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   who reads the passage while under-inclusion leaves nothing behind to check, and
   the quoted phrase is that check.
 
+- **The shipped write-boundary passage in `docs/ROADMAP.md` now carries the
+  static-bearer caveat.** Under the shipped "Exact-path document creation"
+  heading the boundary was stated as `MCP_HTTP_ALLOW_WRITE` + `vault.write`, but
+  `authenticate()` grants a static bearer both scopes as soon as the header
+  matches, so on that deployment only the flag gates anything. The caveat is
+  reused from the `operations.md` checklist rather than reworded, and
+  `docs/policy-provenance.md` now reads four files and six places, naming the new
+  site instead of only counting it. Three records go with it: the passage was in
+  neither the caveat list nor the left-alone table, which is the nothing that
+  under-inclusion leaves behind; a second passage is in neither list either — the
+  exact-path runbook, a different kind of defect tracked separately; and counting
+  the passages is a different search from finding the hits, bounded by window
+  width, by whether the match may cross a newline, and by which spellings it
+  knows. Four of the six places counted are unreachable by that pattern at any
+  window, and widening the window far enough to reach a wrapped juxtaposition
+  starts pairing terms that are merely adjacent — so the raw count is not a
+  bound in either direction until the hits are read and classified.
 - **The exact-path write runbook in `docs/operations.md` no longer tells a
   static-bearer operator to authorize a scope.** It said to set
   `MCP_HTTP_ALLOW_WRITE=1`, restart, "and authorize a `vault.write` scope". The
