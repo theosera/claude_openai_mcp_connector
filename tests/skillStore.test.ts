@@ -417,6 +417,43 @@ describe("SkillStore INV-3 plan binding survives the directory being replaced", 
     }
   });
 
+  it("refuses to stage a Skill plan when the vault is replaced while it is derived", async () => {
+    // The planning window at the third writer. `init` is forced first so the
+    // spy's first stat is the identity capture and not `resolveExistingRoot`'s —
+    // otherwise the swap lands before the capture, the capture reads the
+    // replacement, and the test goes green against a guard that never ran.
+    const store = storeFor(vaultPath);
+    await store.init();
+    const rootRealPath = await fs.realpath(vaultPath);
+    const realStat = fs.stat.bind(fs);
+    let swapped = false;
+    const spy = vi.spyOn(fs, "stat").mockImplementation((async (target: unknown, options?: unknown) => {
+      const result = await (realStat as (t: unknown, o?: unknown) => Promise<unknown>)(target, options);
+      if (!swapped && target === rootRealPath) {
+        swapped = true;
+        await fs.rm(vaultPath, { recursive: true, force: true });
+        await fs.mkdir(path.join(vaultPath, "knowledge", "skills"), { recursive: true });
+      }
+      return result;
+    }) as unknown as typeof fs.stat);
+
+    try {
+      await expect(
+        store.planCreate({
+          skill_name: "improve-ai-harness",
+          skill_md: SKILL_MD,
+          references: [],
+          reason: "planning window probe"
+        })
+      ).rejects.toThrow(/changed while this Skill plan was being prepared/);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(swapped).toBe(true);
+    expect(await fs.readdir(patchStateDir)).toEqual([]);
+  });
+
   it("refuses a Skill plan when the vault is replaced inside the same window", async () => {
     // The check/use window at the third writer. The spy lets the first identity
     // stat return the original directory's numbers and then replaces the

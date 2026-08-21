@@ -2755,6 +2755,82 @@ describe("KnowledgeStore INV-3 plan binding survives the directory being replace
     expect(await fs.readFile(path.join(vaultPath, "projects", "shared.md"), "utf8")).toBe(NOTE);
   });
 
+  it("refuses to stage an update when the vault is replaced while the plan is derived", async () => {
+    // The window BEFORE the identity is captured, which the apply-side checks
+    // cannot see: the plan would truthfully name the replacement while carrying
+    // content read from its predecessor, and every apply-time check would pass.
+    const store = storeFor(vaultPath);
+    // Force `init` before the spy is installed. Without this the first stat the
+    // spy sees is `resolveExistingRoot`'s, so the swap lands BEFORE the identity
+    // is captured — the capture then reads the replacement, the final check
+    // agrees with it, and the test goes green against a guard that never ran.
+    await store.rootPath();
+    const rootRealPath = await fs.realpath(vaultPath);
+    const realStat = fs.stat.bind(fs);
+    let swapped = false;
+    const spy = vi.spyOn(fs, "stat").mockImplementation((async (target: unknown, options?: unknown) => {
+      const result = await (realStat as (t: unknown, o?: unknown) => Promise<unknown>)(target, options);
+      if (!swapped && target === rootRealPath) {
+        swapped = true;
+        await deleteAndRecreateVaultDirectory();
+      }
+      return result;
+    }) as unknown as typeof fs.stat);
+
+    try {
+      await expect(
+        store.planUpdate({
+          id_or_path: "projects/shared.md",
+          new_body: "derived from the vault that was replaced mid-plan",
+          reason: "planning window probe"
+        })
+      ).rejects.toThrow(/changed while this plan was being prepared/);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(swapped).toBe(true);
+    // Nothing staged: a plan refused at this point must leave no file behind for
+    // a later apply to find.
+    expect(await fs.readdir(patchStateDir)).toEqual([]);
+  });
+
+  it("refuses to stage an exact-path create in the same window", async () => {
+    const store = storeFor(vaultPath);
+    // Force `init` before the spy is installed. Without this the first stat the
+    // spy sees is `resolveExistingRoot`'s, so the swap lands BEFORE the identity
+    // is captured — the capture then reads the replacement, the final check
+    // agrees with it, and the test goes green against a guard that never ran.
+    await store.rootPath();
+    const rootRealPath = await fs.realpath(vaultPath);
+    const realStat = fs.stat.bind(fs);
+    let swapped = false;
+    const spy = vi.spyOn(fs, "stat").mockImplementation((async (target: unknown, options?: unknown) => {
+      const result = await (realStat as (t: unknown, o?: unknown) => Promise<unknown>)(target, options);
+      if (!swapped && target === rootRealPath) {
+        swapped = true;
+        await deleteAndRecreateVaultDirectory();
+      }
+      return result;
+    }) as unknown as typeof fs.stat);
+
+    try {
+      await expect(
+        store.planDocumentCreate({
+          relative_path: "projects/new-note.md",
+          title: "New",
+          body: "derived from the vault that was replaced mid-plan",
+          reason: "planning window probe"
+        })
+      ).rejects.toThrow(/changed while this plan was being prepared/);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(swapped).toBe(true);
+    expect(await fs.readdir(patchStateDir)).toEqual([]);
+  });
+
   it("still applies a plan when nothing was replaced", async () => {
     // The false-positive half: an identity strict enough to refuse everything
     // would pass both tests above.

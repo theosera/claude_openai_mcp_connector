@@ -92,6 +92,11 @@ export class SkillStore {
   }
 
   async planCreate(input: PlanSkillCreateInput): Promise<PlannedSkillCreate> {
+    // Captured before the bundle is validated and the target resolved, and
+    // re-checked before the plan file is written: a root replaced in between
+    // would tag this plan for a vault it was never derived against, and a Skill
+    // create has no stale-content check at apply to fall back on.
+    const vaultId = await vaultIdentityTag(await this.root());
     const files = validateBundle(input);
     const target = await this.targetPath(input.skill_name);
     await assertAbsent(target.absolute);
@@ -115,9 +120,15 @@ export class SkillStore {
     // same way a document plan does. Without it this store would have been the
     // one writer the sweep did not reach.
     await ensurePatchStateDir(this.config.patchStateDir);
+    if (vaultId !== (await vaultIdentityTag(await this.root()))) {
+      throw new Error(
+        "The vault changed while this Skill plan was being prepared, so nothing was staged. " +
+          "Re-plan the Skill against this server."
+      );
+    }
     // vault_id goes in the FILE only, never in the record returned to the client
     // — see StagedPlan in types.ts for why.
-    const staged = { ...plan, vault_id: await vaultIdentityTag(await this.root()) };
+    const staged = { ...plan, vault_id: vaultId };
     await fs.writeFile(this.patchPath(patchId), JSON.stringify(staged, null, 2), {
       encoding: "utf8",
       flag: "wx",

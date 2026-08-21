@@ -595,6 +595,10 @@ export class KnowledgeStore implements VaultStore {
   }
 
   async planDocumentCreate(input: PlanDocumentCreateInput): Promise<PlannedDocumentCreate> {
+    // Before the target is validated, for the reason given in `planUpdate`. A
+    // create has no stale-content check at apply, so a plan tagged for a vault it
+    // was not derived against simply publishes there.
+    const vaultId = await this.vaultId();
     const targetPath = await this.validateCreateTarget(input.relative_path);
     const metadata: DocumentMetadata = {
       id: crypto.randomUUID(),
@@ -624,9 +628,10 @@ export class KnowledgeStore implements VaultStore {
     };
 
     await ensurePatchStateDir(this.config.patchStateDir);
+    await this.assertVaultUnchangedWhilePlanning(vaultId);
     // vault_id is added HERE, not on `patch`: it belongs in the file the apply
     // reads, and not in the record handed back to the client (see StagedPlan).
-    const staged: StagedPlan<typeof patch> = { ...patch, vault_id: await this.vaultId() };
+    const staged: StagedPlan<typeof patch> = { ...patch, vault_id: vaultId };
     await fs.writeFile(this.patchPath(patch.patch_id), JSON.stringify(staged, null, 2), {
       encoding: "utf8",
       flag: "wx",
@@ -694,6 +699,12 @@ export class KnowledgeStore implements VaultStore {
     frontmatter_patch?: Record<string, unknown>;
     reason: string;
   }): Promise<PlannedPatch> {
+    // Captured BEFORE anything is read, and re-checked before the plan is
+    // persisted. Deriving first and tagging afterwards lets a root replaced in
+    // between produce a plan whose CONTENT came from the old vault and whose tag
+    // names the new one — every apply-time check then passes. See
+    // `assertVaultUnchangedWhilePlanning`.
+    const vaultId = await this.vaultId();
     const document = await this.fetch(input.id_or_path);
     // INV-9: refuse to stage an update against the reserved audit subtree (early
     // reject; applyPlannedUpdate re-checks authoritatively at write time).
@@ -747,9 +758,10 @@ export class KnowledgeStore implements VaultStore {
     };
 
     await ensurePatchStateDir(this.config.patchStateDir);
+    await this.assertVaultUnchangedWhilePlanning(vaultId);
     // vault_id is added HERE, not on `patch`: it belongs in the file the apply
     // reads, and not in the record handed back to the client (see StagedPlan).
-    const staged: StagedPlan<typeof patch> = { ...patch, vault_id: await this.vaultId() };
+    const staged: StagedPlan<typeof patch> = { ...patch, vault_id: vaultId };
     await fs.writeFile(this.patchPath(patch.patch_id), JSON.stringify(staged, null, 2), {
       encoding: "utf8",
       mode: PATCH_STATE_FILE_MODE
@@ -1214,6 +1226,32 @@ export class KnowledgeStore implements VaultStore {
    * wall for INV-1 and reaches the same conclusion: keep the cheap check, and do
    * not describe it as containment. The residual is a ROADMAP item.
    */
+  /**
+   * Refuse to STAGE a plan whose vault changed while it was being derived.
+   *
+   * The apply-side check answers "is this the vault the plan was staged for".
+   * It cannot answer "is this the vault the plan was derived FROM", because a
+   * root replaced between the read and the tag produces a plan that truthfully
+   * names the replacement while carrying content from its predecessor — and
+   * every apply-time check then passes. An update needs the replacement to hold
+   * byte-identical content at the same path; a create needs nothing at all.
+   * Raised as a fifth P1 by Codex on #142, and distinct from the apply-side
+   * window: this one opens before the identity is captured.
+   *
+   * Same shape as the apply side, and the same limit: capture first, verify
+   * before persisting, and do not call it closed. A replacement landing between
+   * this check and the write of the plan file still slips through, for the
+   * fd-containment reason `assertPlanStagedForThisVault` records.
+   */
+  private async assertVaultUnchangedWhilePlanning(capturedVaultId: string): Promise<void> {
+    if (capturedVaultId !== (await this.vaultId())) {
+      throw new Error(
+        "The vault changed while this plan was being prepared, so nothing was staged. " +
+          "Re-plan the change against this server."
+      );
+    }
+  }
+
   private async assertPlanStagedForThisVault(planVaultId: string | undefined): Promise<void> {
     if (!planVaultId) {
       throw new Error(

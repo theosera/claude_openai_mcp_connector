@@ -95,6 +95,13 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   portably. `readDocument` records the same wall for INV-1 and reaches the same
   conclusion — keep the cheap check, do not call it containment.
 
+  **The same capture-then-verify runs at plan time**, and it is a different
+  window: deriving a plan first and tagging it afterwards lets a root replaced
+  in between produce a plan whose content came from the old vault and whose tag
+  truthfully names the new one, so every apply-time check passes. Each writer
+  now captures the identity before it reads anything and refuses to stage if it
+  changed. A refused plan leaves no file behind.
+
   **The cost, stated rather than discovered later:** `(dev, ino)` is not stable
   across a restore from backup, a copy, or a remount, and including the path
   means renaming the vault refuses too. In all of those the staged plans of an

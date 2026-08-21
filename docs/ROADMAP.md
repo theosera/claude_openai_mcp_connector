@@ -1351,6 +1351,19 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       per-component `O_NOFOLLOW` — which Node does not expose portably. INV-1
       item 9 reached this same wall for `readDocument` and settled the same way.
 
+      **A fifth, at the other end of the two-step.** The apply-side checks
+      answer "is this the vault the plan was staged for" and cannot answer "is
+      this the vault it was derived FROM": a root replaced between the read and
+      the tag yields a plan that truthfully names the replacement while carrying
+      its predecessor's content. All three writers now capture the identity
+      before deriving and verify it before persisting — the same capture-verify
+      shape as the apply side, with the same limit.
+
+      One of the three tests for it went **green against a guard that never
+      ran** on the first attempt: the spy's first `fs.stat` was `init`'s, not
+      the capture's, so the swap landed before the identity was taken. Forcing
+      resolution before installing the spy is what made it reach.
+
       🔭 **Follow-up, not closed by this item:** a vault identity that is
       persistent and anchored to the verified directory. Both halves need
       something this repository does not have yet — somewhere to store an
