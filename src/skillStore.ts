@@ -188,6 +188,15 @@ export class SkillStore {
       // Re-check immediately before the atomic same-filesystem rename. Existing
       // Skills are never replaced; a concurrent creator makes apply fail.
       await assertAbsent(target.absolute);
+      // And the vault, for the same reason it is re-checked in the document
+      // writers: the check above ran before `targetPath()` walked the pathname.
+      // This narrows the swap window to the rename itself; it does not close it.
+      if (plan.vault_id !== (await vaultIdentityTag(await this.root()))) {
+        throw new Error(
+          "Skill plan was staged for a different vault and will not be applied here. " +
+            "Re-plan the Skill against this server."
+        );
+      }
       await fs.rename(temp, target.absolute);
       await fs.unlink(this.patchPath(patchId));
       return {

@@ -1339,6 +1339,25 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       into the data plane. Left as a follow-up rather than described as
       settled, since the previous two rounds each read that way and each was
       wrong. It also degrades silently on a filesystem with no birth time.
+
+      **And a fourth, which is the honest end of this line.** Verifying an
+      identity and then resolving the target by pathname leaves a check-to-use
+      window: replace the directory in between and the check passes against the
+      vault that is already gone. The identity is now re-checked immediately
+      before each of the three writes, which narrows the window to the write
+      itself and is pinned by a test that drives the swap rather than racing for
+      it. **No arrangement of `stat` calls closes it.** That needs the write
+      anchored to the verified directory — fd-based containment, `openat` with
+      per-component `O_NOFOLLOW` — which Node does not expose portably. INV-1
+      item 9 reached this same wall for `readDocument` and settled the same way.
+
+      🔭 **Follow-up, not closed by this item:** a vault identity that is
+      persistent and anchored to the verified directory. Both halves need
+      something this repository does not have yet — somewhere to store an
+      identifier that is not the vault's own data plane, and fd-relative
+      filesystem calls. Four consecutive P1s on one pull request found four
+      different ways for a derived identity to be handed back by the
+      filesystem; the fifth is not worth guessing at.
       **The cost is that `(dev, ino)` does not survive a restore, a copy or a
       remount**, so plans of an arguably unchanged vault are refused there too —
       the direction to be wrong in, since re-planning is cheap.

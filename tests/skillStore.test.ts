@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { PLAN_MAX_AGE_MS, vaultIdentityTag } from "../src/patchState.js";
 import { SkillStore, type PlanSkillCreateInput } from "../src/skillStore.js";
@@ -415,6 +415,42 @@ describe("SkillStore INV-3 plan binding survives the directory being replaced", 
     for (const dir of [parent, patchStateDir]) {
       await fs.rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it("refuses a Skill plan when the vault is replaced inside the same window", async () => {
+    // The check/use window at the third writer. The spy lets the first identity
+    // stat return the original directory's numbers and then replaces the
+    // directory, so the check passes against a vault that is already gone and
+    // `targetPath()` walks the pathname into the replacement.
+    const before = storeFor(vaultPath);
+    const plan = await before.planCreate({
+      skill_name: "improve-ai-harness",
+      skill_md: SKILL_MD,
+      references: [],
+      reason: "check-to-use window probe"
+    });
+
+    const rootRealPath = await fs.realpath(vaultPath);
+    const realStat = fs.stat.bind(fs);
+    let swapped = false;
+    const spy = vi.spyOn(fs, "stat").mockImplementation((async (target: unknown, options?: unknown) => {
+      const result = await (realStat as (t: unknown, o?: unknown) => Promise<unknown>)(target, options);
+      if (!swapped && target === rootRealPath) {
+        swapped = true;
+        await fs.rm(vaultPath, { recursive: true, force: true });
+        await fs.mkdir(path.join(vaultPath, "knowledge", "skills"), { recursive: true });
+      }
+      return result;
+    }) as unknown as typeof fs.stat);
+
+    try {
+      await expect(before.applyPlannedCreate(plan.patch_id)).rejects.toThrow(/staged for a different vault/);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(swapped).toBe(true);
+    await expect(fs.stat(path.join(vaultPath, "knowledge", "skills", "improve-ai-harness"))).rejects.toThrow();
   });
 
   it("refuses a Skill plan staged before the directory at that path was replaced", async () => {

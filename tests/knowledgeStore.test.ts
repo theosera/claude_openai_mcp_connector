@@ -2681,6 +2681,80 @@ describe("KnowledgeStore INV-3 plan binding survives the directory being replace
     await expect(fs.stat(path.join(vaultPath, "projects", "new-note.md"))).rejects.toThrow();
   });
 
+  it("refuses when the vault is replaced between the identity check and the write", async () => {
+    // The window itself, driven rather than raced for: the spy lets the first
+    // identity stat return the ORIGINAL directory's numbers and then swaps the
+    // directory before the apply continues. The check passes against the vault
+    // that is already gone; everything after it walks the pathname and finds the
+    // replacement. Without the second check this create lands in a vault nobody
+    // planned it for.
+    const store = storeFor(vaultPath);
+    const plan = await store.planDocumentCreate({
+      relative_path: "projects/new-note.md",
+      title: "New",
+      body: "planned for the vault that was about to be replaced",
+      reason: "check-to-use window probe"
+    });
+
+    const rootRealPath = await fs.realpath(vaultPath);
+    const realStat = fs.stat.bind(fs);
+    let swapped = false;
+    const spy = vi.spyOn(fs, "stat").mockImplementation((async (target: unknown, options?: unknown) => {
+      const result = await (realStat as (t: unknown, o?: unknown) => Promise<unknown>)(target, options);
+      if (!swapped && target === rootRealPath) {
+        swapped = true;
+        await deleteAndRecreateVaultDirectory();
+      }
+      return result;
+    }) as unknown as typeof fs.stat);
+
+    try {
+      await expect(store.applyPlannedDocumentCreate(plan.patch_id, "projects/new-note.md")).rejects.toThrow(
+        /staged for a different vault/
+      );
+    } finally {
+      spy.mockRestore();
+    }
+
+    // Guards the guard: if the swap never fired, the refusal above would be the
+    // ordinary same-vault path and this test would prove nothing.
+    expect(swapped).toBe(true);
+    await expect(fs.stat(path.join(vaultPath, "projects", "new-note.md"))).rejects.toThrow();
+  });
+
+  it("refuses an update when the vault is replaced inside the same window", async () => {
+    // Same window, the other writer. The replacement carries byte-identical
+    // content at the same relative path, so the stale check between the two
+    // identity checks passes and cannot be the thing that refuses.
+    const store = storeFor(vaultPath);
+    const plan = await store.planUpdate({
+      id_or_path: "projects/shared.md",
+      new_body: "planned for the vault that was about to be replaced",
+      reason: "check-to-use window probe"
+    });
+
+    const rootRealPath = await fs.realpath(vaultPath);
+    const realStat = fs.stat.bind(fs);
+    let swapped = false;
+    const spy = vi.spyOn(fs, "stat").mockImplementation((async (target: unknown, options?: unknown) => {
+      const result = await (realStat as (t: unknown, o?: unknown) => Promise<unknown>)(target, options);
+      if (!swapped && target === rootRealPath) {
+        swapped = true;
+        await deleteAndRecreateVaultDirectory();
+      }
+      return result;
+    }) as unknown as typeof fs.stat);
+
+    try {
+      await expect(store.applyPlannedUpdate(plan.patch_id)).rejects.toThrow(/staged for a different vault/);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(swapped).toBe(true);
+    expect(await fs.readFile(path.join(vaultPath, "projects", "shared.md"), "utf8")).toBe(NOTE);
+  });
+
   it("still applies a plan when nothing was replaced", async () => {
     // The false-positive half: an identity strict enough to refuse everything
     // would pass both tests above.

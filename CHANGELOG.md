@@ -84,6 +84,17 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   measured flows without opening a write path. On a filesystem that records no
   birth time the tuple silently falls back to path and inode.
 
+  **The identity is re-checked immediately before each write**, because
+  everything between the first check and the write — target validation,
+  resolution, the stale read — walks the pathname again, so a directory replaced
+  in that window would be verified in its old incarnation and written in its
+  new one. The second check narrows that window to the write itself. **It does
+  not close it**, and no arrangement of `stat` calls can: closing it needs the
+  write anchored to the directory that was verified, which is fd-based
+  containment (`openat`, per-component `O_NOFOLLOW`) that Node does not expose
+  portably. `readDocument` records the same wall for INV-1 and reaches the same
+  conclusion — keep the cheap check, do not call it containment.
+
   **The cost, stated rather than discovered later:** `(dev, ino)` is not stable
   across a restore from backup, a copy, or a remount, and including the path
   means renaming the vault refuses too. In all of those the staged plans of an

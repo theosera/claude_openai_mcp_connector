@@ -671,6 +671,10 @@ export class KnowledgeStore implements VaultStore {
     // check in serializeMarkdown cannot speak for what is written here.
     assertEmittedFrontmatterWithinLimit(patch.new_content);
     const absolutePath = await this.resolveForWrite(await this.validateCreateTarget(patch.target_path));
+    // Again, immediately before the write: the check above ran before the target
+    // was resolved, and resolution walks the pathname afresh. See the note on
+    // `assertPlanStagedForThisVault` for what this narrows and what it cannot.
+    await this.assertPlanStagedForThisVault(patch.vault_id);
     try {
       await fs.writeFile(absolutePath, patch.new_content, { encoding: "utf8", flag: "wx" });
     } catch (error) {
@@ -808,6 +812,10 @@ export class KnowledgeStore implements VaultStore {
     // because this is the authoritative gate and the plan-time one is only an
     // early refusal. INV-9 draws that line the same way for the audit surface.
     assertEmittedFrontmatterWithinLimit(patch.new_content);
+    // Again, immediately before the write. Between the check at the top and this
+    // line the target was resolved, read and hashed, all by pathname — see the
+    // note on `assertPlanStagedForThisVault`.
+    await this.assertPlanStagedForThisVault(patch.vault_id);
     // Same-directory temp + rename: an interrupted apply must leave the note
     // whole (old or new), never truncated. See src/atomicWrite.ts.
     await replaceFileAtomically(absolutePath, patch.new_content, original);
@@ -1190,6 +1198,21 @@ export class KnowledgeStore implements VaultStore {
    *
    * Neither message names a path or a root. The tags are opaque by construction
    * and the client has no use for them beyond "these two differ".
+   *
+   * ⚠️ **Called TWICE per apply, and the second call is not redundant.** This
+   * check stats the root; everything after it — target validation, resolution,
+   * the stale read — walks the pathname again, so a directory swapped in that
+   * window is verified in its old incarnation and written in its new one. Codex
+   * raised that as a fourth P1 on #142. Calling it again immediately before the
+   * mutation narrows the window from "check → validate → resolve → read → hash →
+   * write" to "check → write".
+   *
+   * ⚠️ **It does not close it, and no arrangement of stats can.** Closing it
+   * needs the write anchored to the directory that was verified — fd-based
+   * containment, `openat` with `O_NOFOLLOW` per component — which Node does not
+   * expose portably. `src/knowledgeStore.ts`'s `readDocument` records the same
+   * wall for INV-1 and reaches the same conclusion: keep the cheap check, and do
+   * not describe it as containment. The residual is a ROADMAP item.
    */
   private async assertPlanStagedForThisVault(planVaultId: string | undefined): Promise<void> {
     if (!planVaultId) {
