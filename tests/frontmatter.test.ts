@@ -681,7 +681,8 @@ describe("apply re-checks the cap, so a stale plan cannot carry a write past it"
   /**
    * Stage a plan the way a server WITHOUT the emit cap would have: by writing
    * the patch file directly. Going through planUpdate is impossible now, which
-   * is the whole point — the bytes predate the guard, and nothing expires them.
+   * is the whole point — the bytes predate the guard, and the seven-day sweep
+   * is staging-driven, so on a quiet server nothing removes them either.
    */
   async function stagePlanFile(patch: Record<string, unknown>): Promise<string> {
     const patchId = crypto.randomUUID();
