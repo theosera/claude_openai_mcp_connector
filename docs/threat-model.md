@@ -62,7 +62,7 @@ referenced only via `KNOWLEDGE_ROOT`.
  ChatGPT / Claude.ai ──▶ HTTPS tunnel ──▶ 127.0.0.1:PORT  ┌─ /authorize,/token,/register (OAuth 2.1)
  (web, OAuth only)       (cloudflared)        │            │   PKCE S256 · login gate · DCR
                                               │  httpServer├─ /mcp  (bearer OR audience-bound token)
- Claude Desktop/API ───▶ static bearer ──────▶│            │   read-only unless allowWrite + vault.write
+ Claude Desktop/API ───▶ static bearer ──────▶│            │   read-only unless that surface's own flag + vault.write
                                               └────────────┴──────────────┐
                                                                           ▼
  Claude Code / Codex ──▶ stdio (local process) ─────────────────▶  buildMcpServer (tool factory)
@@ -77,9 +77,19 @@ client tool args → server (input validation), (c) server → filesystem (path
 containment), (d) vault content → LLM/agent (untrusted-data boundary), (e)
 repo/CI → public (secret hygiene).
 
-> ⚠️ **`read-only unless allowWrite + vault.write` is two independent conditions
-> for every principal — but for the static bearer the second is only as narrow as
-> the operator made it.** `authenticate()` used to return
+> ⚠️ **`read-only unless <that surface's flag> + vault.write` is two independent
+> conditions for every principal — but for the static bearer the second is only as
+> narrow as the operator made it.**
+>
+> ★ **The flag half is per-surface, not one global `allowWrite`.** `surfaceFor`
+> AND-s `vault.write` separately with `allowWrite` (the document plan/apply
+> tools), `allowLegacyCreateDocument`, `allowSkillWrite` and `allowAuditWrite`,
+> so **turning one off does not close the others** — an endpoint with
+> `MCP_HTTP_ALLOW_WRITE` unset but `MCP_HTTP_ALLOW_SKILL_WRITE` on is not
+> read-only. Raised by CodeRabbit on #144; the earlier wording named `allowWrite`
+> as though it were the whole gate.
+>
+> `authenticate()` used to return
 > `{scopes: [vault.read, vault.write]}` unconditionally once the token matched,
 > so on that path the second half was always true and the flag was the only gate.
 > It now returns `config.authTokenScopes` (`MCP_AUTH_TOKEN_SCOPES`,
@@ -129,7 +139,7 @@ repo/CI → public (secret hygiene).
 | Reading files outside the vault                                     | Path containment, fail-closed (`INV-1`).                                                                                     | —                                                                                    |
 | Serving the vault over HTTP with no auth                            | `MCP_AUTH_TOKEN` required or startup refused; loopback bind by default (`INV-6`).                                            | Public exposure only via explicit HTTPS tunnel.                                      |
 | Token/code/password leaking via logs                                | No secrets in logs; secrets via env only (`INV-6`, `INV-7`, `INV-4`).                                                        | —                                                                                    |
-| Over-broad remote capability                                        | Read-only by default; write tools are **not even registered** without `allowWrite` + `vault.write` scope (`INV-6`, `INV-7`). | ⚠️ For the **static bearer** the scope half defaults to full (see §3), so unless `MCP_AUTH_TOKEN_SCOPES` narrows it the flag is the only gate. Independent for OAuth tokens. |
+| Over-broad remote capability                                        | Read-only by default; a write tool is **not even registered** without **its own surface flag** (`allowWrite` / `allowLegacyCreateDocument` / `allowSkillWrite` / `allowAuditWrite`) **and** `vault.write` scope (`INV-6`, `INV-7`). ⚠️ Unsetting one flag closes one surface, not all four. | ⚠️ For the **static bearer** the scope half defaults to full (see §3), so unless `MCP_AUTH_TOKEN_SCOPES` narrows it the flag is the only gate. Independent for OAuth tokens. |
 | OAuth open-redirect leaking a code                                  | `redirect_uri` exact-match + https/loopback only; bad client/redirect → 400, not redirected (`INV-7`).                       | —                                                                                    |
 | Secret/vault committed to the public repo                           | `.gitignore` + synthetic-only fixtures + per-file `git add` (`INV-4`).                                                       | ⚠️ Relies on discipline; **harder secret-scanning is a gap** (ROADMAP).              |
 | Exfiltration of vault content by an authorized-but-malicious client | —                                                                                                                            | ⚠️ **No DLP / exfiltration detection** (known gap, ROADMAP). Out of scope for 0.1.0. |

@@ -453,14 +453,21 @@ the OAuth flow. The URL to register in the client is
 
 ## 5. Operational security checklist
 
-- [ ] `MCP_HTTP_ALLOW_WRITE` is **unset** (read-only) unless you have a specific,
-      audited need. Writes also require a `vault.write`-scoped token.
+- [ ] `MCP_HTTP_ALLOW_WRITE` is **unset** unless you have a specific, audited
+      need. ⚠️ **Unsetting it makes the endpoint read-only only if the other
+      three write flags are unset too.** `surfaceFor` AND-s `vault.write`
+      separately with `allowWrite` (document plan/apply),
+      `allowLegacyCreateDocument`, `allowSkillWrite` and `allowAuditWrite`, so
+      **this flag closes the general document-write surface and nothing else** —
+      the Skill and audit surfaces have their own checklist items below, and
+      `MCP_ALLOW_LEGACY_CREATE_DOCUMENT` has its own further down.
+      Writes also require a `vault.write`-scoped token.
       ⚠️ **That second condition is real for OAuth clients, and for the static
       bearer it is only as narrow as you made it.** The bearer carries
       `vault.read vault.write` by DEFAULT (`authenticate()` in
       `src/httpServer.ts` reads `MCP_AUTH_TOKEN_SCOPES`), so unless that variable
-      is set this flag is the **only** thing standing between a caller and a
-      write — treat it as a single gate, not two.
+      is set **the surface's own flag** is the **only** thing standing between a
+      caller and a write on that surface — treat it as a single gate, not two.
 - [ ] `MCP_AUTH_TOKEN_SCOPES=vault.read` on any endpoint whose static bearer
       should not be able to write — e.g. a write-enabled endpoint whose writes
       are meant for the OAuth web client only. The variable can only **narrow**
