@@ -469,4 +469,56 @@ describe("scripts/check-stdio.mjs (declared-vs-live stdio surface)", () => {
     expect(output).toContain("unclassified/unknown: exfiltrate_vault");
     expect(code).toBe(1);
   }, 30000);
+
+  // Raised by Codex on #144: the narrower check asked "is ANY tool of this
+  // category present", so a category registered HALFWAY passed silently. The
+  // shape that matters is a plan/apply pair with one half missing — the check
+  // reported a clean match while apply_planned_update was not registered at all.
+  //
+  // Narrower is still a warning and not a failure (it cannot widen the surface),
+  // so this asserts the exit code stays 0 AND that no FAIL line appears: a test
+  // that only looked for the WARN text would also pass if the warning arrived
+  // alongside a spurious failure.
+  it("warns on a category registered HALFWAY, naming the missing tools", async () => {
+    const stub = path.join(dir, "half-entry.mjs");
+    await fs.writeFile(
+      stub,
+      [
+        "let buffer = '';",
+        "const send = (m) => process.stdout.write(JSON.stringify(m) + '\\n');",
+        "process.stdin.on('data', (chunk) => {",
+        "  buffer += String(chunk);",
+        "  const lines = buffer.split('\\n');",
+        "  buffer = lines.pop() ?? '';",
+        "  for (const line of lines) {",
+        "    if (!line.trim()) continue;",
+        "    const message = JSON.parse(line);",
+        "    if (message.method === 'initialize') {",
+        "      send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: '2025-06-18',",
+        "        capabilities: { tools: {} }, serverInfo: { name: 'stub', version: '0' } } });",
+        "    } else if (message.method === 'tools/list') {",
+        "      send({ jsonrpc: '2.0', id: message.id, result: { tools: [",
+        "        { name: 'search_documents', annotations: { readOnlyHint: true } },",
+        "        { name: 'plan_document_create' }, { name: 'apply_planned_document_create' } ] } });",
+        "    }",
+        "  }",
+        "});",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    const envFile = path.join(dir, "half.env");
+    await fs.writeFile(envFile, `KNOWLEDGE_ROOT=${dir}\n`, "utf8");
+
+    const { code, output } = await runCheck(["--env", envFile, "--entry", stub]);
+
+    expect(output).toContain("WARN:");
+    expect(output).toContain("plan_document_update");
+    expect(output).toContain("apply_planned_update");
+    expect(output).toContain("2/4 present");
+    // Present halves must NOT be named as missing.
+    expect(output).not.toMatch(/missing[^\n]*plan_document_create/);
+    expect(output).not.toContain("FAIL:");
+    expect(code).toBe(0);
+  }, 30000);
 });

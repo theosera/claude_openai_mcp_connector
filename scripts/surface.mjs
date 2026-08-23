@@ -42,8 +42,9 @@ export function checkTimeoutMs(env = process.env) {
  *
  * `categories` is `[{ key, tools, declared }]`. A surface WIDER than declared —
  * a known write tool whose category is off, or an unrecognized write-capable
- * tool nobody classified — is a failure. NARROWER (declared on, tool absent) is
- * a warning: narrower never widens the security surface.
+ * tool nobody classified — is a failure. NARROWER — a declared category with ANY
+ * of its tools absent, including a partially registered one — is a warning:
+ * narrower never widens the security surface.
  */
 export function classifySurface(tools, categories) {
   const names = new Set(tools.map((tool) => tool.name));
@@ -65,8 +66,22 @@ export function classifySurface(tools, categories) {
     );
   }
   for (const category of categories) {
-    if (category.declared && !category.tools.some((name) => names.has(name))) {
+    if (!category.declared) continue;
+    // Compare EVERY declared tool, not "is any of them present". `.some()` fell
+    // silent on a partially registered category — plan_document_create present
+    // while apply_planned_document_create is not — which is precisely the state
+    // worth warning about: a plan/apply pair with one half missing, or a Skill
+    // or audit surface registered halfway. Raised by Codex on #144.
+    const missing = category.tools.filter((name) => !names.has(name));
+    if (missing.length === 0) continue;
+    if (missing.length === category.tools.length) {
       warnings.push(`${category.key}: declared ON but no tool present (narrower than declared).`);
+    } else {
+      const present = category.tools.length - missing.length;
+      warnings.push(
+        `${category.key}: declared ON but missing ${missing.join(", ")} ` +
+          `(narrower than declared; ${present}/${category.tools.length} present).`
+      );
     }
   }
 
