@@ -511,6 +511,23 @@ describe("OAuthProvider flow", () => {
     expect(pr.authorization_servers).toEqual([config.issuer]);
   });
 
+  // The `client_id` appendix in docs/ROADMAP.md rests on this key being absent.
+  // While it is, a conformant client gates on it and falls back to DCR, so every
+  // registration goes through /register and gets a throwaway id — which is the
+  // premise the appendix's ceiling assumes. Advertising CIMD support flips that
+  // premise, so this assertion IS the re-open trigger for that section: it is
+  // meant to go red on the commit that adds support, and that commit's job is to
+  // revisit the appendix, not to delete this test.
+  it("does not advertise CIMD support, which the client_id appendix's premise depends on", () => {
+    const provider = new OAuthProvider(config);
+    const as = JSON.parse(provider.authorizationServerMetadata().body);
+    expect(as.client_id_metadata_document_supported).toBeUndefined();
+    // Positive controls: an absent key proves nothing unless the object it is
+    // absent from is the real metadata, so assert two keys that must be present.
+    expect(as.authorization_response_iss_parameter_supported).toBe(true);
+    expect(as.registration_endpoint).toBe(`${config.issuer}/register`);
+  });
+
   it("rejects registration without an allowed redirect_uri", () => {
     const provider = new OAuthProvider(config);
     expect(provider.register({ redirect_uris: ["http://evil/cb"] }).status).toBe(400);

@@ -399,8 +399,12 @@ needs an end date, and there is none.
 (17/17), `MCP_EVENT_LOG_*` rather than `MCP_AUDIT_*` because three audit
 variables already mean something else, three states if the startup line reports
 it at all, the startup line is not the check, and the reverse verification is a
-**negative** assert. Its precondition is the CIMD question, since attribution
-would key on `client_id`.
+**negative** assert. **Its precondition — the CIMD question — is discharged
+(2026-08-24)**: the ROADMAP appendix now records the condition the premise
+actually depends on (this AS not advertising
+`client_id_metadata_document_supported`, which it does not), so attribution may
+key on `client_id` today. The residual constraint carries into A3's design: it
+must not depend on the *in*stability either.
 
 ### Adapt
 

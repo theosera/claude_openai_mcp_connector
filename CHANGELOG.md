@@ -25,6 +25,35 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Documentation
 
+- **The CIMD question is settled, and its re-open trigger is a test.** The
+  ROADMAP recorded that deprecating Dynamic Client Registration in favour of
+  Client ID Metadata Documents invalidated a premise of the `client_id`
+  appendix — "DCR mints a fresh id whenever a client re-adds the connector, so it
+  is not a stable identity" — and blocked any `client_id`-keyed feature, the
+  audit log included, until that was revisited. The revisit finds the premise
+  depends on **this server's own metadata**, not on the deprecation: CIMD support
+  is optional for an authorization server, a conformant client gates on
+  `client_id_metadata_document_supported` and falls back to DCR when it is
+  absent, and this server does not advertise the key. DCR also stays functional
+  for at least twelve more months. So the premise holds, and the audit log is no
+  longer gated on it — with one residual constraint, that its attribution must
+  not depend on the *in*stability either.
+
+  **The rejections in that appendix do not move.** Neither the anti-router ruling
+  nor "`client_id` must not drive trust decisions or widen scope" rests on
+  instability — they rest on MCP solving I/O differences client-side and on
+  INV-6/INV-7 keeping authorization on transport + flags + token scope — so a
+  stable id is not an argument for reopening either. The appendix now says so
+  rather than leaving it to be re-derived by whoever reads it next.
+
+  **The trigger is a test, not a note.** `tests/oauth.test.ts` asserts the key is
+  absent and names the section, so adding CIMD support turns it red at the moment
+  the revisit is earned. Three corrections ride along: the deprecation is
+  **SEP-2577**, not SEP-2468 (that is the `iss` work); CIMD itself is **SEP-991**,
+  from the previous revision; and per-`client_id` revocation is blunter under DCR
+  than the entry said, because a revoked registration can re-register and return
+  under a fresh id.
+
 - **A policy-enforcement and provenance assessment**, in
   `docs/policy-provenance.md`. It was asked to evaluate applying OS-style ideas —
   a policy layer privileged components cannot argue past, artifact provenance,

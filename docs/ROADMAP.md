@@ -440,13 +440,21 @@ The reasons to adopt it anyway, in cost/benefit order:
    together. The matching client duty (validate a supplied `iss` byte-for-byte
    against the expected issuer, and reject a missing one when the AS advertises
    support) falls on ChatGPT / Claude.ai, not on us. Applies to `src/oauth/` on
-   its own, with no transport migration. **Caveat:** the same revision deprecates DCR
-   in favour of Client Metadata Documents (CIMD). That invalidates a premise of
-   the [`client_id` appendix](#appendix--future-uses-of-the-authenticated-client_id)
+   its own, with no transport migration. **Caveat, now discharged:** the same
+   protocol revision (2026-07-28) also deprecates DCR in favour of Client ID
+   Metadata Documents. ⚠️ **Not the same SEP, though this entry used to say so** —
+   SEP-2468 is the `iss` work above, **SEP-2577** is the deprecation, and
+   **SEP-991** is CIMD itself, which landed a revision earlier (2025-11-25). The
+   caveat recorded here was that this invalidates a premise of the
+   [`client_id` appendix](#appendix--future-uses-of-the-authenticated-client_id)
    — "DCR mints a fresh id whenever a client re-adds the connector, so it is not a
-   stable identity". Under CIMD it becomes stable, so the appendix's reasoning
-   about attribution / selective revocation must be revisited **before** any
-   `client_id`-keyed feature (i.e. before the audit log) is built on it.
+   stable identity" — and that the appendix's reasoning about attribution /
+   selective revocation had to be revisited **before** any `client_id`-keyed
+   feature (i.e. before the audit log) was built on it. **That revisit happened on
+   2026-08-24 and the appendix carries its result**, which is not repeated here:
+   the premise turns out to depend on *this AS's own metadata*, not on the
+   deprecation, so the deprecation alone changes nothing and the audit log is no
+   longer gated on it.
 2. **v2 packages + dual-era serving ✅ — this is the one that paid.** It closed
    the **third** cause of "the connection dropped", now written up as resolved in
    [`operations.md` §1.C](./operations.md). Causes (A) ephemeral tunnel URL and
@@ -1294,10 +1302,13 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       `iss=<issuer>`, and `authorizationServerMetadata()` advertises
       `authorization_response_iss_parameter_supported: true` — the pair changes
       together per SEP-2468. Pinned in `tests/oauth.test.ts` (code-issuance
-      redirect, metadata flag, and the HTTP E2E). The sequencing note stands:
-      the same revision deprecates DCR for CIMD, which makes `client_id` a
-      _stable_ identity — revisit the `client_id` appendix **before** building
-      the audit log's attribution on it.
+      redirect, metadata flag, and the HTTP E2E). **The sequencing note that stood
+      here is discharged (2026-08-24)** — it said to revisit the `client_id`
+      appendix before building the audit log's attribution on it. The appendix now
+      states the condition its premise actually depends on, and the reasoning is
+      not duplicated here. Two corrections it carries: the deprecation is
+      **SEP-2577**, not SEP-2468, and CIMD itself is **SEP-991** from the previous
+      revision.
 - [x] **Bind a two-step plan to the vault that staged it** — ✅ every staged plan
       records the primary root's `vaultTag`, and each apply refuses a plan that
       names a different vault or names none.
@@ -1720,14 +1731,51 @@ a client re-adds the connector, it is not even a stable per-vendor identity
 (that would need `clientInfo.name`, which is forgeable). So the honest uses are
 operational (attribution / limits / revocation), not authorization-of-a-person.
 
+**The condition that paragraph depends on — settled 2026-08-24.** The sentence
+above was written without a scope, and a scope is what it needed: **it holds for
+as long as this AS does not advertise `client_id_metadata_document_supported`.**
+CIMD support is optional for an authorization server — SEP-991 says servers
+_SHOULD_ fetch a metadata document when they meet a URL-shaped `client_id`, and
+advertise support in their RFC 8414 metadata — and a conformant client gates on
+that advertisement, falling back to DCR when it is absent. The shipped
+`@modelcontextprotocol/client` does exactly that: it takes the CIMD path only
+when `client_id_metadata_document_supported === true` **and** it holds a client
+metadata URL, and calls `registerClient` otherwise.
+`authorizationServerMetadata()` in `src/oauth/provider.ts` does not carry the
+key, and `authorizePost` refuses an unrecognized `client_id` with
+`400 Unknown client_id.`, so every registration still goes through `/register`
+and still receives a throwaway `client_${randomSecret()}` from
+`src/oauth/store.ts`. **DCR being deprecated does not by itself change any of
+this**: it stays functional through a deprecation window of at least twelve
+months, with removal possible no earlier than a revision on or after 2027-07-28.
+
+**What that licenses, and what it does not.** A `client_id`-keyed feature may be
+built today. It must not depend on the *in*stability either, because that is the
+half that flips the day we advertise the key. **And a stable `client_id` is not
+an argument for reopening the rejections below** — neither of them rests on
+instability. The anti-router ruling is grounded in MCP solving I/O differences
+client-side with the only output difference being config-driven; the "must not
+drive trust decisions" rule is grounded in INV-6/INV-7 keeping authorization on
+transport + flags + token scope. Stability moves neither.
+
+⚠️ **The re-open trigger is a test, not this paragraph.** `tests/oauth.test.ts`
+asserts the key is **absent** from the served metadata and names the appendix in
+its title, so adding CIMD support turns that test red and forces the revisit at
+the moment it is earned — rather than leaving it to be remembered. The prose note
+this replaces did not hold: B1 and B2, which `policy-provenance.md` sequences
+*after* A3, shipped past it while the note sat unresolved, and it took an
+explicit prompt rather than the note itself to collect.
+
 Use cases, roughly by how real/soon they are:
 
 1. **Audit-log attribution (near-term 🔭, strongest).** The audit log only
    becomes useful if each event records _which connector_ acted ("ChatGPT read
-   X", "Claude.ai attempted write Y"). Key it on `client_id`. **Settle the CIMD
-   question first** (see the 2026-07-28 section): the ceiling described just
-   above assumes DCR mints a throwaway id per re-registration, which stops
-   holding once client metadata documents replace DCR.
+   X", "Claude.ai attempted write Y"). Key it on `client_id`. **The CIMD question
+   is settled** (see the condition paragraph above), so this is no longer gated:
+   the ceiling described just above assumes DCR mints a throwaway id per
+   re-registration, and that assumption holds while this AS does not advertise
+   `client_id_metadata_document_supported`. The one residual constraint is that
+   the attribution design must not rely on the *in*stability either.
 2. **Selective revocation (grew in value with token persistence).** The only
    _explicit_ revocation lever today is rotating the password (nukes _all_
    sessions). 🚧 A first automatic slice landed: client registrations holding no
@@ -1736,6 +1784,11 @@ Use cases, roughly by how real/soon they are:
    (an operator-triggered surface) remains future.
    Now that tokens persist across restarts, "revoke ChatGPT only, without making
    Claude.ai re-authorize" wants per-`client_id` token eviction.
+   ⚠️ **Under DCR that lever is blunter than it reads**, which the entry did not
+   say: a revoked registration can re-register and return under a fresh id, so
+   per-`client_id` eviction ends a *session*, not a *client*. Stability is what
+   would make it bite — an argument for sequencing this **after** any CIMD
+   adoption rather than before it.
 3. **Per-connector rate limiting / budget isolation.** Limits are keyed on the
    socket peer today (the anti-`X-Forwarded-For`-spoofing fix); two web clients
    sharing one tunnel egress IP land in the same bucket. To stop one connector
@@ -1755,7 +1808,9 @@ Use cases, roughly by how real/soon they are:
 
 **Rule of thumb:** `client_id` is fine for **attribution, limiting, and
 revocation** (all satisfied by "this token provably came from this
-registration"); it must **not** drive trust decisions or scope widening. A
+registration"); it must **not** drive trust decisions or scope widening.
+**Neither half of that rests on `client_id` being unstable**, so a stable id does
+not reopen it. A
 runtime router that switches tool surfaces by _detecting_ ChatGPT-vs-Claude is
 explicitly rejected: MCP already solves I/O differences client-side (each client
 selects the tools it understands — the `search`/`fetch` aliases in
