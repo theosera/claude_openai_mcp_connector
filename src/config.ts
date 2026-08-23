@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import dotenv from "dotenv";
+import { SCOPE_READ, SCOPE_WRITE } from "./oauth/provider.js";
 import type { OAuthConfig } from "./oauth/provider.js";
 import { vaultTag } from "./patchState.js";
 import { assertRelativePath, posixContains, toPosixPath } from "./pathSafety.js";
@@ -706,6 +707,15 @@ export interface HttpConfig {
   port: number;
   /** Bearer secret every HTTP request must present. Never hardcoded — env only. */
   authToken: string;
+  /**
+   * Scopes the static bearer presents once it matches (GAP-4). Every other
+   * principal has its tool surface derived from the scopes on the token it
+   * presented; the static bearer used to be the one exception, with
+   * `[vault.read, vault.write]` written as a constant inside `authenticate()`.
+   * This carries the same two scopes by default — the derivation is what
+   * changes, not the result — and `MCP_AUTH_TOKEN_SCOPES` can NARROW it.
+   */
+  authTokenScopes: string[];
   /** Whether write tools are exposed over HTTP. Defaults off (read-only). */
   allowWrite: boolean;
   /** Whether only the constrained Skill-creation tools are exposed over HTTP. */
@@ -745,6 +755,68 @@ export function selectedTransport(env: NodeJS.ProcessEnv = process.env): Transpo
 function isTruthy(value: string | undefined): boolean {
   const normalized = value?.trim().toLowerCase();
   return normalized === "1" || normalized === "true" || normalized === "yes";
+}
+
+/**
+ * The scopes the static bearer carries when `MCP_AUTH_TOKEN_SCOPES` is unset —
+ * the full set, exactly what `authenticate()` returned as a literal before this
+ * was configurable. Also the ALLOWLIST: a narrowed set is derived by filtering
+ * this array, so the result is a subset of it by construction rather than by a
+ * validation step that a later edit could drift away from.
+ */
+const STATIC_BEARER_DEFAULT_SCOPES: readonly string[] = [SCOPE_READ, SCOPE_WRITE];
+
+/**
+ * Parse `MCP_AUTH_TOKEN_SCOPES` — the static bearer's scopes (GAP-4).
+ *
+ * NARROWING ONLY, and in two independent senses:
+ *  - it cannot name a scope outside {vault.read, vault.write} (unknown names are
+ *    a startup error, not a silently ignored typo), and the returned array is
+ *    filtered OUT of the default rather than built up from the input; and
+ *  - `surfaceFor` still intersects these scopes with the server's
+ *    `MCP_HTTP_ALLOW_*` flags, so dropping a scope can only remove tools. There
+ *    is no value of this variable that adds one.
+ *
+ * Unset (not merely empty) keeps today's behaviour byte-for-byte, so no existing
+ * deployment changes. Set-but-empty is a startup error rather than a silent
+ * fall-back to the full set: an empty value most plausibly means "no scopes",
+ * and reading it as "every scope" would turn a typo into a widening.
+ *
+ * A set without `vault.read` is refused for the same fail-loudly reason: the
+ * scope gate in `httpServer.ts` would 403 every single request, so the endpoint
+ * could not serve anyone — better said once at startup than once per request.
+ */
+function loadAuthTokenScopes(env: NodeJS.ProcessEnv): string[] {
+  const raw = env.MCP_AUTH_TOKEN_SCOPES;
+  if (raw === undefined) {
+    return [...STATIC_BEARER_DEFAULT_SCOPES];
+  }
+  const requested = raw
+    .split(/[\s,]+/)
+    .map((scope) => scope.trim())
+    .filter((scope) => scope.length > 0);
+  const allowed = STATIC_BEARER_DEFAULT_SCOPES.join(" ");
+  if (requested.length === 0) {
+    throw new Error(
+      `MCP_AUTH_TOKEN_SCOPES is set but names no scope. Remove the variable to keep the default ` +
+        `("${allowed}"), or name a subset of it.`
+    );
+  }
+  const unknown = requested.filter((scope) => !STATIC_BEARER_DEFAULT_SCOPES.includes(scope));
+  if (unknown.length > 0) {
+    throw new Error(
+      `Unknown scope(s) in MCP_AUTH_TOKEN_SCOPES: ${unknown.join(", ")}. ` +
+        `It can only NARROW the static bearer's default ("${allowed}").`
+    );
+  }
+  const scopes = STATIC_BEARER_DEFAULT_SCOPES.filter((scope) => requested.includes(scope));
+  if (!scopes.includes(SCOPE_READ)) {
+    throw new Error(
+      `MCP_AUTH_TOKEN_SCOPES must include "${SCOPE_READ}"; without it every /mcp request from the ` +
+        `static bearer is refused with 403 insufficient_scope.`
+    );
+  }
+  return scopes;
 }
 
 /**
@@ -809,6 +881,7 @@ export function loadHttpConfig(env: NodeJS.ProcessEnv = process.env): HttpConfig
     host,
     port,
     authToken,
+    authTokenScopes: loadAuthTokenScopes(env),
     allowWrite,
     allowSkillWrite,
     allowAuditWrite,

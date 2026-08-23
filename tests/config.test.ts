@@ -833,3 +833,57 @@ describe("server state must live outside the knowledge root", () => {
     expect(loadConfig(env).knowledgeRoots[0].path).toBe(root);
   });
 });
+
+/**
+ * GAP-4 — `MCP_AUTH_TOKEN_SCOPES`, the static bearer's scopes.
+ *
+ * The wire-level consequence (write tools leaving `tools/list`) is pinned in
+ * tests/httpServer.test.ts; these pin the parse, whose whole job is that the
+ * variable can only ever NARROW. Reverse-verified against a mutation that
+ * returns the caller's list verbatim instead of filtering the default: the
+ * unknown-scope test below turns red naming `vault.admin`, while the default
+ * and narrow cases stay green — so the mutation is known to have reached this
+ * function rather than merely been typed into the file.
+ */
+describe("MCP_AUTH_TOKEN_SCOPES (static bearer scopes)", () => {
+  const base = (): NodeJS.ProcessEnv => ({ MCP_AUTH_TOKEN: "static-token" });
+
+  it("defaults to the full set when unset — today's behaviour, unchanged", () => {
+    expect(loadHttpConfig(base()).authTokenScopes).toEqual(["vault.read", "vault.write"]);
+  });
+
+  it("narrows to a read-only bearer", () => {
+    expect(loadHttpConfig({ ...base(), MCP_AUTH_TOKEN_SCOPES: "vault.read" }).authTokenScopes).toEqual(["vault.read"]);
+  });
+
+  it("accepts either separator and normalises order and duplicates", () => {
+    // Order comes from the default array, not from the operator's string, which
+    // is what makes the result a subset of the default by construction.
+    expect(loadHttpConfig({ ...base(), MCP_AUTH_TOKEN_SCOPES: "vault.write, vault.read" }).authTokenScopes).toEqual([
+      "vault.read",
+      "vault.write"
+    ]);
+    expect(loadHttpConfig({ ...base(), MCP_AUTH_TOKEN_SCOPES: "  vault.read   vault.read " }).authTokenScopes).toEqual([
+      "vault.read"
+    ]);
+  });
+
+  it("refuses a scope outside the default set (it can only narrow, never widen)", () => {
+    expect(() => loadHttpConfig({ ...base(), MCP_AUTH_TOKEN_SCOPES: "vault.read vault.admin" })).toThrow(
+      /Unknown scope\(s\) in MCP_AUTH_TOKEN_SCOPES: vault\.admin/
+    );
+    // A near-miss must not pass either: this is an allowlist, not a prefix test.
+    expect(() => loadHttpConfig({ ...base(), MCP_AUTH_TOKEN_SCOPES: "vault.readonly" })).toThrow(/Unknown scope\(s\)/);
+  });
+
+  it("refuses a set-but-empty value rather than reading it as the full set", () => {
+    expect(() => loadHttpConfig({ ...base(), MCP_AUTH_TOKEN_SCOPES: "" })).toThrow(/names no scope/);
+    expect(() => loadHttpConfig({ ...base(), MCP_AUTH_TOKEN_SCOPES: "   " })).toThrow(/names no scope/);
+  });
+
+  it("refuses a set without vault.read, which would 403 every request", () => {
+    expect(() => loadHttpConfig({ ...base(), MCP_AUTH_TOKEN_SCOPES: "vault.write" })).toThrow(
+      /must include "vault\.read"/
+    );
+  });
+});

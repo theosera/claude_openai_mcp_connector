@@ -919,12 +919,14 @@ write back into an existing vault taxonomy. The exact-path flow is now complete:
   containment, and publishes with `wx` so an existing note is never overwritten.
 - Multi-root deployments allow the primary root only. HTTP remains off by
   default and uses the existing `MCP_HTTP_ALLOW_WRITE` + `vault.write` boundary.
-  ⚠️ **That second condition is real for OAuth clients and vacuous for the
-  static bearer**, which is granted `vault.read vault.write` unconditionally
-  (`authenticate()` in `src/httpServer.ts`). On a bearer-only endpoint this
-  flag is the **only** thing standing between a caller and a write — treat it
-  as a single gate, not two. Tracked below under "Scope the static bearer,
-  instead of granting it everything" and analysed in
+  ⚠️ **That second condition is real for OAuth clients, and for the static
+  bearer it is only as narrow as the operator made it.** The bearer carries
+  `vault.read vault.write` by **default** (`authenticate()` in
+  `src/httpServer.ts` now returns `MCP_AUTH_TOKEN_SCOPES`), so on a bearer-only
+  endpoint that has not set it, this flag is still the **only** thing standing
+  between a caller and a write — treat it as a single gate, not two.
+  `MCP_AUTH_TOKEN_SCOPES=vault.read` is what makes it two; see "Scope the static
+  bearer" below (shipped) and
   [`policy-provenance.md`](./policy-provenance.md).
 - Synthetic store tests and an in-memory MCP E2E pin the confirmation payload,
   no-plan-side-effects rule, traversal/symlink/collision failures, and read-back.
@@ -1522,34 +1524,60 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       priority: this was finishing a rule, not opening a question. **With this
       item the rule has no remaining exceptions.**
 
-- [ ] **Scope the static bearer, instead of granting it everything** —
-      `authenticate()` (`src/httpServer.ts`) returns
+- [x] **Scope the static bearer, instead of granting it everything** — ✅
+      **Shipped** (GAP-4). `authenticate()` (`src/httpServer.ts`) used to return
       `{scopes: [vault.read, vault.write]}` **unconditionally** once
-      `MCP_AUTH_TOKEN` matches, so `surfaceFor`'s scope half is a constant on that
-      path and the server-side `MCP_HTTP_ALLOW_*` flag is the only thing gating a
-      write. An OAuth token is scope-bound (`record.scope`); the static bearer is
-      not scopeable at all. There is no way to hold a **read-only** static token,
-      or to run write-enabled for the web client while the bearer stays read-only.
+      `MCP_AUTH_TOKEN` matched, so `surfaceFor`'s scope half was a constant on
+      that path and the server-side `MCP_HTTP_ALLOW_*` flag was the only thing
+      gating a write. An OAuth token is scope-bound (`record.scope`); the static
+      bearer was not scopeable at all — no **read-only** static token, and no way
+      to run write-enabled for the web client while the bearer stayed read-only.
 
-      **Shape of the fix**: an optional `MCP_AUTH_TOKEN_SCOPES` that can only
-      **narrow** — default unchanged (`vault.read vault.write`), never widening
-      beyond what the flags already permit, so no existing deployment changes.
+      **What landed**: `authenticate()` returns `config.authTokenScopes`, parsed
+      from an optional `MCP_AUTH_TOKEN_SCOPES` (`loadHttpConfig`). It can only
+      **narrow**: the returned array is filtered out of the default set rather
+      than built from the input, so a subset is what the type of the operation
+      produces and not what a validation step happens to allow; an unknown scope,
+      a set-but-empty value, and a set without `vault.read` are all startup
+      errors. **Unset is byte-identical to the old behaviour**, so no existing
+      deployment changes. `surfaceFor` still intersects with the flags, so
+      narrowing can only remove tools.
 
       ⚠️ **Reverse-verifying this is not free.** Because the default is unchanged,
       **every test that runs the default path stays green with the guard removed** —
       the same shape as the scan prune that survived `subtreeMayMatch` being
-      flattened to `return true`. The red has to be driven through a **narrowed**
-      `MCP_AUTH_TOKEN_SCOPES` observing write tools disappear from `tools/list`,
-      **and the capture itself asserted** so the test cannot pass vacuously.
+      flattened to `return true`. The red was driven through a **narrowed**
+      `authTokenScopes` observing all nine write tools disappear from
+      `tools/list`, **with the capture itself asserted** (non-empty listing, read
+      tools still present) so the test cannot pass vacuously. Measured: putting
+      the old literal back turns the narrowed test red and leaves the
+      default-path control green — both halves observed, so the mutation is known
+      to have reached the guard.
 
-      ⚠️ **This is a write-surface gate change**, so the pre-commit security
-      review fires on it — which is easy to miss, since the change reads as one
-      line in `authenticate()`. Do not let it ride along in a docs PR.
-
-      **Not a design gap, a rule that has not reached one spot** — the same shape
-      as the `MCP_ENV_FILE` item above, which has since been closed and is the
-      worked precedent for this one. Details in
+      **Not a design gap, a rule that had not reached one spot** — the same shape
+      as the `MCP_ENV_FILE` item above, which is the worked precedent. Details in
       [`policy-provenance.md`](./policy-provenance.md).
+
+- [x] **A declared-vs-live surface check for stdio** — ✅ **Shipped** (GAP-5).
+      `pnpm run check:stdio` (`scripts/check-stdio.mjs`) spawns the **real
+      entrypoint** with one endpoint's `.env`, runs the handshake over
+      stdin/stdout, and classifies `tools/list` against what that file declares
+      (documents always on for stdio; `MCP_ALLOW_LEGACY_CREATE_DOCUMENT`;
+      `MCP_STDIO_ALLOW_{SKILL,AUDIT}_WRITE` with their subdirs, reported in the
+      three INV-8/INV-9 states). Wider than declared fails, narrower warns — the
+      same verdicts `check-http.mjs` gives, from the same shared classifier
+      (`scripts/surface.mjs`), so the write-tool inventory cannot rot in one copy.
+
+      ⚠️ **It reads `tools/list`, never the startup line.** #113 measured those
+      two disagreeing — restoring the Skill gate turned one wire test red and left
+      the startup-line test green — so a check built on the server's own claim
+      would reproduce the gap it exists to close. The child's stderr is kept for
+      diagnostics and never parsed into a verdict.
+
+      Pinned in `tests/stdio.test.ts` with the check's own **positive control**: a
+      stub entry advertising an unclassified write-capable tool must make it exit
+      non-zero and name that tool, so "no FAIL line" in the passing test is
+      evidence rather than an unfalsified negative.
 
 - [ ] **`assertOutsideKnowledgeRoots` does not see hard links** —
       `isInsideRoot` (`src/config.ts`) walks the target's **ancestor

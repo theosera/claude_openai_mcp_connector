@@ -40,7 +40,7 @@ one last spot.**
 | | The rule | Enforced for | Not reached |
 | --- | --- | --- | --- |
 | **GAP-3** | A policy source must not live inside the data plane it governs | `MCP_OAUTH_STATE_FILE`, `MCP_PATCH_STATE_DIR` (incl. its derived default), `MCP_CONTEXT_TYPE_RULES`, **`MCP_ENV_FILE`** (A1) | — closed |
-| **GAP-4** | Authority is derived from the presented principal's scopes | OAuth tokens (`record.scope`) | **the static bearer** (unconditional full scope) |
+| **GAP-4** | Authority is derived from the presented principal's scopes | OAuth tokens (`record.scope`), **and now the static bearer** (`MCP_AUTH_TOKEN_SCOPES`, B1) | — closed |
 
 Neither is a design gap. In both cases the principle is stated, implemented, and
 tested — it simply stops one variable short. **That framing changes the work:
@@ -98,7 +98,7 @@ to why that matters.
 | **Provenance** | Server-owned frontmatter (`id`, `updated_at`) that client content cannot claim (`assertNoServerOwnedFrontmatter`), and staged plan records carrying `patch_id` / `target_path` / `created_at` / `reason` / hashes with a seven-day sweep. |
 | **Fail-closed** | Refuse to start without `MCP_AUTH_TOKEN`; refuse to start on an OAuth config missing its issuer or password; `surfaceFor` throws rather than defaulting (the default would be the full surface); an unrecoverable principal throws; write paths throw on frontmatter the reader would have degraded past. |
 | **Agent-resistant guardrail** | `SERVER_INSTRUCTIONS` states that bodies, frontmatter, search results and tool output are data — never instructions, never approval; every document edit is plan → human approval → apply; the one single-call write is off by default precisely because its approval rested on the model; `fetch` fails closed when a reference resolves to more than one document. |
-| **Declared vs. live verification** | `scripts/check-http.mjs` runs the handshake against a live endpoint and **fails** if the tool surface is *wider* than the `.env` flags declare — including an unrecognized write-capable tool. |
+| **Declared vs. live verification** | `scripts/check-http.mjs` (HTTP) and `scripts/check-stdio.mjs` (stdio, spawning the real entrypoint) run the handshake and **fail** if the tool surface is *wider* than the `.env` flags declare — including an unrecognized write-capable tool. |
 
 The last row is worth calling out: the request asked for tamper detection of
 configuration, and the shape that already exists here is better than hashing a
@@ -148,15 +148,22 @@ asking.
 | **GAP-2** | ~~A staged plan is not bound to the **vault** it was staged for.~~ | **Closed by A2.** Every plan records the primary root's tag; each apply refuses a foreign or unrecorded plan. GAP-2′ (principal) is untouched. |
 | **GAP-2′** | A staged plan is not bound to the **principal** that staged it. | ROADMAP, open — a **different** boundary; see §G. |
 | **GAP-3** | ~~`MCP_ENV_FILE` is outside the containment rule its three siblings follow.~~ | **Closed by A1.** `loadConfig` checks it against every root after they resolve. The option this row called *unevaluated, not rejected* is the one that shipped — see the ROADMAP item for what it does and does not buy. |
-| **GAP-4** | The static bearer receives full scope unconditionally. | **Not recorded anywhere before this document.** |
-| **GAP-5** | stdio has no declared-vs-live check; HTTP has `check-http.mjs`. | Partial. |
+| **GAP-4** | ~~The static bearer receives full scope unconditionally.~~ | **Closed by B1.** `authenticate()` returns `config.authTokenScopes`; `MCP_AUTH_TOKEN_SCOPES` narrows it and the default is unchanged. |
+| **GAP-5** | ~~stdio has no declared-vs-live check; HTTP has `check-http.mjs`.~~ | **Closed by B2.** `check-stdio.mjs` spawns the real entrypoint and classifies its `tools/list`. |
 | **GAP-6** | Fail-closed behaviour is implemented but not written down per operation class. | Nothing. |
 
 ### GAP-4 in detail, and where the documentation misleads
 
-`authenticate()` in `src/httpServer.ts` returns
-`{scopes: [SCOPE_READ, SCOPE_WRITE]}` as soon as `isAuthorizedHeader` succeeds.
-Nothing narrows it. Consequences:
+> ✅ **Closed by B1.** `authenticate()` now returns `config.authTokenScopes`
+> (`MCP_AUTH_TOKEN_SCOPES`), which can only narrow and defaults to the same two
+> scopes. The analysis below is kept as written because **it still describes
+> every deployment that does not set the variable** — the default was deliberately
+> left unchanged, so what B1 removed is the impossibility, not the exposure.
+> Read "cannot" below as "cannot, unless the operator narrows it".
+
+`authenticate()` in `src/httpServer.ts` returned
+`{scopes: [SCOPE_READ, SCOPE_WRITE]}` as soon as `isAuthorizedHeader` succeeded.
+Nothing narrowed it. Consequences:
 
 - A **read-only static token cannot exist.** There is no way to hand out a
   bearer that can search but not write.
@@ -165,7 +172,8 @@ Nothing narrows it. Consequences:
 - "Enable writes for the web client but keep the bearer read-only" is not
   expressible.
 
-What limits the blast radius today is the **two-endpoint deployment** documented
+What limits the blast radius on a default-scoped bearer is the **two-endpoint
+deployment** documented
 in `operations.md` §9: the unattended scanner runs against an endpoint with
 general write off, so a leaked scan bearer reaches only the audit subtree. That
 is endpoint separation doing the work — a deployment property, not a property of
@@ -315,8 +323,9 @@ worth reading**, because it explains why the same predicate is safe elsewhere:
 
 **Two surfaces, one predicate, opposite consequences — and the code was written
 knowing which was which.** That is the strongest available evidence that the
-absence of scoping on the static bearer is a spot the rule has not reached, and
-not a place where nobody thought about it. It is also the same observation the
+absence of scoping on the static bearer was a spot the rule had not reached, and
+not a place where nobody thought about it — which is what made finishing it (B1)
+a small change rather than a new mechanism. It is also the same observation the
 top of this document makes: the principle is constant, **its shape is decided per
 surface** — the way INV-2's "content cannot vouch for itself" came out as *refuse
 to resolve* in the link graph, *cap the weight* in `get_context`, and *return the
@@ -331,7 +340,7 @@ inside choke points that already exist:
 
 ```
 Agent → MCP interface → Connector
-   ├─ Capability check  surfaceFor                unchanged  + scope the static bearer   [GAP-4]
+   ├─ Capability check  surfaceFor                unchanged  ✅ scope the static bearer   [GAP-4 closed]
    ├─ Resource boundary pathSafety / reservations unchanged  ✅ MCP_ENV_FILE              [GAP-3 closed]
    ├─ Integrity check   sha256 CAS                unchanged  + bind a plan to its vault  [GAP-2]
    └─ Provenance        —                         new: an out-of-vault event log         [GAP-1]
@@ -395,13 +404,21 @@ would key on `client_id`.
 
 ### Adapt
 
-- **B1 — make the static bearer scopeable** via an optional
-  `MCP_AUTH_TOKEN_SCOPES` that can only narrow. Default unchanged. Details and
-  the reverse-verification trap are on the ROADMAP item.
-- **B2 — a `check:stdio` counterpart to `check-http.mjs`.** It must spawn the
+- **B1 ✅ — make the static bearer scopeable** via an optional
+  `MCP_AUTH_TOKEN_SCOPES` that can only narrow. Default unchanged. **Shipped**:
+  `authenticate()` returns `config.authTokenScopes`, and the narrowed set is
+  derived by filtering the default rather than accepting the operator's list, so
+  "subset" is what the operation produces rather than what a check permits. The
+  reverse-verification trap the ROADMAP item warned about was real and is
+  recorded there: the default path stays green with the guard removed, so the red
+  had to come from a narrowed set with the capture itself asserted.
+- **B2 ✅ — a `check:stdio` counterpart to `check-http.mjs`.** It must spawn the
   real entrypoint and read `tools/list`; **parsing the startup line would
   reproduce the very gap it exists to close** (#113 measured it: restoring the
   Skill gate turned one wire test red and left the startup-line test green).
+  **Shipped** as `scripts/check-stdio.mjs`, sharing the live-surface classifier
+  with the HTTP check (`scripts/surface.mjs`) so the write-tool inventory exists
+  once; its stderr capture is diagnostic and never a verdict.
 - **B3 — the fail-closed matrix**, now in `threat-model.md` §5.
 
 ### Defer

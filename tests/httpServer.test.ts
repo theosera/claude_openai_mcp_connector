@@ -17,6 +17,7 @@ import { chatgptFetch, chatgptSearch, documentUrl } from "../src/chatgpt.js";
 import type { HttpConfig } from "../src/config.js";
 import { isAuthorized, isAuthorizedHeader, parseBearer, verifyLoginPassword } from "../src/httpAuth.js";
 import { hostnameOf, startHttpServer } from "../src/httpServer.js";
+import { SCOPE_READ, SCOPE_WRITE } from "../src/oauth/provider.js";
 import { KnowledgeStore } from "../src/knowledgeStore.js";
 import { AuditStore } from "../src/auditStore.js";
 import { buildMcpServer, SERVER_INSTRUCTIONS, type BuildServerOptions } from "../src/server.js";
@@ -470,6 +471,7 @@ describe("HTTP transport integration", () => {
       host: "127.0.0.1",
       port: 0,
       authToken: token,
+      authTokenScopes: [SCOPE_READ, SCOPE_WRITE],
       allowWrite: false,
       allowLegacyCreateDocument: false,
       allowSkillWrite: false,
@@ -668,6 +670,7 @@ describe("HTTP transport integration", () => {
         host: "127.0.0.1",
         port: 0,
         authToken: token,
+        authTokenScopes: [SCOPE_READ, SCOPE_WRITE],
         allowWrite: false,
         allowLegacyCreateDocument: false,
         allowSkillWrite: false,
@@ -1180,5 +1183,113 @@ describe("DNS-rebinding allowlist entries", () => {
     // (truncating would silently turn `::1` into an empty, unmatchable entry).
     expect(hostnameOf("::1")).toBe("[::1]");
     expect(hostnameOf("fe80::1")).toBe("[fe80::1]");
+  });
+});
+
+/**
+ * GAP-4 — the static bearer's tool surface is derived from its configured
+ * scopes, like every other principal's.
+ *
+ * ⚠️ These tests are written against a NARROWED `authTokenScopes` on purpose.
+ * The default is unchanged by design, so every test that runs the default path
+ * stays green even with the derivation deleted and the old constant put back —
+ * the same vacuous shape as the scan prune that survived `subtreeMayMatch`
+ * being flattened to `return true`. Only a narrowed set can turn red.
+ *
+ * Reverse-verified (mutation: `authenticate()` returning the old literal
+ * `{ scopes: [SCOPE_READ, SCOPE_WRITE] }` instead of `config.authTokenScopes`):
+ * the narrowed test below fails on the FIRST write tool it expects to be gone,
+ * and the positive control stays green. Both halves were observed, so the
+ * mutation is known to have reached the guard rather than merely been typed.
+ *
+ * The capture itself is asserted (a non-empty list that still carries the read
+ * tools) so "no write tools" cannot be satisfied by a listing that failed,
+ * returned nothing, or never happened.
+ */
+describe("static bearer scopes (GAP-4)", () => {
+  let server: http.Server | undefined;
+  const token = "scoped-static-bearer";
+
+  // Every write surface this server can register is enabled, so the ONLY thing
+  // that can remove a write tool from the listing is the bearer's scope.
+  async function listToolsForBearerScopes(authTokenScopes: string[]): Promise<string[]> {
+    const store = await makeStore();
+    const auditStore = await makeAuditStore();
+    const skillRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-http-scope-skill-"));
+    const skillPatchDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-http-scope-patches-"));
+    await fs.mkdir(path.join(skillRoot, "skills"));
+    const skillStore = new SkillStore({
+      knowledgeRoot: skillRoot,
+      skillsSubdir: "skills",
+      patchStateDir: skillPatchDir
+    });
+    await skillStore.init();
+    const config: HttpConfig = {
+      host: "127.0.0.1",
+      port: 0,
+      authToken: token,
+      authTokenScopes,
+      allowWrite: true,
+      allowLegacyCreateDocument: true,
+      allowSkillWrite: true,
+      allowAuditWrite: true,
+      allowedHosts: [],
+      allowedOrigins: []
+    };
+    server = await startHttpServer(store, config, skillStore, auditStore);
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    config.allowedHosts.push(`127.0.0.1:${port}`, `localhost:${port}`);
+
+    const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
+      requestInit: { headers: { authorization: `Bearer ${token}` } }
+    });
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await client.connect(transport);
+    const { tools } = await client.listTools();
+    await client.close();
+    return tools.map((tool) => tool.name);
+  }
+
+  const WRITE_TOOLS = [
+    "plan_document_create",
+    "apply_planned_document_create",
+    "plan_document_update",
+    "apply_planned_update",
+    "create_document",
+    "plan_skill_create",
+    "apply_planned_skill_create",
+    "append_audit_report",
+    "compare_and_swap_audit_state"
+  ];
+
+  afterEach(async () => {
+    if (server) {
+      await new Promise<void>((resolve) => server!.close(() => resolve()));
+      server = undefined;
+    }
+  });
+
+  it("keeps every write tool for the default scopes — the positive control", async () => {
+    const names = await listToolsForBearerScopes([SCOPE_READ, SCOPE_WRITE]);
+    // Capture assert: the listing happened and carries the read surface.
+    expect(names.length).toBeGreaterThan(0);
+    expect(names).toContain("search_documents");
+    // Every write tool the flags permit is present — so their ABSENCE in the
+    // next test is attributable to the scope narrowing and nothing else.
+    for (const name of WRITE_TOOLS) {
+      expect(names).toContain(name);
+    }
+  });
+
+  it("drops every write tool when MCP_AUTH_TOKEN_SCOPES narrows it to vault.read", async () => {
+    const names = await listToolsForBearerScopes([SCOPE_READ]);
+    // Same capture assert as above: this must be a real, non-empty listing.
+    expect(names.length).toBeGreaterThan(0);
+    expect(names).toContain("search_documents");
+    expect(names).toContain("fetch_document");
+    for (const name of WRITE_TOOLS) {
+      expect(names).not.toContain(name);
+    }
   });
 });

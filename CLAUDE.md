@@ -53,6 +53,7 @@ HTTP は **opt-in の OAuth 2.1 authorization server** (`src/oauth/`、PKCE S256
 | 「一致」「0 件」「全部緑」「存在しない」「完了」など同一性・悉皆・不在の主張を書く直前、テストの緑を安全の根拠にする前、検査・逆検証・スキャンを設計する前、件数を報告する前 | `measurement-scope` |
 | 複数の Claude セッション (Web/CLI) が同じ文書群・同じリポを分担編集する体制を組む / 参加する前、他セッションの成果物に帰属や評価を書く前、/compact の前後 | `multi-session-collab` |
 | **★ ここだけ「着手前」でなく「commit する前」** — **`fs` に書く経路を新設/変更した** (`src/atomicWrite.ts` / `knowledgeStore` の write・apply / `skillStore` / `auditStore` / `oauth/store` の永続化)、または **write tool・write surface の gate を足した/変えた**変更を commit する前                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | **(a) `/claude-security` の change scan** — 使えなければ **(b) `/security-review`** |
+| **★ これも「commit する前」** — **アーカイブ / ログ出力の escape・fence・マスキング規則を変えた**変更 (`archive-session.sh` の fence 生成、`capture-command.sh` の秘匿マスク、および本リポ側の public-safe copy) を commit する前。⚠️ **別リポ (`terminal-ops-logs`) の shell でも発火する** | **(a) `/claude-security` の change scan** — 使えなければ **(b) `/security-review`** |
 
 > ⚠️ **`claim-freshness` の詳細な手順は、下の「状態鮮度の発火表」が正典**。上の行は発火の入口で、
 > skill 本体は携行版である — 矛盾したらそちらが勝つ (`GD-NO-DUPLICATION`: 同じ規則を 2 枚持つと片方が腐る)。
@@ -71,8 +72,19 @@ HTTP は **opt-in の OAuth 2.1 authorization server** (`src/oauth/`、PKCE S256
 > 実測・両者の詳しい違い・空 diff 事故の経緯は **`mcp-vault-security` skill の
 > 「pre-commit レビューの発火」**節。
 >
-> 全変更に広げない — 発火は「`fs` に書く経路」「write surface の gate」に限る。
+> 全変更に広げない — 発火は「`fs` に書く経路」「write surface の gate」
+> 「**出力の封じ込め (escape / fence / マスク)**」の **3 つ**に限る。
 > 毎回回す規約は守られなくなり、守られない規約は無いのと同じ。
+>
+> ⚠️ **3 つ目を足したのは 2026-08-23 で、足した理由をここに残す** (でないと次の読み手には
+> 際限のない拡大に見え、「広げない」という上の一文が効かなくなる)。**前の 2 つが守るのは
+> 「どこに書くか」だが、3 つ目が守るのは「書いたものが後で何として読まれるか」である。**
+> fence を破った untrusted content は、次のセッションが**データではなく地の文として**読む —
+> これは Security hard rule 5 の管轄で、`fs` write 経路とは別の失敗モードである。
+> ★ **実測 (2026-08-23)**: `terminal-ops-logs` の `claude/session-archive-fence-escape`
+> (2 commits、`archive-session.sh` の fence 生成を修正) は、**本表のどの行にも当たらなかった**。
+> ⚠️ **当たらなかったことは無害の証明ではない** — 射程の穴である。だから発火条件は
+> 「このリポの `src/`」ではなく「**この体制の境界**」で書く。
 >
 > skill 構成はフラット固定 (`.claude/skills/<name>/SKILL.md`)。中間カテゴリ
 > ディレクトリで機能グループ化しない (Claude Code の nested 検出は既知の不具合で
