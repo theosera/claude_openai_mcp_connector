@@ -16,7 +16,7 @@ import type { HttpConfig } from "../src/config.js";
 import { startHttpServer } from "../src/httpServer.js";
 import { KnowledgeStore } from "../src/knowledgeStore.js";
 import { SkillStore } from "../src/skillStore.js";
-import { isAllowedRedirectUri, OAuthProvider } from "../src/oauth/provider.js";
+import { isAllowedRedirectUri, OAuthProvider, SCOPE_READ, SCOPE_WRITE } from "../src/oauth/provider.js";
 import { computeS256Challenge, verifyPkceS256 } from "../src/oauth/pkce.js";
 import { RateLimiter } from "../src/oauth/rateLimiter.js";
 import { OAuthStore } from "../src/oauth/store.js";
@@ -745,6 +745,7 @@ describe("OAuth end-to-end over HTTP", () => {
       host: "127.0.0.1",
       port,
       authToken: "static-bearer-unused-here",
+      authTokenScopes: [SCOPE_READ, SCOPE_WRITE],
       allowWrite: false,
       allowSkillWrite: false,
       allowAuditWrite: false,
@@ -846,6 +847,7 @@ describe("OAuth end-to-end over HTTP", () => {
       host: "127.0.0.1",
       port,
       authToken: "static-bearer-unused-here",
+      authTokenScopes: [SCOPE_READ, SCOPE_WRITE],
       allowWrite: false,
       allowSkillWrite: false,
       allowAuditWrite: false,
@@ -894,6 +896,7 @@ describe("OAuth end-to-end over HTTP", () => {
       host: "127.0.0.1",
       port,
       authToken: "static-bearer-unused-here",
+      authTokenScopes: [SCOPE_READ, SCOPE_WRITE],
       allowWrite: true,
       allowSkillWrite: false,
       allowAuditWrite: false,
@@ -1032,6 +1035,7 @@ describe("OAuth end-to-end over HTTP", () => {
       host: "127.0.0.1",
       port,
       authToken: "static-bearer-unused-here",
+      authTokenScopes: [SCOPE_READ, SCOPE_WRITE],
       allowWrite: true,
       allowSkillWrite: false,
       allowAuditWrite: false,
@@ -1093,6 +1097,7 @@ describe("OAuth end-to-end over HTTP", () => {
       host: "127.0.0.1",
       port,
       authToken: "static-bearer-unused-here",
+      authTokenScopes: [SCOPE_READ, SCOPE_WRITE],
       allowWrite: false,
       allowSkillWrite: false,
       allowAuditWrite: false,
@@ -1147,6 +1152,7 @@ describe("OAuth end-to-end over HTTP", () => {
       host: "127.0.0.1",
       port,
       authToken: "static-bearer-unused-here",
+      authTokenScopes: [SCOPE_READ, SCOPE_WRITE],
       allowWrite: true,
       allowSkillWrite: false,
       allowAuditWrite: false,
@@ -1198,6 +1204,7 @@ describe("OAuth end-to-end over HTTP", () => {
       host: "127.0.0.1",
       port,
       authToken: "static-bearer-unused-here",
+      authTokenScopes: [SCOPE_READ, SCOPE_WRITE],
       allowWrite: false,
       allowSkillWrite: true,
       allowAuditWrite: false,
@@ -1233,6 +1240,7 @@ describe("OAuth end-to-end over HTTP", () => {
       host: "127.0.0.1",
       port,
       authToken: "static-bearer-unused-here",
+      authTokenScopes: [SCOPE_READ, SCOPE_WRITE],
       allowWrite: false,
       allowSkillWrite: false,
       allowAuditWrite: false,

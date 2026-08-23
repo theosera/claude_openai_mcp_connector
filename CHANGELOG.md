@@ -6,6 +6,23 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`pnpm run check:stdio`** (`scripts/check-stdio.mjs`) — the declared-vs-live
+  surface check for stdio, which only HTTP had (GAP-5). It spawns the **real
+  entrypoint** with one endpoint's `.env` (plus a minimal `PATH`/`HOME` base, so a
+  stray `MCP_*` in the caller's shell cannot make the declared and live halves
+  describe different configurations), runs the handshake over stdin/stdout, and
+  classifies `tools/list` against what that file declares. Wider than declared
+  fails, narrower warns — the same verdicts `check:http` gives, now from a shared
+  classifier (`scripts/surface.mjs`) so the write-tool inventory lives in one
+  place instead of two copies that drift.
+
+  **It reads `tools/list`, never the startup line.** The startup line is the
+  server's own claim about its surface, and #113 measured the two disagreeing;
+  a check built on the claim would reproduce the gap it exists to close. The
+  child's stderr is captured for diagnostics only and never parsed into a verdict.
+
 ### Documentation
 
 - **A policy-enforcement and provenance assessment**, in
@@ -44,6 +61,27 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   re-checked without re-reading the source. The quotes are exact now.
 
 ### Security
+
+- **The static bearer's scopes are derived, not assumed** (GAP-4). `authenticate()`
+  (`src/httpServer.ts`) returned `{scopes: [vault.read, vault.write]}`
+  unconditionally once `MCP_AUTH_TOKEN` matched, which made it the one principal
+  whose authority did not come from what it presented: `surfaceFor`'s two
+  conditions collapsed to one (the server flag) on that path, a **read-only
+  static token could not exist**, and "writes for the web client, read-only for
+  the pasted bearer" was not expressible. It now returns `config.authTokenScopes`,
+  parsed from an optional **`MCP_AUTH_TOKEN_SCOPES`**.
+
+  **The default is unchanged** — unset means the same two scopes, so no existing
+  deployment behaves differently. The variable can only **narrow**: the result is
+  produced by filtering the default set, not by accepting the operator's list, so
+  a subset is what the operation yields rather than what a validation happens to
+  allow. An unknown scope, a set-but-empty value, and a set without `vault.read`
+  each refuse to start rather than falling back to the full set.
+
+  Because the default is unchanged, every test on the default path stays green
+  with the change reverted — so the behaviour is pinned through a **narrowed**
+  scope set, asserting all nine write tools leave `tools/list` while the listing
+  itself is asserted to be real (non-empty, read tools present).
 
 - **A staged two-step plan is now bound to the vault it was staged for.**
   `apply` looked a plan up by `patch_id` alone and resolved its vault-relative

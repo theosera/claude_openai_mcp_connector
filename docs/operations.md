@@ -455,13 +455,18 @@ the OAuth flow. The URL to register in the client is
 
 - [ ] `MCP_HTTP_ALLOW_WRITE` is **unset** (read-only) unless you have a specific,
       audited need. Writes also require a `vault.write`-scoped token.
-      ⚠️ **That second condition is real for OAuth clients and vacuous for the
-      static bearer**, which is granted `vault.read vault.write` unconditionally
-      (`authenticate()` in `src/httpServer.ts`). On a bearer-only endpoint this
-      flag is the **only** thing standing between a caller and a write — treat it
-      as a single gate, not two. Tracked in
-      [`ROADMAP.md`](./ROADMAP.md) ("scope the static bearer") and analysed in
-      [`policy-provenance.md`](./policy-provenance.md).
+      ⚠️ **That second condition is real for OAuth clients, and for the static
+      bearer it is only as narrow as you made it.** The bearer carries
+      `vault.read vault.write` by DEFAULT (`authenticate()` in
+      `src/httpServer.ts` reads `MCP_AUTH_TOKEN_SCOPES`), so unless that variable
+      is set this flag is the **only** thing standing between a caller and a
+      write — treat it as a single gate, not two.
+- [ ] `MCP_AUTH_TOKEN_SCOPES=vault.read` on any endpoint whose static bearer
+      should not be able to write — e.g. a write-enabled endpoint whose writes
+      are meant for the OAuth web client only. The variable can only **narrow**
+      the default; an unknown scope, an empty value, or a set without
+      `vault.read` refuses to start. Analysed in
+      [`policy-provenance.md`](./policy-provenance.md) (GAP-4).
 - [ ] `MCP_HTTP_ALLOW_SKILL_WRITE` **and `MCP_STDIO_ALLOW_SKILL_WRITE`** are unset
       unless constrained Skill creation is needed on that transport; when enabled,
       `MCP_SKILLS_SUBDIR` is the narrow intended directory and general
@@ -593,10 +598,11 @@ route; the flow below replaces it.
 
 The exact-path tools share the normal document-write boundary. For HTTP, enable
 `MCP_HTTP_ALLOW_WRITE=1` and restart the service. What that leaves depends on
-the credential the caller presents. A **static bearer** already carries
-`vault.read vault.write` unconditionally (`authenticate()` in
-`src/httpServer.ts`), so the flag alone opens the write — there is no scope to
-authorize, and none to withhold. An **OAuth client needs a token that already
+the credential the caller presents. A **static bearer** carries
+`vault.read vault.write` by default (`authenticate()` in `src/httpServer.ts`
+returns `MCP_AUTH_TOKEN_SCOPES`), so unless that variable narrows it the flag
+alone opens the write — there is no scope to authorize, and none to withhold.
+Setting `MCP_AUTH_TOKEN_SCOPES=vault.read` is what withholds it. An **OAuth client needs a token that already
 carries `vault.write`**, and usually it will not have one. The scope is
 *grantable* whenever any of the three HTTP write flags is set (`loadHttpConfig`
 passes `allowWrite || allowSkillWrite || allowAuditWrite`), and `surfaceFor`
@@ -1092,6 +1098,29 @@ The check reads each file from the path you pass and never from a working
 directory, so it is unaffected by the `MCP_ENV_FILE` change — but it **fails
 while an endpoint is down**, which is what a plist that still lacks
 `MCP_ENV_FILE` looks like from here (`no response` / connection refused).
+
+**The stdio counterpart** answers the same question for a local client
+registration, where there is no listening endpoint to interrogate:
+
+```bash
+pnpm run check:stdio -- --env ./.env
+```
+
+It **spawns the real entrypoint** with that file's variables (plus a minimal
+`PATH`/`HOME` base, so a stray `MCP_*` in your shell cannot make the declared and
+live halves describe different configurations), runs the handshake over
+stdin/stdout, and classifies `tools/list` against what the file declares:
+general document write is always on for stdio, `MCP_ALLOW_LEGACY_CREATE_DOCUMENT`
+gates `create_document`, and the two `MCP_STDIO_ALLOW_*_WRITE` flags gate the
+Skill and audit tools (each reported as `off` / `reserved-only` / `on`, the three
+states INV-8 / INV-9 distinguish). Same verdicts as the HTTP check: wider than
+declared fails, narrower warns.
+
+It runs `dist/index.js` by default — build first, or pass
+`--entry src/index.ts` to check a development checkout. ⚠️ It reads
+**`tools/list`, never the startup line**: the startup line is the server's own
+claim about its surface, and the two have disagreed before (#113), so a check
+built on the claim would reproduce the gap it exists to close.
 
 <details>
 <summary>Manual equivalent (curl)</summary>

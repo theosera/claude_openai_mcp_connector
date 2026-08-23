@@ -27,9 +27,11 @@ export default tseslint.config(
     languageOptions: {
       globals: {
         AbortSignal: "readonly",
+        clearTimeout: "readonly",
         console: "readonly",
         fetch: "readonly",
-        process: "readonly"
+        process: "readonly",
+        setTimeout: "readonly"
       }
     }
   },

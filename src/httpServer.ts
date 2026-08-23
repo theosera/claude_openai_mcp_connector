@@ -287,9 +287,17 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
 /**
  * Authenticate an /mcp request. Returns the effective principal, or null.
- *  - Static bearer (MCP_AUTH_TOKEN): the trusted local operator → full scopes.
+ *  - Static bearer (MCP_AUTH_TOKEN): scopes come from `config.authTokenScopes`
+ *    (`MCP_AUTH_TOKEN_SCOPES`), defaulting to the full set.
  *  - OAuth access token: must be valid AND audience-bound to this server's
  *    canonical resource (RFC 8707); scopes come from the token grant.
+ *
+ * GAP-4: this used to return the literal `{scopes: [SCOPE_READ, SCOPE_WRITE]}`,
+ * which made the static bearer the one principal whose authority was NOT derived
+ * from what it presented — `surfaceFor`'s two conditions collapsed to one (the
+ * server flag) on that path, and a read-only bearer could not exist. The default
+ * is unchanged, so nothing an existing deployment sees moves; what changes is
+ * that the scopes are now a value an operator can narrow rather than a constant.
  */
 function authenticate(
   authHeader: string | string[] | undefined,
@@ -298,7 +306,9 @@ function authenticate(
 ): Principal | null {
   const header = headerValue(authHeader);
   if (isAuthorizedHeader(header, config.authToken)) {
-    return { scopes: [SCOPE_READ, SCOPE_WRITE] };
+    // Copied, not aliased: a Principal is handed to `surfaceFor` per request and
+    // the config's array must not be reachable for mutation through it.
+    return { scopes: [...config.authTokenScopes] };
   }
   if (oauth) {
     const record = oauth.store.validateAccessToken(parseBearer(header));

@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -352,4 +353,120 @@ describe("stdio dual-era serving", () => {
 
     await client.close();
   }, 60_000);
+});
+
+/**
+ * GAP-5 — `scripts/check-stdio.mjs`, the declared-vs-live surface check for
+ * stdio (HTTP has had one since `check-http.mjs`).
+ *
+ * Spawned as the operator runs it, against the REAL entrypoint, because the
+ * property under test is that the check reads `tools/list` rather than the
+ * server's startup line: #113 measured those two disagreeing (restoring the
+ * Skill gate turned a wire test red and left the startup-line test green), so a
+ * check built on the claim would reproduce the gap it exists to close.
+ *
+ * The second test is the positive control for the first. "No FAIL line" is only
+ * evidence if a FAIL line is reachable — the same reason the audit-surface tests
+ * assert what must NOT appear rather than only what must.
+ */
+describe("scripts/check-stdio.mjs (declared-vs-live stdio surface)", () => {
+  let dir: string;
+  const script = path.join(repoRoot, "scripts", "check-stdio.mjs");
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-check-stdio-"));
+  });
+
+  afterEach(async () => {
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  function runCheck(args: string[]): Promise<{ code: number | null; output: string }> {
+    return new Promise((resolve) => {
+      const child = spawn(process.execPath, [script, ...args], { cwd: repoRoot, stdio: ["ignore", "pipe", "pipe"] });
+      let output = "";
+      child.stdout.on("data", (chunk) => (output += String(chunk)));
+      child.stderr.on("data", (chunk) => (output += String(chunk)));
+      child.on("close", (code) => resolve({ code, output }));
+    });
+  }
+
+  it("passes against the real entrypoint and classifies every write category", async () => {
+    const vault = path.join(dir, "vault");
+    await fs.mkdir(path.join(vault, "90_Audit", "vault-scan", "reports"), { recursive: true });
+    await fs.mkdir(path.join(vault, "_skills"), { recursive: true });
+    await fs.writeFile(path.join(vault, "note.md"), "---\ntitle: Note\n---\n\nbody\n", "utf8");
+    const envFile = path.join(dir, "stdio.env");
+    await fs.writeFile(
+      envFile,
+      [
+        `KNOWLEDGE_ROOT=${vault}`,
+        `MCP_PATCH_STATE_DIR=${path.join(dir, "patches")}`,
+        "MCP_ALLOW_LEGACY_CREATE_DOCUMENT=1",
+        "MCP_AUDIT_SUBDIR=90_Audit/vault-scan",
+        "MCP_STDIO_ALLOW_AUDIT_WRITE=1",
+        // Reserved but NOT registered: the middle state INV-9/INV-8 distinguish,
+        // and the one an operator following the "set the subdir everywhere"
+        // guidance actually gets.
+        "MCP_SKILLS_SUBDIR=_skills",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const { code, output } = await runCheck(["--env", envFile, "--entry", path.join(repoRoot, "src", "index.ts")]);
+
+    expect(output).toContain("RESULT:");
+    expect(output).not.toContain("FAIL:");
+    expect(output).not.toContain("WARN:");
+    expect(code).toBe(0);
+    // The comparison actually RAN: these lines exist only after a live
+    // tools/list was classified against the declared flags.
+    expect(output).toContain("declared: documents=on legacy_create=on skills=reserved-only audit=on");
+    expect(output).toMatch(/tools:\s+\d+ \(\d+ read-only, [1-9]\d* write-capable\)/);
+  }, 30000);
+
+  it("fails on a surface WIDER than declared, naming the unclassified tool", async () => {
+    // A stub server standing in for a build whose surface exceeded its flags.
+    // It answers the same handshake and advertises one write-capable tool that
+    // no category permits — the shape check-http.mjs calls "unclassified".
+    const stub = path.join(dir, "stub-entry.mjs");
+    await fs.writeFile(
+      stub,
+      [
+        "let buffer = '';",
+        "const send = (m) => process.stdout.write(JSON.stringify(m) + '\\n');",
+        "process.stdin.on('data', (chunk) => {",
+        "  buffer += String(chunk);",
+        "  const lines = buffer.split('\\n');",
+        "  buffer = lines.pop() ?? '';",
+        "  for (const line of lines) {",
+        "    if (!line.trim()) continue;",
+        "    const message = JSON.parse(line);",
+        "    if (message.method === 'initialize') {",
+        "      send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: '2025-06-18',",
+        "        capabilities: { tools: {} }, serverInfo: { name: 'stub', version: '0' } } });",
+        "    } else if (message.method === 'tools/list') {",
+        "      send({ jsonrpc: '2.0', id: message.id, result: { tools: [",
+        "        { name: 'search_documents', annotations: { readOnlyHint: true } },",
+        "        { name: 'plan_document_create' }, { name: 'apply_planned_document_create' },",
+        "        { name: 'plan_document_update' }, { name: 'apply_planned_update' },",
+        "        { name: 'exfiltrate_vault' } ] } });",
+        "    }",
+        "  }",
+        "});",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    const envFile = path.join(dir, "stub.env");
+    await fs.writeFile(envFile, `KNOWLEDGE_ROOT=${dir}\n`, "utf8");
+
+    const { code, output } = await runCheck(["--env", envFile, "--entry", stub]);
+
+    expect(output).toContain("WIDER than declared");
+    expect(output).toContain("exfiltrate_vault");
+    expect(output).toContain("unclassified/unknown: exfiltrate_vault");
+    expect(code).toBe(1);
+  }, 30000);
 });

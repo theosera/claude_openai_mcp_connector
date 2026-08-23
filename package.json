@@ -17,6 +17,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check:http": "node scripts/check-http.mjs",
+    "check:stdio": "node scripts/check-stdio.mjs",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "lint:ox": "oxlint src tests scripts",

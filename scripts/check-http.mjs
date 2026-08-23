@@ -31,33 +31,16 @@
 
 import path from "node:path";
 import { parseEnvFile, parsePort, isTruthy, requiredEnv, repoRoot } from "./repo-env.mjs";
+import {
+  AUDIT_WRITE_TOOLS,
+  GENERAL_WRITE_TOOLS,
+  LEGACY_CREATE_TOOLS,
+  SKILL_WRITE_TOOLS,
+  checkTimeoutMs,
+  classifySurface
+} from "./surface.mjs";
 
-const GENERAL_WRITE_TOOLS = [
-  "plan_document_create",
-  "apply_planned_document_create",
-  "plan_document_update",
-  "apply_planned_update"
-];
-// Its own category, not part of general write: create_document is the only
-// document write with no plan/apply pair, so it takes a second opt-in
-// (MCP_ALLOW_LEGACY_CREATE_DOCUMENT) on top of MCP_HTTP_ALLOW_WRITE. Folding it
-// back into GENERAL_WRITE_TOOLS would make this check accept it on any
-// write-enabled endpoint — i.e. stop checking the flag that gates it.
-const LEGACY_CREATE_TOOLS = ["create_document"];
-const SKILL_WRITE_TOOLS = ["plan_skill_create", "apply_planned_skill_create"];
-const AUDIT_WRITE_TOOLS = ["append_audit_report", "compare_and_swap_audit_state"];
-const KNOWN_WRITE_TOOLS = new Set([
-  ...GENERAL_WRITE_TOOLS,
-  ...LEGACY_CREATE_TOOLS,
-  ...SKILL_WRITE_TOOLS,
-  ...AUDIT_WRITE_TOOLS
-]);
-
-const TIMEOUT_MS = (() => {
-  const raw = process.env.MCP_CHECK_TIMEOUT_MS?.trim();
-  const parsed = raw ? Number.parseInt(raw, 10) : NaN;
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : 10000;
-})();
+const TIMEOUT_MS = checkTimeoutMs();
 
 const USAGE = `Usage: node scripts/check-http.mjs [--env <path>]...
 
@@ -156,9 +139,6 @@ async function checkEndpoint(envPath) {
     const tools = listPayload.result?.tools;
     if (!Array.isArray(tools)) throw new Error("tools/list returned no tools array.");
 
-    const names = new Set(tools.map((tool) => tool.name));
-    const readOnly = tools.filter((tool) => tool.annotations?.readOnlyHint === true).length;
-
     const declared = {
       generalWrite: isTruthy(env.MCP_HTTP_ALLOW_WRITE),
       // Both flags, because the tool needs both to be registered.
@@ -173,28 +153,10 @@ async function checkEndpoint(envPath) {
       { key: "audit write", tools: AUDIT_WRITE_TOOLS, declared: declared.auditWrite }
     ];
 
-    // The set of write tools the endpoint's flags actually permit. Anything
-    // write-capable outside this set — a known tool whose flag is off OR an
-    // unrecognized/new mutating tool — is a surface WIDER than declared and
-    // fails closed.
-    const permittedWriteTools = new Set(categories.filter((c) => c.declared).flatMap((c) => c.tools));
-    const writeCapable = tools.filter((tool) => tool.annotations?.readOnlyHint !== true).map((tool) => tool.name);
-    const unexpected = writeCapable.filter((name) => !permittedWriteTools.has(name));
-
-    const failures = [];
-    const warnings = [];
-    if (unexpected.length > 0) {
-      const unclassified = unexpected.filter((name) => !KNOWN_WRITE_TOOLS.has(name));
-      const suffix = unclassified.length > 0 ? ` (unclassified/unknown: ${unclassified.join(", ")})` : "";
-      failures.push(
-        `WIDER than declared — write-capable tools not permitted by flags: ${unexpected.join(", ")}${suffix}`
-      );
-    }
-    for (const category of categories) {
-      if (category.declared && !category.tools.some((name) => names.has(name))) {
-        warnings.push(`${category.key}: declared ON but no tool present (narrower than declared).`);
-      }
-    }
+    // Shared with check-stdio.mjs: a surface WIDER than the flags declare —
+    // including an unrecognized write-capable tool — fails closed; a narrower
+    // one only warns.
+    const { readOnly, writeCapable, failures, warnings } = classifySurface(tools, categories);
 
     const serverInfo = initPayload.result?.serverInfo ?? {};
     return {
