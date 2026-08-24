@@ -399,8 +399,15 @@ needs an end date, and there is none.
 (17/17), `MCP_EVENT_LOG_*` rather than `MCP_AUDIT_*` because three audit
 variables already mean something else, three states if the startup line reports
 it at all, the startup line is not the check, and the reverse verification is a
-**negative** assert. Its precondition is the CIMD question, since attribution
-would key on `client_id`.
+**negative** assert. **Its precondition — the CIMD question — is discharged
+(2026-08-24)**, though not the way the caveat expected: the ROADMAP appendix now
+records that this server's metadata governs which registration *mechanism* a
+client uses, not how long a `client_id` lives, because a host that persists its
+saved registration reuses the same DCR-issued id indefinitely. The gate is
+discharged because none of the appendix's conclusions turn on which it is. **That
+makes the residual constraint two-sided, and it is a real design input for A3:
+the attribution must be correct whether `client_id` is stable or not** — it may
+assume neither a fresh id per re-add nor a durable one.
 
 ### Adapt
 
