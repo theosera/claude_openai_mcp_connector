@@ -443,8 +443,11 @@ The reasons to adopt it anyway, in cost/benefit order:
    its own, with no transport migration. **Caveat, now discharged:** the same
    protocol revision (2026-07-28) also deprecates DCR in favour of Client ID
    Metadata Documents. ⚠️ **Not the same SEP, though this entry used to say so** —
-   SEP-2468 is the `iss` work above, **SEP-2577** is the deprecation, and
-   **SEP-991** is CIMD itself, which landed a revision earlier (2025-11-25). The
+   SEP-2468 is the `iss` work above, and **SEP-991** is CIMD itself, which landed
+   a revision earlier (2025-11-25). ⛔ **The deprecation has no SEP number cited
+   here on purpose**: SEP-2577 is "Deprecate Roots, Sampling, and Logging" and
+   does not cover DCR, though the SDK's own `@deprecated` comment says it does.
+   Cite the **2026-07-28** revision and the deprecated-features table instead. The
    caveat recorded here was that this invalidates a premise of the
    [`client_id` appendix](#appendix--future-uses-of-the-authenticated-client_id)
    — "DCR mints a fresh id whenever a client re-adds the connector, so it is not a
@@ -1306,9 +1309,10 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       here is discharged (2026-08-24)** — it said to revisit the `client_id`
       appendix before building the audit log's attribution on it. The appendix now
       states the condition its premise actually depends on, and the reasoning is
-      not duplicated here. Two corrections it carries: the deprecation is
-      **SEP-2577**, not SEP-2468, and CIMD itself is **SEP-991** from the previous
-      revision.
+      not duplicated here. Two corrections it carries: the deprecation belongs to
+      the **2026-07-28** revision rather than to SEP-2468 (and not to SEP-2577
+      either, which covers Roots/Sampling/Logging), and CIMD itself is **SEP-991**
+      from the previous revision.
 - [x] **Bind a two-step plan to the vault that staged it** — ✅ every staged plan
       records the primary root's `vaultTag`, and each apply refuses a plan that
       names a different vault or names none.
@@ -1731,32 +1735,57 @@ a client re-adds the connector, it is not even a stable per-vendor identity
 (that would need `clientInfo.name`, which is forgeable). So the honest uses are
 operational (attribution / limits / revocation), not authorization-of-a-person.
 
-**The condition that paragraph depends on — settled 2026-08-24.** The sentence
-above was written without a scope, and a scope is what it needed: **it holds for
-as long as this AS does not advertise `client_id_metadata_document_supported`.**
-CIMD support is optional for an authorization server — SEP-991 says servers
-_SHOULD_ fetch a metadata document when they meet a URL-shaped `client_id`, and
-advertise support in their RFC 8414 metadata — and a conformant client gates on
-that advertisement, falling back to DCR when it is absent. The shipped
-`@modelcontextprotocol/client` does exactly that: it takes the CIMD path only
-when `client_id_metadata_document_supported === true` **and** it holds a client
+**Settled 2026-08-24 — and the answer is not the one the caveat expected.** The
+sentence above was written without a scope. The revisit set out to give it one
+("it holds while this AS does not advertise
+`client_id_metadata_document_supported`") and **that scope is still too strong**;
+review caught it before merge. Two separate things had been run together.
+
+**What this server's metadata does govern** is which registration _mechanism_ a
+conformant client uses. CIMD support is optional for an authorization server —
+SEP-991 has servers advertise it in their RFC 8414 metadata — and a conformant
+client gates on that advertisement, falling back to DCR when it is absent. The
+shipped `@modelcontextprotocol/client` takes the CIMD path only when
+`client_id_metadata_document_supported === true` **and** it holds a client
 metadata URL, and calls `registerClient` otherwise.
 `authorizationServerMetadata()` in `src/oauth/provider.ts` does not carry the
 key, and `authorizePost` refuses an unrecognized `client_id` with
-`400 Unknown client_id.`, so every registration still goes through `/register`
-and still receives a throwaway `client_${randomSecret()}` from
-`src/oauth/store.ts`. **DCR being deprecated does not by itself change any of
-this**: it stays functional through a deprecation window of at least twelve
-months, with removal possible no earlier than a revision on or after 2027-07-28.
+`400 Unknown client_id.`, so we never accept a durable, client-chosen URL as an
+identity, and every registration we do mint is an opaque per-registration
+`client_${randomSecret()}` from `src/oauth/store.ts`.
 
-**What that licenses, and what it does not.** A `client_id`-keyed feature may be
-built today. It must not depend on the *in*stability either, because that is the
-half that flips the day we advertise the key. **And a stable `client_id` is not
-an argument for reopening the rejections below** — neither of them rests on
+⛔ **What it does not govern is how long an id lives.** In that same SDK, the
+whole CIMD-versus-`registerClient` choice sits inside `if (!clientInformation)`,
+reached only when the client has no _saved_ registration. A host that persists
+its client information reuses the same DCR-issued `client_id` across sessions and
+across re-adds; whether re-adding the connector mints a fresh id is therefore a
+fact about **the host's credential-deletion behaviour**, which this server cannot
+observe and no assertion about our metadata can detect. **So "DCR mints a fresh
+id whenever a client re-adds the connector" was never safe to assert** — that was
+true before CIMD entered the picture, and the deprecation is not what broke it.
+
+**What that licenses.** A `client_id`-keyed feature may be built today, and the
+gate is discharged — but not because ids are unstable. It is discharged because
+**none of the conclusions below depend on which way it goes**, so the design rule
+is to be agnostic: **A3's attribution must be correct whether `client_id` is
+stable or not.** Concretely, it may not assume a fresh id per re-add (a
+persisting host defeats that), and it may not assume a durable one either (a host
+that clears its credentials defeats that). **And a stable `client_id` is not an
+argument for reopening the rejections below** — neither of them rests on
 instability. The anti-router ruling is grounded in MCP solving I/O differences
 client-side with the only output difference being config-driven; the "must not
 drive trust decisions" rule is grounded in INV-6/INV-7 keeping authorization on
 transport + flags + token scope. Stability moves neither.
+
+**On the deprecation itself.** DCR is deprecated as of protocol revision
+**2026-07-28**, in favour of CIMD (**SEP-991**, from the 2025-11-25 revision), and
+stays functional through a deprecation window of at least twelve months. ⚠️ **Do
+not attribute the deprecation to SEP-2577** — that SEP is "Deprecate Roots,
+Sampling, and Logging" and does not cover DCR. The `@deprecated` JSDoc on
+`registerClient` in the shipped `@modelcontextprotocol/client` says SEP-2577
+anyway, and an earlier version of this section repeated it from there; **the most
+reachable source in this repo is wrong on this point.** Cite the revision and the
+deprecated-features table rather than a SEP number.
 
 ⚠️ **The re-open trigger is a test, not this paragraph.** `tests/oauth.test.ts`
 asserts the key is **absent** from the served metadata and names the appendix in
@@ -1771,11 +1800,13 @@ Use cases, roughly by how real/soon they are:
 1. **Audit-log attribution (near-term 🔭, strongest).** The audit log only
    becomes useful if each event records _which connector_ acted ("ChatGPT read
    X", "Claude.ai attempted write Y"). Key it on `client_id`. **The CIMD question
-   is settled** (see the condition paragraph above), so this is no longer gated:
+   is settled** (see the paragraph above), so this is no longer gated. ⚠️ **But
    the ceiling described just above assumes DCR mints a throwaway id per
-   re-registration, and that assumption holds while this AS does not advertise
-   `client_id_metadata_document_supported`. The one residual constraint is that
-   the attribution design must not rely on the *in*stability either.
+   re-registration, and that assumption does not hold**: a host that persists its
+   client information reuses the same id indefinitely. The residual constraint is
+   therefore two-sided — **the attribution design must be correct whether
+   `client_id` is stable or not**, assuming neither a fresh id per re-add nor a
+   durable one.
 2. **Selective revocation (grew in value with token persistence).** The only
    _explicit_ revocation lever today is rotating the password (nukes _all_
    sessions). 🚧 A first automatic slice landed: client registrations holding no

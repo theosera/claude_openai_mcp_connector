@@ -511,14 +511,18 @@ describe("OAuthProvider flow", () => {
     expect(pr.authorization_servers).toEqual([config.issuer]);
   });
 
-  // The `client_id` appendix in docs/ROADMAP.md rests on this key being absent.
-  // While it is, a conformant client gates on it and falls back to DCR, so every
-  // registration goes through /register and gets a throwaway id — which is the
-  // premise the appendix's ceiling assumes. Advertising CIMD support flips that
-  // premise, so this assertion IS the re-open trigger for that section: it is
-  // meant to go red on the commit that adds support, and that commit's job is to
-  // revisit the appendix, not to delete this test.
-  it("does not advertise CIMD support, which the client_id appendix's premise depends on", () => {
+  // Pins the registration MECHANISM, and only that: while this key is absent, a
+  // conformant client gates on it and registers through /register instead of
+  // presenting a URL-shaped client_id of its own choosing. It deliberately does
+  // NOT pin how long an id lives — in the same SDK the CIMD-vs-registerClient
+  // choice sits inside `if (!clientInformation)`, so a host that persists its
+  // saved registration reuses one id indefinitely, and no server-side assertion
+  // can see that. The `client_id` appendix in docs/ROADMAP.md says why that
+  // distinction matters. Advertising CIMD support changes the mechanism, so this
+  // assertion is the re-open trigger for that section: it is meant to go red on
+  // the commit that adds support, and that commit's job is to revisit the
+  // appendix, not to delete this test.
+  it("does not advertise CIMD support, so a conformant client registers through DCR", () => {
     const provider = new OAuthProvider(config);
     const as = JSON.parse(provider.authorizationServerMetadata().body);
     expect(as.client_id_metadata_document_supported).toBeUndefined();
