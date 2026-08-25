@@ -241,10 +241,44 @@ body_jq='
   # three, and followed by nothing but whitespace. A run mid-line, or one trailed
   # by text (`~~~~~~ label`), closes nothing, so widening for it would rewrite
   # notes that were never at risk -- ordinary prose still renders at six.
+  #
+  # "A line start" means the line model the READER uses, not the one jq uses.
+  # CommonMark ends a line on LF, on CRLF, and on a BARE CR (U+000D) too, but
+  # split("\n") only knows LF, so `~~~~~~<CR>## User` arrives as ONE jq line
+  # whose rest is non-whitespace: it scores 0, the fence opens at six, and the
+  # reader then sees a six-tilde line that closes it. (CRLF already scored,
+  # because the leftover CR is [[:space:]] -- only the BARE CR was invisible.)
+  # Split on CR as well, so both models cut the text into the same lines.
+  #
+  # Split on it, do NOT fold it with a regex. One-argument split is a plain
+  # string split; gsub("\r\n?"; "\n") walks the WHOLE text and measured
+  # QUADRATIC (CR-dense tool output, 32 -> 128 KB: 1.31s -> 19.19s, ~3.9x per
+  # doubling, against a flat 0.01s before). This renders the ENTIRE transcript
+  # on every turn and no hook in settings.json sets a timeout, so one poisoned
+  # tool result would get the renderer killed before the single write below --
+  # silently erasing the record of its own arrival and of every turn after it.
+  #
+  # The startswith filter is what keeps cutting more lines from costing more: a
+  # line beginning with neither `~` nor a space cannot be a closing fence (with
+  # no leading space `^ {0,3}` takes nothing, so `~*` captures an EMPTY run and
+  # the line scores 0 whatever follows), so dropping it before the per-line
+  # regex discards a contribution that was already 0. Measured at 128 KB, the
+  # ordinary shapes get faster and CR-dense text gets slower: CRLF 0.028s ->
+  # 0.009s, LF 0.028s -> 0.008s, CR-dense 0.009s -> 0.021s. Every shape stays
+  # linear in size, and the WORST case over inputs falls (9.0 -> 4.9 s/MB), so
+  # the CR-dense cost does not raise the bound an attacker can reach.
+  #
+  # Splitting is measurement-only: $t is still emitted byte-for-byte, so content
+  # that legitimately carries CR (Windows-authored files, curl progress redraws,
+  # terminal control sequences) is archived exactly as it arrived and the ONLY
+  # thing this can change is the fence length. It stops at U+000D: U+2028 /
+  # U+2029 / U+0085 / form feed are not CommonMark line endings, so folding them
+  # would widen fences that no reader could have closed.
   def fence($lang; $text):
     ($text // "") as $t
     | ([ $t
-         | split("\n")[]
+         | split("\n")[] | split("\r")[]
+         | select(startswith("~") or startswith(" "))
          | capture("^ {0,3}(?<run>~*)(?<rest>.*)$")
          | if (.rest | test("^[[:space:]]*$")) then (.run | length) else 0 end ] | max // 0) as $longest
     | (if $longest >= 6 then $longest + 1 else 6 end) as $n
