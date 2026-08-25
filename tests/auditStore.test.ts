@@ -391,6 +391,9 @@ describe("AuditStore", () => {
     it("still writes a real report that carries a title and its own tags", async () => {
       // Including the state tag itself: a tag designates nothing on a document
       // that cannot name a project, so real reports keep their own vocabulary.
+      // "Designates nothing" is not "does nothing" -- the tag still selects this
+      // file for search_documents/list_projects/get_context; that is a caller
+      // asking for it, and what it gets back is untrusted vault DATA (INV-5).
       const written = await store.appendAuditReport({
         run_id: "20260718T010203Z--legit",
         content: "---\ntitle: 異常なし\ntags:\n  - audit\n  - project-state\n---\n\n# scan\n\nclean\n"

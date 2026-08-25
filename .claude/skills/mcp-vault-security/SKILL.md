@@ -342,7 +342,13 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
    同じで、後から read 面が読み始めた key が既定で拒否される。承認つき二段階の
    `frontmatter_patch` ですら 5 key の allowlist なのだから、**承認の無い single-call 面が
    それより広くてはならない** (むしろ狭い: `title` / `tags` は自己記述で、project を名乗れない
-   文書上の tag は何も designate しない)。
+   文書上の tag は何も designate しない — `get_project_state` は `project` で先に絞るため)。
+   ⚠️ **「designate しない」は「不活性」ではない** — tag は依然として呼び出し側が選ぶ
+   discovery signal で、`search_documents(tags)` / `list_projects(tags)` /
+   **`get_context(tags)` (これは一致セクションを本文として返す)** で当たる。**閉じたのは
+   designation だけ**であり、当たった結果は他の retrieval と同じ untrusted vault DATA (INV-5)。
+   `tags` を残すのは自己記述のための意図的なトレードで、allowlist を広げる次の人に
+   「tag は何もしない」と読ませない。
    **★ 判定は正規化前の生 key で行う** (`declaredFrontmatterKeys`) — `normalizeMetadata` は
    `tags` / `source_refs` を**常に** materialize するので、正規化後の key set では
    「宣言した」と「frontmatter が無い」を区別できず、**allowlist 検査が全 report を落とすか、

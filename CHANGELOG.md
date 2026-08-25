@@ -129,7 +129,12 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
   **Real reports keep working.** `title` and its own `tags` still write,
   the state tag included: a tag designates nothing on a document that cannot name
-  a project. Frontmatter-free reports still write. What changes beyond the
+  a project, because `get_project_state` filters by `project` first. It is not
+  inert, though — a tag remains a caller-selected discovery signal for
+  `search_documents(tags)`, `list_projects(tags)` and `get_context(tags)`, the
+  last of which returns matching sections as text. That is retrieval rather than
+  designation, and the deliberate price of letting an audit file describe itself.
+  Frontmatter-free reports still write. What changes beyond the
   refusal above is that a report stamping **its own custom keys** (a
   `scanner:` line, say) is now refused too and must move that detail into the
   body. The keys are read **before** normalization, because `normalizeMetadata`
