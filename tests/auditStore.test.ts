@@ -253,6 +253,66 @@ describe("AuditStore", () => {
       );
       expect(Date.now() - started).toBeLessThan(1_000);
     });
+
+    // The block cap above and the expansion cap here are two different halves of
+    // the same guard, and each needs its own observation. The cap above bounds
+    // what the parser will INGEST -- it fires on a huge unterminated block. This
+    // one bounds what the parse RESULT costs to materialize: an anchor/alias
+    // bomb is a few hundred bytes of source that expands to gigabytes, so the
+    // block cap waves it straight through.
+    //
+    // tests/frontmatter.test.ts already pins this budget -- but through
+    // `parseMarkdown`, which is the READ path. The audit writers do not go
+    // through `parseMarkdown`; `declaredFrontmatterKeys` calls the two guards
+    // itself. Deleting its `assertBoundedFrontmatterExpansion` call left the
+    // whole suite green (measured: 635 passed), because every existing
+    // assertion reached the read path's copy. That is the gap these close.
+    const aliasBomb = (key: string, levels = 8, fan = 7): string => {
+      const lines = [`a0: &a0 [${Array.from({ length: fan }, () => '"lol"').join(",")}]`];
+      for (let level = 1; level < levels; level++) {
+        lines.push(`a${level}: &a${level} [${Array.from({ length: fan }, () => `*a${level - 1}`).join(",")}]`);
+      }
+      lines.push(`${key}: *a${levels - 1}`);
+      return `---\n${lines.join("\n")}\n---\n\n# scan\n`;
+    };
+
+    it("refuses a report whose frontmatter is an alias bomb, without expanding it", async () => {
+      // The REASON matters: `expands to more than` is the budget refusing, not
+      // the block cap and not a generic parse error. Time is asserted for the
+      // same reason as above -- refusing after materializing gigabytes is not
+      // refusing.
+      const started = Date.now();
+      await expect(
+        store.appendAuditReport({ run_id: "20260718T010203Z--bomb", content: aliasBomb("tags") })
+      ).rejects.toThrow(/expands to more than/);
+      expect(Date.now() - started).toBeLessThan(1_000);
+      await expect(fs.readdir(path.join(auditRoot, "reports"))).resolves.toEqual([]);
+    });
+
+    it("refuses audit state whose frontmatter is an alias bomb, without expanding it", async () => {
+      // Both writers share the choke, so both need the assertion: a later change
+      // that moved the guard into appendAuditReport alone would still be green
+      // on the test above.
+      const started = Date.now();
+      await expect(
+        store.compareAndSwapAuditState({ expected_sha256: EMPTY_SHA, new_content: aliasBomb("tags") })
+      ).rejects.toThrow(/expands to more than/);
+      expect(Date.now() - started).toBeLessThan(1_000);
+      await expect(fs.stat(path.join(auditRoot, "state.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    it("still writes a report with a long but flat tag list", async () => {
+      // The control. Without it, both assertions above pass just as well against
+      // a budget set so low that no real report survives -- which would be a
+      // different and broken server. No anchors, no aliases: the source is far
+      // larger than the bomb and it must go through.
+      const tags = Array.from({ length: 200 }, (_, index) => `  - scan-${index}`).join("\n");
+      const written = await store.appendAuditReport({
+        run_id: "20260718T010203Z--flat",
+        content: `---\ntitle: nightly\ntags:\n${tags}\n---\n\n# scan\n\nclean\n`
+      });
+      expect(written.created).toBe(true);
+    });
   });
 
   // INV-9 (write side). The subtree reservation says WHERE these bytes may land.
