@@ -280,6 +280,8 @@ describe("AuditStore", () => {
       ""
     ].join("\n");
 
+    const REPORT_WITH = (frontmatter: string): string => `---\n${frontmatter}\n---\n\nbody\n`;
+
     it("refuses a report that attributes itself to a project, and writes nothing", async () => {
       await expect(store.appendAuditReport({ run_id: "20260718T010203Z--forge", content: FORGED })).rejects.toThrow(
         /may not claim \(project, client, target_repo, source_refs\)/
@@ -313,6 +315,77 @@ describe("AuditStore", () => {
           content: "---\nscanner: vault-scan-v3\n---\n\n# scan\n"
         })
       ).rejects.toThrow(/may not claim \(scanner\)/);
+    });
+
+    // The evasion battery, PINNED rather than measured.
+    //
+    // The run that produced this gate exercised these spellings in a throwaway
+    // harness and reported them all refused. That is a measurement of the code
+    // as it stood, and it goes nowhere near a regression: change how
+    // `declaredFrontmatterKeys` reads the block -- a different parser, an
+    // earlier normalize, a "helpful" key rewrite -- and every one of these could
+    // reopen with the whole suite still green. A harness result is not a
+    // guarantee; this is.
+    //
+    // Each case asserts the REASON (`may not claim`), not merely that something
+    // threw. A spelling that is simply invalid YAML would also reject, from the
+    // parse branch, and would count as "refused" while proving nothing about the
+    // allowlist. The accepted controls below close the other half: if the whole
+    // battery were malformed, they are what fails.
+    const EVASIONS: [string, string][] = [
+      ["uppercase key", "PROJECT: acme"],
+      ["single-quoted key", "'project': acme"],
+      ["double-quoted key", '"project": acme'],
+      ["explicit key", "? project\n: acme"],
+      ["flow mapping", "{project: acme, title: t}"],
+      ["merge key via anchor", "base: &b\n  project: acme\n<<: *b"],
+      ["alias value", "seed: &x acme\nproject: *x"],
+      ["duplicate key", "title: ok\nproject: acme"],
+      ["!!map tag", "!!map\nproject: acme"],
+      ["trailing space before colon", "project : acme"],
+      ["tab after colon", "project:\tacme"],
+      ["non-ASCII key", "プロジェクト: acme"],
+      ["__proto__ nesting", "__proto__:\n  project: acme"],
+      ["client alone", "client: acme"],
+      ["target_repo alone", "target_repo: acme"],
+      ["source_refs alone", "source_refs:\n  - a.md"]
+    ];
+
+    it.each(EVASIONS)("refuses `project` however it is spelled: %s", async (_name, frontmatter) => {
+      await expect(
+        store.appendAuditReport({
+          run_id: `20260718T010203Z--ev${Buffer.from(frontmatter).toString("hex").slice(0, 8)}`,
+          content: REPORT_WITH(frontmatter)
+        })
+      ).rejects.toThrow(/may not claim/);
+    });
+
+    // Spellings that need the whole document, not just the block body.
+    it.each([
+      ["a BOM before the fence", "\ufeff---\nproject: acme\n---\n\nbody\n"],
+      ["CRLF line endings", "---\r\nproject: acme\r\n---\r\n\r\nbody\r\n"],
+      ["a ---yaml language tag", "---yaml\nproject: acme\n---\n\nbody\n"]
+    ])("refuses `project` declared with %s", async (_name, content) => {
+      await expect(
+        store.appendAuditReport({
+          run_id: `20260718T010203Z--raw${Buffer.from(content).toString("hex").slice(0, 8)}`,
+          content
+        })
+      ).rejects.toThrow(/may not claim/);
+    });
+
+    // The controls. Without them the battery above passes just as well against a
+    // gate that refuses everything, which would be a different (and broken) server.
+    it.each([
+      ["a title", "title: t"],
+      ["tags", "tags:\n  - audit"],
+      ["both", "title: t\ntags:\n  - audit"]
+    ])("still accepts a report declaring %s", async (_name, frontmatter) => {
+      const written = await store.appendAuditReport({
+        run_id: `20260718T010203Z--ok${Buffer.from(frontmatter).toString("hex").slice(0, 8)}`,
+        content: REPORT_WITH(frontmatter)
+      });
+      expect(written.created).toBe(true);
     });
 
     it("still writes a real report that carries a title and its own tags", async () => {
