@@ -94,8 +94,9 @@ export function assertNoServerOwnedFrontmatter(raw: string, label: string): void
 // `client`), designates it as that project's state by a tag ON a document that
 // already carries the project, points ops entries at a repo through
 // `target_repo`, and follows `source_refs` into other documents. So a report
-// declaring `project` plus the state tag was returned by `get_project_state` in
-// full, described to the caller as a note the owner designated -- authored by a
+// declaring `project` plus the state tag was returned by `get_project_state` as
+// full text against the token budget, described to the caller as a note the
+// owner designated -- authored by a
 // principal holding only this surface, with no plan/apply and no approval.
 //
 // An allowlist rather than a list of the four keys that happen to escalate
@@ -107,17 +108,30 @@ export function assertNoServerOwnedFrontmatter(raw: string, label: string): void
 // unattended surface must not be wider than that. It is narrower: `title` and
 // `tags` describe the file itself.
 //
-// ⚠️ A tag is not inert, and an earlier draft of this comment said it "confers
-// nothing", which is too broad. A tag cannot DESIGNATE: `get_project_state`
-// filters by `project` before it looks at the state tag, so a file that cannot
-// name a project cannot become one's state. But a tag is still a caller-selected
-// DISCOVERY signal — `search_documents(tags)`, `list_projects(tags)` and, the
-// one that returns text, `get_context(tags)`, which passes them straight to
-// `store.search` and then packs matching sections into the response. That is a
-// caller asking for the tag, not a document promoting itself, and it is bounded
-// the same way every other retrieval is (INV-5: what comes back is untrusted
-// vault DATA). Keeping `tags` is a deliberate trade for self-description; the
-// escalation this gate closes is designation, and designation alone.
+// ⚠️ A tag is not inert. An earlier draft said it "confers nothing", which was
+// too broad; the correction that replaced it -- "a caller asking for the tag,
+// not a document promoting itself" -- moved one step and stopped, and was also
+// too broad. Both are recorded because the second is the easier mistake to make
+// again: it sounds like a limit and is really only true of the FILTERING half.
+//
+// A tag cannot DESIGNATE: `get_project_state` filters by `project` before it
+// looks at the state tag, so a file that cannot name a project cannot become
+// one's state. That, and only that, is what this gate closes.
+//
+// A tag IS a retrieval signal the document authors:
+//   - as a filter the caller selects -- `search_documents(tags)`,
+//     `list_projects(tags)`, `get_context(tags)`, the last of which passes them
+//     straight to `store.search` and packs matching sections in as text;
+//   - and as a RANKING term no caller asked for -- `scoreDocument`
+//     (`search.ts`) adds 5 for every query term matching a tag, so a tagged
+//     report can surface in a plain free-text query that never named it, body
+//     snippet included;
+//   - and, where an operator has configured a tag rule, as a `type` label with
+//     a weight in `get_context` (`typeRules.ts`, capped at
+//     MAX_SELF_DECLARED_WEIGHT).
+// All of it stays bounded the way every retrieval is (INV-5: what comes back is
+// untrusted vault DATA), and none of it makes the file anyone's state. Keeping
+// `tags` is a deliberate trade for self-description.
 export const AUDIT_WRITABLE_FRONTMATTER_KEYS = ["title", "tags"] as const;
 
 const AUDIT_WRITABLE_FRONTMATTER_KEY_SET = new Set<string>(AUDIT_WRITABLE_FRONTMATTER_KEYS);
@@ -140,7 +154,7 @@ export function assertAuditWritableFrontmatter(raw: string, label: string): void
       `The ${label} declares frontmatter it may not claim (${attributing.join(", ")}). ` +
         `An audit file may declare only ${AUDIT_WRITABLE_FRONTMATTER_KEYS.join(" and ")}: keys such as ` +
         `project, client, target_repo and source_refs attribute a document to a project or to other notes, ` +
-        `and the read side reports that attribution as the owner's own. Put the detail in the body instead.`
+        `and the read side surfaces that attribution as the vault's own. Put the detail in the body instead.`
     );
   }
 }

@@ -343,10 +343,17 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
    `frontmatter_patch` ですら 5 key の allowlist なのだから、**承認の無い single-call 面が
    それより広くてはならない** (むしろ狭い: `title` / `tags` は自己記述で、project を名乗れない
    文書上の tag は何も designate しない — `get_project_state` は `project` で先に絞るため)。
-   ⚠️ **「designate しない」は「不活性」ではない** — tag は依然として呼び出し側が選ぶ
-   discovery signal で、`search_documents(tags)` / `list_projects(tags)` /
-   **`get_context(tags)` (これは一致セクションを本文として返す)** で当たる。**閉じたのは
-   designation だけ**であり、当たった結果は他の retrieval と同じ untrusted vault DATA (INV-5)。
+   ⚠️ **「designate しない」は「不活性」ではない。** ここは 2 度誤った — 最初は
+   「confers nothing」、次は「呼び出し側が選ぶ signal だ」。**後者も過小**である:
+   ① 呼び出し側が選ぶ filter (`search_documents(tags)` / `list_projects(tags)` /
+   **`get_context(tags)` = 一致セクションを本文として返す**) に加えて、
+   ② **誰も指定していない ranking 項**でもある — `scoreDocument` (`search.ts`) は
+   query term が tag に一致するたび +5 するので、**tag を名指ししていない自由文検索**に
+   snippet 込みで浮上する。③ 運用者が tag rule を設定していれば `get_context` で
+   **重み付き `type`** が付く。**文書が自分で名乗れるのはここまでで、名乗れないのが
+   designation** — 閉じたのはそれだけ。当たった結果は他の retrieval と同じ
+   untrusted vault DATA (INV-5)。⚠️ **本文には届かない** — 本文中の markdown link は
+   通常のグラフ辺になるので、`trace_sources` の backlink には現れうる。
    `tags` を残すのは自己記述のための意図的なトレードで、allowlist を広げる次の人に
    「tag は何もしない」と読ませない。
    **★ 判定は正規化前の生 key で行う** (`declaredFrontmatterKeys`) — `normalizeMetadata` は
@@ -432,8 +439,10 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
 > (`MCP_AUTH_TOKEN_SCOPES` を狭めて write tool が `tools/list` から消える形が該当)。
 > **② 要件が「載せないこと」なら、主 assert は negative でなければならない** —
 > 「出ること」を assert するテストは、**載せてはいけないものが混入しても緑のまま通る**。
-> INV-9 で `assertNoServerOwnedFrontmatter` を「書けること」ではなく**「名乗れないこと」**で
-> pin したのと同じ形。
+> INV-9 で監査 frontmatter を「書けること」ではなく**「名乗れないこと」**で pin したのと
+> 同じ形 (現在は `assertAuditWritableFrontmatter`。`assertNoServerOwnedFrontmatter` は
+> INV-8 の Skill reference 側に残っている — **関数名で grep する読み手のために、
+> どちらがどちらか明示する**)。
 > **③ 起動行を検査に使わない。起動行は「主張」であって「面」ではない** — 実測: #113 の逆検証で
 > Skill gate を戻したとき赤くなったのは**ワイヤ上のテスト 1 本だけ**で、起動行を見るテストは
 > 緑のままだった。起動行の assert は**補助まで**。

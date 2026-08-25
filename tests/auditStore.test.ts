@@ -340,21 +340,39 @@ describe("AuditStore", () => {
       ["flow mapping", "{project: acme, title: t}"],
       ["merge key via anchor", "base: &b\n  project: acme\n<<: *b"],
       ["alias value", "seed: &x acme\nproject: *x"],
-      ["duplicate key", "title: ok\nproject: acme"],
       ["!!map tag", "!!map\nproject: acme"],
       ["trailing space before colon", "project : acme"],
       ["tab after colon", "project:\tacme"],
-      ["non-ASCII key", "プロジェクト: acme"],
       ["__proto__ nesting", "__proto__:\n  project: acme"],
-      ["client alone", "client: acme"],
-      ["target_repo alone", "target_repo: acme"],
-      ["source_refs alone", "source_refs:\n  - a.md"]
+      ["alongside an allowed key", "title: ok\nproject: acme"]
+    ];
+
+    // Keys that are refused for being unlisted rather than for being `project`
+    // in disguise. Same gate, different half of it: the battery above proves the
+    // allowlist is not fooled by spelling, and this proves it is an allowlist at
+    // all rather than a `project` denylist. Kept apart because one title cannot
+    // honestly cover both.
+    const UNLISTED_KEYS: [string, string][] = [
+      ["client", "client: acme"],
+      ["target_repo", "target_repo: acme"],
+      ["source_refs", "source_refs:\n  - a.md"],
+      ["a non-ASCII key", "プロジェクト: acme"],
+      ["a key no read path reads today", "scanner: nightly"]
     ];
 
     it.each(EVASIONS)("refuses `project` however it is spelled: %s", async (_name, frontmatter) => {
       await expect(
         store.appendAuditReport({
           run_id: `20260718T010203Z--ev${Buffer.from(frontmatter).toString("hex").slice(0, 8)}`,
+          content: REPORT_WITH(frontmatter)
+        })
+      ).rejects.toThrow(/may not claim/);
+    });
+
+    it.each(UNLISTED_KEYS)("refuses an unlisted key declared on its own: %s", async (_name, frontmatter) => {
+      await expect(
+        store.appendAuditReport({
+          run_id: `20260718T010203Z--un${Buffer.from(frontmatter).toString("hex").slice(0, 8)}`,
           content: REPORT_WITH(frontmatter)
         })
       ).rejects.toThrow(/may not claim/);

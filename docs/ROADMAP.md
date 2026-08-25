@@ -872,7 +872,11 @@ could name any note in the vault. `SKILL.md` was already pinned to
 `name`/`description`; its reference files were the gap.
 
 `assertNoServerOwnedFrontmatter` refuses `id` and `updated_at` in client-chosen
-content.
+content. ⚠️ **2026-08-25**: still exactly true of the Skill-reference side, and
+still true in effect for the audit side — but the audit writers now reach
+`assertAuditWritableFrontmatter`, which calls the extracted server-owned check
+inside itself. Grepping this function name no longer finds the audit path; see
+the allowlist note further down.
 
 - **One helper at each store's choke point**, not the same test written three
   times: `assertWritableText`, which both audit writers already pass through,
@@ -1469,8 +1473,9 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       and apply both end, so a squat is unrepresentable rather than merely
       unapplied. See the write-side root-A section above.
 
-      ★ **2026-08-25 — the audit half was widened from that denylist to an
-      allowlist.** The original text stands: `id` / `updated_at` is a complete
+      ★ **2026-08-25 — the audit half was converted from that denylist to an
+      allowlist** (the check's coverage widened; the surface it permits
+      narrowed). The original text stands: `id` / `updated_at` is a complete
       set for *identity*, and it is still what the Skill-reference side refuses.
       What it did not cover is *designation*: `project` plus the state tag made
       `get_project_state` return an audit report in full as a note the owner

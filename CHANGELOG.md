@@ -110,7 +110,8 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Everything else passed — including the keys the read side uses to decide what a
   document *belongs to*. A report whose frontmatter declared
   `project: <victim>` plus the state tag was returned by **`get_project_state` in
-  `state_docs`, in full, described by the tool as a note the owner designated**;
+  `state_docs`, as full text against its token budget, described by the tool as a
+  note the owner designated**;
   it also took a seat in `recent_docs`, appeared in `ops_recent` via
   `target_repo`, and was counted against the victim project by `list_projects`.
   The principal that could author it holds *only* this surface — no
@@ -130,10 +131,15 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   **Real reports keep working.** `title` and its own `tags` still write,
   the state tag included: a tag designates nothing on a document that cannot name
   a project, because `get_project_state` filters by `project` first. It is not
-  inert, though — a tag remains a caller-selected discovery signal for
-  `search_documents(tags)`, `list_projects(tags)` and `get_context(tags)`, the
-  last of which returns matching sections as text. That is retrieval rather than
-  designation, and the deliberate price of letting an audit file describe itself.
+  inert. Beyond the filters the caller selects (`search_documents(tags)`,
+  `list_projects(tags)`, `get_context(tags)`, the last returning matching
+  sections as text), free-text search scores a document up for every query term
+  matching one of its tags — so a tagged report can surface in a query that
+  never named the tag — and an operator-configured tag rule can attach a
+  weighted `type` in `get_context`. That much the report authors about itself.
+  What it cannot author is designation, and designation is what this closes.
+  ⚠️ Nor does the rule reach the **body**: markdown links there produce ordinary
+  graph edges, so a report can still appear as a `trace_sources` backlink.
   Frontmatter-free reports still write. What changes beyond the
   refusal above is that a report stamping **its own custom keys** (a
   `scanner:` line, say) is now refused too and must move that detail into the
