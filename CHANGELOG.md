@@ -152,6 +152,24 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   audit subtree — that is what the surface is for. It stops that text arriving in
   front of a later session as something a project's owner designated.
 
+  ⚠️ **Reports already on disk are not migrated.** A report written before this
+  change, whose frontmatter declares keys of its own, is refused when it is
+  re-submitted — even byte-for-byte identical. The frontmatter check runs in
+  `assertWritableText`, ahead of the `wx` write, so the `EEXIST` comparison that
+  would have returned `{ created: false }` is never reached. Nothing on disk
+  changes and no bytes are written: what an upgrade loses is the idempotent
+  retry, not the trail. There is no separate migration step, because a scanner
+  still emitting those keys fails on every *new* `run_id` as well until it moves
+  them into the body — the one fix settles both, and a scanner that has been
+  fixed has nothing left to replay.
+
+  The obvious reading — compare the existing bytes *before* applying the policy —
+  is not the remedy. The `readFile` on that path sits after `assertNotSymlink`
+  deliberately, so the comparison cannot follow a symlink out of `reports/`, and
+  the NUL and size checks live inside `assertWritableText` itself; a read placed
+  ahead of it would run on unvalidated, unbounded input on every request, not
+  only on the ones about to be refused.
+
 - **The static bearer's scopes are derived, not assumed** (GAP-4). `authenticate()`
   (`src/httpServer.ts`) returned `{scopes: [vault.read, vault.write]}`
   unconditionally once `MCP_AUTH_TOKEN` matched, which made it the one principal
