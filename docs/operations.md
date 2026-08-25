@@ -1153,6 +1153,44 @@ curl -s -X POST http://127.0.0.1:8788/mcp \
 </details>
 
 The scanner must use a `run_id` with **no colons or slashes** (e.g.
-`20260718T010203Z--<uuid>`); a raw ISO timestamp with `:` is rejected. See
-[`SECURITY.md`](../SECURITY.md) (T11 + operating-conditions note) for the threat
-model behind this split, and `CHANGELOG.md` `[0.6.0]` for what shipped.
+`20260718T010203Z--<uuid>`); a raw ISO timestamp with `:` is rejected.
+
+See [`SECURITY.md`](../SECURITY.md) (T11 + operating-conditions note) for the
+threat model behind the subtree split above.
+
+A report or state file may declare **only `title` and `tags`** in its
+frontmatter. Audit files land in the vault as ordinary `.md` documents, and the
+read side takes `project` / `client` / `target_repo` / `source_refs` as saying
+what a document *belongs to* — a report declaring `project` plus the state tag
+would come back from `get_project_state` as a note the owner designated. So the
+subtree reservation is matched by a rule about what the bytes may claim
+(`INV-9`): an audit file describes itself and cannot attribute itself **in its
+frontmatter** to anything. A scanner that stamps its own metadata (`scanner:`,
+`severity:`, …) puts it in the body instead.
+
+⚠️ **The body is still untrusted content, and this rule does not reach it.**
+Markdown links and wikilinks in a report produce ordinary graph edges, so a
+report whose body links a project's note comes back as that note's backlink
+under `trace_sources` and as a `linked:*` neighbour in `get_context`. Bounded
+the way every retrieval is (INV-5), and not designation — but "attributes
+itself to nothing" would be the wrong thing to carry away.
+
+⚠️ `tags` is allowed and is **not inert**. It designates nothing (a file that
+cannot name a `project` cannot become that project's state), and that is the
+whole of what the rule buys. Beyond it, a tag is a retrieval signal the report
+itself authors:
+
+- a **filter the caller selects** — `search_documents(tags)`,
+  `list_projects(tags)`, `get_context(tags)`, the last returning matching
+  sections as text;
+- a **ranking term no caller asked for** — free-text search scores a document up
+  for every query term matching one of its tags, so a tagged report can surface,
+  body snippet and all, in a query that never named the tag;
+- and, where you have configured a tag rule, a **`type` label with a weight** in
+  `get_context`.
+
+So tagging your scanner's reports is not free. It is the deliberate cost of
+letting an audit file describe itself, and it is worth picking tags that will
+not collide with the vocabulary your own notes are searched by. See
+`docs/threat-model.md` (the row on promoting audit content into a project's
+designated state) and `CHANGELOG.md` `[Unreleased]` for what shipped.
