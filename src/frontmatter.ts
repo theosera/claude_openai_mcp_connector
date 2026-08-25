@@ -105,8 +105,19 @@ export function assertNoServerOwnedFrontmatter(raw: string, label: string): void
 // a staged plan and the current user's approval of a complete diff, is itself
 // limited to five allowlisted keys (PATCHABLE_FRONTMATTER_KEYS); a single-call
 // unattended surface must not be wider than that. It is narrower: `title` and
-// `tags` describe the file itself, and a tag confers nothing on a document that
-// cannot name a project.
+// `tags` describe the file itself.
+//
+// ⚠️ A tag is not inert, and an earlier draft of this comment said it "confers
+// nothing", which is too broad. A tag cannot DESIGNATE: `get_project_state`
+// filters by `project` before it looks at the state tag, so a file that cannot
+// name a project cannot become one's state. But a tag is still a caller-selected
+// DISCOVERY signal — `search_documents(tags)`, `list_projects(tags)` and, the
+// one that returns text, `get_context(tags)`, which passes them straight to
+// `store.search` and then packs matching sections into the response. That is a
+// caller asking for the tag, not a document promoting itself, and it is bounded
+// the same way every other retrieval is (INV-5: what comes back is untrusted
+// vault DATA). Keeping `tags` is a deliberate trade for self-description; the
+// escalation this gate closes is designation, and designation alone.
 export const AUDIT_WRITABLE_FRONTMATTER_KEYS = ["title", "tags"] as const;
 
 const AUDIT_WRITABLE_FRONTMATTER_KEY_SET = new Set<string>(AUDIT_WRITABLE_FRONTMATTER_KEYS);

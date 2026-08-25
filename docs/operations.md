@@ -1163,6 +1163,14 @@ would come back from `get_project_state` as a note the owner designated. So the
 subtree reservation is matched by a rule about what the bytes may claim
 (`INV-9`): an audit file describes itself and attributes itself to nothing. A
 scanner that stamps its own metadata (`scanner:`, `severity:`, …) puts it in the
-body instead. See
+body instead.
+
+⚠️ `tags` is allowed and is **not inert**: it designates nothing (a file that
+cannot name a `project` cannot become that project's state), but it is still a
+selector for `search_documents(tags)`, `list_projects(tags)` and
+`get_context(tags)` — the last returns matching sections as text. A scanner
+tagging its reports makes them findable by anyone who asks for that tag. That is
+retrieval, not designation, and it is the deliberate cost of letting an audit
+file describe itself. See
 [`SECURITY.md`](../SECURITY.md) (T11 + operating-conditions note) for the threat
 model behind this split, and `CHANGELOG.md` `[0.6.0]` for what shipped.
