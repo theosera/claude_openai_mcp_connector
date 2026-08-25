@@ -205,7 +205,7 @@ export function parseMarkdown(raw: string): { frontmatter: DocumentMetadata; bod
  */
 export const MAX_FRONTMATTER_BLOCK_BYTES = 8 * 1024;
 
-const FRONTMATTER_DELIMITER = "---";
+export const FRONTMATTER_DELIMITER = "---";
 
 /** The frontmatter block gray-matter will parse out of an input. */
 type FrontmatterBlock = {
