@@ -1468,6 +1468,19 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       on its own as an **INV-8/INV-9** change. The Skill check sits where plan
       and apply both end, so a squat is unrepresentable rather than merely
       unapplied. See the write-side root-A section above.
+
+      ★ **2026-08-25 — the audit half was widened from that denylist to an
+      allowlist.** The original text stands: `id` / `updated_at` is a complete
+      set for *identity*, and it is still what the Skill-reference side refuses.
+      What it did not cover is *designation*: `project` plus the state tag made
+      `get_project_state` return an audit report in full as a note the owner
+      designated. `assertAuditWritableFrontmatter` now limits the audit surface
+      to `title` and `tags`, at the same `assertWritableText` choke. **An
+      allowlist rather than a second denylist**, because enumerating categories
+      one at a time is what produced this round — identity first, designation
+      second, and whatever the read path starts honouring next would have been
+      third. ⚠️ Not closed by it: a process writing into the vault outside this
+      server (the launchd scanner writes reports directly) reaches neither gate.
 - [x] **Keep host filesystem layout out of client-visible errors (root E)** — ✅
       `withClientSafeErrors` wraps each store at the single point the server
       builds them, so a system error reaches the client as its `code` alone.

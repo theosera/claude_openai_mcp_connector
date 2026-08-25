@@ -68,8 +68,8 @@ const SERVER_OWNED_FRONTMATTER_KEY_SET = new Set<string>(SERVER_OWNED_FRONTMATTE
  * repeated at each: three copies of a rule is three chances for one to drift,
  * and the read side has exactly one place that honours these keys.
  *
- * Parses through `parseMarkdown`, which bounds the block at
- * MAX_FRONTMATTER_BLOCK_BYTES BEFORE gray-matter runs. That ordering is
+ * Reads the declared keys through `declaredFrontmatterKeys`, which bounds the
+ * block at MAX_FRONTMATTER_BLOCK_BYTES BEFORE gray-matter runs. That ordering is
  * load-bearing here, not incidental: these callers accept payloads far larger
  * than the cap (an audit report may be 512 KiB), so inspecting their frontmatter
  * with an unbounded parse would re-open the quadratic parse-time path on a write
@@ -82,21 +82,93 @@ const SERVER_OWNED_FRONTMATTER_KEY_SET = new Set<string>(SERVER_OWNED_FRONTMATTE
  * another on read.
  */
 export function assertNoServerOwnedFrontmatter(raw: string, label: string): void {
-  let frontmatter: DocumentMetadata;
-  try {
-    ({ frontmatter } = parseMarkdown(raw));
-  } catch (error) {
-    throw new Error(`The ${label} has frontmatter the server cannot parse: ${(error as Error).message}`, {
-      cause: error
-    });
-  }
+  assertServerOwnedKeysAbsent(declaredFrontmatterKeys(raw, label), label);
+}
 
-  const declared = Object.keys(frontmatter).filter((key) => SERVER_OWNED_FRONTMATTER_KEY_SET.has(key));
+// Keys an audit report / audit state file may declare ABOUT ITSELF.
+//
+// INV-9 confines WHERE the audit surface may write. It said nothing about what
+// those bytes may CLAIM once written, and the audit files land in the vault as
+// `.md` documents that the read side indexes like any other note. The read side
+// attributes a document to a project through `project` (and narrows by
+// `client`), designates it as that project's state by a tag ON a document that
+// already carries the project, points ops entries at a repo through
+// `target_repo`, and follows `source_refs` into other documents. So a report
+// declaring `project` plus the state tag was returned by `get_project_state` in
+// full, described to the caller as a note the owner designated -- authored by a
+// principal holding only this surface, with no plan/apply and no approval.
+//
+// An allowlist rather than a list of the four keys that happen to escalate
+// today, for the reason `toPublicDocument` is an allowlist and not a `delete`:
+// a key the read path starts honouring later is refused here by default instead
+// of quietly inheriting the same promotion. `plan_document_update`, which needs
+// a staged plan and the current user's approval of a complete diff, is itself
+// limited to five allowlisted keys (PATCHABLE_FRONTMATTER_KEYS); a single-call
+// unattended surface must not be wider than that. It is narrower: `title` and
+// `tags` describe the file itself, and a tag confers nothing on a document that
+// cannot name a project.
+export const AUDIT_WRITABLE_FRONTMATTER_KEYS = ["title", "tags"] as const;
+
+const AUDIT_WRITABLE_FRONTMATTER_KEY_SET = new Set<string>(AUDIT_WRITABLE_FRONTMATTER_KEYS);
+
+/**
+ * Refuse verbatim audit content that declares any frontmatter key beyond the
+ * self-describing ones -- server-owned keys included, with their own message.
+ *
+ * Same choke point (`assertWritableText`) and the same bounded parse as
+ * `assertNoServerOwnedFrontmatter`; both audit writers reach it, so a third one
+ * added later inherits the rule.
+ */
+export function assertAuditWritableFrontmatter(raw: string, label: string): void {
+  const declaredKeys = declaredFrontmatterKeys(raw, label);
+  assertServerOwnedKeysAbsent(declaredKeys, label);
+
+  const attributing = declaredKeys.filter((key) => !AUDIT_WRITABLE_FRONTMATTER_KEY_SET.has(key));
+  if (attributing.length > 0) {
+    throw new Error(
+      `The ${label} declares frontmatter it may not claim (${attributing.join(", ")}). ` +
+        `An audit file may declare only ${AUDIT_WRITABLE_FRONTMATTER_KEYS.join(" and ")}: keys such as ` +
+        `project, client, target_repo and source_refs attribute a document to a project or to other notes, ` +
+        `and the read side reports that attribution as the owner's own. Put the detail in the body instead.`
+    );
+  }
+}
+
+function assertServerOwnedKeysAbsent(declaredKeys: readonly string[], label: string): void {
+  const declared = declaredKeys.filter((key) => SERVER_OWNED_FRONTMATTER_KEY_SET.has(key));
   if (declared.length > 0) {
     throw new Error(
       `The ${label} declares server-owned frontmatter (${declared.join(", ")}). ` +
         `${SERVER_OWNED_FRONTMATTER_KEYS.join(" and ")} identify a document to the server and cannot be supplied by a client.`
     );
+  }
+}
+
+/**
+ * The keys a raw document's frontmatter block declares, BEFORE normalization.
+ *
+ * Raw deliberately: `normalizeMetadata` always materializes `tags` and
+ * `source_refs` (as `[]` when absent), so its key set describes what the read
+ * path will see rather than what the client wrote -- and a check that cannot
+ * tell "declared source_refs" from "declared no frontmatter at all" is not a
+ * check. `id` / `updated_at` are neither added nor removed by normalization, so
+ * the server-owned test above reads the same either way.
+ *
+ * The bounds run in `parseMarkdown`'s order, and that ordering is the reason
+ * this is not simply a second parse: the block cap runs BEFORE gray-matter, so a
+ * caller that accepts 512 KiB payloads never reaches the quadratic parse-time
+ * path (see assertBoundedFrontmatterBlock).
+ */
+function declaredFrontmatterKeys(raw: string, label: string): string[] {
+  try {
+    assertBoundedFrontmatterBlock(raw);
+    const parsed = matter(raw, SAFE_MATTER_OPTIONS);
+    assertBoundedFrontmatterExpansion(parsed.data, raw);
+    return Object.keys(parsed.data as Record<string, unknown>);
+  } catch (error) {
+    throw new Error(`The ${label} has frontmatter the server cannot parse: ${(error as Error).message}`, {
+      cause: error
+    });
   }
 }
 

@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { assertNoServerOwnedFrontmatter } from "./frontmatter.js";
+import { assertAuditWritableFrontmatter } from "./frontmatter.js";
 import { relativeToRoot, resolveExistingRoot, resolveInsideRoot, toPosixPath } from "./pathSafety.js";
 
 // A `run_id` becomes a filename (`reports/<run_id>.md`), so constrain it to a
@@ -284,15 +284,18 @@ function assertWritableText(value: string, maxBytes: number, label: string): str
   }
   // Reports and state land in the vault as .md files and are indexed as
   // documents like any other, so client-supplied frontmatter here is a claim
-  // about identity, not a note about a scan. INV-9 confined WHERE these bytes
-  // may be written; this confines WHAT they may claim once there.
+  // about identity and membership, not a note about a scan. INV-9 confined
+  // WHERE these bytes may be written; this confines WHAT they may claim once
+  // there — the file may describe itself (title, tags) and may not attribute
+  // itself to a project, a client, a repo or another document, which is how the
+  // read side comes to present it as something the owner designated.
   //
   // Order matters: the size check above runs first, so the parse inside is
   // reached only for input already bounded, and the parse itself caps the
   // frontmatter block before gray-matter runs. A report may be 512 KiB — far
   // past the point where an unbounded frontmatter parse becomes the very
   // quadratic path that cap exists to close.
-  assertNoServerOwnedFrontmatter(value, label);
+  assertAuditWritableFrontmatter(value, label);
   return value;
 }
 

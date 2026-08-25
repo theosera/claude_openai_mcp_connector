@@ -1153,6 +1153,16 @@ curl -s -X POST http://127.0.0.1:8788/mcp \
 </details>
 
 The scanner must use a `run_id` with **no colons or slashes** (e.g.
-`20260718T010203Z--<uuid>`); a raw ISO timestamp with `:` is rejected. See
+`20260718T010203Z--<uuid>`); a raw ISO timestamp with `:` is rejected.
+
+A report or state file may declare **only `title` and `tags`** in its
+frontmatter. Audit files land in the vault as ordinary `.md` documents, and the
+read side takes `project` / `client` / `target_repo` / `source_refs` as saying
+what a document *belongs to* — a report declaring `project` plus the state tag
+would come back from `get_project_state` as a note the owner designated. So the
+subtree reservation is matched by a rule about what the bytes may claim
+(`INV-9`): an audit file describes itself and attributes itself to nothing. A
+scanner that stamps its own metadata (`scanner:`, `severity:`, …) puts it in the
+body instead. See
 [`SECURITY.md`](../SECURITY.md) (T11 + operating-conditions note) for the threat
 model behind this split, and `CHANGELOG.md` `[0.6.0]` for what shipped.
