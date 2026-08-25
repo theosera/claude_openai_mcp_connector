@@ -103,6 +103,36 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **The session-archive fence is sized over CR line endings too** (third
+  `/claude-security` scan, F4 and F11). The fence containing untrusted
+  tool-result text was sized by splitting the content on LF only, but CommonMark
+  ends a line on a bare CR as well: `~~~~~~<CR>## 👤 User …` reached the sizer as
+  **one** line whose rest was non-whitespace, so it scored 0, the fence opened at
+  the six-tilde floor, and the reader then saw a six-tilde line that **closed**
+  it. Everything after it became top-level Markdown in a note that is committed,
+  pushed to the vault, and later served back over MCP as the record of the
+  session — a forged operator turn carrying an approval nobody gave. This is the
+  escape #94 was written to close, reached through a line terminator that fix did
+  not model.
+
+  The sizer now splits on CR as well. It **splits** rather than folding CR with a
+  regex on purpose: `gsub("\r\n?"; "\n")` walks the whole text and measured
+  quadratic on CR-dense output (32 → 128 KB: 1.31s → 19.19s), and this renderer
+  runs over the entire transcript every turn with no hook timeout, so one poisoned
+  tool result would get the render killed before the single write — erasing the
+  record of its own arrival. The emitted text is unchanged byte for byte; only
+  the fence length can move, and only where a CR-delimited line is itself a valid
+  closing fence.
+
+  ⚠️ **The other two findings against this script are not closed here.** F2 (ANSI
+  stripping still runs *after* the fence is sized) and F3 (the secret mask misses
+  quoted/JSON credential values) were declined at the fix stage and **remain
+  open**; there is no guard for them to remove, so the ANSI and quoted-value
+  cases are **unverified, which is not the same as verified green**. Removing
+  `| split("\r")[]` reds five named assertions — the CR half only.
+  `archive-session.sh` ships byte-identical in `terminal-ops-logs`, and neither
+  half of the change is effective alone.
+
 - **The static bearer's scopes are derived, not assumed** (GAP-4). `authenticate()`
   (`src/httpServer.ts`) returned `{scopes: [vault.read, vault.write]}`
   unconditionally once `MCP_AUTH_TOKEN` matched, which made it the one principal
