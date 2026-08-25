@@ -248,6 +248,153 @@ describe("frontmatter YAML anchor/alias expansion guard", () => {
     expect(parseMarkdownSafe(raw).parseError).toMatch(/expands to more than/);
   });
 
+  it("draws the expansion budget from the BLOCK, not the file, when a BOM hides the delimiter", () => {
+    // The budget bounding alias expansion was `frontmatterSourceLength(raw) * 16`,
+    // and that function tested the RAW prefix for `---` while gray-matter strips a
+    // leading U+FEFF first. So a BOM-prefixed file — which gray-matter DOES parse —
+    // fell into the no-frontmatter fallback and was budgeted at 16x the WHOLE FILE.
+    //
+    // Measured on this exact payload: 65,536 bytes of budget without the BOM
+    // against 8,388,576 with it, a 128x widening bought with one character. The
+    // bomb is 263 bytes and the padding is inert filler, so the attacker sets the
+    // budget by choosing the file size — 16x of it — and the block-size cap cannot
+    // help, because the block is tiny. This is the pair that matters: the two
+    // payloads differ ONLY by the BOM, so anything that treats them differently
+    // fails, and a guard that simply refused all BOMs would fail the tests below.
+    const bomb = aliasBomb("note", 7, 6);
+    const padded = (prefix: string): string =>
+      prefix + bomb + "x".repeat(512 * 1024 - Buffer.byteLength(prefix + bomb, "utf8"));
+
+    // The control: identical bytes, no BOM. Refused at the floor budget today and
+    // before this fix — without it the test could pass on a build that refuses
+    // every large file for some unrelated reason.
+    const withoutBom = parseMarkdownSafe(padded(""));
+    expect(withoutBom.parseError).toMatch(/expands to more than 65536 bytes/);
+
+    // The finding: one BOM, and the same bomb is stored.
+    const started = Date.now();
+    const withBom = parseMarkdownSafe(padded("\uFEFF"));
+    const elapsed = Date.now() - started;
+
+    // The SAME budget as the control — the number is asserted, not just the
+    // refusal, because a refusal at 8,388,576 would also "throw" while having
+    // walked 128x the work and while storing any bomb that fits under it.
+    expect(withBom.parseError).toMatch(/expands to more than 65536 bytes/);
+    expect(withBom.frontmatter.tags).toEqual([]);
+    // Degrades like any other malformed frontmatter, so one hostile note does not
+    // abort a vault scan, and the body still indexes.
+    expect(withBom.body).toContain("ZZBOMBBODY");
+    // Work is bounded by the budget, not by the 3.76 MiB the bomb expands to.
+    expect(elapsed).toBeLessThan(1_000);
+    // And nothing survives into what fetch_document would JSON.stringify.
+    expect(JSON.stringify(withBom.frontmatter).length).toBeLessThan(1_000);
+  });
+
+  it("puts the budget on its floor when there is no block, rather than on the file size", () => {
+    // The no-block fallback returned the WHOLE INPUT LENGTH, on the reasoning that
+    // over-estimating only ever loosens a bound. That is true of a block measured
+    // generously and false of this fallback, because the fallback is taken exactly
+    // when this guard and gray-matter DISAGREE about whether a block exists — and
+    // then 16x an attacker-chosen file size is not a loose bound, it is none. The
+    // BOM was one way to force that disagreement; returning the floor is what
+    // keeps the NEXT one a false positive instead of an open door.
+    //
+    // A doubled BOM is a real instance: strip-bom-string removes one, so
+    // gray-matter sees `\uFEFF---` and finds no frontmatter at all. Under the old
+    // fallback this 512 KiB file bought an 8 MiB budget for frontmatter that
+    // parses to `{}`.
+    const bomb = aliasBomb("note", 7, 6);
+    const doubled = "\uFEFF\uFEFF" + bomb;
+    const padded = doubled + "x".repeat(512 * 1024 - Buffer.byteLength(doubled, "utf8"));
+
+    const parsed = parseMarkdownSafe(padded);
+
+    // gray-matter found no frontmatter, so there is nothing to expand and nothing
+    // to refuse: the note is legal, and its metadata is empty.
+    expect(parsed.parseError).toBeUndefined();
+    expect(parsed.frontmatter.tags).toEqual([]);
+    expect(JSON.stringify(parsed.frontmatter).length).toBeLessThan(100);
+  });
+
+  it("keeps parsing ordinary notes that have no frontmatter, at any size", () => {
+    // The negative half of the floor change, and the reason it is safe: when the
+    // guard and gray-matter AGREE there is no block, gray-matter yields `{}`,
+    // which this walk charges 28 bytes against a 65,536-byte floor. Dropping the
+    // budget from 16x the file to the floor therefore cannot refuse anything —
+    // but only a test that actually parses a large frontmatter-free note says so.
+    const parsed = parseMarkdownSafe(`# Long note\n\n${"lorem ipsum dolor sit amet\n".repeat(20_000)}`);
+
+    expect(parsed.parseError).toBeUndefined();
+    expect(parsed.body).toContain("lorem ipsum");
+  });
+
+  it("keeps the full budget for a legitimate BOM-prefixed note with real frontmatter", () => {
+    // The other direction of the same fix: measuring the block in the STRIPPED
+    // coordinate system must not shrink the budget for notes that deserve it. A
+    // BOM-prefixed session-archive index has ~4 KiB of source_refs; its budget
+    // comes from that block and it must survive intact, metadata and all.
+    const parsed = parseMarkdownSafe("\uFEFF" + sessionArchiveNote(90));
+
+    expect(parsed.parseError).toBeUndefined();
+    expect(parsed.frontmatter.source_refs).toHaveLength(90);
+    expect(parsed.frontmatter.id).toBe("cc-session-index-2026-08");
+  });
+
+  it("derives the budget from the block, not from the floor", () => {
+    // The tests above pin WHERE the block is measured; none of them observes the
+    // budget's MAGNITUDE. Replacing the whole body of `frontmatterSourceLength`
+    // with `return 0` — every budget pinned to the 64 KiB floor, never derived
+    // from the block — leaves the other 611 tests green. That is the vacuity this
+    // one closes, and it is a real failure mode rather than a tidiness point: a
+    // floored budget silently refuses legitimate frontmatter, and a note that
+    // loses its frontmatter loses its `id`, which moves its identity to its path.
+    //
+    // The calibration is the test. The payload has to land BETWEEN the two
+    // budgets or it cannot tell them apart:
+    //
+    //   block-derived budget   6,321 code units x 16  =  101,136
+    //   this payload expands to                        =   92,722
+    //   floor                                          =   65,536
+    //
+    // so it parses on the real code (92,722 < 101,136) and is refused the moment
+    // the budget collapses to the floor (92,722 > 65,536). Every other bomb in
+    // this file overflows BOTH budgets, which is why they all stay green under
+    // that mutation and say nothing about where the budget came from.
+    //
+    // 92,722 is MEASURED, by instrumenting the walk itself rather than
+    // recomputing its accounting by hand — an earlier revision of this comment
+    // said ~89,200, which is the aliased list alone and omits the filler, the
+    // anchor's own array and the root keys.
+    //
+    // There are TWO margins here and they are not interchangeable. Quoting one
+    // number invites reading it as the other:
+    //
+    //   above the floor        92,722 - 65,536 = 27,186   the DISCRIMINATING
+    //                                                     margin: how far the
+    //                                                     mutation is from
+    //                                                     passing anyway. Thick.
+    //   below the block budget 101,136 - 92,722 =  8,414   the FALSE-POSITIVE
+    //                                          (8.3%)      margin: how far the
+    //                                                      real code is from
+    //                                                      refusing this note. Thin.
+    //
+    // So the test is in no danger of stopping to detect the regression, but it
+    // IS close to breaking on correct code: a modest growth in what
+    // normalizeMetadata emits, or in this payload, reddens it for a reason that
+    // has nothing to do with the guard. Re-measure rather than eyeball if you
+    // touch either.
+    const anchor = `a: &a [${Array.from({ length: 16 }, () => '"lol"').join(",")}]`;
+    const list = `b: [${Array.from({ length: 900 }, () => "*a").join(",")}]`;
+    const filler = `note: "${"x".repeat(3_500)}"`;
+    const raw = `---\n${anchor}\n${list}\n${filler}\n---\n\nZZCALIBBODY marker\n`;
+
+    const parsed = parseMarkdownSafe(raw);
+
+    expect(parsed.parseError).toBeUndefined();
+    expect(parsed.frontmatter.b).toHaveLength(900);
+    expect(parsed.body).toContain("ZZCALIBBODY");
+  });
+
   it("keeps coercing YAML auto-typed scalars on notes that do not amplify", () => {
     const parsed = parseMarkdownSafe(
       "---\ntitle: Numbered\nclient: 2024\nproject: 2025\ntags: [2024, 3]\n---\n\nbody\n"
