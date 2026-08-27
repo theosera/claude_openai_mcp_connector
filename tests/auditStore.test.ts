@@ -46,6 +46,109 @@ describe("AuditStore", () => {
     expect((await fs.stat(onDisk)).mode & 0o777).toBe(0o600);
   });
 
+  describe("reports that predate the claim allowlist", () => {
+    // Written straight to disk, on purpose: these files stand for reports that
+    // landed when `project:` was still legal on this surface. Going through
+    // appendAuditReport would refuse them, which is the whole premise.
+    const LEGACY = "---\ntitle: nightly\nproject: acme\n---\n\n# scan\n\nclean\n";
+    const RUN_ID = "20260718T010203Z--legacy";
+    let onDisk: string;
+
+    beforeEach(async () => {
+      onDisk = path.join(auditRoot, "reports", `${RUN_ID}.md`);
+      await fs.writeFile(onDisk, LEGACY, { encoding: "utf8", mode: 0o600 });
+    });
+
+    it("answers an identical re-submission with the same idempotent success as before", async () => {
+      // The at-least-once case: a queue redelivers a payload written before the
+      // allowlist. Checking first would throw and the queue would never
+      // converge, though the report it is trying to deliver is already there.
+      const again = await store.appendAuditReport({ run_id: RUN_ID, content: LEGACY });
+      expect(again).toEqual({ path: `90_Audit/vault-scan/reports/${RUN_ID}.md`, created: false });
+      // Nothing was written: create-only is not relaxed, only re-recognised.
+      expect(await fs.readFile(onDisk, "utf8")).toBe(LEGACY);
+      expect((await fs.stat(onDisk)).mode & 0o777).toBe(0o600);
+    });
+
+    it("still refuses the same claim when a single byte differs", async () => {
+      // Not "already exists with different content" — the frontmatter is the
+      // primary problem and the caller has to fix that, not pick a new run_id.
+      await expect(
+        store.appendAuditReport({ run_id: RUN_ID, content: LEGACY.replace("clean", "dirty") })
+      ).rejects.toThrow(/may not claim \(project\)/);
+      expect(await fs.readFile(onDisk, "utf8")).toBe(LEGACY);
+    });
+
+    it("still refuses the same content under a run_id that does not exist", async () => {
+      // The hatch is keyed to a file already holding these exact bytes. Absent
+      // that, this is simply a forbidden write, and it stays forbidden.
+      await expect(store.appendAuditReport({ run_id: "20260718T010203Z--fresh", content: LEGACY })).rejects.toThrow(
+        /may not claim \(project\)/
+      );
+      await expect(fs.stat(path.join(auditRoot, "reports", "20260718T010203Z--fresh.md"))).rejects.toMatchObject({
+        code: "ENOENT"
+      });
+    });
+
+    it("gives no hatch to a server-owned key, even byte for byte", async () => {
+      // `id` / `updated_at` were refused before the allowlist too, so no file
+      // this surface wrote can carry them and there is no accepted past to
+      // preserve. A file that does carry them arrived some other way, and
+      // recognising it would be the server agreeing it is a legitimate report.
+      const forged = "---\nid: 0000\n---\n\n# scan\n";
+      const forgedRunId = "20260718T010203Z--forged";
+      await fs.writeFile(path.join(auditRoot, "reports", `${forgedRunId}.md`), forged, "utf8");
+      await expect(store.appendAuditReport({ run_id: forgedRunId, content: forged })).rejects.toThrow(
+        /may not set|server/i
+      );
+    });
+
+    it("gives no hatch to an oversized report, so the cap never reads the slot", async () => {
+      // The bytes on disk are the SAME bytes being submitted. That is the only
+      // shape that can tell the two orders apart: a hatch wide enough to catch
+      // the size cap would find an exact match here and answer `created: false`
+      // -- having read the 512 KiB+ file the cap exists to avoid touching. An
+      // over-cap report differing from the stored one proves nothing, because
+      // the mismatch rethrows the same error either way. (A file this large is
+      // reachable: the launchd scanner writes reports to disk directly, past
+      // both gates -- the residual `docs/threat-model.md:125` records.)
+      const huge = `---\nproject: acme\n---\n\n${"x".repeat(512 * 1024)}`;
+      const hugeRunId = "20260718T010203Z--huge";
+      await fs.writeFile(path.join(auditRoot, "reports", `${hugeRunId}.md`), huge, "utf8");
+      await expect(store.appendAuditReport({ run_id: hugeRunId, content: huge })).rejects.toThrow(/too large/);
+    });
+
+    it("refuses to answer through a symlinked report leaf", async () => {
+      // The compare must not follow a link out of reports/ to decide what
+      // reports/ holds — same reason the EEXIST compare refuses one.
+      const outside = path.join(root, "outside.md");
+      await fs.writeFile(outside, LEGACY, "utf8");
+      const linked = path.join(auditRoot, "reports", "20260718T010203Z--linked.md");
+      await fs.symlink(outside, linked);
+      await expect(store.appendAuditReport({ run_id: "20260718T010203Z--linked", content: LEGACY })).rejects.toThrow(
+        /symlink/i
+      );
+    });
+
+    it("lets audit state migrate forward instead, with no hatch of its own", async () => {
+      // state.md is replaced, not created, and the gate reads new_content only.
+      // A state file that predates the allowlist is migrated by writing clean
+      // bytes over it — expected_sha256 still comes from the old ones.
+      const statePath = path.join(auditRoot, "state.md");
+      await fs.writeFile(statePath, LEGACY, "utf8");
+      await expect(
+        store.compareAndSwapAuditState({ expected_sha256: sha(LEGACY), new_content: LEGACY })
+      ).rejects.toThrow(/may not claim \(project\)/);
+      const migrated = "---\ntitle: nightly\n---\n\n# scan\n\nclean\n";
+      const swapped = await store.compareAndSwapAuditState({
+        expected_sha256: sha(LEGACY),
+        new_content: migrated
+      });
+      expect(swapped.sha256).toBe(sha(migrated));
+      expect(await fs.readFile(statePath, "utf8")).toBe(migrated);
+    });
+  });
+
   it("rejects unsafe run_ids and NUL content", async () => {
     for (const bad of ["../escape", "a/b", "_hidden", ".dot", "-lead", "", "x".repeat(129)]) {
       await expect(store.appendAuditReport({ run_id: bad, content: "x" })).rejects.toThrow(/run_id/i);

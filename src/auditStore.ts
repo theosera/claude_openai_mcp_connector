@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { assertAuditWritableFrontmatter } from "./frontmatter.js";
+import { AuditFrontmatterClaimError, assertAuditWritableFrontmatter } from "./frontmatter.js";
 import { relativeToRoot, resolveExistingRoot, resolveInsideRoot, toPosixPath } from "./pathSafety.js";
 
 // A `run_id` becomes a filename (`reports/<run_id>.md`), so constrain it to a
@@ -127,7 +127,30 @@ export class AuditStore {
       if (typeof input.run_id !== "string" || !RUN_ID_PATTERN.test(input.run_id)) {
         throw new Error("Invalid run_id. Use a single token of letters/digits/._- starting with a letter or digit.");
       }
-      const content = assertWritableText(input.content, MAX_REPORT_BYTES, "audit report");
+      // The gate runs before anything touches the filesystem, and stays there.
+      // But it now refuses a set it did not refuse before -- any key outside
+      // `title`/`tags` -- and reports written before that widening are on disk
+      // carrying keys that were legal when they landed. `appendAuditReport` is
+      // create-only and idempotent: re-submitting a report byte for byte is a
+      // documented success, which is how an at-least-once delivery queue stops
+      // retrying. Checking first turns that success into a throw for exactly
+      // those older reports, and the queue has nothing to converge on.
+      //
+      // So the claim refusal alone gets a second look: if the slot already holds
+      // this very byte sequence, the re-submission is the no-op it always was
+      // and the answer is the same `created: false`. Nothing is written, the
+      // gate is not relaxed for anything new, and any other refusal -- size,
+      // NUL, a parse failure, a server-owned key -- still returns before a
+      // single `stat`.
+      let content: string;
+      try {
+        content = assertWritableText(input.content, MAX_REPORT_BYTES, "audit report");
+      } catch (error) {
+        if (!(error instanceof AuditFrontmatterClaimError)) throw error;
+        const existing = await this.readExistingReport(input.run_id);
+        if (existing === null || existing.content !== input.content) throw error;
+        return { path: existing.path, created: false };
+      }
       const reportsRoot = await this.reportsRoot();
       // run_id is a strict single-segment token (no separators, validated above)
       // and reportsRoot is a re-validated REAL directory, so the target stays
@@ -172,6 +195,13 @@ export class AuditStore {
           "expected_sha256 must be a 64-character hex SHA-256 (use the sha256 of the empty string for a first write)."
         );
       }
+      // No claim-refusal escape hatch here, deliberately. The report path needs
+      // one because a report is immutable: the only way past a refused older
+      // file is to re-send it unchanged. `state.md` is replaced, and the gate
+      // reads `new_content` only -- never what is on disk -- so a scanner
+      // holding a state file that predates the allowlist migrates it by writing
+      // clean content over it, with `expected_sha256` still taken from the old
+      // bytes. The forward path exists, so nothing needs relaxing to reach it.
       const content = assertWritableText(input.new_content, MAX_STATE_BYTES, "audit state");
       const auditRoot = await this.auditRoot();
       const target = path.join(auditRoot, STATE_FILENAME);
@@ -216,6 +246,34 @@ export class AuditStore {
       throw new Error("MCP_AUDIT_SUBDIR changed after initialization.");
     }
     return this.auditRootRealPath!;
+  }
+
+  /**
+   * Read `reports/<run_id>.md` for the idempotency compare, or null if the slot
+   * is free. Used only from the claim-refusal path above; the accepted path
+   * still learns the slot is taken from `wx` itself rather than by looking.
+   *
+   * This is the one place a refused write touches the filesystem, and what it
+   * can reveal is bounded to what the caller already holds: the answer differs
+   * only when the caller has produced the stored bytes exactly. That is the
+   * same signal `created: false` gives on the accepted path today -- an
+   * intentional part of the idempotency contract -- not a new one.
+   */
+  private async readExistingReport(runId: string): Promise<{ path: string; content: string } | null> {
+    const reportsRoot = await this.reportsRoot();
+    const target = path.join(reportsRoot, `${runId}.md`);
+    // Same reason as the EEXIST compare below: never follow a symlinked leaf out
+    // of reports/ to answer a question about what reports/ holds.
+    await assertNotSymlink(target, "an audit report path");
+    try {
+      return {
+        path: toPosixPath(relativeToRoot(this.rootRealPath!, target)),
+        content: await fs.readFile(target, "utf8")
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
   }
 
   /** Re-resolve + re-validate the reports/ directory on every append (swap guard). */
