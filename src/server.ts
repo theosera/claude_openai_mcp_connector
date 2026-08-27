@@ -579,7 +579,7 @@ export function buildMcpServer(vaultStore: VaultStore, options: BuildServerOptio
       {
         title: "Append audit report",
         description:
-          "Create an audit report at reports/<run_id>.md inside the configured audit subtree. run_id is a single filename token of letters/digits/._- starting with a letter or digit (NO colons or slashes) — use a basic-format timestamp plus a uuid, e.g. 20260718T010203Z--<uuid>, not a colon-bearing ISO time. Reports are never overwritten: identical content for an existing run_id is an idempotent no-op; different content is rejected. Cannot write anywhere else in the vault.",
+          "Create an audit report at reports/<run_id>.md inside the configured audit subtree. run_id is a single filename token of letters/digits/._- starting with a letter or digit (NO colons or slashes) — use a basic-format timestamp plus a uuid, e.g. 20260718T010203Z--<uuid>, not a colon-bearing ISO time. Reports are never overwritten: identical content for an existing run_id is an idempotent no-op; different content is rejected. Cannot write anywhere else in the vault. Frontmatter may declare only title and tags: an audit file describes itself and cannot attribute itself to a project, a client, a repo or another document (project, client, target_repo, source_refs, id, updated_at and any other key are rejected) — put that detail in the body.",
         inputSchema: {
           run_id: z.string(),
           content: z.string()
@@ -596,7 +596,7 @@ export function buildMcpServer(vaultStore: VaultStore, options: BuildServerOptio
       {
         title: "Compare-and-swap audit state",
         description:
-          "Atomically replace the audit state file (state.md) inside the configured audit subtree only if its current content still hashes to expected_sha256 (use the sha256 of the empty string for a first write); otherwise the update is rejected as stale. Cannot write anywhere else in the vault.",
+          "Atomically replace the audit state file (state.md) inside the configured audit subtree only if its current content still hashes to expected_sha256 (use the sha256 of the empty string for a first write); otherwise the update is rejected as stale. Cannot write anywhere else in the vault. Its frontmatter is held to the same rule as an audit report: title and tags only.",
         inputSchema: {
           expected_sha256: z.string(),
           new_content: z.string()

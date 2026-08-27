@@ -327,14 +327,42 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
    パターン (先頭英数字・`/`/`..`/NUL 不可) で reports/ 外へ出られない。
 3. `compare_and_swap_audit_state` は `state.md` を **sha256 CAS** (読んだ版と一致時のみ更新、
    不一致は stale reject)。初回は `sha256("")`。書込は tmp+rename + `0600`。
-   **★ 3b. report / state ともサーバ所有 frontmatter (`id` / `updated_at`) を名乗れない**
-   (`assertNoServerOwnedFrontmatter`、`assertWritableText` 内 = **両 writer の共通 choke**。
+   **★ 3b. report / state が frontmatter で名乗れるのは `title` / `tags` だけ**
+   (`assertAuditWritableFrontmatter`、`assertWritableText` 内 = **両 writer の共通 choke**。
    後から 3 本目の writer を足しても自動で通る)。監査ファイルは `.md` として index されるので、
    **「監査サブツリーに閉じ込めた」はバイトの着地先については真、read 面が誰の同一性として
    返すかについては偽**だった (audit-write だけを持つ principal が vault 内の任意の note を
-   名乗れた)。**parse は必ず `parseMarkdown` 経由** — report は 512 KiB まで来るので、
-   無界に parse すると N-C で塞いだ二次経路を**write 面に開け直す**。テストは throw だけでなく
-   **経過時間も assert** する (cap 無しだと同じ payload で ~286 秒)。
+   名乗れた)。
+   **★ 同じ穴が「同一性」だけでなく「帰属」にも開いていた** — `id` / `updated_at` を塞いだ
+   段階では `project` / `client` / `tags` / `target_repo` / `source_refs` が素通りで、read 面は
+   **まさにその key を designation として読む**。`project` + state tag を宣言した report を
+   `get_project_state` が **`state_docs` に全文で**返し、tool 自身がそれを「owner が state として
+   designate した note」と説明した (`list_projects` は victim project の作業として数えた)。
+   **denylist でなく allowlist にする** — `toPublicDocument` が delete でなく allowlist である理由と
+   同じで、後から read 面が読み始めた key が既定で拒否される。承認つき二段階の
+   `frontmatter_patch` ですら 5 key の allowlist なのだから、**承認の無い single-call 面が
+   それより広くてはならない** (むしろ狭い: `title` / `tags` は自己記述で、project を名乗れない
+   文書上の tag は何も designate しない — `get_project_state` は `project` で先に絞るため)。
+   ⚠️ **「designate しない」は「不活性」ではない。** ここは 2 度誤った — 最初は
+   「confers nothing」、次は「呼び出し側が選ぶ signal だ」。**後者も過小**である:
+   ① 呼び出し側が選ぶ filter (`search_documents(tags)` / `list_projects(tags)` /
+   **`get_context(tags)` = 一致セクションを本文として返す**) に加えて、
+   ② **誰も指定していない ranking 項**でもある — `scoreDocument` (`search.ts`) は
+   query term が tag に一致するたび +5 するので、**tag を名指ししていない自由文検索**に
+   snippet 込みで浮上する。③ 運用者が tag rule を設定していれば `get_context` で
+   **重み付き `type`** が付く。**文書が自分で名乗れるのはここまでで、名乗れないのが
+   designation** — 閉じたのはそれだけ。当たった結果は他の retrieval と同じ
+   untrusted vault DATA (INV-5)。⚠️ **本文には届かない** — 本文中の markdown link は
+   通常のグラフ辺になるので、`trace_sources` の backlink には現れうる。
+   `tags` を残すのは自己記述のための意図的なトレードで、allowlist を広げる次の人に
+   「tag は何もしない」と読ませない。
+   **★ 判定は正規化前の生 key で行う** (`declaredFrontmatterKeys`) — `normalizeMetadata` は
+   `tags` / `source_refs` を**常に** materialize するので、正規化後の key set では
+   「宣言した」と「frontmatter が無い」を区別できず、**allowlist 検査が全 report を落とすか、
+   さもなくば何も見ていないことになる**。
+   **parse の順序は `parseMarkdown` と同一** (block cap → `matter()` → expansion cap) — report は
+   512 KiB まで来るので、無界に parse すると N-C で塞いだ二次経路を**write 面に開け直す**。
+   テストは throw だけでなく **経過時間も assert** する (cap 無しだと同じ payload で ~286 秒)。
    **parse 不能な frontmatter も reject** — read 側が degrade するのは既存 note を返す義務が
    あるからで、writer にその義務は無い。
 4. append/CAS は **in-process mutex で直列化** — MCP はセッション内で並行 tool 呼び出しを
@@ -411,8 +439,10 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
 > (`MCP_AUTH_TOKEN_SCOPES` を狭めて write tool が `tools/list` から消える形が該当)。
 > **② 要件が「載せないこと」なら、主 assert は negative でなければならない** —
 > 「出ること」を assert するテストは、**載せてはいけないものが混入しても緑のまま通る**。
-> INV-9 で `assertNoServerOwnedFrontmatter` を「書けること」ではなく**「名乗れないこと」**で
-> pin したのと同じ形。
+> INV-9 で監査 frontmatter を「書けること」ではなく**「名乗れないこと」**で pin したのと
+> 同じ形 (現在は `assertAuditWritableFrontmatter`。`assertNoServerOwnedFrontmatter` は
+> INV-8 の Skill reference 側に残っている — **関数名で grep する読み手のために、
+> どちらがどちらか明示する**)。
 > **③ 起動行を検査に使わない。起動行は「主張」であって「面」ではない** — 実測: #113 の逆検証で
 > Skill gate を戻したとき赤くなったのは**ワイヤ上のテスト 1 本だけ**で、起動行を見るテストは
 > 緑のままだった。起動行の assert は**補助まで**。
@@ -509,6 +539,11 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
   scanエンドポイント (一般write off + audit on) は audit tool のみ露出し一般write toolは非登録
 - **サーバ所有 frontmatter を書く側で拒否 (INV-2 write側 / INV-8・INV-9)**: report / state /
   Skill `references/*.md` が `id` や `updated_at` を宣言したら reject し、**ファイルは作られない** /
+  **監査面はさらに `title` / `tags` 以外を全て reject** (`project` を宣言した report / state が
+  reject され、read 面が読まない未知 key も reject される) / **主 assert は negative** —
+  被害 project の genuine な state note を置いた vault で `get_project_state` を実際に回し、
+  **攻撃者本文が応答のどこにも出ない**ことを見る (genuine が出ることの assert は、
+  偽物が隣に並んでいても緑になる) /
   Skill は **plan の時点**で拒否 (apply だけだと承認用 diff を見せた後で止まる) /
   サーバ所有でない frontmatter・frontmatter 無しは**従来どおり通る** (誤検知の逆) /
   ★ **巨大な未終端ブロックを渡して経過時間を assert** — 書く側に frontmatter 検査を足したせいで
