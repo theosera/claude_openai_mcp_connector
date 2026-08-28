@@ -717,8 +717,11 @@ export class KnowledgeStore implements VaultStore {
     // Reject any non-allowlisted frontmatter key before it can reach the file
     // (frontmatter field-injection defense). `id` / `updated_at` stay server-owned.
     const frontmatterPatch = assertFrontmatterPatch(input.frontmatter_patch ?? {});
-    const currentRaw = await fs.readFile(document.absolutePath, "utf8");
-    const expectedSha = sha256(currentRaw);
+    // Hash the bytes; decode from the same buffer so the text merged below and
+    // the hash `apply` will re-check describe one read of one file.
+    const currentBytes = await fs.readFile(document.absolutePath);
+    const currentRaw = currentBytes.toString("utf8");
+    const expectedSha = sha256(currentBytes);
     // Build the planned frontmatter from the bytes `expectedSha` covers, NOT
     // from `document.frontmatter` — that came through the parse cache, and a
     // stat-signature cache can only be as fresh as the signature it watches.
@@ -807,16 +810,16 @@ export class KnowledgeStore implements VaultStore {
     // Read the bytes and the inode metadata through ONE handle, so what gets
     // re-applied to the replacement describes exactly the file that was hashed.
     const handle = await fs.open(absolutePath, "r");
-    let currentRaw: string;
+    let currentBytes: Buffer;
     let original: { mode: number; uid: number; gid: number };
     try {
-      currentRaw = await handle.readFile("utf8");
+      currentBytes = await handle.readFile();
       const stats = await handle.stat();
       original = { mode: stats.mode & 0o777, uid: stats.uid, gid: stats.gid };
     } finally {
       await handle.close();
     }
-    const currentSha = sha256(currentRaw);
+    const currentSha = sha256(currentBytes);
 
     if (currentSha !== patch.expected_sha256) {
       throw new Error("Patch is stale: the target document changed after the plan was created.");
@@ -1535,8 +1538,20 @@ export function resolveUniqueReference(
   return candidates[0];
 }
 
-function sha256(value: string): string {
-  return crypto.createHash("sha256").update(value).digest("hex");
+/**
+ * Hash bytes, not a decoded string. `readFile("utf8")` maps every invalid
+ * sequence onto U+FFFD, so two files that differ on disk hash the same once
+ * decoded -- and a staleness check whose whole job is noticing that the file
+ * changed would report "unchanged" across a real change. Identical to the
+ * previous string form for every input that is valid UTF-8, so staged plans and
+ * the `content_sha256` wire value are unaffected wherever the decode was
+ * lossless.
+ */
+function sha256(value: string | Buffer): string {
+  return crypto
+    .createHash("sha256")
+    .update(typeof value === "string" ? Buffer.from(value, "utf8") : value)
+    .digest("hex");
 }
 
 function auditReservedError(): Error {

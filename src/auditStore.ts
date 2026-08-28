@@ -148,7 +148,7 @@ export class AuditStore {
       } catch (error) {
         if (!(error instanceof AuditFrontmatterClaimError)) throw error;
         const existing = await this.readExistingReport(input.run_id);
-        if (existing === null || existing.content !== input.content) throw error;
+        if (existing === null || Buffer.compare(existing.bytes, encodedBytes(input.content)) !== 0) throw error;
         return { path: existing.path, created: false };
       }
       const reportsRoot = await this.reportsRoot();
@@ -166,8 +166,8 @@ export class AuditStore {
           // otherwise the idempotency compare would follow the link and read a
           // file outside reports/, and the audit trail would be ambiguous.
           await assertNotSymlink(target, "an audit report path");
-          const existing = await fs.readFile(target, "utf8");
-          if (existing === content) {
+          const existing = await fs.readFile(target);
+          if (Buffer.compare(existing, encodedBytes(content)) === 0) {
             // Idempotent re-submission of the same run: succeed without touching
             // the file (create-only preserved).
             return { path: relativePath, created: false };
@@ -209,9 +209,14 @@ export class AuditStore {
       // subtree; keep the state file a real file confined to the audit root.
       await assertNotSymlink(target, "state.md inside MCP_AUDIT_SUBDIR");
 
-      let current = "";
+      // Hash the bytes on disk, not their decoding. A compare-and-swap exists to
+      // detect that the file changed, and two different byte sequences that are
+      // both invalid UTF-8 decode to the same replacement characters -- so the
+      // decoded form reports "unchanged" across a real change and swaps away an
+      // update it was supposed to refuse.
+      let current: Buffer = Buffer.alloc(0);
       try {
-        current = await fs.readFile(target, "utf8");
+        current = await fs.readFile(target);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
@@ -259,7 +264,7 @@ export class AuditStore {
    * same signal `created: false` gives on the accepted path today -- an
    * intentional part of the idempotency contract -- not a new one.
    */
-  private async readExistingReport(runId: string): Promise<{ path: string; content: string } | null> {
+  private async readExistingReport(runId: string): Promise<{ path: string; bytes: Buffer } | null> {
     const reportsRoot = await this.reportsRoot();
     const target = path.join(reportsRoot, `${runId}.md`);
     // Same reason as the EEXIST compare below: never follow a symlinked leaf out
@@ -268,7 +273,7 @@ export class AuditStore {
     try {
       return {
         path: toPosixPath(relativeToRoot(this.rootRealPath!, target)),
-        content: await fs.readFile(target, "utf8")
+        bytes: await fs.readFile(target)
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
@@ -357,6 +362,29 @@ function assertWritableText(value: string, maxBytes: number, label: string): str
   return value;
 }
 
-function sha256(value: string): string {
-  return crypto.createHash("sha256").update(value, "utf8").digest("hex");
+/**
+ * The bytes a submitted string lands on disk as. Every comparison against an
+ * existing audit file goes through this rather than through the decoded string,
+ * because `readFile(..., "utf8")` is lossy in both directions that matter here:
+ * a lone surrogate is written as the U+FFFD bytes and never decodes back to
+ * what was submitted, so a genuinely byte-identical resubmission is refused;
+ * and two *different* invalid byte sequences share one replacement-character
+ * decoding, so they compare equal. A create-only surface needs the first to
+ * hold and a compare-and-swap needs the second.
+ */
+function encodedBytes(value: string): Buffer {
+  return Buffer.from(value, "utf8");
+}
+
+/**
+ * Hash bytes, not a decoded string. Identical to the previous string form for
+ * every input that is valid UTF-8, so the wire contract -- including
+ * sha256("") for a first state write -- is unchanged; it differs only where the
+ * decode was lossy, which is exactly where the old form collided.
+ */
+function sha256(value: string | Buffer): string {
+  return crypto
+    .createHash("sha256")
+    .update(typeof value === "string" ? encodedBytes(value) : value)
+    .digest("hex");
 }

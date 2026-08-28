@@ -643,6 +643,91 @@ describe("AuditStore", () => {
       );
     });
   });
+
+  describe("comparisons are byte-exact, not decoded text", () => {
+    // `readFile(…, "utf8")` maps every invalid sequence onto U+FFFD, which breaks
+    // an idempotency compare in BOTH directions: a byte-identical resubmission
+    // stops matching (a lone surrogate never survives the round trip), and two
+    // files that genuinely differ start matching (they share one replacement
+    // decoding). A create-only surface needs the first; a compare-and-swap needs
+    // the second. The negative cases are the load-bearing ones — a test that only
+    // checked "identical content still works" passes with the defect in place.
+    const shaBytes = (value: Buffer): string => crypto.createHash("sha256").update(value).digest("hex");
+
+    // Two byte sequences that differ on disk yet decode to the same string.
+    const INVALID = Buffer.concat([Buffer.from([0xff]), Buffer.from("A\n", "utf8")]);
+    const DECODES_TO = INVALID.toString("utf8"); // "�A\n"
+
+    it("accepts a byte-identical resubmission whose text does not survive decoding", async () => {
+      // A lone surrogate reaches the server as a JSON string and lands as the
+      // U+FFFD bytes; comparing decoded text refuses the very same submission.
+      const content = "# report \ud800\n";
+      const runId = "20260718T010203Z--surrogate";
+      const first = await store.appendAuditReport({ run_id: runId, content });
+      expect(first.created).toBe(true);
+
+      const again = await store.appendAuditReport({ run_id: runId, content });
+      expect(again.created).toBe(false);
+    });
+
+    it("refuses a report whose bytes differ but whose decoding matches", async () => {
+      const runId = "20260718T010203Z--collide";
+      const onDisk = path.join(auditRoot, "reports", `${runId}.md`);
+      // Written straight to disk: the scanner writes reports past this surface,
+      // so invalid UTF-8 can be sitting in the slot.
+      await fs.writeFile(onDisk, INVALID, { mode: 0o600 });
+
+      await expect(store.appendAuditReport({ run_id: runId, content: DECODES_TO })).rejects.toThrow(
+        /never overwritten/
+      );
+      // The stored bytes are untouched, and were never claimed as "already ours".
+      expect(Buffer.compare(await fs.readFile(onDisk), INVALID)).toBe(0);
+    });
+
+    it("refuses a pre-allowlist report whose bytes differ but whose decoding matches", async () => {
+      // Same collision, reached through the claim hatch rather than the EEXIST
+      // compare: the two paths read the slot for different reasons and both have
+      // to answer the same question about it.
+      const runId = "20260718T010203Z--legacy-collide";
+      const onDisk = path.join(auditRoot, "reports", `${runId}.md`);
+      const legacyBytes = Buffer.concat([Buffer.from("---\ntitle: t\nproject: acme\n---\n", "utf8"), INVALID]);
+      await fs.writeFile(onDisk, legacyBytes, { mode: 0o600 });
+
+      const decodesTo = legacyBytes.toString("utf8");
+      await expect(store.appendAuditReport({ run_id: runId, content: decodesTo })).rejects.toThrow(
+        /declares frontmatter it may not claim/
+      );
+      expect(Buffer.compare(await fs.readFile(onDisk), legacyBytes)).toBe(0);
+    });
+
+    it("lets a compare-and-swap hold the bytes it actually read", async () => {
+      const onDisk = path.join(auditRoot, "state.md");
+      await fs.writeFile(onDisk, INVALID, { mode: 0o600 });
+
+      // The holder of the true bytes can swap; hashing the decoding locks it out
+      // of its own state file permanently.
+      const result = await store.compareAndSwapAuditState({
+        expected_sha256: shaBytes(INVALID),
+        new_content: "# state\n\nclean\n"
+      });
+      expect(result.sha256).toBe(shaBytes(Buffer.from("# state\n\nclean\n", "utf8")));
+      expect(await fs.readFile(onDisk, "utf8")).toBe("# state\n\nclean\n");
+    });
+
+    it("refuses a compare-and-swap whose expected hash only matches after decoding", async () => {
+      const onDisk = path.join(auditRoot, "state.md");
+      await fs.writeFile(onDisk, INVALID, { mode: 0o600 });
+
+      // This is the lost update: the caller read some *other* byte sequence that
+      // decodes the same way, and the swap must not treat that as "unchanged".
+      const lossy = shaBytes(Buffer.from(DECODES_TO, "utf8"));
+      expect(lossy).not.toBe(shaBytes(INVALID));
+      await expect(
+        store.compareAndSwapAuditState({ expected_sha256: lossy, new_content: "# clobbered\n" })
+      ).rejects.toThrow(/stale/);
+      expect(Buffer.compare(await fs.readFile(onDisk), INVALID)).toBe(0);
+    });
+  });
 });
 
 describe("loadConfig audit subtree disjointness", () => {
