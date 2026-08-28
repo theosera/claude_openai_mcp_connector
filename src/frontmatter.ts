@@ -320,14 +320,25 @@ export function parseMarkdown(raw: string): { frontmatter: DocumentMetadata; bod
  */
 export const MAX_FRONTMATTER_BLOCK_BYTES = 8 * 1024;
 
+export const FRONTMATTER_DELIMITER = "---";
+
+/** The frontmatter block gray-matter will parse out of an input. */
+type FrontmatterBlock = {
+  /** The input with gray-matter's own leading-U+FEFF strip applied. */
+  text: string;
+  /** Index into `text`, one past the last character of the block. */
+  end: number;
+  /** False when there is no closing `\n---`, i.e. the block runs to EOF. */
+  terminated: boolean;
+};
+
 /**
- * Refuse a frontmatter block larger than the cap, before gray-matter sees it.
+ * Model of gray-matter's block detection — the ONE copy every guard here shares.
  *
- * Mirrors gray-matter's own block detection (`lib/engine`/`index.js`): a block
- * exists only when the input opens with the delimiter, and it runs to the first
- * `\n---` — or to the END of the input when there is none. A file that does not
- * open with the delimiter has no block at all and is never measured here, so a
- * megabyte-long note with no frontmatter stays perfectly legal.
+ * Mirrors `lib/utils.js` + `index.js`: a block exists only when the input opens
+ * with the delimiter, and it runs to the first `\n---` — or to the END of the
+ * input when there is none. Input that does not open with the delimiter has no
+ * block at all, so a megabyte-long note with no frontmatter stays legal.
  *
  * ⚠️ The mirror has to include gray-matter's NORMALIZATION, not only its
  * delimiter scan. `lib/utils.js` runs the input through `strip-bom-string`
@@ -343,36 +354,71 @@ export const MAX_FRONTMATTER_BLOCK_BYTES = 8 * 1024;
  * whether a parser will do something has to model what the parser does to its
  * input FIRST, not what the caller passed in.
  *
+ * ⚠️ And it has to be modelled ONCE. This began as the same few lines written
+ * out at each of the three call sites below, and the BOM strip reached two of
+ * them: `frontmatterSourceLength` kept testing the RAW prefix, so a BOM-prefixed
+ * file — which gray-matter does parse — fell into its no-frontmatter fallback and
+ * drew an anchor-expansion budget from the whole file instead of from its block.
+ * Measured on a 512 KiB audit report carrying a 263-byte anchor bomb: 65,536
+ * bytes of budget without the BOM (refused) against 8,388,576 with it (stored,
+ * and 3.76 MiB of `JSON.stringify` on every later read). A shared model cannot
+ * half-drift; three copies of one always can.
+ *
+ * Deliberately NOT modelled, because each would WIDEN what is measured and a
+ * mirror wider than the parser is the failure mode this exists to prevent:
+ * gray-matter also refuses a fourth delimiter character (`----…` is body to it,
+ * a block to us) and skips a language tag before the block (`---yaml`, so its
+ * block is shorter than ours). Over-detecting only ever measures MORE than
+ * gray-matter parses, which is the safe direction for all three callers.
+ */
+function locateFrontmatterBlock(input: string): FrontmatterBlock | null {
+  const text = input.charAt(0) === "\uFEFF" ? input.slice(1) : input;
+  if (!text.startsWith(FRONTMATTER_DELIMITER)) {
+    return null;
+  }
+  const close = text.indexOf("\n" + FRONTMATTER_DELIMITER, FRONTMATTER_DELIMITER.length);
+  return { text, end: close === -1 ? text.length : close, terminated: close !== -1 };
+}
+
+/**
+ * Size of a located block in UTF-8 bytes, because that is what the constant, the
+ * messages and the docs all say. They said bytes while this compared
+ * `String.length`, which counts UTF-16 code units, so a CJK block passed at three
+ * times the stated limit.
+ *
+ * Bytes are not what drives the cost. Measured at the cap: 8,192 code units of
+ * newlines take 76.11 ms, while 8,192 code units of CJK — 24,568 bytes — take
+ * 0.88 ms, because the quadratic term counts LINE STARTS. Bytes are adopted
+ * anyway, on two grounds: a byte is never fewer than a code unit, so the byte
+ * bound is never the weaker of the two; and a limit whose name disagrees with
+ * its behaviour is one the next reader will trust and should not.
+ *
+ * Scanning the block to count its bytes is LINEAR, including the unterminated
+ * case where the block is the whole file — microseconds against the quadratic
+ * parse this exists to prevent.
+ */
+function frontmatterBlockBytes(block: FrontmatterBlock): number {
+  return Buffer.byteLength(block.text.slice(0, block.end), "utf8");
+}
+
+/**
+ * Refuse a frontmatter block larger than the cap, before gray-matter sees it.
+ *
  * Throwing (rather than degrading quietly) is what makes the cap observable:
  * `parseMarkdownSafe` turns it into a `parseError`, which the store logs with
  * the file path before indexing the note body-only, and the write paths fail
  * outright instead of dropping metadata on the floor.
  */
 function assertBoundedFrontmatterBlock(input: string): void {
-  const raw = input.charAt(0) === "\uFEFF" ? input.slice(1) : input;
-  if (!raw.startsWith(FRONTMATTER_DELIMITER)) {
+  const block = locateFrontmatterBlock(input);
+  if (block === null) {
     return;
   }
-  const close = raw.indexOf("\n" + FRONTMATTER_DELIMITER, FRONTMATTER_DELIMITER.length);
-  // UTF-8 bytes, because that is what the constant, the message and the docs all
-  // say. They said bytes while this compared `String.length`, which counts
-  // UTF-16 code units, so a CJK block passed at three times the stated limit.
-  //
-  // Bytes are not what drives the cost. Measured at the cap: 8,192 code units of
-  // newlines take 76.11 ms, while 8,192 code units of CJK — 24,568 bytes — take
-  // 0.88 ms, because the quadratic term counts LINE STARTS. Bytes are adopted
-  // anyway, on two grounds: a byte is never fewer than a code unit, so the byte
-  // bound is never the weaker of the two; and a limit whose name disagrees with
-  // its behaviour is one the next reader will trust and should not.
-  //
-  // Scanning the block to count its bytes is LINEAR, including the unterminated
-  // case where the block is the whole file — microseconds against the quadratic
-  // parse this exists to prevent.
-  const blockLength = Buffer.byteLength(close === -1 ? raw : raw.slice(0, close), "utf8");
+  const blockLength = frontmatterBlockBytes(block);
   if (blockLength > MAX_FRONTMATTER_BLOCK_BYTES) {
     throw new Error(
       `Frontmatter block is ${blockLength} bytes, over the ${MAX_FRONTMATTER_BLOCK_BYTES}-byte limit` +
-        `${close === -1 ? " (no closing delimiter, so the whole file would be parsed as frontmatter)" : ""}; ` +
+        `${block.terminated ? "" : " (no closing delimiter, so the whole file would be parsed as frontmatter)"}; ` +
         "refusing to parse it."
     );
   }
@@ -432,8 +478,6 @@ const OPAQUE_LEAF_BYTES = 64;
 /** Serialized size charged per byte of a `!!binary` Buffer (`{"type":"Buffer","data":[…]}`). */
 const BINARY_BYTE_BYTES = 4;
 
-const FRONTMATTER_DELIMITER = "---";
-
 /**
  * Number of characters `JSON.stringify` emits for `value`, including its two
  * quotes.
@@ -485,8 +529,8 @@ function jsonStringCost(value: string, remaining: number): number {
 }
 
 /**
- * Upper bound on the YAML block gray-matter parsed out of `raw`, derived ONLY
- * from `raw`.
+ * Length of the YAML block gray-matter parsed out of `raw`, derived ONLY from
+ * `raw`. Zero when there is no block, which puts the budget on its floor.
  *
  * Deliberately NOT `parsed.matter`: gray-matter defines that property as
  * non-enumerable (lib/to-file.js) and its content-keyed cache returns
@@ -498,16 +542,40 @@ function jsonStringCost(value: string, remaining: number): number {
  * `source_refs`). Reading `raw` keeps the budget identical on the first parse
  * and every repeat parse of identical content.
  *
- * Over-estimating is safe (a looser budget, never a false positive), so any
- * input that does not look like default-delimited frontmatter falls back to the
- * whole input length.
+ * ⚠️ The no-block case returns 0, NOT `raw.length`, and the difference is the
+ * whole guard. "Over-estimating is safe" is true of a block that was measured
+ * too generously; it is false of THIS fallback, because the fallback is taken
+ * exactly when this function and gray-matter DISAGREE about whether there is a
+ * block — and then the budget is 16x a file the attacker pads to any size he
+ * likes, while the bomb he is hiding is a few hundred bytes. That is not a
+ * looser bound, it is no bound.
+ *
+ * On today's inputs the two cannot disagree — `locateFrontmatterBlock` applies
+ * gray-matter's own normalization — so this 0 changes no outcome that exists:
+ * when both agree there is no block, gray-matter yields `{}`, which the walk
+ * charges 2 bytes against a 64 KiB floor. Reverting just this `0` to
+ * `raw.length` leaves the whole suite green, and that is stated here rather than
+ * left for the next reader to discover, because a line no test can redden is a
+ * line nobody should assume is covered.
+ *
+ * ⚠️ Scoped deliberately to the `0`. Replacing this function's BODY — deriving
+ * no budget at all, `return 0` for every input — was ALSO green until the test
+ * "derives the budget from the block, not from the floor" was added, and that is
+ * a different and worse gap: the fallback above is unreachable while the model is
+ * faithful, but a budget that never leaves the floor silently refuses legitimate
+ * frontmatter, and a note that loses its frontmatter loses its `id`. A count is
+ * not given here on purpose — the suite grows, and a number in prose goes stale
+ * while the claim stays true.
+ *
+ * It is kept because it is what CONTAINS a regression in the normalization above.
+ * Measured, by deleting the BOM strip from `locateFrontmatterBlock`: with this 0
+ * the budget falls to the floor and the bomb is still refused; with `raw.length`
+ * it climbs to 16x the file and the bomb is stored. Same missing strip, and the
+ * fallback alone decides whether that is a false positive on a note with no
+ * metadata to lose or an open door.
  */
 function frontmatterSourceLength(raw: string): number {
-  if (!raw.startsWith(FRONTMATTER_DELIMITER)) {
-    return raw.length;
-  }
-  const close = raw.indexOf("\n" + FRONTMATTER_DELIMITER, FRONTMATTER_DELIMITER.length);
-  return close === -1 ? raw.length : close;
+  return locateFrontmatterBlock(raw)?.end ?? 0;
 }
 
 function assertBoundedFrontmatterExpansion(data: unknown, raw: string): void {
@@ -622,39 +690,36 @@ export function parseMarkdownSafe(raw: string): {
  * the plan-time check is a UX courtesy — and this guard had them backwards.
  */
 export function assertEmittedFrontmatterWithinLimit(serialized: string): void {
-  // Same first step as assertBoundedFrontmatterBlock, and for the same reason:
-  // with no opening delimiter there is no block to measure, and scanning for a
-  // closing one anyway would find the first `\n---` in the BODY and refuse a
-  // legitimate write whose body happens to contain a horizontal rule.
+  // The SAME model of gray-matter the read guard uses, from the same function —
+  // which is the point. With no opening delimiter there is no block to measure,
+  // and scanning for a closing one anyway would find the first `\n---` in the
+  // BODY and refuse a legitimate write whose body happens to contain a
+  // horizontal rule.
   //
   // Unreachable today — normalizeMetadata always yields at least `tags` and
   // `source_refs`, so gray-matter always emits a block. Kept because the guard
   // it mirrors has it, and because "the serializer always emits frontmatter" is
   // a property of a different function than this one.
-  // ⚠️ The BOM strip is half of that first step, and leaving it out was a hole,
-  // not a tidiness issue. `assertBoundedFrontmatterBlock` strips U+FEFF before it
-  // looks for the delimiter, so content starting BOM + `---` + an oversize block
-  // is refused on READ. Without the same strip here, that content does not even
-  // start with `---` as far as this function is concerned, returns early
-  // unchecked, and gets written — producing precisely the unreadable,
-  // unrepairable note this guard exists to prevent.
+  // ⚠️ The BOM strip inside that model is load-bearing here, and an earlier
+  // hand-written copy of it that left the strip out was a hole, not a tidiness
+  // issue: the read guard strips U+FEFF before looking for the delimiter, so
+  // content starting BOM + `---` + an oversize block is refused on READ. Without
+  // the same strip, that content does not even start with `---` as far as this
+  // function is concerned, returns early unchecked, and gets written — producing
+  // precisely the unreadable, unrepairable note this guard exists to prevent.
+  // Measuring `serialized` with an index found in the stripped text mixes two
+  // coordinate systems the same way; `FrontmatterBlock` carries the text the
+  // index belongs to so the two cannot be separated again.
   //
   // Reachable through the same door as the apply-time check itself: staged
   // `new_content` is not re-derived from `serializeMarkdown` (which never emits a
   // BOM) and carries no content hash of its own — `expected_sha256` binds the
   // TARGET's prior bytes, not the plan's payload.
-  const raw = serialized.charAt(0) === "\uFEFF" ? serialized.slice(1) : serialized;
-  if (!raw.startsWith(FRONTMATTER_DELIMITER)) {
+  const block = locateFrontmatterBlock(serialized);
+  if (block === null) {
     return;
   }
-  // `raw` for BOTH, exactly as the read guard does. Measuring `serialized` with
-  // an index found in `raw` mixes two coordinate systems: with a BOM present the
-  // slice carries the BOM's three bytes and stops one character early, so emit
-  // and read disagreed about the same bytes near the cap — and the direction of
-  // the disagreement let a write through that the read path then refused, which
-  // is the failure this whole guard exists to prevent.
-  const close = raw.indexOf("\n" + FRONTMATTER_DELIMITER, FRONTMATTER_DELIMITER.length);
-  const blockLength = Buffer.byteLength(close === -1 ? raw : raw.slice(0, close), "utf8");
+  const blockLength = frontmatterBlockBytes(block);
   if (blockLength > MAX_FRONTMATTER_BLOCK_BYTES) {
     throw new Error(
       `Refusing to write: the frontmatter this produces is ${blockLength} bytes, over the ` +

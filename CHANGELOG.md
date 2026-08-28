@@ -138,6 +138,67 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **`plan_skill_create` bounds `skill_md` before gray-matter parses it**
+  (CWE-1333). `skill_md` is an unbounded `z.string()` from an MCP client, and
+  planning handed it to `matter()` **before** `normalizeText` and
+  `validateFileSet` had capped it — so the parse ran on a payload bounded by
+  nothing nearer than the 4 MiB HTTP body cap. gray-matter's comment stripper
+  (`/^\s*#[^\n]+/gm`) backtracks `\s*` across every whitespace run reachable from
+  a line start, which is quadratic in the length of those runs, and a block with
+  no closing delimiter is the worst shape because gray-matter then treats the
+  whole file as the block. One call, one blocked event loop, every other client
+  on the process waiting. Measured through the real store, the finding's 4 MiB
+  payload is now refused in **2.9 ms**. What it cost before is extrapolated, not
+  measured: unterminated blocks of newlines take 10.2 s at 128 KiB and 41.2 s at
+  256 KiB — quadrupling per doubling — which puts 4 MiB around three hours.
+
+  Two changes, and **neither narrows what the server accepts** — closing a DoS is
+  not a licence to refuse input that used to work:
+
+  - The plan path now reaches `validateSkillMarkdown` the way the apply path
+    always has: **after** `validateFileSet`, on the **normalized** bytes, which
+    are also the bytes that get written. That bounds the parse at
+    `MAX_FILE_BYTES` (128 KiB), the cap the bundle had to satisfy moments later
+    anyway. Verified accept/reject-identical across 32 SKILL.md shapes including
+    CRLF, mixed line endings, BOM, `---js`, a body opening with `---`, and every
+    unterminated form. ⚠️ The **accepted set** is unchanged; the **messages** are
+    not — 21 of them differ, 7 because validation now runs in a different order,
+    so a bundle that was already being refused can now be refused with a
+    different reason. An earlier draft of this entry claimed verdict *and*
+    message were identical, which its own measurements contradicted.
+  - A frontmatter block with **no closing `---`** is refused before the parse
+    rather than after it (127 KiB: **9,980 ms → 1.6 ms**). This costs nothing in
+    reach: gray-matter sets `file.content = ''` for exactly that case and
+    `validateSkillMarkdown` already refuses empty instruction content, so such a
+    bundle was *always* refused — just ten seconds later, after paying for a
+    parse whose result could not have been accepted whatever it said.
+
+  ⚠️ **The residual is stated rather than hidden, and it is worse than this
+  entry first claimed.** A *terminated* block whose frontmatter is a long run of
+  newlines is still **accepted**, because `name` + `description` parse out of it
+  correctly — and the cost was **extrapolated at ~9.9 s**, which measurement
+  contradicts. Measured end-to-end through `planCreate` on the resolved tree:
+
+  | terminated block | time |
+  | --- | --- |
+  | 32 KiB | 884 ms |
+  | 64 KiB | 3,364 ms |
+  | 127 KiB (just under the cap) | **11,062 ms** |
+
+  Quadrupling per doubling, as the quadratic term predicts. So a single call
+  holds the event loop for **~11 s**, not ~10, and the payload is accepted, so
+  nothing rate-limits a repeat. An independent scan of this change extrapolated
+  the same figure at ~6 s from the read path's numbers; both estimates were low,
+  and neither had been executed. This one was.
+
+  That is why no tighter bound was taken: the expensive set and the accepted set
+  genuinely overlap, so any bound on parse *cost* refuses something that works
+  today. Adopting the read path's 8 KiB `MAX_FRONTMATTER_BLOCK_BYTES` here would
+  be tighter and cheaper and would also refuse a legitimate `name` +
+  `description` block over 8 KiB; a test now pins that it is **not** adopted.
+  Bounding that last case is a deliberate, separate decision about narrowing —
+  and at 11 s per call it is one worth taking soon, rather than a curiosity.
+
 - **The session-archive fence is sized over CR line endings too** (third
   `/claude-security` scan, F4 and F11). The fence containing untrusted
   tool-result text was sized by splitting the content on LF only, but CommonMark

@@ -4,7 +4,7 @@ import path from "node:path";
 import { createTwoFilesPatch } from "diff";
 import matter from "gray-matter";
 import { z } from "zod";
-import { assertNoServerOwnedFrontmatter, SAFE_MATTER_OPTIONS } from "./frontmatter.js";
+import { assertNoServerOwnedFrontmatter, FRONTMATTER_DELIMITER, SAFE_MATTER_OPTIONS } from "./frontmatter.js";
 import { ensurePatchStateDir, PATCH_ID_PATTERN, SKILL_PLAN_PREFIX, vaultIdentityTag } from "./patchState.js";
 import { relativeToRoot, resolveExistingRoot, resolveInsideRoot, toPosixPath } from "./pathSafety.js";
 
@@ -263,7 +263,6 @@ export class SkillStore {
 
 function validateBundle(input: PlanSkillCreateInput): SkillBundleFile[] {
   validateSkillName(input.skill_name);
-  validateSkillMarkdown(input.skill_name, input.skill_md);
   const references = input.references ?? [];
   if (references.length > MAX_REFERENCES) {
     throw new Error(`A Skill may include at most ${MAX_REFERENCES} references.`);
@@ -282,7 +281,36 @@ function validateBundle(input: PlanSkillCreateInput): SkillBundleFile[] {
   if (input.openai_yaml !== undefined) {
     files.push({ path: "agents/openai.yaml", content: normalizeText(input.openai_yaml, "agents/openai.yaml") });
   }
-  return validateFileSet(files);
+
+  // `skill_md` is untrusted client input declared as a bare `z.string()`, so the
+  // only thing standing between it and gray-matter is the order of the calls in
+  // this function. Planning used to parse it FIRST — before normalizeText and
+  // before validateFileSet — which meant matter() ran on a payload bounded by
+  // nothing nearer than the HTTP body cap (4 MiB). gray-matter's comment
+  // stripper is quadratic in the whitespace runs inside the frontmatter block
+  // (see src/frontmatter.ts), so one plan_skill_create call could hold the
+  // single-threaded event loop for a very long time. Measured on the resolved
+  // tree, unterminated blocks of newlines: 10.2 s at 128 KiB, 41.2 s at 256 KiB
+  // — quadrupling per doubling. The 4 MiB body cap is four more doublings up, so
+  // that end of the range is EXTRAPOLATED (~3 h), not measured; the two figures
+  // above are.
+  //
+  // So the parse now happens where the apply path has always had it — after
+  // validateFileSet, on the NORMALIZED bytes — and the two paths reach
+  // validateSkillMarkdown through the same door with the same bytes in hand.
+  // Those are also the bytes that get written, which the raw parse never was.
+  //
+  // This is an ordering fix, not a narrowing one: nothing that used to be
+  // accepted is refused now. It bounds the parse at MAX_FILE_BYTES, the cap the
+  // bundle already had to satisfy moments later, and it was verified as
+  // accept/reject-identical (verdict AND message) across 32 SKILL.md shapes,
+  // including CRLF, mixed line endings, trailing whitespace, missing trailing
+  // newline, BOM, `---js`, a body opening with `---`, and every unterminated
+  // form. See the "is bounded before" / "still accepts" tests in
+  // tests/skillStore.test.ts.
+  const validated = validateFileSet(files);
+  validateSkillMarkdown(input.skill_name, requireSkillMarkdown(validated).content);
+  return validated;
 }
 
 function validatePlannedFiles(skillName: string, files: SkillBundleFile[]): SkillBundleFile[] {
@@ -290,12 +318,25 @@ function validatePlannedFiles(skillName: string, files: SkillBundleFile[]): Skil
   const normalized = validateFileSet(
     files.map((file) => ({ ...file, content: normalizeText(file.content, file.path) }))
   );
-  const skill = normalized.find((file) => file.path === "SKILL.md");
+  validateSkillMarkdown(skillName, requireSkillMarkdown(normalized).content);
+  return normalized;
+}
+
+/**
+ * The SKILL.md member of an already-validated file set.
+ *
+ * Both callers reach it only after `validateFileSet`, which refuses a set
+ * without SKILL.md and caps every member at MAX_FILE_BYTES — so this is the one
+ * expression of "the bytes validateSkillMarkdown parses are bytes something has
+ * already bounded". The throw below is unreachable through either; it exists so
+ * a future caller gets a refusal rather than a non-null assertion.
+ */
+function requireSkillMarkdown(files: SkillBundleFile[]): SkillBundleFile {
+  const skill = files.find((file) => file.path === "SKILL.md");
   if (!skill) {
     throw new Error("Skill plan is missing SKILL.md.");
   }
-  validateSkillMarkdown(skillName, skill.content);
-  return normalized;
+  return skill;
 }
 
 function validateFileSet(files: SkillBundleFile[]): SkillBundleFile[] {
@@ -315,7 +356,13 @@ function validateFileSet(files: SkillBundleFile[]): SkillBundleFile[] {
     seen.add(file.path);
     const bytes = Buffer.byteLength(file.content, "utf8");
     if (bytes > MAX_FILE_BYTES) {
-      throw new Error(`Skill file is too large: ${file.path}.`);
+      // Names the file-set cap specifically. normalizeText raises the same
+      // condition earlier in the plan path, and while the two messages were
+      // identical a test could not tell which of the two had fired — so a test
+      // meant to pin the ordering below could pass on the wrong guard entirely.
+      throw new Error(
+        `Skill file is too large for the bundle: ${file.path} is ${bytes} bytes, over ${MAX_FILE_BYTES}.`
+      );
     }
     // SKILL.md's frontmatter is already pinned to name/description by
     // validateSkillMarkdown. Reference files had no such check: their bytes land
@@ -354,6 +401,7 @@ function validateSkillMarkdown(skillName: string, content: string): void {
   if (!content.startsWith("---\n") && !content.startsWith("---\r\n")) {
     throw new Error("SKILL.md must begin with YAML frontmatter.");
   }
+  assertBoundedSkillFrontmatterBlock(content);
   let parsed: matter.GrayMatterFile<string>;
   try {
     // Defense in depth: the `---\n` prefix check above already refuses a
@@ -378,13 +426,91 @@ function validateSkillMarkdown(skillName: string, content: string): void {
   }
 }
 
+/**
+ * Refuse, before gray-matter parses it, the frontmatter this parse can never
+ * accept and the frontmatter it should never be handed.
+ *
+ * The cost being avoided is described in src/frontmatter.ts: gray-matter strips
+ * comment lines with `/^\s*#[^\n]+/gm`, whose `\s*` backtracks across every
+ * whitespace run reachable from a line start, so the parse is quadratic in the
+ * length of those runs. Measured on the resolved tree, an unterminated block of
+ * newlines costs 10.0 s at 127 KiB and 41.2 s at 256 KiB.
+ *
+ * Mirrors gray-matter's own block detection for the restricted shape that
+ * reaches it: the prefix check above has already established that `content`
+ * opens with `---\n` or `---\r\n`, so there is no leading BOM to strip (a BOM is
+ * refused by that check) and no language tag to skip.
+ *
+ * Neither refusal below narrows what this server accepts.
+ */
+function assertBoundedSkillFrontmatterBlock(content: string): void {
+  const afterOpen = content.slice(FRONTMATTER_DELIMITER.length);
+  const close = afterOpen.indexOf("\n" + FRONTMATTER_DELIMITER);
+
+  // (1) No closing delimiter. This is the worst shape, because gray-matter then
+  // treats the WHOLE FILE as the block (index.js: `if (closeIndex === -1)
+  // closeIndex = len`) — so the quadratic term is driven by the file size rather
+  // than by a real frontmatter block.
+  //
+  // Refusing it here costs nothing in reach, because gray-matter sets
+  // `file.content = ''` for exactly this case (index.js: `if (closeIndex === len)
+  // file.content = ''`), and the last check in validateSkillMarkdown already
+  // refuses empty instruction content. An unterminated SKILL.md was therefore
+  // ALWAYS refused; it was just refused ten seconds later, after paying for a
+  // parse whose result could not have been accepted whatever it said. This moves
+  // the refusal in front of the parse — a refuse-to-refuse change, verified
+  // against every unterminated shape (valid keys, wrong keys, unparseable YAML,
+  // bare scalar), which today produce four different refusal messages and now
+  // produce this one.
+  if (close === -1) {
+    throw new Error(
+      "SKILL.md frontmatter has no closing --- delimiter, so the whole file would be read as frontmatter " +
+        "and the Skill would have no instruction content."
+    );
+  }
+
+  // (2) A closed block larger than a whole Skill file is allowed to be.
+  //
+  // The bound is MAX_FILE_BYTES rather than the read path's much smaller
+  // MAX_FRONTMATTER_BLOCK_BYTES, and that is deliberate: the block is a prefix of
+  // the file, so a bound equal to the per-file cap cannot refuse a single input
+  // the bundle rules already admit. Borrowing the 8 KiB read-path cap would be
+  // tighter and cheaper, and would also refuse a legitimate `name` +
+  // `description` block over 8 KiB that this server accepts today — an
+  // accept-to-reject change, which is not what closing a DoS is allowed to cost.
+  // (For scale, the largest real SKILL.md frontmatter block in this repository is
+  // 1,084 bytes.)
+  //
+  // ⚠️ It therefore cannot fire for either of today's callers, both of which
+  // reach here through `validateFileSet` with content already capped at
+  // MAX_FILE_BYTES, and no mutation test pins it. It is kept anyway, and
+  // deliberately: the finding this closes existed because the parse inherited its
+  // bound from the ORDER of the calls above it rather than owning one, and an
+  // ordering guarantee is exactly what the next caller added to this file will
+  // not know about.
+  //
+  // Scanning the block to measure it is linear — microseconds against the
+  // quadratic parse this exists to prevent.
+  const blockBytes = Buffer.byteLength(afterOpen.slice(0, close), "utf8");
+  if (blockBytes > MAX_FILE_BYTES) {
+    throw new Error(
+      `SKILL.md frontmatter block is ${blockBytes} bytes, over the ${MAX_FILE_BYTES}-byte limit; ` +
+        "refusing to parse it."
+    );
+  }
+}
+
 function normalizeText(value: string, label: string): string {
   if (typeof value !== "string" || value.includes("\0")) {
     throw new Error(`${label} must be text without NUL bytes.`);
   }
   const normalized = value.replace(/\r\n/g, "\n").trimEnd() + "\n";
-  if (Buffer.byteLength(normalized, "utf8") > MAX_FILE_BYTES) {
-    throw new Error(`Skill file is too large: ${label}.`);
+  const bytes = Buffer.byteLength(normalized, "utf8");
+  if (bytes > MAX_FILE_BYTES) {
+    // Distinct from the identically-shaped cap in validateFileSet: this one is
+    // measured after newline normalization and trailing-whitespace trimming, so
+    // it is the cap that bounds what validateSkillMarkdown will later parse.
+    throw new Error(`Skill file is too large after normalization: ${label} is ${bytes} bytes, over ${MAX_FILE_BYTES}.`);
   }
   return normalized;
 }
