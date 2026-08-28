@@ -194,6 +194,73 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `archive-session.sh` ships byte-identical in `terminal-ops-logs`, and neither
   half of the change is effective alone.
 
+- **The audit write surface is constrained in what it may claim, not only in
+  where it writes** (INV-9). `append_audit_report` and
+  `compare_and_swap_audit_state` wrote their payload byte-for-byte, and the only
+  frontmatter they refused was the two server-owned keys (`id`, `updated_at`).
+  Everything else passed — including the keys the read side uses to decide what a
+  document *belongs to*. A report whose frontmatter declared
+  `project: <victim>` plus the state tag was returned by **`get_project_state` in
+  `state_docs`, as full text against its token budget, described by the tool as a
+  note the owner designated**;
+  it also took a seat in `recent_docs`, appeared in `ops_recent` via
+  `target_repo`, and was counted against the victim project by `list_projects`.
+  The principal that could author it holds *only* this surface — no
+  `create_document`, no plan/apply, no approval step — which is the unattended
+  scanner the surface exists for, and the confused deputy the endpoint split
+  exists to bound.
+
+  Both writers already met at one choke point (`assertWritableText`), so the rule
+  goes there: an audit file may declare **`title` and `tags`, and nothing else**
+  (`assertAuditWritableFrontmatter`). An allowlist rather than a list of the four
+  keys that escalate today, for the reason `toPublicDocument` is an allowlist and
+  not a `delete`: a key the read path starts honouring later is refused by
+  default. `plan_document_update` — which needs a staged plan and the current
+  user's approval of a complete diff — is itself limited to five allowlisted
+  keys; a single-call unattended surface must not be wider than that.
+
+  **Real reports keep working.** `title` and its own `tags` still write,
+  the state tag included: a tag designates nothing on a document that cannot name
+  a project, because `get_project_state` filters by `project` first. It is not
+  inert. Beyond the filters the caller selects (`search_documents(tags)`,
+  `list_projects(tags)`, `get_context(tags)`, the last returning matching
+  sections as text), free-text search scores a document up for every query term
+  matching one of its tags — so a tagged report can surface in a query that
+  never named the tag — and an operator-configured tag rule can attach a
+  weighted `type` in `get_context`. That much the report authors about itself.
+  What it cannot author is designation, and designation is what this closes.
+  ⚠️ Nor does the rule reach the **body**: markdown links there produce ordinary
+  graph edges, so a report can still appear as a `trace_sources` backlink.
+  Frontmatter-free reports still write. What changes beyond the
+  refusal above is that a report stamping **its own custom keys** (a
+  `scanner:` line, say) is now refused too and must move that detail into the
+  body. The keys are read **before** normalization, because `normalizeMetadata`
+  always materializes `tags` and `source_refs` and a check over its output could
+  not tell a declaration from an empty file.
+
+  The report **body** is unchanged in status: it is still untrusted vault content
+  under INV-5, and this does not stop a hijacked scanner writing text into the
+  audit subtree — that is what the surface is for. It stops that text arriving in
+  front of a later session as something a project's owner designated.
+
+  ⚠️ **Reports already on disk are not migrated.** A report written before this
+  change, whose frontmatter declares keys of its own, is refused when it is
+  re-submitted — even byte-for-byte identical. The frontmatter check runs in
+  `assertWritableText`, ahead of the `wx` write, so the `EEXIST` comparison that
+  would have returned `{ created: false }` is never reached. Nothing on disk
+  changes and no bytes are written: what an upgrade loses is the idempotent
+  retry, not the trail. There is no separate migration step, because a scanner
+  still emitting those keys fails on every *new* `run_id` as well until it moves
+  them into the body — the one fix settles both, and a scanner that has been
+  fixed has nothing left to replay.
+
+  The obvious reading — compare the existing bytes *before* applying the policy —
+  is not the remedy. The `readFile` on that path sits after `assertNotSymlink`
+  deliberately, so the comparison cannot follow a symlink out of `reports/`, and
+  the NUL and size checks live inside `assertWritableText` itself; a read placed
+  ahead of it would run on unvalidated, unbounded input on every request, not
+  only on the ones about to be refused.
+
 - **The static bearer's scopes are derived, not assumed** (GAP-4). `authenticate()`
   (`src/httpServer.ts`) returned `{scopes: [vault.read, vault.write]}`
   unconditionally once `MCP_AUTH_TOKEN` matched, which made it the one principal
