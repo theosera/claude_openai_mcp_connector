@@ -8,6 +8,45 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Every comparison against a file on disk is byte-exact, at all four sites**
+  (Codex P2 on #151, and three more the finding did not name). `readFile(…,
+  "utf8")` folds every invalid sequence onto U+FFFD, which breaks a comparison in
+  *both* directions: a byte-identical resubmission stops matching, because a lone
+  surrogate is written as the replacement bytes and never decodes back to what
+  was sent; and two files that genuinely differ start matching, because they
+  share one replacement decoding. A create-only surface needs the first to hold.
+  A compare-and-swap needs the second — noticing that the file changed is its
+  entire job.
+
+  Codex named one site. Enumerating the family rather than fixing the one that
+  was reported found **four**, in two files and under two invariants:
+
+  | site | invariant | what the decode cost it |
+  | --- | --- | --- |
+  | `appendAuditReport`, the `EEXIST` idempotency compare | INV-9 | two different stored byte sequences answered `created: false`, so the surface reported a report as already-ours that it never wrote |
+  | `appendAuditReport`, the claim-refusal hatch added in #151 | INV-9 | same collision, reached for a different reason |
+  | `compareAndSwapAuditState`, the staleness hash | INV-9 | **a lost update** — two on-disk states hashed the same, so a swap the CAS existed to refuse went through |
+  | `planUpdate` / `applyPlannedUpdate`, the staleness hash | INV-3 | an external edit between plan and apply was invisible, and the apply overwrote content the approved diff never showed |
+
+  ⚠️ **The two pre-existing audit sites are the ones that mattered most**, and
+  neither was reported: the `EEXIST` compare is the path an ordinary (non-legacy)
+  retry takes, and the CAS is the one primitive here whose only job is detecting
+  change. Fixing only the reported site would have left the busier path and the
+  compare-and-swap intact.
+
+  The fix hashes and compares `Buffer`s. **For every input that is valid UTF-8
+  the hash is unchanged**, so `sha256("")` for a first state write, staged plans
+  taken before this change, and the returned `content_sha256` all keep their
+  values; it differs only where the decode was lossy, which is exactly where the
+  old form collided. Where the two disagree the new answer is the conservative
+  one — a swap or an apply is refused rather than allowed.
+
+  Six tests pin it, and the load-bearing ones are **negative**: a test that only
+  checked "identical content still works" passes with the defect in place. Each
+  of the four sites was reverse-verified separately, with the mutation read back
+  from the file before the run to confirm it landed — 2 red, 1 red, 2 red, 1 red,
+  and the four sets are disjoint.
+
 - **An audit report written before the claim allowlist can still be re-submitted
   byte for byte** (Codex P2 on the allowlist change). `assertWritableText` runs
   before anything touches the filesystem, and stays there — but the set it

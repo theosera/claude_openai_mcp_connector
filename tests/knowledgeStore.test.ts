@@ -453,6 +453,36 @@ describe("KnowledgeStore", () => {
     await expect(store.applyPlannedUpdate(plan.patch_id)).rejects.toThrow(/stale/);
   });
 
+  // INV-3, byte-exactly. The vault holds files this server did not write (an
+  // editor, a sync client, the scanner), so invalid UTF-8 can be sitting in a
+  // note — and `readFile("utf8")` folds every invalid sequence onto U+FFFD.
+  // Hashing the decoding therefore reports "unchanged" across a real edit, and
+  // the apply overwrites content the plan never showed anyone. This is the
+  // negative direction, which is the one that matters: a test that only checked
+  // "an unedited file still applies" passes with the defect in place.
+  it("rejects a stale apply when the file changed into different bytes that decode the same", async () => {
+    const target = path.join(root, "projects/chatgpt/research/shared-search.md");
+    const original = await fs.readFile(target);
+    const before = Buffer.concat([original, Buffer.from([0xff]), Buffer.from("\n", "utf8")]);
+    await fs.writeFile(target, before);
+
+    const plan = await store.planUpdate({
+      id_or_path: "chatgpt-research-001",
+      new_body: "# Shared Search Framework\n\nPlanned body.",
+      reason: "test byte-exact stale check"
+    });
+
+    const after = Buffer.concat([original, Buffer.from([0xfe]), Buffer.from("\n", "utf8")]);
+    // The premise, asserted rather than assumed: different on disk, identical
+    // once decoded. Without this the test could pass for the wrong reason.
+    expect(Buffer.compare(before, after)).not.toBe(0);
+    expect(before.toString("utf8")).toBe(after.toString("utf8"));
+    await fs.writeFile(target, after);
+
+    await expect(store.applyPlannedUpdate(plan.patch_id)).rejects.toThrow(/stale/);
+    expect(Buffer.compare(await fs.readFile(target), after)).toBe(0);
+  });
+
   // INV-3 durability: the only overwriting write must swap the file, not rewrite
   // it in place, so an interrupted apply can never leave a truncated note. The
   // inode is the observable difference — `writeFile` over the target keeps it,
