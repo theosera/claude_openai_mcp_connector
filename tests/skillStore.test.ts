@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config.js";
+import { MAX_FRONTMATTER_BLOCK_BYTES } from "../src/frontmatter.js";
 import { PLAN_MAX_AGE_MS, vaultIdentityTag } from "../src/patchState.js";
 import { SkillStore, type PlanSkillCreateInput } from "../src/skillStore.js";
 
@@ -208,6 +209,151 @@ describe("SkillStore", () => {
     it("still accepts a reference with no frontmatter at all", async () => {
       const plan = await store.planCreate(withReference("# Evaluation\n\nRecord evidence.\n"));
       await expect(store.applyPlannedCreate(plan.patch_id)).resolves.toBeTruthy();
+    });
+  });
+
+  // CWE-1333. `skill_md` is an unbounded `z.string()` from an MCP client, and
+  // planning used to hand it to gray-matter BEFORE normalizeText and
+  // validateFileSet had capped it — so matter() ran on a payload bounded by
+  // nothing nearer than the HTTP body cap (4 MiB). gray-matter's comment
+  // stripper (`/^\s*#[^\n]+/gm`) backtracks `\s*` across every whitespace run
+  // reachable from a line start, which is quadratic in the length of those runs,
+  // and an unterminated block is the worst shape because gray-matter then treats
+  // the whole file as the block (index.js: `if (closeIndex === -1) closeIndex = len`).
+  //
+  // Measured on the resolved tree, unterminated newline blocks: 10.2 s at
+  // 128 KiB, 41.2 s at 256 KiB, quadrupling per doubling. One call, one blocked
+  // event loop, every other MCP client on the process waiting.
+  describe("frontmatter parse is bounded before gray-matter sees it (CWE-1333)", () => {
+    // Unterminated: no `\n---` anywhere, so the block is the whole file. The
+    // trailing "x" matters — normalizeText trimEnd()s, and without it the run of
+    // newlines would be trimmed away and the payload would never be oversized.
+    const unterminatedBlock = (bytes: number): string => `---\n${"\n".repeat(bytes)}x`;
+
+    it("refuses an oversize SKILL.md by SIZE, before any parse of it", async () => {
+      const started = process.hrtime.bigint();
+      await expect(store.planCreate({ ...validInput(), skill_md: unterminatedBlock(256 * 1024) })).rejects.toThrow(
+        /too large after normalization/
+      );
+      const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+
+      // BOTH assertions carry weight, and neither is redundant.
+      //
+      // The MESSAGE identifies which guard refused. normalizeText and
+      // validateFileSet raise the same condition, and until their messages were
+      // made distinguishable this could not tell them apart — nor tell either of
+      // them from the block bound inside validateSkillMarkdown. Restore the old
+      // call order and this payload is still refused, but by the block bound,
+      // with a different message: red, and red for exactly the finding, because
+      // reaching that bound means the input got as far as validateSkillMarkdown
+      // before anything sized it.
+      //
+      // The TIME distinguishes "refused before the parse" from "refused after
+      // one". A throw alone cannot: the old code threw too, 41 s later. 2 s is
+      // ~2000x the observed cost and ~5% of the vulnerable one, so it separates
+      // the two without being flaky on a loaded CI box.
+      expect(elapsedMs).toBeLessThan(2000);
+
+      // Nothing staged, nothing created: the refusal is total, not partial.
+      await expect(fs.readdir(skillsRoot)).resolves.toEqual([]);
+      await expect(fs.readdir(patchStateDir)).resolves.toEqual([]);
+    });
+
+    it("refuses an unterminated frontmatter block without parsing it", async () => {
+      // The shape the size cap does NOT catch: 127 KiB is under MAX_FILE_BYTES,
+      // so normalizeText passes it through, and with no closing delimiter
+      // gray-matter parses the whole file as the block. Measured through the real
+      // store before this guard: 9,980 ms, and then refused anyway.
+      //
+      // "Refused anyway" is the entire licence for this guard. gray-matter sets
+      // file.content = '' whenever the block never closes, and
+      // validateSkillMarkdown refuses empty instruction content — so no
+      // unterminated SKILL.md has ever been accepted, whatever its YAML said.
+      // Moving that refusal in front of the parse is refuse-to-refuse; it cannot
+      // narrow the accepted set, only the bill.
+      const started = process.hrtime.bigint();
+      await expect(store.planCreate({ ...validInput(), skill_md: unterminatedBlock(127 * 1024) })).rejects.toThrow(
+        /no closing --- delimiter/
+      );
+      // Time is the whole assertion here. The old code threw for this input too;
+      // it just charged ~10 s of blocked event loop first, so a throw-only test
+      // would have passed against the vulnerable version.
+      expect(Number(process.hrtime.bigint() - started) / 1e6).toBeLessThan(2000);
+    });
+
+    it.each([
+      ["valid keys", `---\nname: improve-ai-harness\ndescription: d\n`],
+      ["wrong keys", `---\nfoo: bar\n`],
+      ["unparseable YAML", `---\n\tname: [\n`],
+      ["bare scalar", `---\n\n\n\nz`]
+    ])("refused an unterminated block before this change too, so nothing narrowed: %s", async (_label, skillMd) => {
+      // The refuse-to-refuse claim, enumerated rather than asserted in prose.
+      // Each of these produced a DIFFERENT refusal message before the guard
+      // ("must include instruction content", "may contain only name and
+      // description", "invalid YAML", "may contain only name and description");
+      // all four were refusals, which is the property that matters.
+      await expect(store.planCreate({ ...validInput(), skill_md: skillMd })).rejects.toThrow();
+      await expect(fs.readdir(skillsRoot)).resolves.toEqual([]);
+    });
+
+    it("keeps the same ordering on the apply path, for a plan tampered on disk", async () => {
+      // applyPlannedCreate re-validates plan.files, and its integrity check
+      // (plan.diff vs bundleDiff) runs only AFTER validatePlannedFiles — so the
+      // parse must be bounded before it, not by it. Pins the apply half of the
+      // ordering against a future edit that "tidies" validatePlannedFiles the
+      // way validateBundle used to be written.
+      const plan = await store.planCreate(validInput());
+      const planPath = path.join(patchStateDir, `skill-create-${plan.patch_id}.json`);
+      const staged = JSON.parse(await fs.readFile(planPath, "utf8")) as {
+        files: { path: string; content: string }[];
+      };
+      const skill = staged.files.find((file) => file.path === "SKILL.md");
+      expect(skill).toBeDefined();
+      skill!.content = unterminatedBlock(256 * 1024);
+      await fs.writeFile(planPath, JSON.stringify(staged), "utf8");
+
+      const started = process.hrtime.bigint();
+      await expect(store.applyPlannedCreate(plan.patch_id)).rejects.toThrow(/too large after normalization/);
+      expect(Number(process.hrtime.bigint() - started) / 1e6).toBeLessThan(2000);
+      await expect(fs.readdir(skillsRoot)).resolves.toEqual([]);
+    });
+
+    // The negative half, and the one that answers the objection that sank the
+    // previous attempt at this fix: it closed the hole by giving SKILL.md the
+    // READ path's 8 KiB MAX_FRONTMATTER_BLOCK_BYTES, which refuses a legitimate
+    // name + description block this server accepts today. Bounding a parse is
+    // not licence to shrink the accepted set, so this pins the size that must
+    // keep working. Adopt the read-path cap here and it goes red.
+    it("still accepts a frontmatter block far larger than the read path's cap", async () => {
+      const description = "d".repeat(32 * 1024);
+      const skillMd = `---\nname: improve-ai-harness\ndescription: ${description}\n---\n\n# Improve AI Harness\n\nBody.\n`;
+      const blockBytes = Buffer.byteLength(skillMd.slice("---".length, skillMd.indexOf("\n---", "---".length)), "utf8");
+      // Machine-checked, so the test cannot quietly stop testing what it says:
+      // this block IS over the read-path cap and IS under the per-file cap.
+      expect(blockBytes).toBeGreaterThan(MAX_FRONTMATTER_BLOCK_BYTES);
+      expect(blockBytes).toBeLessThan(128 * 1024);
+
+      const plan = await store.planCreate({ ...validInput(), skill_md: skillMd, references: [] });
+      const applied = await store.applyPlannedCreate(plan.patch_id);
+      expect(applied.files).toContain("knowledge/skills/improve-ai-harness/SKILL.md");
+      expect(await fs.readFile(path.join(skillsRoot, "improve-ai-harness", "SKILL.md"), "utf8")).toBe(skillMd);
+    });
+
+    // The plan path now validates the NORMALIZED bytes rather than the raw ones,
+    // which is what lets the size cap run first without narrowing anything. CRLF
+    // is the shape most likely to break under that move — normalizeText rewrites
+    // every line ending before validateSkillMarkdown sees it, so the
+    // `startsWith("---\r\n")` arm of the frontmatter check is now unreachable
+    // through both callers. This pins the outcome that actually matters: a CRLF
+    // SKILL.md is still accepted, and lands as LF.
+    it("still accepts a CRLF SKILL.md, and writes it with normalized line endings", async () => {
+      const crlf = SKILL_MD.replace(/\n/g, "\r\n");
+      const plan = await store.planCreate({ ...validInput(), skill_md: crlf, references: [] });
+      await store.applyPlannedCreate(plan.patch_id);
+
+      const written = await fs.readFile(path.join(skillsRoot, "improve-ai-harness", "SKILL.md"), "utf8");
+      expect(written).toBe(SKILL_MD);
+      expect(written).not.toContain("\r");
     });
   });
 
