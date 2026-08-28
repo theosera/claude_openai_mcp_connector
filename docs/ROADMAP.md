@@ -1486,6 +1486,23 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       second, and whatever the read path starts honouring next would have been
       third. ⚠️ Not closed by it: a process writing into the vault outside this
       server (the launchd scanner writes reports directly) reaches neither gate.
+
+      ★ **2026-08-25, same day — the conversion had a cost the note above did not
+      name, and it is now paid.** Narrowing what a surface permits is not free
+      when the surface has a *history*: reports that landed while `project:` was
+      legal are on disk, and `appendAuditReport` is create-only and idempotent,
+      so re-sending one unchanged is a documented success. The gate runs before
+      any filesystem contact — correct, and unchanged — but that turned the
+      idempotent answer into a throw for exactly those older reports. **Only the
+      claim refusal now gets a second look**, through its own error type: if the
+      slot already holds those very bytes, the answer is the `created: false` it
+      always was, and nothing is written. Size, NUL, parse failure and
+      server-owned keys still return before a single `stat`; `state.md` gets no
+      hatch at all because it is replaced rather than created, so it migrates
+      forward on its own. ⚠️ **The general lesson is the one to carry, not the
+      patch**: an allowlist that replaces a denylist changes what the surface
+      will accept *tomorrow* and what it will still recognise from *yesterday*,
+      and only the first half is visible in the diff.
 - [x] **Keep host filesystem layout out of client-visible errors (root E)** — ✅
       `withClientSafeErrors` wraps each store at the single point the server
       builds them, so a system error reaches the client as its `code` alone.

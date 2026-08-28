@@ -137,6 +137,24 @@ export const AUDIT_WRITABLE_FRONTMATTER_KEYS = ["title", "tags"] as const;
 const AUDIT_WRITABLE_FRONTMATTER_KEY_SET = new Set<string>(AUDIT_WRITABLE_FRONTMATTER_KEYS);
 
 /**
+ * Thrown only when audit content declares a key outside the self-describing
+ * allowlist -- never for a size cap, a parse failure, or a server-owned key.
+ *
+ * The narrowness is the point. This is the one refusal the allowlist *widened*:
+ * before it, `id` and `updated_at` were the whole denied set, and no file this
+ * surface wrote could carry them. So a report already on disk may legitimately
+ * declare `project:` -- it was accepted when it was written -- and only this
+ * error can tell an idempotent re-submission of such a file apart from content
+ * that is refused for a reason no pre-existing file could have been written
+ * with. `AuditStore.appendAuditReport` catches exactly this type; widen it and
+ * you hand the same escape hatch to the size cap, whose whole job is to refuse
+ * before anything reads.
+ */
+export class AuditFrontmatterClaimError extends Error {
+  override readonly name = "AuditFrontmatterClaimError";
+}
+
+/**
  * Refuse verbatim audit content that declares any frontmatter key beyond the
  * self-describing ones -- server-owned keys included, with their own message.
  *
@@ -150,7 +168,7 @@ export function assertAuditWritableFrontmatter(raw: string, label: string): void
 
   const attributing = declaredKeys.filter((key) => !AUDIT_WRITABLE_FRONTMATTER_KEY_SET.has(key));
   if (attributing.length > 0) {
-    throw new Error(
+    throw new AuditFrontmatterClaimError(
       `The ${label} declares frontmatter it may not claim (${attributing.join(", ")}). ` +
         `An audit file may declare only ${AUDIT_WRITABLE_FRONTMATTER_KEYS.join(" and ")}: keys such as ` +
         `project, client, target_repo and source_refs attribute a document to a project or to other notes, ` +

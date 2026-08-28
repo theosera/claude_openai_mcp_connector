@@ -6,6 +6,41 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **An audit report written before the claim allowlist can still be re-submitted
+  byte for byte** (Codex P2 on the allowlist change). `assertWritableText` runs
+  before anything touches the filesystem, and stays there — but the set it
+  refuses just widened from `id`/`updated_at` to *every* key outside
+  `title`/`tags`, and reports that landed while `project:` was legal are on disk
+  carrying it. `appendAuditReport` is create-only and idempotent: re-sending a
+  report unchanged is a documented success, which is how an at-least-once
+  delivery queue stops retrying. Checking first turned that into a throw for
+  exactly those older reports, and the queue had nothing to converge on.
+
+  **Only the claim refusal gets a second look**, through its own error type
+  (`AuditFrontmatterClaimError`): if the slot already holds that very byte
+  sequence, the answer is the `created: false` it always was. Nothing is
+  written. Every other refusal — size, NUL, a parse failure, a server-owned key —
+  still returns before a single `stat`. The size cap especially: a hatch wide
+  enough to catch it would read the 512 KiB+ file the cap exists to avoid
+  touching, and a test pins that by storing and re-submitting the *same*
+  oversized bytes, the one shape that can tell the two orders apart.
+
+  ⚠️ **`compare_and_swap_audit_state` deliberately has no such hatch.** A report
+  is immutable, so re-sending it unchanged is the only way past an older file; a
+  state file is *replaced*, and the gate reads `new_content` only — so a
+  pre-allowlist `state.md` migrates by writing clean bytes over it, with
+  `expected_sha256` still taken from the old ones. The forward path already
+  exists, so nothing needs relaxing to reach it.
+
+  What a refused write can now learn is bounded to what the caller already
+  holds: the answer differs only when it has produced the stored bytes exactly,
+  which is the same signal `created: false` gives on the accepted path today.
+  The compare refuses a symlinked leaf first, for the reason the `EEXIST`
+  compare does — it must not follow a link out of `reports/` to answer a
+  question about what `reports/` holds.
+
 ### Added
 
 - **`pnpm run check:stdio`** (`scripts/check-stdio.mjs`) — the declared-vs-live
@@ -260,6 +295,27 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the NUL and size checks live inside `assertWritableText` itself; a read placed
   ahead of it would run on unvalidated, unbounded input on every request, not
   only on the ones about to be refused.
+
+  ★ **Corrected, same day: the retry is restored, by the shape that paragraph
+  itself named.** The text above stands as the account of what the allowlist
+  alone does, and both of its objections are right about *reordering* — they are
+  the reason the fix is **catch-then-check** rather than check-later. The policy
+  still runs first and still runs on every request; only when it throws its own
+  claim error does the append look at the slot, and it looks through
+  `assertNotSymlink` before `readFile`, exactly where that guard already sat.
+  Nothing reaches `writeFile` unvalidated, because nothing is written on that
+  path at all, and NUL and the size cap have already passed inside
+  `assertWritableText` before the claim check is reached — so neither runs on
+  unbounded input, and neither is skipped. See the `Fixed` entry at the top of
+  this release for the measurements, including the mutation that shows a hatch
+  wide enough to catch the size cap would read the 512 KiB+ file that cap exists
+  to avoid touching.
+
+  ⚠️ **What the paragraph above got right is the part that is not about
+  ordering**: the loss is self-limiting, because a scanner still emitting those
+  keys fails on every new `run_id` too. That argument is untouched by the fix and
+  is the honest reason its value is narrow — it helps a replay of *old bytes*
+  (an at-least-once queue), not a scanner that simply has not been updated.
 
 - **The static bearer's scopes are derived, not assumed** (GAP-4). `authenticate()`
   (`src/httpServer.ts`) returned `{scopes: [vault.read, vault.write]}`
