@@ -8,6 +8,57 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The SKILL.md frontmatter parse is bounded by how many lines the block opens,
+  not by how many bytes it holds.** The two guards already in front of
+  `matter()` refuse an unterminated block and a block over `MAX_FILE_BYTES`, and
+  neither reaches a *terminated* block of newlines: it closes, and it is under
+  the file cap, so both let it through. gray-matter strips comments with
+  `/^\s*#[^\n]+/gm`, and the `m` flag makes the count of line starts the
+  multiplier while `\s*` backtracks from each one — so the bill is set by lines,
+  not size. Measured here on gray-matter 4.0.3, every sample a shape this server
+  accepts today:
+
+  | line starts | char | block bytes | parse |
+  | ---: | --- | ---: | ---: |
+  | 256 | LF | 293 | 0.2 ms |
+  | 8,192 | LF | 8,229 | 42.6 ms |
+  | 44,032 | LF | 44,069 | 1,270 ms |
+  | 40,000 | U+2028 | 120,060 | 2,074 ms |
+
+  Those rows move bytes and line starts together, so they show the shape but not
+  the bound. The cost is line starts *times* the whitespace run each one opens,
+  and the attacker picks the size, so the worst input at a given limit is a
+  full-size block split into that many lines. Re-measured with the block held at
+  `MAX_FILE_BYTES` and only the line count varying:
+
+  | line starts | total bytes | parse |
+  | ---: | ---: | ---: |
+  | 6 | 131,059 | 4.5 ms |
+  | 256 | 130,853 | **24.4 ms** |
+  | 1,024 | 130,085 | 91.9 ms |
+  | ~131,000 | 131,050 | 10,712 ms |
+
+  So the limit admits about **24 ms**, not the 0.2 ms the first table suggests —
+  a ~440x reduction against the unbounded case, not a ~50,000x one. Stating it
+  the other way would have been a bound measured with two variables moving at
+  once.
+
+  A byte bound cannot separate those rows — 130 KB on one line parses in about
+  3 ms, and 130 KB of newlines takes ten seconds — which is why the comment on
+  the existing byte guard recorded the trade as unavoidable: an 8 KiB cap would
+  also refuse a legitimate large `name` + `description`, an accept-to-reject
+  change. **Counting line starts does not charge that.** A legitimate block is a
+  handful of lines whatever its size; the largest one in this repository opens
+  **6**, against a limit of **256**. A 200-line block scalar is still accepted,
+  and there is a test that says so.
+
+  The count includes **U+2028 and U+2029**, which open a line for the regex
+  engine exactly as `\n` does. Counting newlines alone would have left the class
+  reachable through a character the count never sees: U+2028 is 3 bytes, so
+  about 43,690 of them fit under `MAX_FILE_BYTES`, and 40,000 of them cost
+  2,074 ms. Removing the guard turns exactly the two new tests red, at 1,276 ms
+  and 2,074 ms, and nothing else.
+
 - **Every comparison against a file on disk is byte-exact, at all four sites**
   (Codex P2 on #151, and three more the finding did not name). `readFile(…,
   "utf8")` folds every invalid sequence onto U+FFFD, which breaks a comparison in

@@ -14,6 +14,18 @@ const MAX_FILE_BYTES = 128 * 1024;
 const MAX_TOTAL_BYTES = 512 * 1024;
 const MAX_REFERENCES = 20;
 
+// The number of line starts a real SKILL.md frontmatter block has, with room to
+// spare. Measured over all 10 SKILL.md files in this repository: the largest
+// block is 1,083 bytes and the most line starts any of them carries is 6.
+const MAX_FRONTMATTER_LINE_STARTS = 256;
+
+// The line terminators JS `^` recognises under the `m` flag. It is not only
+// `\n`: U+2028 and U+2029 open a line for the regex engine as well, so a count
+// that looked at newlines alone would leave the whole class reachable through a
+// character the count never sees. Built from char codes so this file stays
+// ASCII — a literal U+2028 in source breaks tools that read it.
+const FRONTMATTER_LINE_START = new RegExp("[\n\r" + String.fromCharCode(0x2028, 0x2029) + "]", "g");
+
 export interface SkillStoreConfig {
   knowledgeRoot: string;
   skillsSubdir: string;
@@ -491,11 +503,58 @@ function assertBoundedSkillFrontmatterBlock(content: string): void {
   //
   // Scanning the block to measure it is linear — microseconds against the
   // quadratic parse this exists to prevent.
-  const blockBytes = Buffer.byteLength(afterOpen.slice(0, close), "utf8");
+  const block = afterOpen.slice(0, close);
+  const blockBytes = Buffer.byteLength(block, "utf8");
   if (blockBytes > MAX_FILE_BYTES) {
     throw new Error(
       `SKILL.md frontmatter block is ${blockBytes} bytes, over the ${MAX_FILE_BYTES}-byte limit; ` +
         "refusing to parse it."
+    );
+  }
+
+  // (3) A closed block carrying more line starts than any real block does.
+  //
+  // (2) cannot fire for either of today's callers, and bytes are the wrong
+  // measure anyway. gray-matter's comment stripper is `/^\s*#[^\n]+/gm`: the `m`
+  // flag makes the LINE STARTS the multiplier and `\s*` backtracks from each one,
+  // so the cost tracks how many lines open, not how large the block is. Measured
+  // here on gray-matter 4.0.3, every sample a TERMINATED block this server
+  // accepts today:
+  //
+  //     line starts   char       block bytes   parse
+  //             256   LF                 293    0.2 ms
+  //           1,024   LF               1,061    1.0 ms
+  //           8,192   LF               8,229   42.6 ms
+  //          44,032   LF              44,069    1,270 ms
+  //          40,000   U+2028         120,060    2,074 ms
+  //
+  // Those samples move bytes and line starts together, so they show the shape but
+  // NOT the bound. The bound is the worst case at a fixed size, and an attacker
+  // picks the size: the cost is line starts TIMES the whitespace run each one
+  // opens, so the expensive input is a full-size block split into many lines, not
+  // a small one. Re-measured with the block held at MAX_FILE_BYTES and only the
+  // line count varying:
+  //
+  //     line starts   total bytes   parse
+  //               6       131,059    4.5 ms
+  //             128       130,981   15.9 ms
+  //             256       130,853   24.4 ms   <- what this limit actually admits
+  //           1,024       130,085   91.9 ms
+  //           8,192       122,917    740 ms
+  //         ~131,000       131,050   10,712 ms
+  //
+  // A byte bound cannot separate those rows: a 130 KB block on one line parses in
+  // about 3 ms, and 130 KB of newlines takes ten seconds. The comment on (2)
+  // rejected an 8 KiB byte cap because it would also refuse a legitimate large
+  // `name` + `description` — an accept-to-reject change — and recorded that trade
+  // as the price of leaving this open. Counting line starts does not charge it: a
+  // legitimate block is a handful of lines at any size, and the largest one in
+  // this repository opens 6.
+  const lineStarts = (block.match(FRONTMATTER_LINE_START) ?? []).length;
+  if (lineStarts > MAX_FRONTMATTER_LINE_STARTS) {
+    throw new Error(
+      `SKILL.md frontmatter block opens ${lineStarts} lines, over the ` +
+        `${MAX_FRONTMATTER_LINE_STARTS}-line limit; refusing to parse it.`
     );
   }
 }
