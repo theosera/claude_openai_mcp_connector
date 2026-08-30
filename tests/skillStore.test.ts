@@ -281,6 +281,56 @@ describe("SkillStore", () => {
       expect(Number(process.hrtime.bigint() - started) / 1e6).toBeLessThan(2000);
     });
 
+    // The shape neither guard above catches: the block CLOSES, and it is well
+    // under MAX_FILE_BYTES, so both the unterminated check and the byte bound pass
+    // it straight through to gray-matter. What makes it expensive is how many
+    // lines it opens, because the comment stripper is `/^\s*#[^\n]+/gm`.
+    it.each([
+      ["newlines", "\n", 44_032],
+      // U+2028 is the half a newline-only count would miss. It opens a line for
+      // the regex engine exactly as `\n` does, so a guard that counted `\n` alone
+      // would leave the whole class reachable through it. Built from a char code
+      // so this source file stays ASCII: a literal U+2028 in source breaks tools
+      // that read it — three separate attempts here died that way before this.
+      //
+      // 40,000 rather than 44,032 because U+2028 is 3 bytes: 44,032 of them make
+      // the file 132,163 bytes and MAX_FILE_BYTES refuses it first, which would
+      // have made this test pass while proving nothing about line starts. The
+      // reachable ceiling is ~43,690, so the guard has to fire below that, and
+      // 40,000 is inside the window a real attacker has.
+      ["U+2028", String.fromCharCode(0x2028), 40_000],
+      // A lone CR. `normalizeText` folds `\r\n` to `\n`, so a CRLF payload never
+      // reaches here as CR — but a bare CR does, and the regex engine opens a line
+      // on it. At one byte each this is the WORST of the four arms: ~131k fit under
+      // MAX_FILE_BYTES, and on the base revision 44,032 of them are ACCEPTED after
+      // 1,138 ms. Without this row, deleting `\r` from the character class leaves
+      // every test green.
+      ["CR", "\r", 44_032],
+      // U+2029 pairs with U+2028 and is just as expensive: dropping it from the
+      // class alone also leaves every test green, and revives 1,860 ms. Two arms of
+      // one character class are two guards; a case per arm is what pins them.
+      ["U+2029", String.fromCharCode(0x2029), 40_000]
+    ])("refuses a terminated block that opens too many lines, before parsing it: %s", async (_label, ch, count) => {
+      const skillMd = `---\nname: improve-ai-harness\ndescription: d\n${ch.repeat(count)}\n---\n\n# Heading\n\nBody.\n`;
+      const started = process.hrtime.bigint();
+      await expect(store.planCreate({ ...validInput(), skill_md: skillMd })).rejects.toThrow(/over the 256-line limit/);
+      // Same reasoning as the unterminated case: a throw alone would pass against
+      // the vulnerable version, which also threw — 1,270 ms later for newlines and
+      // 2,407 ms later for U+2028. The time is what says the refusal came first.
+      expect(Number(process.hrtime.bigint() - started) / 1e6).toBeLessThan(500);
+    });
+
+    it("still accepts a long multi-line description, so the bound costs no reach", async () => {
+      // The control for the claim in the guard's comment. An 8 KiB BYTE cap was
+      // rejected upstream because it would refuse a legitimate large `name` +
+      // `description`; counting line starts must not quietly reintroduce that.
+      // 200 lines of block scalar is far more than any real Skill uses (the
+      // largest block in this repository opens 6) and is still accepted.
+      const skillMd = `---\nname: improve-ai-harness\ndescription: |\n${"  a legitimate description line\n".repeat(200)}---\n\n# Heading\n\nBody.\n`;
+      const plan = await store.planCreate({ ...validInput(), skill_md: skillMd });
+      expect(plan.skill_name).toBe("improve-ai-harness");
+    });
+
     it.each([
       ["valid keys", `---\nname: improve-ai-harness\ndescription: d\n`],
       ["wrong keys", `---\nfoo: bar\n`],
