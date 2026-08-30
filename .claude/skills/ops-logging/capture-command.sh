@@ -40,11 +40,33 @@ esac
 
 # --- secret masking (command string is the only free-text we store) ------
 mask() {
+  # A credential in tool output is usually QUOTED ("access_token": "…",
+  # {'api_key':'…'}), and the keyword rule at the bottom cannot see it: it ends
+  # the value at whitespace, and a JSON line has none, so it never even starts —
+  # the character after the keyword is a quote, not one of `=:` or a space.
+  # The two rules below mask the quoted run instead, one per quote character so
+  # the closing quote can be required without a back-reference (POSIX ERE has
+  # none). The value is escape-aware, or `password: "p@ss\"word"` would end at
+  # the ESCAPED quote and leave `word"` in the clear.
+  #
+  # A closing quote is REQUIRED, and that bound is the point. Without it the
+  # value runs to end of line, which is F12's failure in a new place — a rule
+  # that runs past its intended end. It bites here because these two hooks mask
+  # whole Bash command strings and whole note bodies: `grep -n "token: " src/*.ts`
+  # offers the string's CLOSING quote as an opening one, and everything after it
+  # would be blanked. Requiring the close costs nothing, because an unterminated
+  # value still falls through to the keyword rule below and is masked to
+  # whitespace there, exactly as it was before these rules existed.
+  #
+  # That keyword rule is therefore left BYTE-IDENTICAL to its previous form: it
+  # is the fallback that keeps this change from ever masking less than before.
   sed -E \
     -e 's/gh[pousr]_[A-Za-z0-9]{20,}/***MASKED***/g' \
     -e 's/github_pat_[A-Za-z0-9_]{20,}/***MASKED***/g' \
     -e 's#(://[^/:@[:space:]]+):[^/@[:space:]]+@#\1:***MASKED***@#g' \
     -e 's/([Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+)[^[:space:]]+/\1***MASKED***/g' \
+    -e "s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+\")([^\"\\\\]|\\\\.)*\"/\1***MASKED***\"/Ig" \
+    -e "s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\]|\\\\.)*'/\1***MASKED***'/Ig" \
     -e 's/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)[^[:space:]]+/\1***MASKED***/Ig' \
     -e 's/AKIA[0-9A-Z]{16}/***MASKED***/g' \
     -e 's/sk-[A-Za-z0-9_-]{20,}/***MASKED***/g' \

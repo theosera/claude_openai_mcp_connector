@@ -8,6 +8,51 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The session-archive and ops-logging secret masks now cover a credential that
+  arrives QUOTED**, which is the shape credentials actually arrive in. The keyword
+  rule accepts only `=`, `:` or whitespace after the keyword, so on
+  `{"access_token":"…","refresh_token":"…"}` it never even starts — the next
+  character is a quote — and an OAuth token response was written to the note in
+  the clear, committed, pushed to the vault, and readable again over MCP by
+  anything holding `vault.read`. Two quoted-run rules cover it, one per quote
+  character so the closing quote can be required without a back-reference.
+
+  Both rules are bounded and escape-aware. The closing quote is required because
+  an unbounded value runs to end of line, and these hooks mask whole Bash command
+  strings and whole note bodies: `grep -n "token: " src/*.ts` offers a closing
+  quote as an opening one, and everything after it would be blanked. The value
+  class is escape-aware, or `password: "p@ss\"word"` would end at the escaped
+  quote and leave the tail readable — a secret *less* masked than before.
+
+  The pre-existing keyword rule is left byte-identical and is the fallback, so
+  this change cannot mask less than before: an unterminated quoted value still
+  falls through to it and is masked to whitespace exactly as it was. A test pins
+  that byte-identity for the same reason.
+
+  Cost, measured rather than asserted: every tracked `.md/.ts/.sh/.json/.yml`
+  file at the branch point — 99 files, 36,330 lines — was run through the old and
+  the new `mask()` and the outputs compared. Three lines change, and the count of
+  lines containing `***MASKED***` is 686 before and 686 after, so no line is newly
+  masked; the three are places where an already-masked line loses a little more.
+  That corpus is repository source, not what the hooks actually receive (Bash
+  command strings and note bodies carrying JSON tool output), so it understates
+  the benefit and the over-masking alike — "three lines" is a measurement, not an
+  upper bound. Runtime stays linear: on 60–130 KB adversarial inputs (escape
+  runs, backslash runs, one huge value, many small matches) the mask costs
+  0.025–0.066 s against 0.012–0.029 s before, a factor of at most 2.6 with no
+  backtracking blowup.
+
+  Reverse-verified with three mutations, one per guard, each confirmed to land
+  before the suite was run: dropping both quoted-run rules reds six named
+  assertions including the OAuth leak, degrading the escape-aware value class
+  reds three, and making the closing quote optional reds three, among them the
+  keyword-fallback test. The shipped hook is the subject under test — the suite
+  extracts `mask()` from the script rather than copying it, so a regression in
+  the hook reds the test.
+
+  The same two rules are mirrored byte-for-byte into `terminal-ops-logs`, which
+  is the canonical home of both scripts.
+
 - **The SKILL.md frontmatter parse is bounded by how many lines the block opens,
   not by how many bytes it holds.** The two guards already in front of
   `matter()` refuse an unterminated block and a block over `MAX_FILE_BYTES`, and
