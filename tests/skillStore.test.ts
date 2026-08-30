@@ -298,7 +298,18 @@ describe("SkillStore", () => {
       // have made this test pass while proving nothing about line starts. The
       // reachable ceiling is ~43,690, so the guard has to fire below that, and
       // 40,000 is inside the window a real attacker has.
-      ["U+2028", String.fromCharCode(0x2028), 40_000]
+      ["U+2028", String.fromCharCode(0x2028), 40_000],
+      // A lone CR. `normalizeText` folds `\r\n` to `\n`, so a CRLF payload never
+      // reaches here as CR — but a bare CR does, and the regex engine opens a line
+      // on it. At one byte each this is the WORST of the four arms: ~131k fit under
+      // MAX_FILE_BYTES, and on the base revision 44,032 of them are ACCEPTED after
+      // 1,138 ms. Without this row, deleting `\r` from the character class leaves
+      // every test green.
+      ["CR", "\r", 44_032],
+      // U+2029 pairs with U+2028 and is just as expensive: dropping it from the
+      // class alone also leaves every test green, and revives 1,860 ms. Two arms of
+      // one character class are two guards; a case per arm is what pins them.
+      ["U+2029", String.fromCharCode(0x2029), 40_000]
     ])("refuses a terminated block that opens too many lines, before parsing it: %s", async (_label, ch, count) => {
       const skillMd = `---\nname: improve-ai-harness\ndescription: d\n${ch.repeat(count)}\n---\n\n# Heading\n\nBody.\n`;
       const started = process.hrtime.bigint();
