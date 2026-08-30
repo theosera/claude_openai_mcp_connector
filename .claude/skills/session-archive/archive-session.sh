@@ -14,16 +14,68 @@
 #   - This script ships in a PUBLIC repo too, so the vault repo is NEVER named
 #     here. It is located via $SESSION_VAULT_REPO, or by scanning $HOME/*/ for
 #     a `.claude-session-vault` marker file committed at the vault clone root.
+#     That marker only LOCATES a candidate; it travels inside a clone, so it
+#     cannot authorize one. Authorization is $SESSION_VAULT_ORIGIN, or the
+#     ~/.config/session-archive/vault-origin file — an out-of-band pin naming
+#     the git remote this transcript may be pushed to.
 #   - The destination folder inside the vault comes from $SESSION_LOG_SUBDIR,
 #     else the first non-comment line of the marker file, else `claude-sessions`.
 #   - Secret patterns are masked with the SAME rules as ops-logging
 #     capture-command.sh (keep the two mask() functions in sync).
-#   - No vault clone found -> no-op. Never blocks the turn: always exits 0.
+#   - No authorized vault clone -> no-op. Never blocks the turn: always exits 0.
 set -euo pipefail
 
 # Escape hatch for sessions that must not be archived.
 [ "${SESSION_ARCHIVE_DISABLE:-0}" = "1" ] && exit 0
 command -v jq >/dev/null 2>&1 || exit 0
+
+# --- the out-of-band vault pin ---------------------------------------------
+# `.claude-session-vault` is committed at the vault clone root, which means it
+# is also committable by anyone who can land a file in a repo this machine
+# checks out. A value carried inside a clone therefore cannot decide where the
+# full transcript goes: the marker locates a candidate, and this pin authorizes
+# it. The pin names the REMOTE, not the directory, because `git push` is what
+# takes the transcript off the machine -- authorizing a directory whose origin
+# was never looked at leaves the transcript going wherever that origin points.
+# Both sources are out of band: an env var, and a file under the user's config
+# dir, which is outside every checkout and so cannot arrive in a clone.
+VAULT_ORIGIN_PIN="${SESSION_VAULT_ORIGIN:-}"
+if [ -z "$VAULT_ORIGIN_PIN" ]; then
+  pin_file="${XDG_CONFIG_HOME:-$HOME/.config}/session-archive/vault-origin"
+  if [ -f "$pin_file" ]; then
+    VAULT_ORIGIN_PIN="$(grep -v '^[[:space:]]*#' "$pin_file" 2>/dev/null \
+      | grep -m1 -v '^[[:space:]]*$' || true)"
+  fi
+fi
+
+# Compare remotes by identity, not by spelling: one repository is written
+# `git@host:owner/name.git`, `https://host/owner/name`, and -- inside a hosted
+# container -- `https://x-access-token:<token>@host/owner/name.git`. Reduce all
+# of them to `host/owner/name`, so a pin written once keeps matching and the
+# comparison never handles the credential embedded in a URL.
+git_url_id() {
+  printf '%s' "${1:-}" | sed -E \
+    -e 's/^[[:space:]]+//' \
+    -e 's/[[:space:]]+$//' \
+    -e 's#^[A-Za-z][A-Za-z0-9+.-]*://##' \
+    -e 's#^[^/@]*@##' \
+    -e 's#^([^/:]+):#\1/#' \
+    -e 's#/+$##' \
+    -e 's#\.git$##' | tr 'A-Z' 'a-z'
+}
+
+# True when $1 is a clone whose `origin` is the pinned vault. Both URLs must
+# match: the push URL is where the transcript would land, and the fetch URL is
+# where the rebase below takes commits from before pushing them on.
+origin_is_pinned_vault() {
+  local pin_id fetch_url push_url
+  [ -n "$VAULT_ORIGIN_PIN" ] || return 1
+  pin_id="$(git_url_id "$VAULT_ORIGIN_PIN")"
+  [ -n "$pin_id" ] || return 1
+  fetch_url="$(git -C "$1" remote get-url origin 2>/dev/null || true)"
+  push_url="$(git -C "$1" remote get-url --push origin 2>/dev/null || true)"
+  [ "$(git_url_id "$fetch_url")" = "$pin_id" ] && [ "$(git_url_id "$push_url")" = "$pin_id" ]
+}
 
 # --- locate the vault clone (env first, then marker-file scan) -------------
 # The scan decides where the FULL transcript is pushed, so it must never resolve
@@ -35,24 +87,43 @@ VAULT_REPO="${SESSION_VAULT_REPO:-}"
 if [ -z "$VAULT_REPO" ]; then
   scan_hit=""
   scan_count=0
+  marked_count=0
   for candidate in "$HOME"/*/; do
     if [ -f "${candidate}.claude-session-vault" ] && [ -d "${candidate}.git" ]; then
+      marked_count=$((marked_count + 1))
+      # The marker says "I am a vault"; only the pin says the operator chose
+      # this one. Without this line the sole credential needed to receive every
+      # future transcript is a file committed inside a clone.
+      origin_is_pinned_vault "${candidate%/}" || continue
       scan_hit="${candidate%/}"
       scan_count=$((scan_count + 1))
     fi
   done
+  # Say that archiving stopped, but never name the candidates or the pin: this
+  # script ships in a public repo, those strings are the vault location, and a
+  # container's origin URL can carry a token. The count is what the operator
+  # acts on, and silence here would look like a working archive that quietly
+  # stopped writing.
   if [ "$scan_count" -eq 1 ]; then
     VAULT_REPO="$scan_hit"
   elif [ "$scan_count" -gt 1 ]; then
-    # Say that archiving stopped, but never name the candidates: this script
-    # ships in a public repo and those paths are the vault location. The count
-    # is what the operator acts on, and silence here would look like a working
-    # archive that quietly stopped writing.
     printf 'session-archive: %s marked vault clones under $HOME; set SESSION_VAULT_REPO to choose one. Not archiving.\n' \
       "$scan_count" >&2
+  elif [ -n "$VAULT_ORIGIN_PIN" ] && [ "$marked_count" -gt 0 ]; then
+    printf 'session-archive: %s marked vault clone(s) under $HOME, none with the pinned origin. Not archiving.\n' \
+      "$marked_count" >&2
+  elif [ "$marked_count" -gt 0 ]; then
+    printf 'session-archive: %s marked vault clone(s) under $HOME but no vault pin, and a marker committed inside a clone cannot authorize a push destination. Set SESSION_VAULT_REPO, or pin the vault remote in SESSION_VAULT_ORIGIN or ~/.config/session-archive/vault-origin. Not archiving.\n' \
+      "$marked_count" >&2
   fi
 fi
 { [ -n "$VAULT_REPO" ] && [ -d "$VAULT_REPO/.git" ]; } || exit 0
+# A configured pin constrains the explicitly selected vault too, and it is
+# checked here -- before anything is rendered, written, committed or pushed.
+if [ -n "$VAULT_ORIGIN_PIN" ] && ! origin_is_pinned_vault "$VAULT_REPO"; then
+  printf 'session-archive: the selected vault clone does not have the pinned origin. Not archiving.\n' >&2
+  exit 0
+fi
 
 # --- destination subdir: env > marker first line > default -----------------
 SUBDIR="${SESSION_LOG_SUBDIR:-}"

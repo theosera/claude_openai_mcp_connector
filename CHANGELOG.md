@@ -43,6 +43,54 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A `.claude-session-vault` marker no longer decides where a session transcript
+  is pushed.** The marker is committed at a vault clone's root, which means it is
+  committable by anyone who can land a file in a repository this machine checks
+  out: it travelled inside the clone, so it could locate a candidate but never
+  authorize one. The scan now adopts a marked clone only when its `origin` matches
+  a pin given out of band — `SESSION_VAULT_ORIGIN`, or the first non-comment line
+  of `~/.config/session-archive/vault-origin`, both of which live outside every
+  checkout and so cannot arrive in one.
+
+  The pin names the remote rather than the directory, because `git push` is what
+  takes the transcript off the machine; authorizing a directory whose origin was
+  never looked at leaves the transcript going wherever that origin points. **Both
+  the fetch and the push URL must match** — a clone that fetches from the vault
+  and pushes elsewhere is exactly the case a fetch-only check would wave through.
+  Remotes are compared by repository identity, not by spelling, so
+  `git@host:owner/name.git`, `https://host/owner/name` and a container's
+  credential-bearing URL reduce to the same `host/owner/name`; the reduction drops
+  the userinfo, so the comparison never handles an embedded credential. A pin also
+  constrains an explicitly selected `SESSION_VAULT_REPO`, and every check runs
+  before anything is rendered, written, committed or pushed.
+
+  Refusals say what stopped and how many marked clones were seen, and name no
+  candidate path, no pin and no origin URL: this script ships in a public
+  repository and a container's origin can carry a token. Staying silent was not an
+  option either — a hook that quietly stops writing looks exactly like one that is
+  working.
+
+  This does not stop archiving where a vault is selected explicitly: the pin
+  constrains `SESSION_VAULT_REPO` only when a pin is set. On the machine this was
+  developed on there is no `.claude-session-vault` marker anywhere under `$HOME`
+  (measured to depth 5), because the vault working copy lives under iCloud, which
+  the depth-1 marker scan cannot reach — so the scan path has nothing to refuse.
+  Environments that *do* rely on marker discovery must set a pin, and are told so
+  on stderr rather than silently skipped.
+
+  Reverse-verified with three mutations, one per guard, each confirmed to produce
+  the intended mutant and not merely a non-zero diff: removing the scan-loop pin
+  check reds three named assertions, among them one that shows the whole session
+  delivered to a planted clone; disabling the check on an explicitly selected
+  clone reds exactly the assertion that names it; and dropping the push-URL
+  conjunct reds exactly "refuses a clone that fetches from the pinned vault but
+  pushes somewhere else", whose failure output shows a note pushed to the wrong
+  remote. The first attempt at that third mutation deleted the line instead of
+  narrowing it and reddened three *positive* assertions — a red for the wrong
+  reason, redone rather than counted.
+
+  Mirrored byte-for-byte into `terminal-ops-logs`, the canonical home of the hook.
+
 - **The session-archive and ops-logging secret masks now cover a credential that
   arrives QUOTED**, which is the shape credentials actually arrive in. The keyword
   rule accepts only `=`, `:` or whitespace after the keyword, so on

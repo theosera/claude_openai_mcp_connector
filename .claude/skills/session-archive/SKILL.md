@@ -29,11 +29,24 @@ Claude Code のセッション transcript (JSONL) を Markdown 1 ノート/セ�
   無ければ `$HOME/*/` 直下の `.claude-session-vault` マーカーファイルを走査。
   保存先サブディレクトリは `$SESSION_LOG_SUBDIR` > マーカー 1 行目 > 既定
   `claude-sessions`。**どちらも見つからなければ全 hook は no-op** (fail-safe)。
+- **★ マーカーが示すのは「場所」だけで、「送り先として正当か」は clone の外から来る。**
+  マーカーは vault clone のルートに commit されている = **clone の中を運ばれてくる
+  データ**なので、それ自体は権限にならない (checkout した任意のリポが名乗れる)。
+  走査が候補を採用する条件は **origin が out-of-band の pin と一致すること**:
+  `$SESSION_VAULT_ORIGIN` env、または `~/.config/session-archive/vault-origin`
+  (どの checkout にも入り得ない場所) の最初の非コメント行。照合は URL の綴りでなく
+  **リポジトリ同一性** (`git@host:o/n.git` / `https://host/o/n` / token 入り URL は同一)。
+  **fetch URL と push URL の両方**を見る — transcript を機外へ出すのは push なので、
+  push 先を見ない照合は何も守らない。pin があれば `SESSION_VAULT_REPO` で明示した
+  clone にも適用し、一致しなければ archive しない。
 - **走査は「ちょうど 1 件」でしか解決しない** (fail-closed)。走査結果はセッション
   全文の push 先なので、複数一致を先頭勝ちで採ると `$HOME` 直下にマーカー付き
   clone を置ける者が glob 順を取って全 transcript を受け取れる。2 件以上なら
   **何も archive せず**件数だけ stderr に出す。正当に vault が複数ある構成は
   `SESSION_VAULT_REPO` で明示する (env は走査より優先)。
+- **拒否は必ず理由を stderr に出す** (pin 未設定 / pin に一致する clone が無い /
+  明示した clone が pin と違う)。黙って no-op にすると「archive がやっと動いた」と
+  見分けが付かない。
 - **secret マスキングは ops-logging と同一規則** (`mask()` を同期させる —
   token 形式を追加したら capture-command.sh と archive-session.sh の両方を更新)。
 - push が non-fast-forward なら `git pull --rebase --autostash` → 再 push
@@ -55,7 +68,10 @@ tool_use 入力の絶対パス) から検出して `repos` / `tags` に全記録
 ## ハードルール (退行させない)
 
 - **vault のリポ名・実パス・URL・フォルダ実名をこのリポ (public) に書かない。**
-  env + マーカー検出の間接参照を崩さない。
+  env + マーカー検出の間接参照を崩さない。stderr の拒否メッセージにも候補パス・
+  pin・origin URL を出さない (件数だけ)。
+- **マーカーだけで送り先を決める形に戻さない。** clone の中に入って来た値は
+  authorization ではない — 走査の採用条件から origin pin を外さない。
 - **マスキング規則を緩めない** (ops-logging と同期)。
 - **`git add` は生成した該当ノート 1 ファイルのみ**。
 - **hook はターンをブロックしない** (常に exit 0 / vault 不在は no-op)。
