@@ -206,9 +206,14 @@ This repo also ships a `session-archive` hook
 Stop/SessionEnd it renders the full Claude Code session transcript (title +
 conversation + tool calls/results, secrets masked) into one Markdown note per
 session inside your private vault clone and pushes it — so past sessions become
-searchable through this MCP server. The vault clone is located via
-`SESSION_VAULT_REPO` or a `.claude-session-vault` marker file at the vault
-root; without either, the hook is a no-op. See
+searchable through this MCP server. The vault clone is named by
+`SESSION_VAULT_REPO`, or found by scanning for a `.claude-session-vault` marker
+file at a clone root. That marker travels inside a clone, so it only **locates**
+a candidate: the scan adopts one only when its `origin` matches a pin you gave
+out of band — `SESSION_VAULT_ORIGIN`, or the first non-comment line of
+`~/.config/session-archive/vault-origin`. Without an explicit repo or a matching
+pin the hook archives nothing, and prints why whenever it found a marked clone
+it would not use. See
 `.claude/skills/session-archive/SKILL.md`.
 
 ## Transports

@@ -1,8 +1,9 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const hookPath = path.join(repoRoot, ".claude", "skills", "session-archive", "archive-session.sh");
@@ -516,5 +517,280 @@ describe("session-archive secret masking", () => {
     // archive-session.sh says the ops-logging copy carries the same rules. A rule
     // added to one and not the other leaves that transport masking less.
     expect(await shippedMask(captureHookPath)).toBe(await shippedMask(hookPath));
+  });
+});
+
+/**
+ * The other thing this hook decides is WHERE the rendered transcript goes: it is
+ * written into a clone under $HOME and `git push`-ed to that clone's origin.
+ *
+ * The marker file that used to make that decision on its own,
+ * `.claude-session-vault`, is committed at the vault clone root — so it travels
+ * inside a clone, and any repository this machine checks out can carry one. The
+ * tests below run the SHIPPED script against a throwaway $HOME holding real git
+ * clones with real (local) remotes, and assert on what each REMOTE received,
+ * because the push is the step that takes the transcript off the machine.
+ *
+ * They drive the hook in `precompact` mode: vault selection runs before the mode
+ * branch, so it is the same code either way, and precompact skips the
+ * three-second transcript-flush wait that Stop/SessionEnd take.
+ */
+
+const SUBDIR = "sessions";
+const SESSION_ID = "0f9e8d7c-1111-2222-3333-444455556666";
+/** Only ever present in the transcript: if it reaches a remote, that remote received the session. */
+const TRANSCRIPT_CANARY = "PRIVATE-SOURCE-LINE-9f3a";
+
+const TRANSCRIPT: unknown[] = [
+  {
+    type: "user",
+    isMeta: false,
+    timestamp: "2026-08-10T10:00:00.000Z",
+    message: { content: "summarise the private notes" }
+  },
+  {
+    type: "assistant",
+    timestamp: "2026-08-10T10:00:05.000Z",
+    message: { content: [{ type: "tool_use", name: "Read", input: { file_path: "/notes/private.md" } }] }
+  },
+  {
+    type: "user",
+    isMeta: false,
+    timestamp: "2026-08-10T10:00:06.000Z",
+    message: { content: [{ type: "tool_result", content: TRANSCRIPT_CANARY }] }
+  }
+];
+
+interface Fixture {
+  root: string;
+  home: string;
+  transcript: string;
+}
+
+const fixtureRoots: string[] = [];
+
+async function makeFixture(): Promise<Fixture> {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "session-archive-")));
+  fixtureRoots.push(root);
+  const home = path.join(root, "home");
+  await fs.mkdir(home, { recursive: true });
+  // Hermetic git: identity, default branch and signing come from here, never
+  // from the host's own config.
+  await fs.writeFile(
+    path.join(root, "gitconfig"),
+    "[user]\n\tname = session-archive test\n\temail = test@example.invalid\n" +
+      "[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n"
+  );
+  const transcript = path.join(root, "transcript.jsonl");
+  await fs.writeFile(transcript, TRANSCRIPT.map((line) => JSON.stringify(line)).join("\n") + "\n");
+  return { root, home, transcript };
+}
+
+/**
+ * Built from scratch rather than from process.env, so a SESSION_VAULT_* value in
+ * the developer's own shell cannot decide what these tests measure.
+ */
+function hookEnv(fixture: Fixture, overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
+  return {
+    PATH: process.env.PATH ?? "",
+    HOME: fixture.home,
+    GIT_CONFIG_GLOBAL: path.join(fixture.root, "gitconfig"),
+    GIT_CONFIG_SYSTEM: "/dev/null",
+    GIT_TERMINAL_PROMPT: "0",
+    ...overrides
+  };
+}
+
+function git(args: string[], fixture: Fixture): string {
+  return execFileSync("git", args, { env: hookEnv(fixture), encoding: "utf8", stdio: "pipe" });
+}
+
+/**
+ * A marked clone under $HOME: a git repo with the marker COMMITTED at its root
+ * and an origin of its own. This is both the documented vault setup and exactly
+ * what an attacker commits into a repo the operator checks out — the two are
+ * indistinguishable from inside the checkout, which is the point.
+ */
+async function markedClone(fixture: Fixture, name: string): Promise<{ dir: string; remote: string }> {
+  const dir = path.join(fixture.home, name);
+  const remote = path.join(fixture.root, "remotes", `${name}.git`);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.mkdir(path.dirname(remote), { recursive: true });
+  await fs.writeFile(path.join(dir, ".claude-session-vault"), `${SUBDIR}\n`);
+  git(["init", "-q", dir], fixture);
+  git(["-C", dir, "add", "--", ".claude-session-vault"], fixture);
+  git(["-C", dir, "commit", "-q", "-m", "vault marker"], fixture);
+  git(["init", "--bare", "-q", remote], fixture);
+  git(["-C", dir, "remote", "add", "origin", remote], fixture);
+  git(["-C", dir, "push", "-q", "-u", "origin", "HEAD"], fixture);
+  return { dir, remote };
+}
+
+function runHook(
+  fixture: Fixture,
+  env: NodeJS.ProcessEnv,
+  script: string = hookPath
+): { status: number | null; stderr: string } {
+  const payload = JSON.stringify({
+    session_id: SESSION_ID,
+    transcript_path: fixture.transcript,
+    cwd: fixture.home,
+    hook_event_name: "PreCompact"
+  });
+  const result = spawnSync("bash", [script, "precompact"], { input: payload, env, encoding: "utf8" });
+  return { status: result.status, stderr: result.stderr ?? "" };
+}
+
+/** The notes a remote actually received — what whoever owns that repository can read. */
+function notesPushedTo(remote: string, fixture: Fixture): string[] {
+  return git(["-C", remote, "ls-tree", "-r", "-z", "--name-only", "refs/heads/main"], fixture)
+    .split("\0")
+    .filter((entry) => entry.endsWith(".md"));
+}
+
+const PIN_CHECK = '      origin_is_pinned_vault "${candidate%/}" || continue\n';
+
+/**
+ * The scan as it was BEFORE the fix: a marked clone is adopted on the strength of
+ * its own marker file. Used only to show these tests can observe the delivery
+ * they screen for — a refusal that would hold with the guard removed is evidence
+ * of nothing.
+ */
+async function hookWithoutPinCheck(fixture: Fixture): Promise<string> {
+  const script = await fs.readFile(hookPath, "utf8");
+  if (!script.includes(PIN_CHECK)) {
+    throw new Error(
+      "the marker scan no longer calls origin_is_pinned_vault — either the anchor moved, or the scan has " +
+        "regressed to adopting any marked clone, which is the failure the refusals above exist to catch."
+    );
+  }
+  const downgraded = path.join(fixture.root, "archive-session.downgraded.sh");
+  await fs.writeFile(downgraded, script.replace(PIN_CHECK, ""));
+  return downgraded;
+}
+
+describe("session-archive vault authorization", () => {
+  beforeAll(() => {
+    for (const tool of ["jq", "git"]) {
+      try {
+        execFileSync(tool, ["--version"], { stdio: "pipe" });
+      } catch {
+        throw new Error(
+          `\`${tool}\` is not on PATH. The hook exits 0 without it, so every "nothing was pushed" ` +
+            `assertion below would hold for the wrong reason. Install ${tool} (CI images ship it).`
+        );
+      }
+    }
+  });
+
+  afterAll(async () => {
+    await Promise.all(fixtureRoots.map((root) => fs.rm(root, { recursive: true, force: true })));
+  });
+
+  it("refuses a marked clone that nothing outside the checkout authorized", async () => {
+    const fixture = await makeFixture();
+    const planted = await markedClone(fixture, "collaborator-repo");
+
+    const { status, stderr } = runHook(fixture, hookEnv(fixture));
+
+    expect(notesPushedTo(planted.remote, fixture)).toEqual([]);
+    // The refusal lands before anything is rendered or written, so the clone is
+    // untouched too — not merely unpushed.
+    expect(await fs.readdir(planted.dir)).not.toContain(SUBDIR);
+    expect(stderr).toContain("no vault pin");
+    // Fail closed, and still never block the turn.
+    expect(status).toBe(0);
+  });
+
+  it("archives to the clone whose origin the operator pinned", async () => {
+    const fixture = await makeFixture();
+    const vault = await markedClone(fixture, "vault-clone");
+
+    // Pinned without the `.git` suffix the remote carries: a pin is compared by
+    // repository identity, not by spelling, so one written once keeps matching.
+    const { status } = runHook(fixture, hookEnv(fixture, { SESSION_VAULT_ORIGIN: vault.remote.replace(/\.git$/, "") }));
+
+    const notes = notesPushedTo(vault.remote, fixture);
+    expect(notes).toHaveLength(1);
+    expect(notes[0].startsWith(`${SUBDIR}/_precompact/`)).toBe(true);
+    expect(git(["-C", vault.remote, "show", `refs/heads/main:${notes[0]}`], fixture)).toContain(TRANSCRIPT_CANARY);
+    expect(status).toBe(0);
+  });
+
+  it("takes the pin from the config file outside every checkout", async () => {
+    const fixture = await makeFixture();
+    const vault = await markedClone(fixture, "vault-clone");
+    const pinDir = path.join(fixture.home, ".config", "session-archive");
+    await fs.mkdir(pinDir, { recursive: true });
+    await fs.writeFile(path.join(pinDir, "vault-origin"), `# the vault this machine archives to\n\n${vault.remote}\n`);
+
+    runHook(fixture, hookEnv(fixture));
+
+    expect(notesPushedTo(vault.remote, fixture)).toHaveLength(1);
+  });
+
+  it("ignores a planted marked clone and still archives to the pinned vault", async () => {
+    const fixture = await makeFixture();
+    const vault = await markedClone(fixture, "vault-clone");
+    const planted = await markedClone(fixture, "collaborator-repo");
+
+    runHook(fixture, hookEnv(fixture, { SESSION_VAULT_ORIGIN: vault.remote }));
+
+    expect(notesPushedTo(planted.remote, fixture)).toEqual([]);
+    expect(notesPushedTo(vault.remote, fixture)).toHaveLength(1);
+  });
+
+  it("still archives to an explicitly selected vault when no pin is configured", async () => {
+    const fixture = await makeFixture();
+    const vault = await markedClone(fixture, "vault-clone");
+
+    runHook(fixture, hookEnv(fixture, { SESSION_VAULT_REPO: vault.dir }));
+
+    expect(notesPushedTo(vault.remote, fixture)).toHaveLength(1);
+  });
+
+  it("refuses an explicitly selected clone whose origin is not the pinned one", async () => {
+    const fixture = await makeFixture();
+    const vault = await markedClone(fixture, "vault-clone");
+    const planted = await markedClone(fixture, "collaborator-repo");
+
+    const { status, stderr } = runHook(
+      fixture,
+      hookEnv(fixture, { SESSION_VAULT_REPO: planted.dir, SESSION_VAULT_ORIGIN: vault.remote })
+    );
+
+    expect(notesPushedTo(planted.remote, fixture)).toEqual([]);
+    expect(stderr).toContain("pinned origin");
+    expect(status).toBe(0);
+  });
+
+  it("refuses a clone that fetches from the pinned vault but pushes somewhere else", async () => {
+    const fixture = await makeFixture();
+    const vault = await markedClone(fixture, "vault-clone");
+    const planted = await markedClone(fixture, "collaborator-repo");
+    // `origin` now reads as the pinned vault and writes to another repository.
+    // The push is the step that takes the transcript off the machine, so the pin
+    // is worth nothing unless it is checked against where the push would land.
+    git(["-C", vault.dir, "remote", "set-url", "--push", "origin", planted.remote], fixture);
+
+    const { stderr } = runHook(fixture, hookEnv(fixture, { SESSION_VAULT_ORIGIN: vault.remote }));
+
+    expect(notesPushedTo(planted.remote, fixture)).toEqual([]);
+    expect(notesPushedTo(vault.remote, fixture)).toEqual([]);
+    expect(stderr).toContain("Not archiving");
+  });
+
+  it("delivers the whole session to the planted clone once the pin check is removed", async () => {
+    const fixture = await makeFixture();
+    const planted = await markedClone(fixture, "collaborator-repo");
+    const downgraded = await hookWithoutPinCheck(fixture);
+
+    runHook(fixture, hookEnv(fixture), downgraded);
+
+    // Without that line, a file committed inside the clone is the whole
+    // authorization: the transcript lands in a repository the operator never named.
+    const notes = notesPushedTo(planted.remote, fixture);
+    expect(notes).toHaveLength(1);
+    expect(git(["-C", planted.remote, "show", `refs/heads/main:${notes[0]}`], fixture)).toContain(TRANSCRIPT_CANARY);
   });
 });
