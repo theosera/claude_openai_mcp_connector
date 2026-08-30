@@ -507,7 +507,17 @@ describe("AuditStore", () => {
       ["trailing space before colon", "project : acme"],
       ["tab after colon", "project:\tacme"],
       ["__proto__ nesting", "__proto__:\n  project: acme"],
-      ["alongside an allowed key", "title: ok\nproject: acme"]
+      ["alongside an allowed key", "title: ok\nproject: acme"],
+      // Empty values. The key is what the allowlist judges, and YAML spells "no
+      // value" three ways -- all of which still DECLARE `project`. Pinned
+      // because the plausible regression is a writer that skips empty fields
+      // (`filter(([, v]) => v != null)` before taking the keys, say): the key
+      // would vanish from what the gate sees while still sitting in the bytes
+      // that land on disk, so the read path would honour a `project` the gate
+      // never examined. The control below is the other half.
+      ["a bare key with no value", "project:"],
+      ["an explicit null", "project: null"],
+      ["a tilde null", "project: ~"]
     ];
 
     // Keys that are refused for being unlisted rather than for being `project`
@@ -560,7 +570,11 @@ describe("AuditStore", () => {
     it.each([
       ["a title", "title: t"],
       ["tags", "tags:\n  - audit"],
-      ["both", "title: t\ntags:\n  - audit"]
+      ["both", "title: t\ntags:\n  - audit"],
+      // Pairs with the empty-value evasions above: those are refused for the
+      // key they declare, not for being empty. Without this the three of them
+      // pass equally well against a gate that simply rejects null values.
+      ["an allowed key with no value", "title:"]
     ])("still accepts a report declaring %s", async (_name, frontmatter) => {
       const written = await store.appendAuditReport({
         run_id: `20260718T010203Z--ok${Buffer.from(frontmatter).toString("hex").slice(0, 8)}`,
