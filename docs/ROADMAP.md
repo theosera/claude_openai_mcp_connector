@@ -72,6 +72,19 @@ was outstanding:
 - Kept the existing security properties (opaque 256-bit tokens, single-use
   short-lived codes that are **never persisted**, refresh rotation invalidated
   on disk immediately, capped/pruned collections) and single-user simplicity.
+- **Amended 2026-08-30 (incident-driven):** strict single-use rotation turned
+  one lost token response over a dead ingress into a forced full re-auth — the
+  presented refresh token was already deleted when the response carrying its
+  replacement vanished. Rotation now has a bounded replay-grace window
+  (`ROTATION_GRACE_MS`, 60 s): a rotated token re-presented inside the window
+  rotates again and **revokes the entire successor chain minted downstream of
+  the lost response** (an interceptor who captured it — even one who then
+  rotated what they captured — loses it; the legitimate client provably never
+  received it). The pair and its revocation linkage are persisted in ONE atomic
+  save, so no crash window leaves a live pair on disk that a post-restart
+  replay cannot revoke. The window never extends on replay, its state persists
+  across restarts, and beyond it single-use holds exactly as before. Pinned by
+  `tests/oauth.test.ts` with per-guard red/green mutation checks.
 - Pinned by `tests/oauth.test.ts`. See
   [`operations.md §1.B`](./operations.md#b-oauth-state--in-memory-by-default-persistable-via-a-state-file).
 
@@ -1089,10 +1102,16 @@ search p95 over 200 ms, is already met at 2,880 notes.
 
 ## Mid-term
 
-### Hosting recipes 💭
+### Hosting recipes 💭 → 🚧 (first slice)
 
 Turn [`operations.md`](./operations.md) into runnable recipes: a named-tunnel +
 systemd bundle, a container image, and a one-page "deploy to a $5 VPS" guide.
+🚧 First runnable slice landed 2026-08-30 (incident-driven): a Funnel-ingress
+watchdog (`scripts/funnel-watchdog.sh` + launchd recipe in
+[`operations.md §2`](./operations.md#macos-tailscale-funnel--launchd)) —
+`tailscale funnel status` reads config, not liveness, so a post-sleep dead
+ingress served 502s for hours while every local signal looked green. The rest
+of this item is unchanged.
 
 ### Observability 💭
 

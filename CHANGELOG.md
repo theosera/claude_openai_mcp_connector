@@ -6,6 +6,41 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Refresh-token rotation gained a bounded replay-grace window** (incident
+  2026-08-30). Strict single-use rotation deleted the presented refresh token
+  before the client held its replacement, so one response lost over a dead
+  ingress turned the next refresh into `invalid_grant` and forced a full
+  re-authorization. A rotated token re-presented inside `ROTATION_GRACE_MS`
+  (60 s) now rotates again, and the replay revokes the **entire successor
+  chain** minted downstream of the lost response — not just the direct pair,
+  which an interceptor could escape by rotating what they captured once
+  (independent review, P2). The minted pair and its revocation linkage are
+  persisted in **one atomic save**, closing the crash window in which disk held
+  a live pair with no linkage back to the rotated token (independent review,
+  P2). The window never extends on replay, survives restarts, and beyond it
+  single-use holds exactly as before; hash-at-rest is unchanged (successor
+  links are sha256 keys). Pinned in `tests/oauth.test.ts` with six per-guard
+  red/green mutation checks recorded in the test file.
+
+- **`apply_planned_update` / `apply_planned_document_create` responses now
+  carry `applied_sha256`** — the hash of the exact bytes the apply wrote
+  (computed from the staged content handed to the atomic write, not re-read
+  from disk). A client whose apply response is lost can fetch + hash the
+  document to settle "did my apply land?" instead of re-staging the full
+  content; the retry alone only learns "the plan is gone", which cannot
+  distinguish applied from expired. Response-shape addition only — no new
+  tool.
+
+- **`scripts/funnel-watchdog.sh` + launchd recipe** (docs/operations.md §2):
+  after a sleep/offline window the Tailscale Funnel ingress can stay dead
+  while `tailscale funnel status` prints "Funnel on" — status reads config,
+  not liveness, and a local curl of the public URL never traverses the public
+  edge (MagicDNS). The watchdog re-asserts `tailscale funnel --bg <port>` on a
+  timer; the re-assert was measured idempotent while healthy and restored a
+  dead ingress, both externally verified (2026-08-30).
+
 ### Fixed
 
 - **The SKILL.md frontmatter parse is bounded by how many lines the block opens,

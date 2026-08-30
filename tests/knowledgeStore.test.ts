@@ -216,6 +216,14 @@ describe("KnowledgeStore", () => {
     const result = await store.applyPlannedDocumentCreate(plan.patch_id, relativePath);
     expect(result.document.relativePath).toBe(relativePath);
     expect(result.document.body).toContain("Synthetic exact-path body");
+    // applied_sha256 contract: the hash names the exact bytes on disk, so a
+    // client whose apply RESPONSE was lost can later fetch + hash to settle
+    // "did it land?" without re-staging (2026-08-30 incident). One readFile —
+    // hash and comparison describe the same bytes.
+    // 逆検証・赤緑実測 (2026-08-30): 両 apply の戻り値を sha256("mutated") に
+    // 差し替えると、この assert と update 側の assert の 2 本だけが赤。
+    const createdBytes = await fs.readFile(path.join(root, relativePath));
+    expect(result.appliedSha256).toBe(crypto.createHash("sha256").update(createdBytes).digest("hex"));
     expect(result.document.frontmatter).toMatchObject({
       client: "chatgpt",
       project: "verification",
@@ -360,6 +368,10 @@ describe("KnowledgeStore", () => {
     const result = await store.applyPlannedUpdate(plan.patch_id);
     expect(result.document.body).toContain("Updated synthetic body");
     expect(result.document.frontmatter.tags).toEqual(["mcp", "updated"]);
+    // Same applied_sha256 contract as exact-path create: the returned hash is
+    // the on-disk bytes this apply wrote (single readFile for hash + compare).
+    const updatedBytes = await fs.readFile(path.join(root, result.document.relativePath));
+    expect(result.appliedSha256).toBe(crypto.createHash("sha256").update(updatedBytes).digest("hex"));
   });
 
   it("stages two-step plans owner-only, inside an owner-only state directory", async () => {

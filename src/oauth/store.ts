@@ -17,8 +17,16 @@ import path from "node:path";
 //    fails CLOSED — the store starts empty and every session must re-auth,
 //  - authorization codes are single-use and short-lived, and are deliberately
 //    NEVER persisted (a restart mid-flow just restarts the flow),
-//  - refresh-token rotation deletes the presented token from disk immediately,
-//    so single-use semantics hold across restarts,
+//  - refresh-token rotation invalidates the presented token, with a short
+//    replay-grace window (ROTATION_GRACE_MS) so a rotation whose RESPONSE was
+//    lost in transit does not strand the client with an already-dead token: a
+//    rotated token re-presented inside the window rotates again, and the whole
+//    successor CHAIN minted downstream of the lost response is revoked at that
+//    moment (the legitimate client provably never received it, and an
+//    interceptor who rotated what they captured is reached however many hops
+//    they took — see revokeSuccessorChain). The window never
+//    extends on replay, its state is written to disk on every transition, and
+//    beyond it single-use semantics hold across restarts exactly as before,
 //  - every collection is capped and pruned to bound memory (DoS via unbounded
 //    dynamic client registration / token minting).
 
@@ -31,6 +39,15 @@ const DEFAULT_MAX_TOKENS = 2000;
 // authorize->token round-trip so an in-flight registration (registered, not yet
 // exchanged for a token) is never swept mid-flow.
 const DEFAULT_CLIENT_ORPHAN_GRACE_MS = 60 * 60 * 1000;
+
+// How long a refresh token stays replayable after it was rotated. Sized for
+// "the rotation response was lost on an unreliable link and the client retries
+// promptly" — NOT for offline recovery (a client that comes back hours later
+// re-authorizes, as before). Keeping it short bounds the extra exposure: a
+// stolen rotated token is useful for at most this window, and using it revokes
+// the legitimate client's pair, which surfaces the theft as a forced re-auth
+// instead of hiding it.
+export const ROTATION_GRACE_MS = 60 * 1000;
 
 const STATE_VERSION = 1;
 const STATE_SALT_BYTES = 16;
@@ -66,6 +83,23 @@ interface TokenRecord {
   scope: string;
   resource: string;
   expiresAt: number;
+  /**
+   * Refresh tokens only — set the first time the token is rotated. Presence
+   * marks the record as "already rotated, alive only for the replay-grace
+   * window"; `expiresAt` is capped to `rotatedAt + ROTATION_GRACE_MS` at the
+   * same moment, so the ordinary expiry sweep retires it. Never updated on
+   * replay (the window must not extend).
+   */
+  rotatedAt?: number;
+  /**
+   * sha256 keys (never raw tokens — hash-at-rest holds) of the access/refresh
+   * pair minted by the most recent rotation of this token. A replay inside the
+   * grace window revokes them: the client re-presenting the OLD token proves
+   * the response carrying these never arrived, so if anyone else holds them it
+   * is an interceptor.
+   */
+  successorAccessKey?: string;
+  successorRefreshKey?: string;
 }
 
 export interface OAuthStoreOptions {
@@ -218,6 +252,20 @@ export class OAuthStore {
   }
 
   issueTokens(clientId: string, scope: string, resource: string): IssuedTokens {
+    const issued = this.mintTokens(clientId, scope, resource);
+    this.save();
+    return issued;
+  }
+
+  /**
+   * Mint a pair WITHOUT saving. Exists so `rotateRefreshToken` can persist the
+   * minted pair and its successor linkage in ONE atomic save (tmp + rename): a
+   * save between them is a crash window where disk holds a live successor pair
+   * with no linkage back to the rotated token, and a post-restart replay would
+   * then skip revoking it. Every non-rotation caller goes through
+   * `issueTokens`, which saves immediately.
+   */
+  private mintTokens(clientId: string, scope: string, resource: string): IssuedTokens {
     this.prune();
     const accessToken = randomSecret();
     const refreshToken = randomSecret();
@@ -238,7 +286,6 @@ export class OAuthStore {
     // tokens faster than they expire cannot grow the maps without bound.
     enforceCap(this.accessTokens, this.maxTokens);
     enforceCap(this.refreshTokens, this.maxTokens);
-    this.save();
     return {
       accessToken,
       refreshToken,
@@ -264,22 +311,91 @@ export class OAuthStore {
     return { clientId: record.clientId, scope: record.scope, resource: record.resource };
   }
 
-  /** Refresh-token rotation: the presented refresh token is invalidated. */
+  /**
+   * Refresh-token rotation with a bounded replay-grace window.
+   *
+   * Why not strict single-use: the response carrying the new pair travels over
+   * the same unreliable link that motivates refreshing at all. Deleting the
+   * presented token BEFORE the client has the replacement means one lost
+   * response strands the client with nothing but a dead token — the next
+   * refresh is `invalid_grant` and the user is forced back through the full
+   * authorize flow (observed in production, 2026-08-30 incident). So:
+   *
+   *  - First presentation: mark the record rotated (`rotatedAt`), cap its
+   *    `expiresAt` to the grace window, and mint a fresh pair.
+   *  - Re-presentation INSIDE the window: the client provably never received
+   *    the previous response, so revoke the whole successor chain minted for
+   *    it (if an interceptor holds any of it — even after rotating what they
+   *    captured — it dies here) and mint another fresh pair. `rotatedAt` is
+   *    never touched again — replays cannot extend the window.
+   *  - Re-presentation AFTER the window: the record has expired (the cap above)
+   *    or been swept; the token is dead, exactly as under strict single-use.
+   *
+   * Every transition is saved to disk immediately, so replay semantics hold
+   * across restarts the same way single-use failure did before.
+   */
   rotateRefreshToken(refreshToken: string, clientId: string): IssuedTokens | null {
     const key = tokenKey(refreshToken);
     const record = this.refreshTokens.get(key);
     if (!record) {
       return null;
     }
-    this.refreshTokens.delete(key);
-    if (record.expiresAt <= this.now() || record.clientId !== clientId) {
-      // The deletion above must still reach disk: single-use semantics for a
-      // presented refresh token hold across restarts even on a failed rotation.
+    const t = this.now();
+    if (record.expiresAt <= t || record.clientId !== clientId) {
+      this.refreshTokens.delete(key);
+      // The deletion must still reach disk: a dead presented token stays dead
+      // across restarts even on a failed rotation.
       this.save();
       return null;
     }
-    // issueTokens() saves, covering the deletion in the success path too.
-    return this.issueTokens(clientId, record.scope, record.resource);
+    if (record.rotatedAt === undefined) {
+      record.rotatedAt = t;
+      // The ordinary expiry sweep (evictExpired / load) retires the record once
+      // the window closes — no separate cleanup path to get wrong.
+      record.expiresAt = Math.min(record.expiresAt, t + ROTATION_GRACE_MS);
+    } else {
+      // Replay inside the window (outside it, the expiry check above already
+      // returned). Everything minted downstream of the lost response is
+      // revoked — the WHOLE chain, not just the direct pair: an interceptor
+      // who captured the lost response can rotate its refresh token once and
+      // put their live pair one hop beyond a single-level delete. Walking the
+      // chain reaches them however many hops they took.
+      this.revokeSuccessorChain(record);
+    }
+    // Mint WITHOUT saving, record the linkage, then save ONCE: the pair and
+    // the successor keys that make it revocable must hit disk in the same
+    // atomic write, or a crash between two saves leaves a live pair on disk
+    // that a post-restart replay cannot revoke.
+    const issued = this.mintTokens(clientId, record.scope, record.resource);
+    record.successorAccessKey = tokenKey(issued.accessToken);
+    record.successorRefreshKey = tokenKey(issued.refreshToken);
+    this.save();
+    return issued;
+  }
+
+  /**
+   * Delete every token reachable through successor links from `record`. The
+   * walk is bounded: each visited refresh key is deleted from the map before
+   * following its links, and a `seen` set guards against a malformed cycle in
+   * loaded state, so it terminates in at most the map's size.
+   */
+  private revokeSuccessorChain(record: TokenRecord): void {
+    const seen = new Set<string>();
+    let accessKey = record.successorAccessKey;
+    let refreshKey = record.successorRefreshKey;
+    while (accessKey !== undefined || refreshKey !== undefined) {
+      if (accessKey !== undefined) {
+        this.accessTokens.delete(accessKey);
+      }
+      let next: TokenRecord | undefined;
+      if (refreshKey !== undefined && !seen.has(refreshKey)) {
+        seen.add(refreshKey);
+        next = this.refreshTokens.get(refreshKey);
+        this.refreshTokens.delete(refreshKey);
+      }
+      accessKey = next?.successorAccessKey;
+      refreshKey = next?.successorRefreshKey;
+    }
   }
 
   private prune(): void {
@@ -380,12 +496,26 @@ export class OAuthStore {
             typeof record.expiresAt === "number" &&
             record.expiresAt > t
           ) {
-            into.set(record.tokenHash, {
+            const loaded: TokenRecord = {
               clientId: record.clientId,
               scope: record.scope,
               resource: record.resource,
               expiresAt: record.expiresAt
-            });
+            };
+            // Rotation-grace state must survive a restart, or a replay after a
+            // supervisor bounce would look like a first rotation and re-open
+            // the window. Each field is optional and individually validated;
+            // absent fields (a pre-grace state file) load as never-rotated.
+            if (typeof record.rotatedAt === "number") {
+              loaded.rotatedAt = record.rotatedAt;
+            }
+            if (typeof record.successorAccessKey === "string") {
+              loaded.successorAccessKey = record.successorAccessKey;
+            }
+            if (typeof record.successorRefreshKey === "string") {
+              loaded.successorRefreshKey = record.successorRefreshKey;
+            }
+            into.set(record.tokenHash, loaded);
           }
         }
       };

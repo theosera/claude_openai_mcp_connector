@@ -408,12 +408,61 @@ launchctl load -w ~/Library/LaunchAgents/local.mcp-connector.plist
 > (`…/node-versions/vX.Y.Z/installation/bin/node`), **not** a transient
 > per-shell multishell path.
 
+**3. Keep the Funnel ingress alive (watchdog).** After a sleep/offline window
+the Funnel **ingress** (public edge → tailscaled) can stay dead while
+`tailscale funnel status` keeps printing "Funnel on" — status reads the stored
+serve config, **not** the live ingress (observed 2026-08-30: every remote
+client got 502/connection errors for hours while the origin was healthy and
+status said on). Two things follow. First, **do not use `funnel status`, or a
+local curl of the public URL, as a liveness check** — MagicDNS resolves the
+public name to the machine itself, so a local curl never traverses the public
+edge; only a probe from outside the tailnet tests it. Second, re-running
+`tailscale funnel --bg <port>` is cheap, idempotent while healthy, and restores
+a dead ingress (both externally verified) — so simply re-assert it on a timer:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>local.mcp-funnel-watchdog</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/abs/path/to/claude_openai_mcp_connector/scripts/funnel-watchdog.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>MCP_FUNNEL_PORT</key><string>8787</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>300</integer>
+  <key>StandardOutPath</key><string>/abs/path/to/logs/funnel-watchdog.out.log</string>
+  <key>StandardErrorPath</key><string>/abs/path/to/logs/funnel-watchdog.err.log</string>
+</dict>
+</plist>
+```
+
+```bash
+launchctl load -w ~/Library/LaunchAgents/local.mcp-funnel-watchdog.plist
+```
+
+`RunAtLoad` covers the boot/wake-adjacent case (launchd fires missed
+`StartInterval` ticks after wake, so a separate sleep-watcher is not needed);
+five minutes bounds the outage window at negligible cost. The script skips
+quietly (exit 0) while tailscaled is down or logged out, and reads no secrets.
+After loading it, verify **once from outside the tailnet** (phone on cellular,
+or any external host) that the public URL answers.
+
 **Caveats.**
 
 - **macOS sleep pauses the process.** When the Mac sleeps, `node` is suspended
   and in-memory OAuth tokens effectively drop, so the connector goes quiet until
   wake + re-auth. A dedicated always-on host is better; `caffeinate` (e.g.
   running the connector under `caffeinate -s`) mitigates it while on power.
+- **Sleep also kills the Funnel ingress, silently** — see the watchdog in
+  step 3 above; without it the connector can be unreachable for hours while
+  every local signal looks green.
 - **Restart = re-Authorize, not re-register.** Because the `*.ts.net` URL is
   fixed, after a restart you only press **Authorize** in the client to mint fresh
   tokens — no need to delete and re-add the connector. To skip even that
