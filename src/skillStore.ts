@@ -15,8 +15,16 @@ const MAX_TOTAL_BYTES = 512 * 1024;
 const MAX_REFERENCES = 20;
 
 // The number of line starts a real SKILL.md frontmatter block has, with room to
-// spare. Measured over all 10 SKILL.md files in this repository: the largest
-// block is 1,083 bytes and the most line starts any of them carries is 6.
+// spare. Measured over all 10 SKILL.md files in this repository, counted the way
+// the guard below counts — the block starts at the opening delimiter's own
+// newline, so that newline is one of them: the largest block is 1,084 bytes and
+// the most line starts any of them carries is 7. (Counting from after that first
+// newline gives 1,083 and 6; both are self-consistent, but only the first
+// describes what this constant is compared against.)
+//
+// One consequence is worth stating rather than leaving to be re-derived: since
+// the block always opens with that newline, an author's own budget inside it is
+// 255, not 256.
 const MAX_FRONTMATTER_LINE_STARTS = 256;
 
 // The line terminators JS `^` recognises under the `m` flag. It is not only
@@ -453,7 +461,11 @@ function validateSkillMarkdown(skillName: string, content: string): void {
  * opens with `---\n` or `---\r\n`, so there is no leading BOM to strip (a BOM is
  * refused by that check) and no language tag to skip.
  *
- * Neither refusal below narrows what this server accepts.
+ * The first two refusals below narrow nothing: an unterminated block was already
+ * refused after the parse, and a block over MAX_FILE_BYTES cannot reach here.
+ * The third one does narrow, and only over bomb shapes — a block opening more
+ * than MAX_FRONTMATTER_LINE_STARTS lines was accepted before this and is
+ * refused now. The largest real block in this repository opens 7.
  */
 function assertBoundedSkillFrontmatterBlock(content: string): void {
   const afterOpen = content.slice(FRONTMATTER_DELIMITER.length);
@@ -535,13 +547,25 @@ function assertBoundedSkillFrontmatterBlock(content: string): void {
   // a small one. Re-measured with the block held at MAX_FILE_BYTES and only the
   // line count varying:
   //
-  //     line starts   total bytes   parse
-  //               6       131,059    4.5 ms
-  //             128       130,981   15.9 ms
-  //             256       130,853   24.4 ms   <- what this limit actually admits
-  //           1,024       130,085   91.9 ms
-  //           8,192       122,917    740 ms
-  //         ~131,000       131,050   10,712 ms
+  //     line starts   total bytes   even layout   worst layout
+  //               6       131,064       1.5 ms         2.1 ms
+  //             128       131,064      10.8 ms        20.5 ms
+  //             256       131,064      20.8 ms        40.1 ms   <- what this admits
+  //           1,024       131,064      82.8 ms       157.0 ms
+  //           8,192       131,064     598.7 ms     1,223.4 ms
+  //         ~131,000       131,064  10,328.1 ms    10,368.8 ms
+  //
+  // Two layouts because size and line count do not finish the job either. The
+  // cost is line starts TIMES the whitespace run each one opens, so where the
+  // terminators sit inside the block changes it by about 2x: spreading them
+  // evenly gives every run the same short length, while packing them at the
+  // front leaves one long run reachable from all of them. The bound is the worst
+  // layout, because the attacker picks it.
+  //
+  // The last row is the check on that claim: at ~131,000 line starts the block is
+  // saturated with terminators, there is no whitespace left to place, and the two
+  // layouts converge to within 0.4%. A difference that disappears exactly when
+  // the variable stops being free is a difference caused by that variable.
   //
   // A byte bound cannot separate those rows: a 130 KB block on one line parses in
   // about 3 ms, and 130 KB of newlines takes ten seconds. The comment on (2)
@@ -549,7 +573,7 @@ function assertBoundedSkillFrontmatterBlock(content: string): void {
   // `name` + `description` — an accept-to-reject change — and recorded that trade
   // as the price of leaving this open. Counting line starts does not charge it: a
   // legitimate block is a handful of lines at any size, and the largest one in
-  // this repository opens 6.
+  // this repository opens 7.
   const lineStarts = (block.match(FRONTMATTER_LINE_START) ?? []).length;
   if (lineStarts > MAX_FRONTMATTER_LINE_STARTS) {
     throw new Error(

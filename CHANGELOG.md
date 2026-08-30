@@ -29,19 +29,34 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the bound. The cost is line starts *times* the whitespace run each one opens,
   and the attacker picks the size, so the worst input at a given limit is a
   full-size block split into that many lines. Re-measured with the block held at
-  `MAX_FILE_BYTES` and only the line count varying:
+  `MAX_FILE_BYTES` — and with the terminators placed two ways, because where they
+  sit inside the block is a third variable and not a fixed one:
 
-  | line starts | total bytes | parse |
-  | ---: | ---: | ---: |
-  | 6 | 131,059 | 4.5 ms |
-  | 256 | 130,853 | **24.4 ms** |
-  | 1,024 | 130,085 | 91.9 ms |
-  | ~131,000 | 131,050 | 10,712 ms |
+  | line starts | total bytes | even layout | worst layout |
+  | ---: | ---: | ---: | ---: |
+  | 6 | 131,064 | 1.5 ms | 2.1 ms |
+  | 128 | 131,064 | 10.8 ms | 20.5 ms |
+  | 256 | 131,064 | 20.8 ms | **40.1 ms** |
+  | 1,024 | 131,064 | 82.8 ms | 157.0 ms |
+  | 8,192 | 131,064 | 598.7 ms | 1,223.4 ms |
+  | ~131,000 | 131,064 | 10,328.1 ms | 10,368.8 ms |
 
-  So the limit admits about **24 ms**, not the 0.2 ms the first table suggests —
-  a ~440x reduction against the unbounded case, not a ~50,000x one. Stating it
-  the other way would have been a bound measured with two variables moving at
-  once.
+  So the limit admits about **40 ms** — a ~250x reduction against the unbounded
+  case, not the ~50,000x the first table suggests and not the ~440x an even
+  layout suggests. Spreading the terminators gives every whitespace run the same
+  short length; packing them at the front leaves one long run reachable from all
+  of them, and the attacker chooses.
+
+  The last row is the check on that reading. At ~131,000 line starts the block is
+  saturated with terminators, there is no whitespace left to place, and the two
+  layouts converge to within 0.4%. A difference that vanishes exactly when the
+  variable stops being free is a difference caused by that variable — which is
+  also why machine or version differences do not explain it.
+
+  This correction has now been made twice on the same number. The first pass
+  fixed bytes and line starts moving together and left layout free; the table
+  above fixes layout. Each pass held one more variable still, and each was found
+  by someone else measuring the same thing a different way.
 
   A byte bound cannot separate those rows — 130 KB on one line parses in about
   3 ms, and 130 KB of newlines takes ten seconds — which is why the comment on
@@ -49,15 +64,27 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   also refuse a legitimate large `name` + `description`, an accept-to-reject
   change. **Counting line starts does not charge that.** A legitimate block is a
   handful of lines whatever its size; the largest one in this repository opens
-  **6**, against a limit of **256**. A 200-line block scalar is still accepted,
+  **7**, against a limit of **256**. A 200-line block scalar is still accepted,
   and there is a test that says so.
 
-  The count includes **U+2028 and U+2029**, which open a line for the regex
-  engine exactly as `\n` does. Counting newlines alone would have left the class
-  reachable through a character the count never sees: U+2028 is 3 bytes, so
-  about 43,690 of them fit under `MAX_FILE_BYTES`, and 40,000 of them cost
-  2,074 ms. Removing the guard turns exactly the two new tests red, at 1,276 ms
-  and 2,074 ms, and nothing else.
+  Counted the way the guard counts: the block begins at the opening delimiter's
+  own newline, so that newline is one of them. Counting from after it gives 6 and
+  1,083 bytes rather than 7 and 1,084 — self-consistent, but not the number this
+  limit is compared against. The same offset means an author's own budget inside
+  the block is 255, not 256.
+
+  The count includes **all four** terminators the regex engine opens a line on —
+  `\n`, `\r`, **U+2028 and U+2029** — and each of the four has its own test.
+  Pinning the cap is not the same as pinning the class: removing the threshold
+  fails every case at once, which looks like disjoint red and only proves the cap
+  fires. Removing one arm has to fail that arm's case and nothing else, and now
+  does, for all four.
+
+  `\r` was the arm that mattered and the one with no coverage. `normalizeText`
+  folds `\r\n` to `\n`, so CRLF never arrives as CR — but a bare CR does, and at
+  one byte each ~131k fit under `MAX_FILE_BYTES`: 44,032 of them were **accepted
+  after 1,138 ms** before this. U+2028 and U+2029 are three bytes, so about
+  43,690 fit and 40,000 cost 2,074 ms.
 
 - **Every comparison against a file on disk is byte-exact, at all four sites**
   (Codex P2 on #151, and three more the finding did not name). `readFile(…,
