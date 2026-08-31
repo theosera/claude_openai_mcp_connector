@@ -10,6 +10,19 @@
 # the ingress; it was measured to be idempotent while healthy and to restore a
 # dead ingress (externally verified from outside the tailnet, twice).
 #
+# SCOPE (learned on the third occurrence, 2026-08-31): the re-assert heals the
+# SLEEP/IDLE variant only. When the machine's network path changes under
+# tailscaled — a VPN toggled on/off, a Wi-Fi/gateway switch (observed as
+# "portmap: gateway and self IP changed" plus a changed public IP in
+# `tailscale netcheck`) — the edge keeps holding the stale path, and this
+# re-assert does NOT bring the ingress back: `tailscale status`/netcheck look
+# healthy, funnel says "on", and the public URL stays dead. Recovery for that
+# variant is re-joining the tailnet, then re-asserting:
+#   tailscale down && sleep 2 && tailscale up && bash funnel-watchdog.sh
+# Automating the down/up here was considered and deliberately left out: it
+# drops every live tailnet connection on the machine, which is too large a
+# side effect for an unattended 5-minute timer to take on a guess.
+#
 # WHY NOT AN EXTERNAL HEALTH CHECK FROM THIS MACHINE: curl-ing the public
 # https://<machine>.<tailnet>.ts.net URL from the machine itself does NOT
 # traverse the public ingress — MagicDNS resolves the name to this machine's
@@ -77,7 +90,8 @@ if ! "$TS" status > /dev/null 2>&1; then
 fi
 
 # Idempotent re-assert. --bg persists the config and returns immediately;
-# when the ingress is already live this is a no-op, when it died (sleep,
-# network change) this brings it back.
+# when the ingress is already live this is a no-op, and when it died the
+# sleep/idle way this brings it back. (NOT after a network-path change —
+# see SCOPE in the header; that variant needs `tailscale down && up` first.)
 "$TS" funnel --bg "$PORT" > /dev/null
 echo "funnel-watchdog: re-asserted funnel --bg $PORT at $(date '+%Y-%m-%dT%H:%M:%S%z')"

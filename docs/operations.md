@@ -454,6 +454,27 @@ quietly (exit 0) while tailscaled is down or logged out, and reads no secrets.
 After loading it, verify **once from outside the tailnet** (phone on cellular,
 or any external host) that the public URL answers.
 
+⚠️ **Scope of the watchdog — the re-assert does not heal every dead ingress**
+(learned on the third occurrence, 2026-08-31; the two verifications above were
+both the sleep variant). When the machine's **network path changes under
+tailscaled** — a VPN toggled on or off, a Wi-Fi/gateway switch — the edge keeps
+holding the stale path while every local signal stays green: `tailscale status`
+shows the node online, `netcheck` reaches DERP, funnel says "on", and the
+re-assert is a no-op. The tell in the logs is `portmap: … gateway and self IP
+changed` and a different public IPv4 between two `tailscale netcheck` runs.
+Recovery for that variant is re-joining the tailnet, then re-asserting:
+
+```bash
+tailscale down && sleep 2 && tailscale up
+bash /abs/path/to/scripts/funnel-watchdog.sh   # or wait ≤5 min for the timer
+```
+
+Then verify from outside the tailnet again. Automating the `down && up` inside
+the watchdog was considered and deliberately left out — it drops every live
+tailnet connection on the machine, too large a side effect for an unattended
+timer to take on a guess. If you toggle a VPN routinely, run the two lines
+above as part of the toggle.
+
 **Caveats.**
 
 - **macOS sleep pauses the process.** When the Mac sleeps, `node` is suspended
@@ -463,6 +484,9 @@ or any external host) that the public URL answers.
 - **Sleep also kills the Funnel ingress, silently** — see the watchdog in
   step 3 above; without it the connector can be unreachable for hours while
   every local signal looks green.
+- **A VPN toggle / network switch kills it differently** — the watchdog's
+  re-assert does NOT recover that variant; it needs `tailscale down && up`
+  first (see the scope warning in step 3).
 - **Restart = re-Authorize, not re-register.** Because the `*.ts.net` URL is
   fixed, after a restart you only press **Authorize** in the client to mint fresh
   tokens — no need to delete and re-add the connector. To skip even that
