@@ -1,8 +1,9 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const hookPath = path.join(repoRoot, ".claude", "skills", "session-archive", "archive-session.sh");
@@ -364,5 +365,432 @@ describe("session-archive tool-result fencing", () => {
     ]);
 
     expect(topLevelLines(note).some((line) => line.startsWith("## 👤 User —"))).toBe(true);
+  });
+});
+
+const captureHookPath = path.join(repoRoot, ".claude", "skills", "ops-logging", "capture-command.sh");
+
+/**
+ * The secret mask is the only thing between a credential that appeared in a tool
+ * result and a note that is committed, pushed to the vault, and later served back
+ * over MCP to anything holding `vault.read`.
+ *
+ * The keyword rule accepts only `=`, `:` or whitespace after the keyword, so it
+ * never even starts on the shape credentials actually arrive in — `"access_token":
+ * "…"`, `{"password":"…"}` — because the next character is a quote. Two quoted-run
+ * rules cover that. Both are BOUNDED: they require a closing quote, because an
+ * unbounded one runs to end of line, and these hooks mask whole Bash command
+ * strings and whole note bodies (`grep -n "token: " src/*.ts` would lose its tail).
+ *
+ * Like the fencing suite above, these drive the mask EXTRACTED FROM THE SHIPPED
+ * HOOK, not a copy: a copy would keep passing after the hook regressed.
+ */
+
+/** The mask() function as it ships, extracted from a hook script. */
+async function shippedMask(hook: string): Promise<string> {
+  const script = await fs.readFile(hook, "utf8");
+  const lines = script.split("\n");
+  const start = lines.indexOf("mask() {");
+  if (start === -1) {
+    throw new Error(`mask() { not found in ${hook} — the extraction anchor moved.`);
+  }
+  const end = lines.findIndex((line, index) => index > start && line === "}");
+  if (end === -1) {
+    throw new Error(`unterminated mask() in ${hook} — the extraction anchor moved.`);
+  }
+  return lines.slice(start, end + 1).join("\n");
+}
+
+function runMask(maskFn: string, input: string): string {
+  return execFileSync("bash", ["-c", `${maskFn}\nmask`], { input, encoding: "utf8" }).trimEnd();
+}
+
+function mutate(maskFn: string, from: string, to: string, what: string): string {
+  if (!maskFn.includes(from)) {
+    throw new Error(
+      `${what} is already gone from the shipped mask() — the hook has regressed to exactly the ` +
+        "shape the assertion below exists to catch. That failure is the real signal."
+    );
+  }
+  return maskFn.split(from).join(to);
+}
+
+/** `]?[=:` occurs only in the two quoted-run rules; the keyword rule reads `)[=:`. */
+const QUOTED_RULES = "]?[=:";
+/** The escape-aware value class, as the shell source spells it. */
+const DQ_VALUE = String.raw`([^\"\\\\]|\\\\.)*`;
+/** The required closing quote that bounds the double-quoted rule to one line. */
+const DQ_CLOSE = String.raw`)*\"/`;
+/** Byte-identical to the rule as it stood before this change — the no-less-masked fallback. */
+const BARE_KEYWORD_RULE =
+  String.raw`    -e 's/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)[^[:space:]]+/\1***MASKED***/Ig' ` +
+  "\\"; // trailing line-continuation: String.raw cannot end on a backslash
+
+const ACCESS = "A".repeat(32);
+const REFRESH = "R".repeat(20);
+const OAUTH_RESPONSE =
+  `{"access_token":"${ACCESS}","token_type":"Bearer",` +
+  `"refresh_token":"${REFRESH}","scope":"vault.read vault.write"}`;
+
+describe("session-archive secret masking", () => {
+  let mask: string;
+
+  beforeAll(async () => {
+    mask = await shippedMask(hookPath);
+  });
+
+  it("masks both credentials in an OAuth token response, and leaves the object around them intact", () => {
+    const masked = runMask(mask, OAUTH_RESPONSE);
+
+    expect(masked).not.toContain(ACCESS);
+    expect(masked).not.toContain(REFRESH);
+    expect(masked).toContain(`"access_token":"***MASKED***"`);
+    expect(masked).toContain(`"refresh_token":"***MASKED***"`);
+    // The value ends at the closing quote, so the rest of the object survives.
+    expect(masked).toContain(`"scope":"vault.read vault.write"`);
+  });
+
+  it("leaks both credentials once the quoted-run rules are removed, so the pass above means something", () => {
+    const masked = runMask(mutate(mask, QUOTED_RULES, "]?ZZ[=:", "the quoted-run rules"), OAUTH_RESPONSE);
+
+    expect(masked).toContain(ACCESS);
+    expect(masked).toContain(REFRESH);
+  });
+
+  it("masks single-quoted values, the shape a Python dict prints", () => {
+    expect(runMask(mask, `{'api_key': 'EXAMPLEKEYVALUE', 'secret': 'topsecret'}`)).toBe(
+      `{'api_key': '***MASKED***', 'secret': '***MASKED***'}`
+    );
+  });
+
+  it("ends the value at the real closing quote, not at an escaped one", () => {
+    // Without escape awareness the value stops at the \" and leaves the tail of
+    // the credential readable — a secret LESS masked than before this change.
+    const line = `password: "p@ss \\"quoted words\\" tail"`;
+
+    expect(runMask(mask, line)).toBe("password: ***MASKED***");
+    expect(runMask(mutate(mask, DQ_VALUE, String.raw`[^\"]*`, "the escape-aware value class"), line)).toContain(
+      `words\\" tail"`
+    );
+  });
+
+  it("requires a closing quote, so a quote that opens nothing cannot blank the rest of the line", () => {
+    // The closing quote of a shell string is offered as an opening one here. An
+    // unbounded value would run to end of line -- F12's failure in a new place.
+    const line = `grep -n "token: " src/*.ts`;
+
+    expect(runMask(mask, line)).toBe(`grep -n "token: ***MASKED*** src/*.ts`);
+    expect(runMask(mutate(mask, DQ_CLOSE, String.raw`)*\"?/`, "the required closing quote"), line)).toBe(
+      `grep -n "token: ***MASKED***`
+    );
+  });
+
+  it("still masks an unterminated quoted value, so requiring the close costs no coverage", () => {
+    // The bounded rules decline; the keyword rule below them masks to whitespace,
+    // exactly as it did before this change.
+    expect(runMask(mask, `token: "abc123`)).toBe("token: ***MASKED***");
+    expect(runMask(mask, `password: "p@ss\\"word"`)).toBe("password: ***MASKED***");
+  });
+
+  it("keeps the keyword rule byte-identical to its previous form, since it is that fallback", () => {
+    expect(mask).toContain(BARE_KEYWORD_RULE);
+    const withoutFallback = mutate(mask, `${BARE_KEYWORD_RULE}\n`, "", "the keyword fallback rule");
+    expect(runMask(withoutFallback, `token: "abc123`)).toBe(`token: "abc123`);
+  });
+
+  it("still masks the bare shapes the keyword rule already caught", () => {
+    expect(runMask(mask, "password: hunter2")).toBe("password: ***MASKED***");
+    expect(runMask(mask, "https://api.example.com/v1/items?api_key=EXAMPLEVALUE123&page=2")).toBe(
+      "https://api.example.com/v1/items?api_key=***MASKED***"
+    );
+    expect(runMask(mask, "MCP_HTTP_BEARER_TOKEN=abcdefghijklmnop")).toBe("MCP_HTTP_BEARER_TOKEN=***MASKED***");
+  });
+
+  it("does not fire on a keyword that no separator follows, and never crosses a newline", () => {
+    const line = "keyboard secretaria tokenizer src/tokenEstimate.ts";
+    expect(runMask(mask, line)).toBe(line);
+
+    expect(runMask(mask, `token: "abc\nsecond line survives`)).toBe("token: ***MASKED***\nsecond line survives");
+  });
+
+  it("keeps the two shipped mask() copies byte-identical", async () => {
+    // archive-session.sh says the ops-logging copy carries the same rules. A rule
+    // added to one and not the other leaves that transport masking less.
+    expect(await shippedMask(captureHookPath)).toBe(await shippedMask(hookPath));
+  });
+});
+
+/**
+ * The other thing this hook decides is WHERE the rendered transcript goes: it is
+ * written into a clone under $HOME and `git push`-ed to that clone's origin.
+ *
+ * The marker file that used to make that decision on its own,
+ * `.claude-session-vault`, is committed at the vault clone root — so it travels
+ * inside a clone, and any repository this machine checks out can carry one. The
+ * tests below run the SHIPPED script against a throwaway $HOME holding real git
+ * clones with real (local) remotes, and assert on what each REMOTE received,
+ * because the push is the step that takes the transcript off the machine.
+ *
+ * They drive the hook in `precompact` mode: vault selection runs before the mode
+ * branch, so it is the same code either way, and precompact skips the
+ * three-second transcript-flush wait that Stop/SessionEnd take.
+ */
+
+const SUBDIR = "sessions";
+const SESSION_ID = "0f9e8d7c-1111-2222-3333-444455556666";
+/** Only ever present in the transcript: if it reaches a remote, that remote received the session. */
+const TRANSCRIPT_CANARY = "PRIVATE-SOURCE-LINE-9f3a";
+
+const TRANSCRIPT: unknown[] = [
+  {
+    type: "user",
+    isMeta: false,
+    timestamp: "2026-08-10T10:00:00.000Z",
+    message: { content: "summarise the private notes" }
+  },
+  {
+    type: "assistant",
+    timestamp: "2026-08-10T10:00:05.000Z",
+    message: { content: [{ type: "tool_use", name: "Read", input: { file_path: "/notes/private.md" } }] }
+  },
+  {
+    type: "user",
+    isMeta: false,
+    timestamp: "2026-08-10T10:00:06.000Z",
+    message: { content: [{ type: "tool_result", content: TRANSCRIPT_CANARY }] }
+  }
+];
+
+interface Fixture {
+  root: string;
+  home: string;
+  transcript: string;
+}
+
+const fixtureRoots: string[] = [];
+
+async function makeFixture(): Promise<Fixture> {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "session-archive-")));
+  fixtureRoots.push(root);
+  const home = path.join(root, "home");
+  await fs.mkdir(home, { recursive: true });
+  // Hermetic git: identity, default branch and signing come from here, never
+  // from the host's own config.
+  await fs.writeFile(
+    path.join(root, "gitconfig"),
+    "[user]\n\tname = session-archive test\n\temail = test@example.invalid\n" +
+      "[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n"
+  );
+  const transcript = path.join(root, "transcript.jsonl");
+  await fs.writeFile(transcript, TRANSCRIPT.map((line) => JSON.stringify(line)).join("\n") + "\n");
+  return { root, home, transcript };
+}
+
+/**
+ * Built from scratch rather than from process.env, so a SESSION_VAULT_* value in
+ * the developer's own shell cannot decide what these tests measure.
+ */
+function hookEnv(fixture: Fixture, overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
+  return {
+    PATH: process.env.PATH ?? "",
+    HOME: fixture.home,
+    GIT_CONFIG_GLOBAL: path.join(fixture.root, "gitconfig"),
+    GIT_CONFIG_SYSTEM: "/dev/null",
+    GIT_TERMINAL_PROMPT: "0",
+    ...overrides
+  };
+}
+
+function git(args: string[], fixture: Fixture): string {
+  return execFileSync("git", args, { env: hookEnv(fixture), encoding: "utf8", stdio: "pipe" });
+}
+
+/**
+ * A marked clone under $HOME: a git repo with the marker COMMITTED at its root
+ * and an origin of its own. This is both the documented vault setup and exactly
+ * what an attacker commits into a repo the operator checks out — the two are
+ * indistinguishable from inside the checkout, which is the point.
+ */
+async function markedClone(fixture: Fixture, name: string): Promise<{ dir: string; remote: string }> {
+  const dir = path.join(fixture.home, name);
+  const remote = path.join(fixture.root, "remotes", `${name}.git`);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.mkdir(path.dirname(remote), { recursive: true });
+  await fs.writeFile(path.join(dir, ".claude-session-vault"), `${SUBDIR}\n`);
+  git(["init", "-q", dir], fixture);
+  git(["-C", dir, "add", "--", ".claude-session-vault"], fixture);
+  git(["-C", dir, "commit", "-q", "-m", "vault marker"], fixture);
+  git(["init", "--bare", "-q", remote], fixture);
+  git(["-C", dir, "remote", "add", "origin", remote], fixture);
+  git(["-C", dir, "push", "-q", "-u", "origin", "HEAD"], fixture);
+  return { dir, remote };
+}
+
+function runHook(
+  fixture: Fixture,
+  env: NodeJS.ProcessEnv,
+  script: string = hookPath
+): { status: number | null; stderr: string } {
+  const payload = JSON.stringify({
+    session_id: SESSION_ID,
+    transcript_path: fixture.transcript,
+    cwd: fixture.home,
+    hook_event_name: "PreCompact"
+  });
+  const result = spawnSync("bash", [script, "precompact"], { input: payload, env, encoding: "utf8" });
+  return { status: result.status, stderr: result.stderr ?? "" };
+}
+
+/** The notes a remote actually received — what whoever owns that repository can read. */
+function notesPushedTo(remote: string, fixture: Fixture): string[] {
+  return git(["-C", remote, "ls-tree", "-r", "-z", "--name-only", "refs/heads/main"], fixture)
+    .split("\0")
+    .filter((entry) => entry.endsWith(".md"));
+}
+
+const PIN_CHECK = '      origin_is_pinned_vault "${candidate%/}" || continue\n';
+
+/**
+ * The scan as it was BEFORE the fix: a marked clone is adopted on the strength of
+ * its own marker file. Used only to show these tests can observe the delivery
+ * they screen for — a refusal that would hold with the guard removed is evidence
+ * of nothing.
+ */
+async function hookWithoutPinCheck(fixture: Fixture): Promise<string> {
+  const script = await fs.readFile(hookPath, "utf8");
+  if (!script.includes(PIN_CHECK)) {
+    throw new Error(
+      "the marker scan no longer calls origin_is_pinned_vault — either the anchor moved, or the scan has " +
+        "regressed to adopting any marked clone, which is the failure the refusals above exist to catch."
+    );
+  }
+  const downgraded = path.join(fixture.root, "archive-session.downgraded.sh");
+  await fs.writeFile(downgraded, script.replace(PIN_CHECK, ""));
+  return downgraded;
+}
+
+describe("session-archive vault authorization", () => {
+  beforeAll(() => {
+    for (const tool of ["jq", "git"]) {
+      try {
+        execFileSync(tool, ["--version"], { stdio: "pipe" });
+      } catch {
+        throw new Error(
+          `\`${tool}\` is not on PATH. The hook exits 0 without it, so every "nothing was pushed" ` +
+            `assertion below would hold for the wrong reason. Install ${tool} (CI images ship it).`
+        );
+      }
+    }
+  });
+
+  afterAll(async () => {
+    await Promise.all(fixtureRoots.map((root) => fs.rm(root, { recursive: true, force: true })));
+  });
+
+  it("refuses a marked clone that nothing outside the checkout authorized", async () => {
+    const fixture = await makeFixture();
+    const planted = await markedClone(fixture, "collaborator-repo");
+
+    const { status, stderr } = runHook(fixture, hookEnv(fixture));
+
+    expect(notesPushedTo(planted.remote, fixture)).toEqual([]);
+    // The refusal lands before anything is rendered or written, so the clone is
+    // untouched too — not merely unpushed.
+    expect(await fs.readdir(planted.dir)).not.toContain(SUBDIR);
+    expect(stderr).toContain("no vault pin");
+    // Fail closed, and still never block the turn.
+    expect(status).toBe(0);
+  });
+
+  it("archives to the clone whose origin the operator pinned", async () => {
+    const fixture = await makeFixture();
+    const vault = await markedClone(fixture, "vault-clone");
+
+    // Pinned without the `.git` suffix the remote carries: a pin is compared by
+    // repository identity, not by spelling, so one written once keeps matching.
+    const { status } = runHook(fixture, hookEnv(fixture, { SESSION_VAULT_ORIGIN: vault.remote.replace(/\.git$/, "") }));
+
+    const notes = notesPushedTo(vault.remote, fixture);
+    expect(notes).toHaveLength(1);
+    expect(notes[0].startsWith(`${SUBDIR}/_precompact/`)).toBe(true);
+    expect(git(["-C", vault.remote, "show", `refs/heads/main:${notes[0]}`], fixture)).toContain(TRANSCRIPT_CANARY);
+    expect(status).toBe(0);
+  });
+
+  it("takes the pin from the config file outside every checkout", async () => {
+    const fixture = await makeFixture();
+    const vault = await markedClone(fixture, "vault-clone");
+    const pinDir = path.join(fixture.home, ".config", "session-archive");
+    await fs.mkdir(pinDir, { recursive: true });
+    await fs.writeFile(path.join(pinDir, "vault-origin"), `# the vault this machine archives to\n\n${vault.remote}\n`);
+
+    runHook(fixture, hookEnv(fixture));
+
+    expect(notesPushedTo(vault.remote, fixture)).toHaveLength(1);
+  });
+
+  it("ignores a planted marked clone and still archives to the pinned vault", async () => {
+    const fixture = await makeFixture();
+    const vault = await markedClone(fixture, "vault-clone");
+    const planted = await markedClone(fixture, "collaborator-repo");
+
+    runHook(fixture, hookEnv(fixture, { SESSION_VAULT_ORIGIN: vault.remote }));
+
+    expect(notesPushedTo(planted.remote, fixture)).toEqual([]);
+    expect(notesPushedTo(vault.remote, fixture)).toHaveLength(1);
+  });
+
+  it("still archives to an explicitly selected vault when no pin is configured", async () => {
+    const fixture = await makeFixture();
+    const vault = await markedClone(fixture, "vault-clone");
+
+    runHook(fixture, hookEnv(fixture, { SESSION_VAULT_REPO: vault.dir }));
+
+    expect(notesPushedTo(vault.remote, fixture)).toHaveLength(1);
+  });
+
+  it("refuses an explicitly selected clone whose origin is not the pinned one", async () => {
+    const fixture = await makeFixture();
+    const vault = await markedClone(fixture, "vault-clone");
+    const planted = await markedClone(fixture, "collaborator-repo");
+
+    const { status, stderr } = runHook(
+      fixture,
+      hookEnv(fixture, { SESSION_VAULT_REPO: planted.dir, SESSION_VAULT_ORIGIN: vault.remote })
+    );
+
+    expect(notesPushedTo(planted.remote, fixture)).toEqual([]);
+    expect(stderr).toContain("pinned origin");
+    expect(status).toBe(0);
+  });
+
+  it("refuses a clone that fetches from the pinned vault but pushes somewhere else", async () => {
+    const fixture = await makeFixture();
+    const vault = await markedClone(fixture, "vault-clone");
+    const planted = await markedClone(fixture, "collaborator-repo");
+    // `origin` now reads as the pinned vault and writes to another repository.
+    // The push is the step that takes the transcript off the machine, so the pin
+    // is worth nothing unless it is checked against where the push would land.
+    git(["-C", vault.dir, "remote", "set-url", "--push", "origin", planted.remote], fixture);
+
+    const { stderr } = runHook(fixture, hookEnv(fixture, { SESSION_VAULT_ORIGIN: vault.remote }));
+
+    expect(notesPushedTo(planted.remote, fixture)).toEqual([]);
+    expect(notesPushedTo(vault.remote, fixture)).toEqual([]);
+    expect(stderr).toContain("Not archiving");
+  });
+
+  it("delivers the whole session to the planted clone once the pin check is removed", async () => {
+    const fixture = await makeFixture();
+    const planted = await markedClone(fixture, "collaborator-repo");
+    const downgraded = await hookWithoutPinCheck(fixture);
+
+    runHook(fixture, hookEnv(fixture), downgraded);
+
+    // Without that line, a file committed inside the clone is the whole
+    // authorization: the transcript lands in a repository the operator never named.
+    const notes = notesPushedTo(planted.remote, fixture);
+    expect(notes).toHaveLength(1);
+    expect(git(["-C", planted.remote, "show", `refs/heads/main:${notes[0]}`], fixture)).toContain(TRANSCRIPT_CANARY);
   });
 });

@@ -51,6 +51,99 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A `.claude-session-vault` marker no longer decides where a session transcript
+  is pushed.** The marker is committed at a vault clone's root, which means it is
+  committable by anyone who can land a file in a repository this machine checks
+  out: it travelled inside the clone, so it could locate a candidate but never
+  authorize one. The scan now adopts a marked clone only when its `origin` matches
+  a pin given out of band — `SESSION_VAULT_ORIGIN`, or the first non-comment line
+  of `~/.config/session-archive/vault-origin`, both of which live outside every
+  checkout and so cannot arrive in one.
+
+  The pin names the remote rather than the directory, because `git push` is what
+  takes the transcript off the machine; authorizing a directory whose origin was
+  never looked at leaves the transcript going wherever that origin points. **Both
+  the fetch and the push URL must match** — a clone that fetches from the vault
+  and pushes elsewhere is exactly the case a fetch-only check would wave through.
+  Remotes are compared by repository identity, not by spelling, so
+  `git@host:owner/name.git`, `https://host/owner/name` and a container's
+  credential-bearing URL reduce to the same `host/owner/name`; the reduction drops
+  the userinfo, so the comparison never handles an embedded credential. A pin also
+  constrains an explicitly selected `SESSION_VAULT_REPO`, and every check runs
+  before anything is rendered, written, committed or pushed.
+
+  Refusals say what stopped and how many marked clones were seen, and name no
+  candidate path, no pin and no origin URL: this script ships in a public
+  repository and a container's origin can carry a token. Staying silent was not an
+  option either — a hook that quietly stops writing looks exactly like one that is
+  working.
+
+  This does not stop archiving where a vault is selected explicitly: the pin
+  constrains `SESSION_VAULT_REPO` only when a pin is set. On the machine this was
+  developed on there is no `.claude-session-vault` marker anywhere under `$HOME`
+  (measured to depth 5), because the vault working copy lives under iCloud, which
+  the depth-1 marker scan cannot reach — so the scan path has nothing to refuse.
+  Environments that *do* rely on marker discovery must set a pin, and are told so
+  on stderr rather than silently skipped.
+
+  Reverse-verified with three mutations, one per guard, each confirmed to produce
+  the intended mutant and not merely a non-zero diff: removing the scan-loop pin
+  check reds three named assertions, among them one that shows the whole session
+  delivered to a planted clone; disabling the check on an explicitly selected
+  clone reds exactly the assertion that names it; and dropping the push-URL
+  conjunct reds exactly "refuses a clone that fetches from the pinned vault but
+  pushes somewhere else", whose failure output shows a note pushed to the wrong
+  remote. The first attempt at that third mutation deleted the line instead of
+  narrowing it and reddened three *positive* assertions — a red for the wrong
+  reason, redone rather than counted.
+
+  Mirrored byte-for-byte into `terminal-ops-logs`, the canonical home of the hook.
+
+- **The session-archive and ops-logging secret masks now cover a credential that
+  arrives QUOTED**, which is the shape credentials actually arrive in. The keyword
+  rule accepts only `=`, `:` or whitespace after the keyword, so on
+  `{"access_token":"…","refresh_token":"…"}` it never even starts — the next
+  character is a quote — and an OAuth token response was written to the note in
+  the clear, committed, pushed to the vault, and readable again over MCP by
+  anything holding `vault.read`. Two quoted-run rules cover it, one per quote
+  character so the closing quote can be required without a back-reference.
+
+  Both rules are bounded and escape-aware. The closing quote is required because
+  an unbounded value runs to end of line, and these hooks mask whole Bash command
+  strings and whole note bodies: `grep -n "token: " src/*.ts` offers a closing
+  quote as an opening one, and everything after it would be blanked. The value
+  class is escape-aware, or `password: "p@ss\"word"` would end at the escaped
+  quote and leave the tail readable — a secret *less* masked than before.
+
+  The pre-existing keyword rule is left byte-identical and is the fallback, so
+  this change cannot mask less than before: an unterminated quoted value still
+  falls through to it and is masked to whitespace exactly as it was. A test pins
+  that byte-identity for the same reason.
+
+  Cost, measured rather than asserted: every tracked `.md/.ts/.sh/.json/.yml`
+  file at the branch point — 99 files, 36,330 lines — was run through the old and
+  the new `mask()` and the outputs compared. Three lines change, and the count of
+  lines containing `***MASKED***` is 686 before and 686 after, so no line is newly
+  masked; the three are places where an already-masked line loses a little more.
+  That corpus is repository source, not what the hooks actually receive (Bash
+  command strings and note bodies carrying JSON tool output), so it understates
+  the benefit and the over-masking alike — "three lines" is a measurement, not an
+  upper bound. Runtime stays linear: on 60–130 KB adversarial inputs (escape
+  runs, backslash runs, one huge value, many small matches) the mask costs
+  0.025–0.066 s against 0.012–0.029 s before, a factor of at most 2.6 with no
+  backtracking blowup.
+
+  Reverse-verified with three mutations, one per guard, each confirmed to land
+  before the suite was run: dropping both quoted-run rules reds six named
+  assertions including the OAuth leak, degrading the escape-aware value class
+  reds three, and making the closing quote optional reds three, among them the
+  keyword-fallback test. The shipped hook is the subject under test — the suite
+  extracts `mask()` from the script rather than copying it, so a regression in
+  the hook reds the test.
+
+  The same two rules are mirrored byte-for-byte into `terminal-ops-logs`, which
+  is the canonical home of both scripts.
+
 - **The SKILL.md frontmatter parse is bounded by how many lines the block opens,
   not by how many bytes it holds.** The two guards already in front of
   `matter()` refuse an unterminated block and a block over `MAX_FILE_BYTES`, and
