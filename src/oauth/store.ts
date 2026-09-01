@@ -20,11 +20,13 @@ import path from "node:path";
 //  - refresh-token rotation invalidates the presented token, with a short
 //    replay-grace window (ROTATION_GRACE_MS) so a rotation whose RESPONSE was
 //    lost in transit does not strand the client with an already-dead token: a
-//    rotated token re-presented inside the window rotates again, and the whole
-//    successor CHAIN minted downstream of the lost response is revoked at that
+//    rotated token re-presented inside the window rotates again, and every
+//    generation minted downstream of the lost response is revoked at that
 //    moment (the legitimate client provably never received it, and an
 //    interceptor who rotated what they captured is reached however many hops
-//    they took — see revokeSuccessorChain). The window never
+//    they took — see revokeFamilyAbove, which finds them by what the records
+//    carry rather than by links between them, so no intermediate record has to
+//    survive for its descendants to be reachable). The window never
 //    extends on replay, its state is written to disk on every transition, and
 //    beyond it single-use semantics hold across restarts exactly as before,
 //  - every collection is capped and pruned to bound memory (DoS via unbounded
@@ -92,14 +94,26 @@ interface TokenRecord {
    */
   rotatedAt?: number;
   /**
-   * sha256 keys (never raw tokens — hash-at-rest holds) of the access/refresh
-   * pair minted by the most recent rotation of this token. A replay inside the
-   * grace window revokes them: the client re-presenting the OLD token proves
-   * the response carrying these never arrived, so if anyone else holds them it
-   * is an interceptor.
+   * The rotation lineage this token belongs to. A fresh grant opens a new
+   * family; every pair minted by rotating within it inherits the id. Opaque and
+   * random — it names a lineage, it is not derived from any token, so it never
+   * weakens hash-at-rest.
    */
-  successorAccessKey?: string;
-  successorRefreshKey?: string;
+  familyId: string;
+  /**
+   * Position in the lineage, counting from 0 at the fresh grant. A replay
+   * inside the grace window revokes every member of the same family ABOVE its
+   * own generation: the client re-presenting the OLD token proves the response
+   * carrying those never arrived, so if anyone else holds them it is an
+   * interceptor.
+   *
+   * Membership is a property of each record, so revocation is a scan of the
+   * two maps rather than a walk of links between them. That is the whole point:
+   * a walk terminates at the first missing hop, and any deletion — a failed
+   * presentation, the expiry sweep, the hard cap — can remove one. A scan
+   * reaches the same descendants whether or not their ancestors still exist.
+   */
+  generation: number;
 }
 
 export interface OAuthStoreOptions {
@@ -259,26 +273,38 @@ export class OAuthStore {
 
   /**
    * Mint a pair WITHOUT saving. Exists so `rotateRefreshToken` can persist the
-   * minted pair and its successor linkage in ONE atomic save (tmp + rename): a
-   * save between them is a crash window where disk holds a live successor pair
-   * with no linkage back to the rotated token, and a post-restart replay would
-   * then skip revoking it. Every non-rotation caller goes through
-   * `issueTokens`, which saves immediately.
+   * revocation of the superseded generations and the pair that replaces them in
+   * ONE atomic save (tmp + rename): a save between them is a crash window where
+   * disk holds one of the two states nothing else can repair. Every
+   * non-rotation caller goes through `issueTokens`, which saves immediately.
+   *
+   * `lineage` omitted means a fresh grant: a new family at generation 0.
    */
-  private mintTokens(clientId: string, scope: string, resource: string): IssuedTokens {
+  private mintTokens(
+    clientId: string,
+    scope: string,
+    resource: string,
+    lineage?: { familyId: string; generation: number }
+  ): IssuedTokens {
     this.prune();
     const accessToken = randomSecret();
     const refreshToken = randomSecret();
+    const familyId = lineage?.familyId ?? randomSecret();
+    const generation = lineage?.generation ?? 0;
     this.accessTokens.set(tokenKey(accessToken), {
       clientId,
       scope,
       resource,
+      familyId,
+      generation,
       expiresAt: this.now() + this.options.accessTokenTtlSec * 1000
     });
     this.refreshTokens.set(tokenKey(refreshToken), {
       clientId,
       scope,
       resource,
+      familyId,
+      generation,
       expiresAt: this.now() + this.options.refreshTokenTtlSec * 1000
     });
     // Enforce the hard cap even when every entry is still live (pruning only
@@ -324,10 +350,11 @@ export class OAuthStore {
    *  - First presentation: mark the record rotated (`rotatedAt`), cap its
    *    `expiresAt` to the grace window, and mint a fresh pair.
    *  - Re-presentation INSIDE the window: the client provably never received
-   *    the previous response, so revoke the whole successor chain minted for
-   *    it (if an interceptor holds any of it — even after rotating what they
-   *    captured — it dies here) and mint another fresh pair. `rotatedAt` is
-   *    never touched again — replays cannot extend the window.
+   *    the previous response, so revoke every generation of this token's
+   *    family above its own (if an interceptor holds any of it — even after
+   *    rotating what they captured — it dies here) and mint another fresh
+   *    pair. `rotatedAt` is never touched again — replays cannot extend the
+   *    window.
    *  - Re-presentation AFTER the window: the record has expired (the cap above)
    *    or been swept; the token is dead, exactly as under strict single-use.
    *
@@ -343,6 +370,14 @@ export class OAuthStore {
     const t = this.now();
     if (record.expiresAt <= t || record.clientId !== clientId) {
       this.refreshTokens.delete(key);
+      // Nothing else is revoked here, deliberately. This arm is reached by a
+      // spent or misdirected presentation, which is not evidence that the
+      // lineage is compromised — and revoking on it would let anyone holding a
+      // COPY of a spent token destroy the legitimate client's live pair at
+      // will. Removing this record cannot hide a descendant either: membership
+      // lives on the descendants themselves, so a later replay of an ancestor
+      // still reaches them by generation.
+      //
       // The deletion must still reach disk: a dead presented token stays dead
       // across restarts even on a failed rotation.
       this.save();
@@ -356,45 +391,39 @@ export class OAuthStore {
     } else {
       // Replay inside the window (outside it, the expiry check above already
       // returned). Everything minted downstream of the lost response is
-      // revoked — the WHOLE chain, not just the direct pair: an interceptor
-      // who captured the lost response can rotate its refresh token once and
-      // put their live pair one hop beyond a single-level delete. Walking the
-      // chain reaches them however many hops they took.
-      this.revokeSuccessorChain(record);
+      // revoked — every generation of this family above this one, not just the
+      // pair directly minted for it: an interceptor who captured the lost
+      // response can rotate it and put their live pair further up the lineage.
+      this.revokeFamilyAbove(record.familyId, record.generation);
     }
-    // Mint WITHOUT saving, record the linkage, then save ONCE: the pair and
-    // the successor keys that make it revocable must hit disk in the same
-    // atomic write, or a crash between two saves leaves a live pair on disk
-    // that a post-restart replay cannot revoke.
-    const issued = this.mintTokens(clientId, record.scope, record.resource);
-    record.successorAccessKey = tokenKey(issued.accessToken);
-    record.successorRefreshKey = tokenKey(issued.refreshToken);
+    // Mint WITHOUT saving, then save ONCE: the revocation above and the pair
+    // that replaces it must hit disk in the same atomic write, or a crash
+    // between two saves leaves disk holding one without the other.
+    const issued = this.mintTokens(clientId, record.scope, record.resource, {
+      familyId: record.familyId,
+      generation: record.generation + 1
+    });
     this.save();
     return issued;
   }
 
   /**
-   * Delete every token reachable through successor links from `record`. The
-   * walk is bounded: each visited refresh key is deleted from the map before
-   * following its links, and a `seen` set guards against a malformed cycle in
-   * loaded state, so it terminates in at most the map's size.
+   * Delete every access and refresh token in `familyId` above `generation`.
+   *
+   * A scan, not a walk. The records that must die are identified by what they
+   * carry, so no intermediate record has to survive for them to be found —
+   * which is the failure this replaced: links stored in the records themselves
+   * made the chain only as reachable as its least durable hop, and three
+   * separate deletion paths could remove one. Cost is bounded by the token cap
+   * (`maxTokens`), which the two maps are held under at every mint.
    */
-  private revokeSuccessorChain(record: TokenRecord): void {
-    const seen = new Set<string>();
-    let accessKey = record.successorAccessKey;
-    let refreshKey = record.successorRefreshKey;
-    while (accessKey !== undefined || refreshKey !== undefined) {
-      if (accessKey !== undefined) {
-        this.accessTokens.delete(accessKey);
+  private revokeFamilyAbove(familyId: string, generation: number): void {
+    for (const map of [this.accessTokens, this.refreshTokens]) {
+      for (const [key, record] of map) {
+        if (record.familyId === familyId && record.generation > generation) {
+          map.delete(key);
+        }
       }
-      let next: TokenRecord | undefined;
-      if (refreshKey !== undefined && !seen.has(refreshKey)) {
-        seen.add(refreshKey);
-        next = this.refreshTokens.get(refreshKey);
-        this.refreshTokens.delete(refreshKey);
-      }
-      accessKey = next?.successorAccessKey;
-      refreshKey = next?.successorRefreshKey;
     }
   }
 
@@ -500,20 +529,25 @@ export class OAuthStore {
               clientId: record.clientId,
               scope: record.scope,
               resource: record.resource,
-              expiresAt: record.expiresAt
+              expiresAt: record.expiresAt,
+              // A record whose lineage did not survive validation is loaded
+              // into a family of its own at generation 0: it can neither
+              // revoke another token nor be revoked by one. That is the
+              // conservative reading of unusable state — the alternative,
+              // defaulting to a shared id, would let one malformed record
+              // revoke every live token in the store.
+              familyId: typeof record.familyId === "string" ? record.familyId : randomSecret(),
+              generation:
+                typeof record.generation === "number" && Number.isInteger(record.generation) && record.generation >= 0
+                  ? record.generation
+                  : 0
             };
             // Rotation-grace state must survive a restart, or a replay after a
             // supervisor bounce would look like a first rotation and re-open
-            // the window. Each field is optional and individually validated;
-            // absent fields (a pre-grace state file) load as never-rotated.
+            // the window. Validated individually; an absent field (a pre-grace
+            // state file) loads as never-rotated.
             if (typeof record.rotatedAt === "number") {
               loaded.rotatedAt = record.rotatedAt;
-            }
-            if (typeof record.successorAccessKey === "string") {
-              loaded.successorAccessKey = record.successorAccessKey;
-            }
-            if (typeof record.successorRefreshKey === "string") {
-              loaded.successorRefreshKey = record.successorRefreshKey;
             }
             into.set(record.tokenHash, loaded);
           }
