@@ -409,6 +409,36 @@ describe("OAuthStore", () => {
     expect(store.rotateRefreshToken(live.refreshToken, "c")).not.toBeNull();
   });
 
+  // The cap and the replay window meet on one record. Measured 2026-09-01 by
+  // two sessions independently: with the map at its cap the presented record
+  // is its oldest entry, so minting the successor evicts it, and the linkage
+  // assigned a line later lands on an object no longer in the map. The retry
+  // then fails AND the revocation that retry would have performed never runs —
+  // availability and confidentiality, from one eviction.
+  //
+  // The main assertion is positive on purpose. The requirement is that a
+  // record SURVIVES, so "the interceptor's pair is gone" cannot carry it:
+  // eviction satisfies that assertion exactly as well as revocation does, and
+  // eviction is the failure being pinned.
+  it("does not evict the record it is rotating when the cap is already full", () => {
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, maxTokens: 4, now: () => t });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    const others = [0, 1, 2].map(() => store.issueTokens("other", "vault.read", "r"));
+    // The map is now exactly at its cap and the grant above is its oldest
+    // entry. Capping expiresAt for the window mutates a value, which does not
+    // move a Map entry, so it stays first in line for the sweep.
+    const lost = store.rotateRefreshToken(tokens.refreshToken, "c"); // response never arrives
+    expect(lost).not.toBeNull();
+    t += 30_000; // the client retries inside the window
+    const replayed = store.rotateRefreshToken(tokens.refreshToken, "c");
+    expect(replayed).not.toBeNull();
+    expect(store.validateAccessToken(replayed!.accessToken)?.clientId).toBe("c");
+    // The other half: sparing one key did not switch the sweep off. Something
+    // still had to go, and it was the next entry in insertion order.
+    expect(store.rotateRefreshToken(others[0].refreshToken, "other")).toBeNull();
+  });
+
   it("revokes only the family that was replayed, never a bystander's", () => {
     let t = 1_000_000;
     const store = new OAuthStore({ ...opts, now: () => t });

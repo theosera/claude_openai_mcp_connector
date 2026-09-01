@@ -149,14 +149,47 @@ function tokenKey(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
 
-/** Evict the oldest entries (Map preserves insertion order) until size <= max. */
-function enforceCap<K, V>(map: Map<K, V>, max: number): void {
+/**
+ * Evict the oldest entries (Map preserves insertion order) until size <= max.
+ *
+ * `spare` names one key the sweep reaches for last: the refresh record a
+ * rotation is currently minting a successor for. That record is the oldest
+ * live entry by construction — it was issued before everything minted from it,
+ * and capping its `expiresAt` for the replay window mutates a value, which
+ * does not move a Map entry. So a full map evicts exactly the record the
+ * rotation is standing on, and the linkage assigned to it a line later is
+ * written to an object no longer in the map: the lost-response retry finds
+ * nothing, AND the revocation that retry would have performed never runs.
+ *
+ * It is a preference, not a veto — when `spare` is the only entry left the
+ * sweep takes it anyway, so one key can never hold the map above its cap.
+ *
+ * ⚠️ Deliberately narrow. Sparing in-window records from EVERY mint was built
+ * and measured (2026-09-02) and is worse: with the map saturated by records
+ * inside their windows, the sweep starts evicting freshly issued grants
+ * instead — survival vector 111100 for six roots at cap 4, where the last two
+ * grants were evicted in the same call that issued them. A 60-second recovery
+ * convenience must not cost new authorizations. The residual is stated on
+ * `rotateRefreshToken`.
+ */
+function enforceCap<K, V>(map: Map<K, V>, max: number, spare?: K): void {
   while (map.size > max) {
-    const oldest = map.keys().next().value as K | undefined;
-    if (oldest === undefined) {
+    let victim: K | undefined;
+    let oldest: K | undefined;
+    for (const key of map.keys()) {
+      if (oldest === undefined) {
+        oldest = key;
+      }
+      if (key !== spare) {
+        victim = key;
+        break;
+      }
+    }
+    const doomed = victim ?? oldest;
+    if (doomed === undefined) {
       break;
     }
-    map.delete(oldest);
+    map.delete(doomed);
   }
 }
 
@@ -284,7 +317,8 @@ export class OAuthStore {
     clientId: string,
     scope: string,
     resource: string,
-    lineage?: { familyId: string; generation: number }
+    lineage?: { familyId: string; generation: number },
+    spareRefreshKey?: string
   ): IssuedTokens {
     this.prune();
     const accessToken = randomSecret();
@@ -311,7 +345,10 @@ export class OAuthStore {
     // removes expired ones): evict the oldest live tokens so a client minting
     // tokens faster than they expire cannot grow the maps without bound.
     enforceCap(this.accessTokens, this.maxTokens);
-    enforceCap(this.refreshTokens, this.maxTokens);
+    // Only the refresh map takes the preference: a rotated root's own access
+    // token was superseded by its first rotation and is not part of what a
+    // replay hands back.
+    enforceCap(this.refreshTokens, this.maxTokens, spareRefreshKey);
     return {
       accessToken,
       refreshToken,
@@ -399,10 +436,20 @@ export class OAuthStore {
     // Mint WITHOUT saving, then save ONCE: the revocation above and the pair
     // that replaces it must hit disk in the same atomic write, or a crash
     // between two saves leaves disk holding one without the other.
-    const issued = this.mintTokens(clientId, record.scope, record.resource, {
-      familyId: record.familyId,
-      generation: record.generation + 1
-    });
+    // `key` is spared from the cap for the length of this mint: inserting the
+    // successor must not evict the record this rotation is standing on.
+    //
+    // ⚠️ Residual, stated rather than fixed: once this call returns, the
+    // record is an ordinary entry again, so unrelated traffic can still evict
+    // it before the window closes. Sparing it from every mint was measured and
+    // costs freshly issued grants instead (see enforceCap), which is worse.
+    const issued = this.mintTokens(
+      clientId,
+      record.scope,
+      record.resource,
+      { familyId: record.familyId, generation: record.generation + 1 },
+      key
+    );
     this.save();
     return issued;
   }
