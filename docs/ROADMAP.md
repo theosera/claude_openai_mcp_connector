@@ -1097,10 +1097,16 @@ search p95 over 200 ms, is already met at 2,880 notes.
 
 ## Mid-term
 
-### Hosting recipes 💭
+### Hosting recipes 💭 → 🚧 (first slice)
 
 Turn [`operations.md`](./operations.md) into runnable recipes: a named-tunnel +
 systemd bundle, a container image, and a one-page "deploy to a $5 VPS" guide.
+🚧 First runnable slice landed 2026-08-30 (incident-driven): a Funnel-ingress
+watchdog (`scripts/funnel-watchdog.sh` + launchd recipe in
+[`operations.md §2`](./operations.md#macos-tailscale-funnel--launchd)) —
+`tailscale funnel status` reads config, not liveness, so a post-sleep dead
+ingress served 502s for hours while every local signal looked green. The rest
+of this item is unchanged.
 
 ### Observability 💭
 

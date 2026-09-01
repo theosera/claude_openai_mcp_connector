@@ -6,6 +6,24 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`scripts/funnel-watchdog.sh` + launchd recipe** (docs/operations.md §2):
+  after a sleep/offline window the Tailscale Funnel ingress can stay dead
+  while `tailscale funnel status` prints "Funnel on" — status reads config,
+  not liveness, and a local curl of the public URL never traverses the public
+  edge (MagicDNS). The watchdog re-asserts `tailscale funnel --bg <port>` on a
+  timer; the re-assert was measured idempotent while healthy and restored a
+  dead ingress, both externally verified (2026-08-30). **Scope, learned on the
+  third occurrence (2026-08-31): the re-assert heals the sleep/idle variant
+  only.** A network-path change under tailscaled (a VPN toggled on/off, a
+  Wi-Fi/gateway switch) leaves the edge holding a stale path with every local
+  signal green, and the re-assert is a no-op; that variant needs
+  `tailscale down && up` before re-asserting. The watchdog deliberately does
+  not automate the down/up (it drops every live tailnet connection — too large
+  a side effect for an unattended timer); the runbook in operations.md §2
+  carries the manual recovery.
+
 ### Fixed
 
 - **A `.claude-session-vault` marker no longer decides where a session transcript

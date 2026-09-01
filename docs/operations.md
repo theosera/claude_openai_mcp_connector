@@ -408,12 +408,107 @@ launchctl load -w ~/Library/LaunchAgents/local.mcp-connector.plist
 > (`…/node-versions/vX.Y.Z/installation/bin/node`), **not** a transient
 > per-shell multishell path.
 
+**3. Keep the Funnel ingress alive (watchdog).** After a sleep/offline window
+the Funnel **ingress** (public edge → tailscaled) can stay dead while
+`tailscale funnel status` keeps printing "Funnel on" — status reads the stored
+serve config, **not** the live ingress (observed 2026-08-30: every remote
+client got 502/connection errors for hours while the origin was healthy and
+status said on). Two things follow. First, **do not use `funnel status`, or a
+local curl of the public URL, as a liveness check** — MagicDNS resolves the
+public name to the machine itself, so a local curl never traverses the public
+edge; only a probe from outside the tailnet tests it. Second, re-running
+`tailscale funnel --bg <port>` is cheap, idempotent while healthy, and restores
+a dead ingress (both externally verified) — so simply re-assert it on a timer:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>local.mcp-funnel-watchdog</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/abs/path/to/claude_openai_mcp_connector/scripts/funnel-watchdog.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>MCP_FUNNEL_PORT</key><string>8787</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>300</integer>
+  <key>StandardOutPath</key><string>/abs/path/to/logs/funnel-watchdog.out.log</string>
+  <key>StandardErrorPath</key><string>/abs/path/to/logs/funnel-watchdog.err.log</string>
+</dict>
+</plist>
+```
+
+```bash
+launchctl load -w ~/Library/LaunchAgents/local.mcp-funnel-watchdog.plist
+```
+
+`RunAtLoad` covers the boot/wake-adjacent case (launchd fires missed
+`StartInterval` ticks after wake, so a separate sleep-watcher is not needed);
+five minutes bounds the outage window at negligible cost. The script skips
+quietly (exit 0) while tailscaled is down or logged out, and reads no secrets.
+After loading it, verify **once from outside the tailnet** (phone on cellular,
+or any external host) that the public URL answers.
+
+**Finding the `tailscale` binary.** launchd does not give a job your login
+shell's `PATH`; the agent above runs with `/usr/bin:/bin:/usr/sbin:/sbin`, which
+contains neither `/usr/local/bin` nor `/opt/homebrew/bin`. The script therefore
+resolves the CLI in three steps: `TAILSCALE_BIN` if set, then whatever
+`command -v tailscale` finds on that minimal `PATH`, then the macOS app bundle
+at `/Applications/Tailscale.app/Contents/MacOS/Tailscale`. An App Store or
+standalone install is covered by the third step and needs no configuration.
+**A Homebrew-only install is not** — there is no app bundle, and the binary sits
+on a `PATH` launchd will not have — so add `TAILSCALE_BIN` to the
+`EnvironmentVariables` dict above, set to the output of `command -v tailscale`:
+
+```xml
+    <key>TAILSCALE_BIN</key><string>/opt/homebrew/bin/tailscale</string>
+```
+
+Set it only when you need it, and only to a path that exists: an override
+pointing at a missing or non-executable file fails the job (exit 1) rather than
+falling through to the other two steps, because a wrong path is a configuration
+error and the quiet-skip path is reserved for a daemon that is merely down. A
+job that skips forever on a typo is the failure this whole section exists to
+avoid.
+
+⚠️ **Scope of the watchdog — the re-assert does not heal every dead ingress**
+(learned on the third occurrence, 2026-08-31; the two verifications above were
+both the sleep variant). When the machine's **network path changes under
+tailscaled** — a VPN toggled on or off, a Wi-Fi/gateway switch — the edge keeps
+holding the stale path while every local signal stays green: `tailscale status`
+shows the node online, `netcheck` reaches DERP, funnel says "on", and the
+re-assert is a no-op. The tell in the logs is `portmap: … gateway and self IP
+changed` and a different public IPv4 between two `tailscale netcheck` runs.
+Recovery for that variant is re-joining the tailnet, then re-asserting:
+
+```bash
+tailscale down && sleep 2 && tailscale up
+bash /abs/path/to/scripts/funnel-watchdog.sh   # or wait ≤5 min for the timer
+```
+
+Then verify from outside the tailnet again. Automating the `down && up` inside
+the watchdog was considered and deliberately left out — it drops every live
+tailnet connection on the machine, too large a side effect for an unattended
+timer to take on a guess. If you toggle a VPN routinely, run the two lines
+above as part of the toggle.
+
 **Caveats.**
 
 - **macOS sleep pauses the process.** When the Mac sleeps, `node` is suspended
   and in-memory OAuth tokens effectively drop, so the connector goes quiet until
   wake + re-auth. A dedicated always-on host is better; `caffeinate` (e.g.
   running the connector under `caffeinate -s`) mitigates it while on power.
+- **Sleep also kills the Funnel ingress, silently** — see the watchdog in
+  step 3 above; without it the connector can be unreachable for hours while
+  every local signal looks green.
+- **A VPN toggle / network switch kills it differently** — the watchdog's
+  re-assert does NOT recover that variant; it needs `tailscale down && up`
+  first (see the scope warning in step 3).
 - **Restart = re-Authorize, not re-register.** Because the `*.ts.net` URL is
   fixed, after a restart you only press **Authorize** in the client to mint fresh
   tokens — no need to delete and re-add the connector. To skip even that
