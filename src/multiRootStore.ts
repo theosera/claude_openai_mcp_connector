@@ -184,7 +184,7 @@ export class MultiRootStore implements VaultStore {
   async applyPlannedDocumentCreate(
     patchId: string,
     confirmedTargetPath: string
-  ): Promise<{ document: MarkdownDocument; diff: string; appliedSha256: string }> {
+  ): Promise<{ document: MarkdownDocument; diff: string }> {
     if (!confirmedTargetPath.startsWith(`${this.primary.name}:`)) {
       throw new Error("Confirmed target path does not match the planned multi-root document target.");
     }
@@ -192,8 +192,7 @@ export class MultiRootStore implements VaultStore {
     const result = await this.primary.store.applyPlannedDocumentCreate(patchId, relativePath);
     return {
       document: this.wrap(this.primary.name, result.document),
-      diff: result.diff.replace(`+++ ${relativePath}\t`, `+++ ${confirmedTargetPath}\t`),
-      appliedSha256: result.appliedSha256
+      diff: result.diff.replace(`+++ ${relativePath}\t`, `+++ ${confirmedTargetPath}\t`)
     };
   }
 
@@ -213,17 +212,11 @@ export class MultiRootStore implements VaultStore {
     return this.primary.store.planUpdate({ ...input, id_or_path: reference });
   }
 
-  async applyPlannedUpdate(
-    patchId: string
-  ): Promise<{ document: MarkdownDocument; diff: string; appliedSha256: string }> {
+  async applyPlannedUpdate(patchId: string): Promise<{ document: MarkdownDocument; diff: string }> {
     // Plans are only ever created against the primary root (see planUpdate),
     // so applying resolves target_path inside the primary root as well.
     const result = await this.primary.store.applyPlannedUpdate(patchId);
-    return {
-      document: this.wrap(this.primary.name, result.document),
-      diff: result.diff,
-      appliedSha256: result.appliedSha256
-    };
+    return { document: this.wrap(this.primary.name, result.document), diff: result.diff };
   }
 
   async traceSources(idOrPath: string, options: TraceOptions = {}): Promise<TraceResult> {

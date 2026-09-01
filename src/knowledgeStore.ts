@@ -643,7 +643,7 @@ export class KnowledgeStore implements VaultStore {
   async applyPlannedDocumentCreate(
     patchId: string,
     confirmedTargetPath: string
-  ): Promise<{ document: MarkdownDocument; diff: string; appliedSha256: string }> {
+  ): Promise<{ document: MarkdownDocument; diff: string }> {
     const patchRaw = await this.readPatchFile(patchId);
     const patch = JSON.parse(patchRaw) as Partial<PlannedDocumentCreate> & { vault_id?: string };
     if (
@@ -692,12 +692,7 @@ export class KnowledgeStore implements VaultStore {
     }
 
     await fs.unlink(this.patchPath(patchId));
-    // The sha of the staged bytes just written (verified against the staged
-    // content above, and what `wx` put on disk). Returned so a client whose
-    // apply RESPONSE is lost can later fetch the document, hash it, and settle
-    // "did my apply land?" without re-staging — the retry itself answers only
-    // "the plan is gone", which cannot distinguish applied from expired.
-    return { document: await this.readDocument(absolutePath), diff: patch.diff, appliedSha256: patch.content_sha256 };
+    return { document: await this.readDocument(absolutePath), diff: patch.diff };
   }
 
   async planUpdate(input: {
@@ -790,15 +785,11 @@ export class KnowledgeStore implements VaultStore {
    * vault still race, and nothing here pretends otherwise; that needs an on-disk
    * lock and is called out in the operations docs rather than half-solved here.
    */
-  async applyPlannedUpdate(
-    patchId: string
-  ): Promise<{ document: MarkdownDocument; diff: string; appliedSha256: string }> {
+  async applyPlannedUpdate(patchId: string): Promise<{ document: MarkdownDocument; diff: string }> {
     return this.serializeWrite(() => this.applyPlannedUpdateSerialized(patchId));
   }
 
-  private async applyPlannedUpdateSerialized(
-    patchId: string
-  ): Promise<{ document: MarkdownDocument; diff: string; appliedSha256: string }> {
+  private async applyPlannedUpdateSerialized(patchId: string): Promise<{ document: MarkdownDocument; diff: string }> {
     const patchRaw = await this.readPatchFile(patchId);
     const patch = JSON.parse(patchRaw) as PlannedPatch & { operation?: string; vault_id?: string };
     if (patch.operation === "document_create") {
@@ -848,14 +839,7 @@ export class KnowledgeStore implements VaultStore {
     await fs.unlink(this.patchPath(patchId));
     return {
       document: await this.readDocument(absolutePath),
-      diff: patch.diff,
-      // Hash of the exact bytes handed to the atomic replace — the same string,
-      // hashed here rather than re-read from disk, so the value describes what
-      // THIS apply wrote even if an external editor races the read-back above.
-      // A client whose apply response is lost can fetch + hash to settle
-      // "did it land?" instead of re-staging (the retry alone cannot tell
-      // applied from expired).
-      appliedSha256: sha256(patch.new_content)
+      diff: patch.diff
     };
   }
 

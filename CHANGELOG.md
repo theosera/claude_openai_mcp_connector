@@ -8,15 +8,6 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **`apply_planned_update` / `apply_planned_document_create` responses now
-  carry `applied_sha256`** — the hash of the exact bytes the apply wrote
-  (computed from the staged content handed to the atomic write, not re-read
-  from disk). A client whose apply response is lost can fetch + hash the
-  document to settle "did my apply land?" instead of re-staging the full
-  content; the retry alone only learns "the plan is gone", which cannot
-  distinguish applied from expired. Response-shape addition only — no new
-  tool.
-
 - **`scripts/funnel-watchdog.sh` + launchd recipe** (docs/operations.md §2):
   after a sleep/offline window the Tailscale Funnel ingress can stay dead
   while `tailscale funnel status` prints "Funnel on" — status reads config,

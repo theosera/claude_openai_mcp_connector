@@ -500,14 +500,7 @@ export function buildMcpServer(vaultStore: VaultStore, options: BuildServerOptio
       },
       async (input) => {
         const applied = await store.applyPlannedDocumentCreate(input.patch_id, input.confirmed_target_path);
-        // applied_sha256 = the staged bytes that landed. A client whose apply
-        // response is lost can fetch + hash the document to settle "did it
-        // land?" instead of re-staging the full content (2026-08-30 incident).
-        return jsonResult({
-          document: toPublicDocument(applied.document),
-          diff: applied.diff,
-          applied_sha256: applied.appliedSha256
-        });
+        return jsonResult({ document: toPublicDocument(applied.document), diff: applied.diff });
       }
     );
 
@@ -539,13 +532,7 @@ export function buildMcpServer(vaultStore: VaultStore, options: BuildServerOptio
       },
       async (input) => {
         const applied = await store.applyPlannedUpdate(input.patch_id);
-        // Same contract as apply_planned_document_create: applied_sha256 lets a
-        // retrying client distinguish "applied, response lost" from "expired".
-        return jsonResult({
-          document: toPublicDocument(applied.document),
-          diff: applied.diff,
-          applied_sha256: applied.appliedSha256
-        });
+        return jsonResult({ document: toPublicDocument(applied.document), diff: applied.diff });
       }
     );
   }
