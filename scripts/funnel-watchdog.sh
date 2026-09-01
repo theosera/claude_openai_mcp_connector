@@ -94,4 +94,11 @@ fi
 # sleep/idle way this brings it back. (NOT after a network-path change —
 # see SCOPE in the header; that variant needs `tailscale down && up` first.)
 "$TS" funnel --bg "$PORT" > /dev/null
-echo "funnel-watchdog: re-asserted funnel --bg $PORT at $(date '+%Y-%m-%dT%H:%M:%S%z')"
+# What this line may claim is exactly what the command established: the config
+# was accepted. Whether the public ingress is live is a different fact, and one
+# this host cannot determine — the same distinction the header opens with
+# ("status reads the stored serve config, not the live ingress") and the reason
+# the script exists at all. After a network-path change the command succeeds
+# and the ingress stays dead, so a line reading "re-asserted the ingress" would
+# be the original confusion, restated by the tool written to correct it.
+echo "funnel-watchdog: funnel --bg $PORT accepted at $(date '+%Y-%m-%dT%H:%M:%S%z') (config written; ingress liveness not checked from here)"
