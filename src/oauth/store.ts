@@ -342,6 +342,31 @@ export class OAuthStore {
     }
     const t = this.now();
     if (record.expiresAt <= t || record.clientId !== clientId) {
+      // Revoke descendants BEFORE discarding the linkage. The chain is stored
+      // as forward links inside the records themselves, so deleting an
+      // already-rotated record drops the only path from its ancestors to
+      // whatever was minted downstream of it: a later replay of the ancestor
+      // walks into a missing key, `revokeSuccessorChain` terminates there, and
+      // an interceptor's pair one hop beyond survives the whole-chain
+      // revocation this rotation scheme promises (independent review, #156).
+      // A never-rotated record has no successor keys, so this is a no-op on the
+      // ordinary expiry path.
+      //
+      // The trade is availability, and it is not free: someone holding a COPY
+      // of an already-rotated token can now destroy the legitimate client's
+      // live pair by presenting that copy — after the window, or at any time
+      // with a mismatched client — and gains nothing themselves (measured: the
+      // presentation still returns null). Before this line the same two
+      // presentations left the legitimate pair alive. Inside the window it
+      // costs nothing new, because presenting the same copy with the RIGHT
+      // client already revokes that pair and mints a fresh one to the
+      // presenter. Outside it, this is new reach, bounded by how long the
+      // spent record survives the expiry sweep. It is taken deliberately: a
+      // forced re-authorization is recoverable, an interceptor holding a live
+      // pair the revocation cannot reach is not. A chain keyed by a family id
+      // rather than by forward links through mutable records would close the
+      // severing without revoking anything here.
+      this.revokeSuccessorChain(record);
       this.refreshTokens.delete(key);
       // The deletion must still reach disk: a dead presented token stays dead
       // across restarts even on a failed rotation.

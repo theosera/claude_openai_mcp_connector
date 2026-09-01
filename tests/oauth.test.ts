@@ -292,6 +292,10 @@ describe("OAuthStore", () => {
   //  D. load で rotatedAt を落とす → restart の「re-open しない」1 本だけ赤
   //  E. chain walk を単段 delete に戻す → 「WHOLE successor chain」1 本だけ赤
   //  F. mint を issueTokens (2 save) に戻す → 「one atomic save」1 本だけ赤
+  //  G. (2026-09-01) 失敗アームの revokeSuccessorChain を消す → 「revokes
+  //     descendants when a failure path…」1 本だけ赤。直前の CONTROL は緑のまま
+  //     なので、赤はガードの不在を名指しできている。mutation が届いたことは
+  //     pristine との diff が 1 行であることで別途確認した
   it("lets a rotated refresh token be replayed inside the grace window, revoking the lost pair", () => {
     // The incident this pins (2026-08-30): the response carrying the rotated
     // pair is lost in transit; the client retries with the only token it has —
@@ -337,6 +341,41 @@ describe("OAuthStore", () => {
       expect(store.rotateRefreshToken(pair.refreshToken, "c")).toBeNull();
     }
     expect(store.validateAccessToken(replayed!.accessToken)?.clientId).toBe("c");
+  });
+
+  // The pair below is deliberately a CONTROL and a PROBE differing by ONE line:
+  // the wrong-client presentation. Reading them side by side is the whole
+  // argument — if the probe were written alone, a red could mean anything.
+  it("CONTROL: the chain walk reaches a hop while every link is present", () => {
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, now: () => t });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    const lost = store.rotateRefreshToken(tokens.refreshToken, "c"); // response intercepted
+    const hop1 = store.rotateRefreshToken(lost!.refreshToken, "c"); // interceptor rotates it
+    t += 30_000;
+    expect(store.rotateRefreshToken(tokens.refreshToken, "c")).not.toBeNull();
+    expect(store.validateAccessToken(hop1!.accessToken)).toBeNull();
+    expect(store.rotateRefreshToken(hop1!.refreshToken, "c")).toBeNull();
+  });
+
+  it("revokes descendants when a failure path removes an already-rotated link", () => {
+    // Independent review finding (P1, 2026-08-30): the failure arm deleted the
+    // presented record without walking its successor links, so an interceptor
+    // could sever the chain one hop above their own pair and outlive the
+    // ancestor's whole-chain revocation. Identical to the CONTROL above except
+    // for the wrong-client presentation, which is the branch under test.
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, now: () => t });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    const lost = store.rotateRefreshToken(tokens.refreshToken, "c");
+    const hop1 = store.rotateRefreshToken(lost!.refreshToken, "c");
+    // The one added line: the interceptor re-presents the INTERMEDIATE with a
+    // mismatched client, taking the delete-without-walk arm.
+    expect(store.rotateRefreshToken(lost!.refreshToken, "wrong")).toBeNull();
+    t += 30_000;
+    expect(store.rotateRefreshToken(tokens.refreshToken, "c")).not.toBeNull();
+    expect(store.validateAccessToken(hop1!.accessToken)).toBeNull();
+    expect(store.rotateRefreshToken(hop1!.refreshToken, "c")).toBeNull();
   });
 
   it("persists a rotation's pair and its revocation linkage in one atomic save", async () => {
