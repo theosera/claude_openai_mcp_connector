@@ -169,8 +169,9 @@ function tokenKey(token: string): string {
  * inside their windows, the sweep starts evicting freshly issued grants
  * instead — survival vector 111100 for six roots at cap 4, where the last two
  * grants were evicted in the same call that issued them. A 60-second recovery
- * convenience must not cost new authorizations. The residual is stated on
- * `rotateRefreshToken`.
+ * convenience must not cost new authorizations. What that leaves open is an
+ * interceptor who drives the sweep on purpose; it is measured and bounded on
+ * `rotateRefreshToken` rather than hidden here.
  */
 function enforceCap<K, V>(map: Map<K, V>, max: number, spare?: K): void {
   while (map.size > max) {
@@ -439,10 +440,24 @@ export class OAuthStore {
     // `key` is spared from the cap for the length of this mint: inserting the
     // successor must not evict the record this rotation is standing on.
     //
-    // ⚠️ Residual, stated rather than fixed: once this call returns, the
-    // record is an ordinary entry again, so unrelated traffic can still evict
-    // it before the window closes. Sparing it from every mint was measured and
-    // costs freshly issued grants instead (see enforceCap), which is worse.
+    // ⚠️ Residual, stated rather than fixed — and it is not merely bad luck.
+    // Once this call returns the record is an ordinary entry again, and an
+    // interceptor holding the lost response can push it out DELIBERATELY:
+    // rotating the chain they captured adds an entry per rotation, and at
+    // `maxTokens - 1` rotations inside the window the root is swept, so the
+    // replay that would have revoked their family returns `invalid_grant`
+    // instead and their pair survives. Measured independently by two sessions
+    // (2026-09-02): at cap 4 the flip is exactly at 3 rotations, and a large
+    // cap is the control. Nothing outside this file sets `maxTokens`, so the
+    // shipped cost is ~1999 rotations inside ROTATION_GRACE_MS (60 s);
+    // whether that rate is reachable through the HTTP endpoint was NOT
+    // measured, and is the number to check before re-weighing this.
+    //
+    // Not closed here because the obvious close is worse: sparing every
+    // in-window record from every mint was built and measured evicting
+    // freshly issued grants instead (see enforceCap). Pre-filling does not
+    // help an attacker — eviction is insertion-ordered, so entries older than
+    // the root are swept first, and the cap must be filled after it exists.
     const issued = this.mintTokens(
       clientId,
       record.scope,
