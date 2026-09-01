@@ -355,9 +355,24 @@ CAS は読んだ版一致時のみ更新、append/CAS は in-process mutex で�
   **`--audit-level high` なので moderate な本番 advisory は素通りする** (ノイズとの意図的なトレード)。
   **Dependabot は代わりにならない** — alerts 有効でも transitive の新しい advisory は open 0 件で、
   `dependabot.yml` の `updates:` は直接依存が対象。
-- `.github/CODEOWNERS` が `.github/` を所有 (workflow poisoning 対策 / branch protection
-  で code-owner review 必須化)。`.github/dependabot.yml` が SHA pin を週次更新。
-- `.github/` を触る変更は CODEOWNERS review を要する。SHA pin を floating tag に戻さない。
+- `.github/CODEOWNERS` が `.github/` を所有 (workflow poisoning 対策)。
+  `.github/dependabot.yml` が SHA pin を週次更新。SHA pin を floating tag に戻さない。
+- ⚠️ **CODEOWNERS は「誰に届くか」を決めるだけで、いまは何も止めない。**
+  ⛔ **旧版は「branch protection で code-owner review 必須化」「`.github/` を触る変更は
+  CODEOWNERS review を要する」と書いていた。実態と違ったので訂正した** (旧文をここに残すのは、
+  「必須のはずだ」と読んだ次の席が、止まらないことを設定ミスと誤診しないため)。
+  **実測 (2026-09-01、ruleset `#18004963` "Branch-protection" / active)**:
+  `require_code_owner_review: true` だが `required_approving_review_count: 0` なので、
+  **approving review が 0 でも merge できる**。⭕ **実例**: #155 / #157 / #160 はいずれも
+  CODEOWNERS 所有パス (`.claude/` / `src/frontmatter.ts`) を触りながら、**承認 0 で merge された**
+  (bot の review は付くが `COMMENTED` = 承認ではない)。
+  ⇒ **`.github/` や `src/pathSafety.ts` を触る変更のレビューは、規約であって強制ではない。**
+- **実際に merge を止めているのは 2 つ** — `required_status_checks`
+  (`build (22.x)` / `build (24.13.0)` / `CodeQL`、`strict` なので base に追随していないと止まる) と
+  **`required_review_thread_resolution`** (未解決の review thread が 1 本でもあると止まる。
+  実測: #156 は 6 本、#161 は 1 本で止まっていた)。
+  ⚠️ **強制を増やしたいなら触るのは CODEOWNERS ではなく `required_approving_review_count`。**
+  ⛔ **ただしそれは全 PR を所有者 1 人待ちにする** — 採否は運用コストの判断で、コードの判断ではない。
 
 ## Branch naming
 
