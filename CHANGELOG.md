@@ -8,6 +8,22 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Refresh-token rotation gained a bounded replay-grace window** (incident
+  2026-08-30). Strict single-use rotation deleted the presented refresh token
+  before the client held its replacement, so one response lost over a dead
+  ingress turned the next refresh into `invalid_grant` and forced a full
+  re-authorization. A rotated token re-presented inside `ROTATION_GRACE_MS`
+  (60 s) now rotates again, and the replay revokes the **entire successor
+  chain** minted downstream of the lost response — not just the direct pair,
+  which an interceptor could escape by rotating what they captured once
+  (independent review, P2). The minted pair and its revocation linkage are
+  persisted in **one atomic save**, closing the crash window in which disk held
+  a live pair with no linkage back to the rotated token (independent review,
+  P2). The window never extends on replay, survives restarts, and beyond it
+  single-use holds exactly as before; hash-at-rest is unchanged (successor
+  links are sha256 keys). Pinned in `tests/oauth.test.ts` with six per-guard
+  red/green mutation checks recorded in the test file.
+
 - **`scripts/funnel-watchdog.sh` + launchd recipe** (docs/operations.md §2):
   after a sleep/offline window the Tailscale Funnel ingress can stay dead
   while `tailscale funnel status` prints "Funnel on" — status reads config,

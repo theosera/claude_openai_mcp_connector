@@ -11,7 +11,7 @@ import {
 } from "@modelcontextprotocol/client";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HttpConfig } from "../src/config.js";
 import { startHttpServer } from "../src/httpServer.js";
 import { KnowledgeStore } from "../src/knowledgeStore.js";
@@ -19,7 +19,7 @@ import { SkillStore } from "../src/skillStore.js";
 import { isAllowedRedirectUri, OAuthProvider, SCOPE_READ, SCOPE_WRITE } from "../src/oauth/provider.js";
 import { computeS256Challenge, verifyPkceS256 } from "../src/oauth/pkce.js";
 import { RateLimiter } from "../src/oauth/rateLimiter.js";
-import { OAuthStore } from "../src/oauth/store.js";
+import { OAuthStore, ROTATION_GRACE_MS } from "../src/oauth/store.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -272,13 +272,123 @@ describe("OAuthStore", () => {
     expect(store.validateAccessToken(last.accessToken)?.clientId).toBe("c");
   });
 
-  it("rotates refresh tokens and invalidates the old one", () => {
-    const store = new OAuthStore(opts);
+  it("rotates refresh tokens and invalidates the old one once the replay grace closes", () => {
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, now: () => t });
     const tokens = store.issueTokens("c", "vault.read", "r");
     const rotated = store.rotateRefreshToken(tokens.refreshToken, "c");
     expect(rotated).not.toBeNull();
-    expect(store.rotateRefreshToken(tokens.refreshToken, "c")).toBeNull(); // reused
-    expect(store.rotateRefreshToken(tokens.refreshToken, "wrong")).toBeNull();
+    t += ROTATION_GRACE_MS + 1;
+    expect(store.rotateRefreshToken(tokens.refreshToken, "c")).toBeNull(); // reused after grace
+    expect(store.rotateRefreshToken(rotated!.refreshToken, "wrong")).toBeNull(); // wrong client
+    // The wrong-client presentation above killed the successor too — strict, as before.
+    expect(store.rotateRefreshToken(rotated!.refreshToken, "c")).toBeNull();
+  });
+
+  // 逆検証・赤緑実測 (2026-08-30, 各 mutation が当該分岐に届いたことを赤の内訳で確認):
+  //  A. grace を外し即 delete に戻す → replay/非延長/restart の 3 本だけ赤
+  //  B. replay で rotatedAt を触り窓を延長 → 「never extends」1 本だけ赤
+  //  C. successor revocation を消す → revocation を assert する 2 本だけ赤
+  //  D. load で rotatedAt を落とす → restart の「re-open しない」1 本だけ赤
+  //  E. chain walk を単段 delete に戻す → 「WHOLE successor chain」1 本だけ赤
+  //  F. mint を issueTokens (2 save) に戻す → 「one atomic save」1 本だけ赤
+  it("lets a rotated refresh token be replayed inside the grace window, revoking the lost pair", () => {
+    // The incident this pins (2026-08-30): the response carrying the rotated
+    // pair is lost in transit; the client retries with the only token it has —
+    // the one it just presented. Strict single-use turned that retry into a
+    // forced full re-authorization.
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, now: () => t });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    const lost = store.rotateRefreshToken(tokens.refreshToken, "c"); // response never arrives
+    expect(lost).not.toBeNull();
+    t += 30_000; // client retries inside the window
+    const replayed = store.rotateRefreshToken(tokens.refreshToken, "c");
+    expect(replayed).not.toBeNull();
+    // The pair minted for the lost response is revoked — if anyone holds it,
+    // it is an interceptor, and the legitimate client never saw it.
+    expect(store.validateAccessToken(lost!.accessToken)).toBeNull();
+    expect(store.rotateRefreshToken(lost!.refreshToken, "c")).toBeNull();
+    // The replayed pair is fully usable.
+    expect(store.validateAccessToken(replayed!.accessToken)?.clientId).toBe("c");
+    expect(store.rotateRefreshToken(replayed!.refreshToken, "c")).not.toBeNull();
+  });
+
+  it("revokes the WHOLE successor chain on replay, not just the direct pair", () => {
+    // Independent review finding (P2, 2026-08-30): an interceptor who captured
+    // the lost response can rotate its refresh token once, putting their live
+    // pair one hop beyond a single-level delete. The replay must walk the
+    // chain to reach them at any depth.
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, now: () => t });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    const lost = store.rotateRefreshToken(tokens.refreshToken, "c"); // response intercepted
+    // The interceptor rotates what they captured — twice, to prove depth.
+    const hop1 = store.rotateRefreshToken(lost!.refreshToken, "c");
+    const hop2 = store.rotateRefreshToken(hop1!.refreshToken, "c");
+    expect(hop2).not.toBeNull();
+
+    t += 30_000; // legitimate client replays inside the window
+    const replayed = store.rotateRefreshToken(tokens.refreshToken, "c");
+    expect(replayed).not.toBeNull();
+    // Every hop of the interceptor's chain is dead — access and refresh legs.
+    for (const pair of [lost!, hop1!, hop2!]) {
+      expect(store.validateAccessToken(pair.accessToken)).toBeNull();
+      expect(store.rotateRefreshToken(pair.refreshToken, "c")).toBeNull();
+    }
+    expect(store.validateAccessToken(replayed!.accessToken)?.clientId).toBe("c");
+  });
+
+  it("persists a rotation's pair and its revocation linkage in one atomic save", async () => {
+    // Independent review finding (P2, 2026-08-30): saving the minted pair
+    // first and the successor linkage second opens a crash window where disk
+    // holds a live pair a post-restart replay cannot revoke. One save per
+    // successful rotation (each save is an atomic tmp+rename) closes it: there
+    // is no intermediate on-disk state at all. The save count is asserted
+    // BECAUSE it is the mechanism — with two saves the window exists no matter
+    // what the final state looks like.
+    const os = await import("node:os");
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "oauth-atomic-"));
+    const file = path.join(dir, "state.json");
+    let t = 1_000_000;
+    const store = new OAuthStore({
+      ...opts,
+      persistPath: file,
+      persistSecret: "s3cret",
+      now: () => t
+    });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    // `save` is private only at compile time; the runtime spy sees it fine.
+    const saveSpy = vi.spyOn(store as unknown as { save: () => void }, "save");
+    const lost = store.rotateRefreshToken(tokens.refreshToken, "c");
+    expect(lost).not.toBeNull();
+    expect(saveSpy).toHaveBeenCalledTimes(1);
+    saveSpy.mockRestore();
+
+    // And the one save carried the linkage: a replay after a "crash" (fresh
+    // store from the same file) still revokes the lost pair.
+    t += 30_000;
+    const reloaded = new OAuthStore({
+      ...opts,
+      persistPath: file,
+      persistSecret: "s3cret",
+      now: () => t
+    });
+    const replayed = reloaded.rotateRefreshToken(tokens.refreshToken, "c");
+    expect(replayed).not.toBeNull();
+    expect(reloaded.validateAccessToken(lost!.accessToken)).toBeNull();
+    expect(reloaded.rotateRefreshToken(lost!.refreshToken, "c")).toBeNull();
+  });
+
+  it("never extends the replay window on replay", () => {
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, now: () => t });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    expect(store.rotateRefreshToken(tokens.refreshToken, "c")).not.toBeNull(); // window opens at t0
+    t += 50_000;
+    expect(store.rotateRefreshToken(tokens.refreshToken, "c")).not.toBeNull(); // replay at t0+50s
+    t += 20_000; // t0+70s: 20s after the replay, but past the ORIGINAL window
+    expect(store.rotateRefreshToken(tokens.refreshToken, "c")).toBeNull();
   });
 
   it("prunes an orphaned client (no live token) once it ages past the grace window", () => {
@@ -366,16 +476,47 @@ describe("OAuthStore persistence", () => {
     expect(reloaded.rotateRefreshToken(tokens.refreshToken, client.clientId)).not.toBeNull();
   });
 
-  it("keeps refresh-token rotation single-use across restarts", async () => {
+  it("keeps refresh-token rotation single-use across restarts once the grace closes", async () => {
     const file = await stateFilePath();
-    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t });
     const tokens = store.issueTokens("c", "vault.read", "r");
     const rotated = store.rotateRefreshToken(tokens.refreshToken, "c");
     expect(rotated).not.toBeNull();
 
-    const reloaded = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    t += ROTATION_GRACE_MS + 1;
+    const reloaded = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t });
     expect(reloaded.rotateRefreshToken(tokens.refreshToken, "c")).toBeNull(); // old one stays dead
     expect(reloaded.rotateRefreshToken(rotated!.refreshToken, "c")).not.toBeNull();
+  });
+
+  it("carries the replay-grace state across a restart (window survives, and never re-opens)", async () => {
+    const file = await stateFilePath();
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    const lost = store.rotateRefreshToken(tokens.refreshToken, "c"); // response lost; window opens at t0
+    expect(lost).not.toBeNull();
+
+    // Restart inside the window: the replay must still work — and must still
+    // revoke the successors minted before the restart.
+    t += 30_000;
+    const reloaded = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t });
+    const replayed = reloaded.rotateRefreshToken(tokens.refreshToken, "c");
+    expect(replayed).not.toBeNull();
+    expect(reloaded.validateAccessToken(lost!.accessToken)).toBeNull();
+    expect(reloaded.rotateRefreshToken(lost!.refreshToken, "c")).toBeNull();
+
+    // Restart again, past the ORIGINAL window: if `rotatedAt` were dropped on
+    // load, this replay would look like a first rotation and the window would
+    // silently re-open. It must stay closed.
+    t += ROTATION_GRACE_MS;
+    const reloadedLate = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t });
+    expect(reloadedLate.rotateRefreshToken(tokens.refreshToken, "c")).toBeNull();
+    // The replayed pair's refresh leg (TTL 600s) is still the live credential —
+    // its access leg (TTL 60s) has legitimately expired by now, so assert on
+    // the refresh token, not the access token.
+    expect(reloadedLate.rotateRefreshToken(replayed!.refreshToken, "c")).not.toBeNull();
   });
 
   it("persists the invalidation even when a rotation fails (client mismatch)", async () => {
