@@ -310,6 +310,19 @@ export function parseMarkdown(raw: string): { frontmatter: DocumentMetadata; bod
  * already reject nothing; 8 KiB keeps ~7.9x headroom over the largest note that
  * exists while holding the attack to ~41 ms (path 1) and ~1 ms (path 2).
  *
+ * Those figures are AS OF the 2,381-note vault they were taken from, and a headroom
+ * ratio is a fact about the largest note rather than about the cap, so it goes stale
+ * on its own as the vault grows. Re-measured 2026-09-01 over the 2,801 files the
+ * server indexed that day (2,462 of them carrying frontmatter — a count that moved
+ * by 181 within the hour it was taken, so treat it as the denominator this sample
+ * had rather than as the vault's size), counted the way
+ * assertBoundedFrontmatterBlock counts: median 272 B, p99 838 B, p99.9 1,102 B, max
+ * 1,771 B — ~4.6x headroom, nothing over the cap, and no unterminated block. The note
+ * behind the 1,042 B figure is still there; five web-clipped notes added since are what
+ * moved the maximum. So the cap did not have to move — but re-take the maximum before
+ * quoting a ratio: the cap is the numerator and holds still, while the denominator is
+ * whatever the vault happens to hold today.
+ *
  * That 41 ms is the UNTERMINATED shape, which is the worst case — the same as the
  * block comment above says, and the reason an earlier ~23 ms here was wrong: it
  * was the terminated shape, which is ~1.8x cheaper at the same size.

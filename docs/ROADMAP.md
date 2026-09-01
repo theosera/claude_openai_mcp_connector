@@ -804,6 +804,14 @@ worst because gray-matter then treats the whole file as the block.
   host-dependent (the same payloads run ~6x slower on a CI container); only the
   exponent transfers. Over-cap frontmatter fails loudly — logged and body-only on the
   read path, refused outright on the write paths.
+  **Those numbers are as of a 2,381-note vault.** Re-measured 2026-09-01 over the
+  2,801 files the server indexed that day (2,462 with frontmatter — the file count
+  moved by 181 inside the hour, so it is this sample's denominator, not the vault's
+  size), counted the way the guard
+  counts: median 272 B, max 1,771 B — ~4.6x, with nothing over the cap and no
+  unterminated block, so the cap stays. The ratio tracks the largest note, not the
+  cap, so it decays without anyone touching the code: re-take the maximum before
+  quoting a headroom figure.
 - **Behaviour change:** kilobytes of `source_refs` in frontmatter are now
   refused, including the 900-ref session-archive index the tests used to pin as
   legitimate (66.2 KiB). No such note exists in the vault, and a hostile block
