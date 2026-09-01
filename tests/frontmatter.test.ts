@@ -793,7 +793,9 @@ describe("a write may not emit a note the read path will refuse (INV-2, write si
       id_or_path: "ok.md",
       new_body: "body\n",
       // ~4 KiB of tags: comfortably under the cap, and above anything the real
-      // vault holds (measured median 225 B, max 1,042 B).
+      // vault holds (measured median 225 B, max 1,042 B as of a 2,381-note vault;
+      // re-measured 2026-09-01 over 2,801 files, median 272 B and max 1,771 B, still
+      // well under the ~4 KiB here — so what this test pins has not moved).
       frontmatter_patch: { tags: Array.from({ length: 300 }, (_, index) => `t-${index}`) },
       reason: "large but legal"
     });
