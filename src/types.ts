@@ -520,8 +520,8 @@ export interface VaultStore {
   applyPlannedDocumentCreate(
     patchId: string,
     confirmedTargetPath: string
-  ): Promise<{ document: MarkdownDocument; diff: string }>;
+  ): Promise<{ document: MarkdownDocument; diff: string; appliedSha256: string }>;
   planUpdate(input: PlanUpdateInput): Promise<PlannedPatch>;
-  applyPlannedUpdate(patchId: string): Promise<{ document: MarkdownDocument; diff: string }>;
+  applyPlannedUpdate(patchId: string): Promise<{ document: MarkdownDocument; diff: string; appliedSha256: string }>;
   traceSources(idOrPath: string, options?: TraceOptions): Promise<TraceResult>;
 }
