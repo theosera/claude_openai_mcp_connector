@@ -77,14 +77,27 @@ was outstanding:
   presented refresh token was already deleted when the response carrying its
   replacement vanished. Rotation now has a bounded replay-grace window
   (`ROTATION_GRACE_MS`, 60 s): a rotated token re-presented inside the window
-  rotates again and **revokes the entire successor chain minted downstream of
-  the lost response** (an interceptor who captured it — even one who then
-  rotated what they captured — loses it; the legitimate client provably never
-  received it). The pair and its revocation linkage are persisted in ONE atomic
-  save, so no crash window leaves a live pair on disk that a post-restart
-  replay cannot revoke. The window never extends on replay, its state persists
-  across restarts, and beyond it single-use holds exactly as before. Pinned by
-  `tests/oauth.test.ts` with per-guard red/green mutation checks.
+  rotates again and **revokes every generation minted downstream of the lost
+  response** (an interceptor who captured it — even one who then rotated what
+  they captured — loses it; the legitimate client provably never received it).
+  The revocation and the pair that replaces it are persisted in ONE atomic
+  save, so no crash window leaves disk holding one without the other. The
+  window never extends on replay, its state persists across restarts, and
+  beyond it single-use holds exactly as before. Pinned by
+  `tests/oauth.test.ts`, with mutation checks recorded beside the tests.
+- **Amended 2026-09-01:** the first form of that revocation stored the lineage
+  as forward links inside the token records, and a walk over links is only as
+  reachable as its least durable hop — a failed presentation, the expiry sweep,
+  and the hard cap can each remove one, and independent review found the first
+  of those. Membership is now a property of each token (a family id and a
+  generation within it), so a replay revokes the family above its own
+  generation by scanning rather than walking, and no intermediate has to
+  survive for its descendants to be reachable. The alternative — keeping the
+  links and revoking descendants on the failure paths — closes the same gap and
+  was measured buying it with availability: a copy of a spent token could
+  destroy the legitimate client's live pair while gaining nothing. Two tests
+  assert that non-revocation directly, because a fix that pays that price
+  passes every other test here.
 - Pinned by `tests/oauth.test.ts`. See
   [`operations.md §1.B`](./operations.md#b-oauth-state--in-memory-by-default-persistable-via-a-state-file).
 
