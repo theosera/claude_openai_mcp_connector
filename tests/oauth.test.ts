@@ -288,10 +288,24 @@ describe("OAuthStore", () => {
   // 逆検証・赤緑実測 (2026-08-30, 各 mutation が当該分岐に届いたことを赤の内訳で確認):
   //  A. grace を外し即 delete に戻す → replay/非延長/restart の 3 本だけ赤
   //  B. replay で rotatedAt を触り窓を延長 → 「never extends」1 本だけ赤
-  //  C. successor revocation を消す → revocation を assert する 2 本だけ赤
+  //  C. revocation を消す → revocation を assert するテストだけ赤
   //  D. load で rotatedAt を落とす → restart の「re-open しない」1 本だけ赤
-  //  E. chain walk を単段 delete に戻す → 「WHOLE successor chain」1 本だけ赤
+  //  E. (削除) chain walk は family 走査に置き換わった。下の H1/H3 が後継
   //  F. mint を issueTokens (2 save) に戻す → 「one atomic save」1 本だけ赤
+  //
+  // 2026-09-01、successor link を family id + generation に置き換えた際の再実測。
+  // ⚠️ H1/H3/H4 は互いに素ではない — どれも同じ 8 本を赤にする。3 つは 1 つの
+  // 不変条件 (replay は下流の世代を revoke する) の別々の壊し方なので、赤は
+  // 「revocation が効いていない」までしか名指しできない。H2 だけが独立に切れる。
+  //  H1. revokeFamilyAbove を no-op に → 8 本赤。★ 失敗アームの 2 本は緑のまま
+  //      (= 「revoke しない」を assert する側なので、正しく反応しない)
+  //  H2. 世代の境界 > を >= に         → 「retry more than once」1 本だけ赤
+  //  H3. 系統を継承せず毎回新 family に → H1 と同じ 8 本
+  //  H4. generation を +1 せず据え置き  → H1 と同じ 8 本
+  // ⛔ load 側の fallback (familyId / generation が壊れた state を、互いに
+  //    revoke できない孤立 family として読む) は**テストで踏めていない**。
+  //    その分岐に入る state file は HMAC を通る必要があり、旧版の writer を
+  //    テスト内に再実装しない限り作れない。⇒ 未カバーとして申告する。
   it("lets a rotated refresh token be replayed inside the grace window, revoking the lost pair", () => {
     // The incident this pins (2026-08-30): the response carrying the rotated
     // pair is lost in transit; the client retries with the only token it has —
@@ -314,7 +328,7 @@ describe("OAuthStore", () => {
     expect(store.rotateRefreshToken(replayed!.refreshToken, "c")).not.toBeNull();
   });
 
-  it("revokes the WHOLE successor chain on replay, not just the direct pair", () => {
+  it("revokes EVERY generation minted downstream on replay, not just the direct pair", () => {
     // Independent review finding (P2, 2026-08-30): an interceptor who captured
     // the lost response can rotate its refresh token once, putting their live
     // pair one hop beyond a single-level delete. The replay must walk the
@@ -337,6 +351,94 @@ describe("OAuthStore", () => {
       expect(store.rotateRefreshToken(pair.refreshToken, "c")).toBeNull();
     }
     expect(store.validateAccessToken(replayed!.accessToken)?.clientId).toBe("c");
+  });
+
+  // The pair below is a CONTROL and a PROBE differing by ONE line. Reading them
+  // side by side is the argument: the probe removes the intermediate before the
+  // replay, and the descendants must still die. Independent review (P1,
+  // 2026-08-30) found that a chain kept as links between records could not
+  // survive that, because a deletion anywhere along it ends the walk.
+  it("CONTROL: a replay reaches a hop while every record between them exists", () => {
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, now: () => t });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    const lost = store.rotateRefreshToken(tokens.refreshToken, "c"); // response intercepted
+    const hop1 = store.rotateRefreshToken(lost!.refreshToken, "c"); // interceptor rotates it
+    t += 30_000;
+    expect(store.rotateRefreshToken(tokens.refreshToken, "c")).not.toBeNull();
+    expect(store.validateAccessToken(hop1!.accessToken)).toBeNull();
+    expect(store.rotateRefreshToken(hop1!.refreshToken, "c")).toBeNull();
+  });
+
+  it("reaches a hop whose intermediate was already deleted", () => {
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, now: () => t });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    const lost = store.rotateRefreshToken(tokens.refreshToken, "c");
+    const hop1 = store.rotateRefreshToken(lost!.refreshToken, "c");
+    // The one added line: the interceptor re-presents the INTERMEDIATE with a
+    // mismatched client, which deletes it.
+    expect(store.rotateRefreshToken(lost!.refreshToken, "wrong")).toBeNull();
+    t += 30_000;
+    expect(store.rotateRefreshToken(tokens.refreshToken, "c")).not.toBeNull();
+    expect(store.validateAccessToken(hop1!.accessToken)).toBeNull();
+    expect(store.rotateRefreshToken(hop1!.refreshToken, "c")).toBeNull();
+  });
+
+  // The negative half of the same design. Revoking on the failure arms would
+  // also close the gap above, and was measured doing so: it hands anyone
+  // holding a COPY of a spent token the power to destroy the legitimate
+  // client's live pair, on both arms, while gaining nothing themselves. These
+  // two pin that the fix did not buy the gap with that.
+  it.each([
+    ["after the window closes, with the right client", ROTATION_GRACE_MS + 1, "c"],
+    ["inside the window, with a mismatched client", 5_000, "wrong"]
+  ])("leaves the live pair alone when a spent token is presented %s", (_label, advance, client) => {
+    let t = 1_000_000;
+    // accessTokenTtlSec is raised so advancing past the grace window does not
+    // expire the access token on its own — without it the assertion below
+    // passes for the wrong reason, which is how the first run of this probe
+    // failed its own control.
+    const store = new OAuthStore({ ...opts, accessTokenTtlSec: 3600, now: () => t });
+    const spent = store.issueTokens("c", "vault.read", "r");
+    const live = store.rotateRefreshToken(spent.refreshToken, "c")!; // the client RECEIVED this
+    t += advance as number;
+    expect(store.validateAccessToken(live.accessToken)).not.toBeNull(); // control
+    expect(store.rotateRefreshToken(spent.refreshToken, client as string)).toBeNull();
+    expect(store.validateAccessToken(live.accessToken)?.clientId).toBe("c");
+    expect(store.rotateRefreshToken(live.refreshToken, "c")).not.toBeNull();
+  });
+
+  it("revokes only the family that was replayed, never a bystander's", () => {
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, now: () => t });
+    const a = store.issueTokens("c", "vault.read", "r");
+    const b = store.issueTokens("c", "vault.read", "r"); // a separate grant
+    const aNext = store.rotateRefreshToken(a.refreshToken, "c")!;
+    const bNext = store.rotateRefreshToken(b.refreshToken, "c")!;
+    t += 30_000;
+    expect(store.rotateRefreshToken(a.refreshToken, "c")).not.toBeNull(); // replay family A
+    expect(store.validateAccessToken(aNext.accessToken)).toBeNull(); // A's pair dies
+    expect(store.validateAccessToken(bNext.accessToken)?.clientId).toBe("c"); // B untouched
+    expect(store.rotateRefreshToken(bNext.refreshToken, "c")).not.toBeNull();
+  });
+
+  it("lets the client retry more than once inside the window", () => {
+    // A lost response can be lost again. Each replay supersedes the previous
+    // attempt's pair and mints another; the presented token stays presentable
+    // until the window closes.
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, now: () => t });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    const first = store.rotateRefreshToken(tokens.refreshToken, "c")!;
+    t += 10_000;
+    const second = store.rotateRefreshToken(tokens.refreshToken, "c")!;
+    t += 10_000;
+    const third = store.rotateRefreshToken(tokens.refreshToken, "c");
+    expect(third).not.toBeNull();
+    expect(store.validateAccessToken(first.accessToken)).toBeNull();
+    expect(store.validateAccessToken(second.accessToken)).toBeNull();
+    expect(store.validateAccessToken(third!.accessToken)?.clientId).toBe("c");
   });
 
   it("persists a rotation's pair and its revocation linkage in one atomic save", async () => {
