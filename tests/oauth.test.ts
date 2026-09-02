@@ -1197,6 +1197,123 @@ describe("OAuth end-to-end over HTTP", () => {
     expect(sawRateLimit).toBe(true);
   });
 
+  it("bounds the refresh-rotation rate at /token, and says so with a 429", async () => {
+    // Replay detection reads the family's root refresh record out of a capped,
+    // insertion-ordered map. A rotation nets one entry, so an unthrottled caller
+    // can mint until `enforceCap` evicts that root, and the victim's replay —
+    // the thing that revokes a stolen family — returns `invalid_grant` instead.
+    // The eviction is only useful inside ROTATION_GRACE_MS, so the endpoint has
+    // to bound the *rate*. `/token` was the one OAuth route with no limiter.
+    const store = await makeStore();
+    const port = await freePort();
+    const issuer = `http://127.0.0.1:${port}`;
+    const config: HttpConfig = {
+      host: "127.0.0.1",
+      port,
+      authToken: "static-bearer-unused-here",
+      authTokenScopes: [SCOPE_READ, SCOPE_WRITE],
+      allowWrite: false,
+      allowSkillWrite: false,
+      allowAuditWrite: false,
+      allowLegacyCreateDocument: false,
+      allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
+      allowedOrigins: [],
+      oauth: {
+        issuer,
+        loginPassword: "hunter2",
+        accessTokenTtlSec: 3600,
+        refreshTokenTtlSec: 86_400,
+        codeTtlSec: 60,
+        allowWrite: false
+      }
+    };
+    server = await startHttpServer(store, config);
+
+    // Deliberately invalid grants: what is under test is the gate in front of
+    // the handler, not the grant itself. A rejected grant still reaches
+    // `oauth.token(...)` and answers 400, so 400 is the "allowed" reading here
+    // and 429 is the gate firing — which also keeps the test from depending on
+    // rotation state that the limiter would truncate half way through.
+    const hit = async () =>
+      fetch(`${issuer}/token`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: "not-a-real-refresh-token",
+          client_id: "not-a-real-client"
+        }).toString()
+      });
+
+    const statuses: number[] = [];
+    for (let i = 0; i < 40; i++) {
+      statuses.push((await hit()).status);
+    }
+
+    // The gate fires...
+    const firstLimited = statuses.indexOf(429);
+    expect(firstLimited).toBeGreaterThan(-1);
+    // ...and not before the endpoint has served the traffic a single user
+    // actually produces. Without this half, a limit of 1 would pass the line
+    // above while breaking every legitimate refresh.
+    expect(firstLimited).toBeGreaterThanOrEqual(30);
+    expect(statuses.slice(0, 30).every((s) => s === 400)).toBe(true);
+
+    // The rejection is the documented shape, not an incidental error page: a
+    // client that cannot read `Retry-After` cannot back off correctly.
+    const limited = await hit();
+    expect(limited.status).toBe(429);
+    expect(Number(limited.headers.get("retry-after"))).toBeGreaterThan(0);
+    expect(await limited.json()).toEqual({ error: "rate_limited" });
+  });
+
+  it("gives /token its own bucket, so refreshes do not consume the /register budget", async () => {
+    // The three OAuth routes carry different limits on different windows. One
+    // shared bucket would let ordinary refresh traffic lock a user out of
+    // registration (and vice versa), so the separation is part of the contract.
+    const store = await makeStore();
+    const port = await freePort();
+    const issuer = `http://127.0.0.1:${port}`;
+    const config: HttpConfig = {
+      host: "127.0.0.1",
+      port,
+      authToken: "static-bearer-unused-here",
+      authTokenScopes: [SCOPE_READ, SCOPE_WRITE],
+      allowWrite: false,
+      allowSkillWrite: false,
+      allowAuditWrite: false,
+      allowLegacyCreateDocument: false,
+      allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
+      allowedOrigins: [],
+      oauth: {
+        issuer,
+        loginPassword: "hunter2",
+        accessTokenTtlSec: 3600,
+        refreshTokenTtlSec: 86_400,
+        codeTtlSec: 60,
+        allowWrite: false
+      }
+    };
+    server = await startHttpServer(store, config);
+
+    // Spend the whole /token budget.
+    for (let i = 0; i < 31; i++) {
+      await fetch(`${issuer}/token`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: "x", client_id: "y" }).toString()
+      });
+    }
+
+    // /register still answers on its own budget.
+    const reg = await fetch(`${issuer}/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ redirect_uris: ["https://chatgpt.com/cb"] })
+    });
+    expect(reg.status).not.toBe(429);
+  });
+
   it("gates write tools by token scope on an allowWrite server", async () => {
     const store = await makeStore();
     const port = await freePort();

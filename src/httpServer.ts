@@ -18,6 +18,7 @@ const MAX_BODY_BYTES = 4 * 1024 * 1024; // 4 MiB — bound request memory.
 interface OAuthLimiters {
   authorize: RateLimiter;
   register: RateLimiter;
+  token: RateLimiter;
 }
 
 interface Principal {
@@ -85,10 +86,24 @@ export async function startHttpServer(
   const oauth = config.oauth ? new OAuthProvider(config.oauth) : undefined;
   // Coarse per-client rate limits on the public, unauthenticated OAuth endpoints
   // (defense-in-depth against brute force / DCR flooding over a public tunnel).
+  // `/token` is bounded on a shorter window than its siblings because what it has
+  // to stop is a *rate*, not a total. A refresh rotation nets one entry in the
+  // token map — the presented record survives its own grace window while its
+  // successor is inserted — so an unthrottled caller can drive `enforceCap` until
+  // it evicts the root record that reuse detection reads, and the replay that was
+  // supposed to revoke a stolen family returns `invalid_grant` instead. That is
+  // only useful inside ROTATION_GRACE_MS (60 s); past it the root is dead anyway.
+  // So the bound that matters is per-minute, and 30/min leaves the legitimate
+  // single-user traffic (one authorization-code exchange per client, one refresh
+  // per access-token TTL, plus the grace window's retry) two orders of magnitude
+  // of headroom while leaving an attacker ~30 of the ~1999 rotations the eviction
+  // needs. Reaching the endpoint at that rate was measured, not assumed: 1999
+  // rotations completed in 356 ms against a loopback server with no limiter.
   const limiters: OAuthLimiters | undefined = oauth
     ? {
         authorize: new RateLimiter({ limit: 20, windowMs: 5 * 60_000 }),
-        register: new RateLimiter({ limit: 20, windowMs: 10 * 60_000 })
+        register: new RateLimiter({ limit: 20, windowMs: 10 * 60_000 }),
+        token: new RateLimiter({ limit: 30, windowMs: 60_000 })
       }
     : undefined;
 
@@ -434,6 +449,9 @@ async function handleOAuthRoute(
     }
   }
   if (method === "POST" && pathname === "/token") {
+    if (limiters && rateLimited(req, res, limiters.token)) {
+      return true;
+    }
     const form = await readFormBody(req, res);
     if (form === BODY_ERROR) {
       return true;
