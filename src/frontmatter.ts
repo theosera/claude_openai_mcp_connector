@@ -303,7 +303,12 @@ export function parseMarkdown(raw: string): { frontmatter: DocumentMetadata; bod
 // paths whatever it is filled with, and needs no knowledge of either regex.
 
 /**
- * Largest frontmatter block accepted, in characters.
+ * Largest frontmatter block accepted, in UTF-8 bytes.
+ *
+ * This line said "characters" until 2026-09-01, and that mattered more than a stray
+ * word usually would: the switch to byte counting below justified itself on the
+ * grounds that "the constant, the messages and the docs all say" bytes, and this
+ * line — the constant's own docstring — was the one place that did not.
  *
  * Measured against the real vault this server was built for: 2,381 notes,
  * frontmatter median 225 B, p99 501 B, p99.9 and max 1,042 B. A 2 KiB cap would
