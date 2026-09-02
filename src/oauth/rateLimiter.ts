@@ -34,15 +34,41 @@ export class RateLimiter {
 
   /** Count one request for `key`; returns whether it is allowed. */
   hit(key: string): RateLimitResult {
+    return this.record(key, true);
+  }
+
+  /**
+   * Report whether `key` has budget left WITHOUT spending any.
+   *
+   * A gate that both counts and decides can only be placed before the work it
+   * guards, which makes every rejected request — including one an unauthenticated
+   * caller can send for free — spend from the same budget the legitimate caller
+   * needs. Splitting the two lets a caller check first and charge only for the
+   * outcome that is actually worth bounding.
+   */
+  check(key: string): RateLimitResult {
+    return this.record(key, false);
+  }
+
+  /** Spend one unit of `key`'s budget, ignoring the verdict. */
+  consume(key: string): void {
+    this.record(key, true);
+  }
+
+  private record(key: string, spend: boolean): RateLimitResult {
     const t = this.now();
     let bucket = this.buckets.get(key);
     if (!bucket || bucket.resetAt <= t) {
       bucket = { count: 0, resetAt: t + this.options.windowMs };
       this.buckets.set(key, bucket);
     }
-    bucket.count += 1;
+    if (spend) {
+      bucket.count += 1;
+    }
     this.evictIfNeeded(t);
-    const allowed = bucket.count <= this.options.limit;
+    // `check` asks whether one more would fit; `hit` has already taken it.
+    const used = spend ? bucket.count : bucket.count + 1;
+    const allowed = used <= this.options.limit;
     return { allowed, retryAfterSec: Math.max(1, Math.ceil((bucket.resetAt - t) / 1000)) };
   }
 

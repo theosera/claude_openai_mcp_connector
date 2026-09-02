@@ -8,6 +8,39 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Refresh-token rotation gained a bounded replay-grace window** (incident
+  2026-08-30). Strict single-use rotation deleted the presented refresh token
+  before the client held its replacement, so one response lost over a dead
+  ingress turned the next refresh into `invalid_grant` and forced a full
+  re-authorization. A rotated token re-presented inside `ROTATION_GRACE_MS`
+  (60 s) now rotates again, and the replay revokes **every generation of its
+  family above its own** — not just the direct pair, which an interceptor
+  could escape by rotating what they captured once (independent review, P2).
+  Membership is a property of each token (a family id and a generation within
+  it) rather than forward links between records, so no intermediate has to
+  survive for its descendants to be reachable: a walk over links is only as
+  reachable as its least durable hop, and a failed presentation, the expiry
+  sweep and the hard cap can each remove one. The minted pair and its lineage
+  are persisted in **one atomic save**, closing the crash window in which disk
+  held a live pair the next replay could not reach (independent review, P2).
+  The window never extends on replay, survives restarts, and beyond it
+  single-use holds exactly as before.
+
+  Two properties are easy to state wrongly, so they are stated here. The state
+  file still holds no recoverable credential: tokens remain keyed by
+  `sha256(token)`, and the family id that joins them is an opaque random label
+  written in the clear — knowing it authenticates nothing. And the cap does not
+  quietly cancel the window: minting a successor spares the record the rotation
+  is standing on, which at a full map is its oldest entry and would otherwise
+  be evicted by the same call, stranding the retry the window exists to serve
+  and skipping the revocation that retry performs. That exemption is one key
+  for one mint — sparing every in-window record from every mint was measured
+  evicting freshly issued grants instead. The measurement behind that sits on
+  `enforceCap`'s `spare` parameter in `src/oauth/store.ts`, and is not repeated
+  here, so there is one copy of it to keep true. Pinned in `tests/oauth.test.ts`, with
+  the red/green mutation checks recorded beside the tests — including which of
+  them are not mutually exclusive, and which branch the mutations never reached.
+
 - **`scripts/funnel-watchdog.sh` + launchd recipe** (docs/operations.md §2):
   after a sleep/offline window the Tailscale Funnel ingress can stay dead
   while `tailscale funnel status` prints "Funnel on" — status reads config,
@@ -25,6 +58,37 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   carries the manual recovery.
 
 ### Fixed
+
+- **A refresh token presented under the wrong `client_id` no longer deletes the
+  record a replay revokes on.** `rotateRefreshToken` handled expiry and a failed
+  client binding in one arm that deleted either way, and `client_id` arrives
+  unauthenticated on the `/token` form — a public client authenticating with
+  `none` — so a mismatch proves nothing about who sent it. Anyone holding a
+  refresh token could therefore present it under any `client_id` and destroy the
+  in-grace record whose re-presentation is the sole trigger for the family
+  revocation added above. The legitimate client's retry then returned a plain
+  `invalid_grant`, indistinguishable from an expired token, while an interceptor
+  of the lost response kept rotating what they captured. A record with
+  `rotatedAt` set is now refused without being touched; a never-rotated one is
+  still deleted, exactly as before, because it has no family above it and so
+  carries no trigger to lose.
+
+  The entry above says membership lives on each token rather than on forward
+  links, so **no intermediate has to survive for its descendants to be
+  reachable**. That is true and is not what failed here: the record that has to
+  survive is the one the retry presents, and a generation walk cannot start from
+  a record that is gone. Reachability of descendants and reachability of the
+  trigger are separate properties, and only the first was pinned.
+
+  The arm still does not revoke on a mismatch. Treating one as reuse evidence
+  closes the same gap and was measured buying it at the price the entry above
+  already names — a copy of a spent token could destroy the legitimate client's
+  live pair — and the existing test that asserts non-revocation goes red under
+  exactly that change. Removing the deletion costs nothing on that axis, because
+  it withdraws a capability rather than granting one. Pinned in
+  `tests/oauth.test.ts`; the probe that used a mismatched presentation to delete
+  an intermediate now deletes it directly, and was checked against the failure it
+  exists to catch so that it did not decay into a copy of its own control.
 
 - **A `.claude-session-vault` marker no longer decides where a session transcript
   is pushed.** The marker is committed at a vault clone's root, which means it is
@@ -1356,6 +1420,14 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Over-cap frontmatter fails **loudly**: the read path logs it and indexes the
   note body-only (exactly like any other malformed frontmatter), and the write
   paths refuse rather than dropping metadata.
+  **Those figures are as of that 2,381-note vault**, and a headroom ratio is a
+  fact about the largest note rather than about the cap, so it goes stale on its
+  own as the vault grows. Re-measured 2026-09-01 over the 2,801 files the server
+  indexed that day (2,462 carrying frontmatter — a count that moved by 181
+  within the hour it was taken, so treat it as this sample's denominator rather
+  than the vault's size), counted the way the guard counts: median 272 B, max
+  1,771 B — ~4.6x, nothing over the cap and no unterminated block. The cap did
+  not have to move; the ratio did. Re-take the maximum before quoting a ratio.
 
   **Behaviour change:** a note carrying kilobytes of `source_refs` in its
   frontmatter is now refused. The test suite previously pinned a session-archive
