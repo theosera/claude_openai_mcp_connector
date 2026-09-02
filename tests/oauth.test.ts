@@ -306,6 +306,21 @@ describe("OAuthStore", () => {
   //    revoke できない孤立 family として読む) は**テストで踏めていない**。
   //    その分岐に入る state file は HMAC を通る必要があり、旧版の writer を
   //    テスト内に再実装しない限り作れない。⇒ 未カバーとして申告する。
+  //
+  // 2026-09-02、cap の spare 免除 (rotation は自分が立っている record を自分の
+  // mint で evict しない) を足した際の実測。★ 変異を回したのは別セッションで、
+  // ⛔ ①は 1e が先に 1 通り回しており、⭕ ②③と探針は 02 が足した。
+  //  I. rotate の mintTokens(...) から spare キー (key) を外す
+  //     → 「does not evict the record it is rotating…」1 本だけ赤
+  //  J. enforceCap の `key !== spare` を true に潰す → 同じ 1 本だけ赤
+  // ⚠️ I/J は互いに素ではない (同じ不変条件の別々の壊し方)。赤が名指しできるのは
+  //    「spare 免除が効いていない」までで、2 つの site のどちらが壊れたかは区別しない。
+  // ⛔ `const doomed = victim ?? oldest` の fallback は 715 本のどれにも到達しない。
+  //    ⭕ `victim === undefined` で throw する探針を入れて全 715 本を回し、一度も
+  //    発火しないことを確認した。max >= 1 では非 spare キーを 1 つ削った時点で
+  //    size <= max になりループが終わり、max = 0 では根が発行時点で evict されて
+  //    rotate が mint に到達しない (⚠️ 後者は陽性対照を組んで空振りしてから分かった)。
+  //    ⇒ 未到達として申告する。⛔ これは不到達の証明ではない。
   it("lets a rotated refresh token be replayed inside the grace window, revoking the lost pair", () => {
     // The incident this pins (2026-08-30): the response carrying the rotated
     // pair is lost in transit; the client retries with the only token it has —

@@ -36,7 +36,8 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and skipping the revocation that retry performs. That exemption is one key
   for one mint — sparing every in-window record from every mint was measured
   evicting freshly issued grants instead. Pinned in `tests/oauth.test.ts`, with
-  each guard's red/green mutation check recorded beside the tests.
+  the red/green mutation checks recorded beside the tests — including which of
+  them are not mutually exclusive, and which branch the mutations never reached.
 
 - **`scripts/funnel-watchdog.sh` + launchd recipe** (docs/operations.md §2):
   after a sleep/offline window the Tailscale Funnel ingress can stay dead
