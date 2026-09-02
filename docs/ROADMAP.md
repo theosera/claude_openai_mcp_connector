@@ -1169,10 +1169,30 @@ exactly this and could not serve it (the response carrying the field is the
 response that was lost, and no read tool returns the raw bytes to compare
 against). It was dropped rather than shipped with a claim it does not meet, and
 **it never reached `main`**: it was added and removed inside one branch's
-lifetime, and the squash merge left no commit in the history to point at
-(`git log -S applied_sha256 main` is empty, while the same search for
-`expected_sha256` returns three). **#162** is therefore the only durable record
-of it, and carries the design question so the need is not lost with the field.
+lifetime, and the squash merge left no commit in the history to point at.
+
+> **Corrected 2026-09-02.** The sentence above originally offered a check —
+> that `git log -S applied_sha256 main` was empty — and the commit carrying that
+> sentence made it false, because the sentence contains the string. The paired
+> figure ("the same search for `expected_sha256` returns three") named no scope
+> and does not reproduce at any: 13 over the tree, 4 under `src`. The claim the
+> checks were supporting is unchanged and still holds — no commit on `main` adds
+> or removes the field in code — but a check that a reader cannot run is worse
+> than none, so the numbers are gone and the claim stands on its own.
+
+The implementation is not lost with the close. Three remote branches still carry
+it, measured 2026-09-02 with `git ls-remote --heads origin` and a grep at each
+tip's sha rather than at a local ref:
+
+| branch | tip | files |
+| --- | --- | --- |
+| `claude/incident-resilience` (#156, closed unmerged) | `52196cfc5141` | `CHANGELOG.md`, `src/server.ts`, `tests/knowledgeStore.test.ts` |
+| `claude/oauth-token-family-revocation` | `0990e9f80441` | same three |
+| `claude/oauth-revoke-descendants-on-failure` | `2b73fb9f2e26` | same three |
+
+The first is the branch the other two descend from, so a list naming only the
+later two makes it look deletable. **#162** carries the design question; this
+table is what makes the code recoverable after it closes.
 
 **For an update, one answer already works with no code change**, and is worth
 recording because it changes what the remaining question is. The client still
@@ -1202,8 +1222,13 @@ That leaves two questions, and they are separable:
 
 - **A discard for a staged plan.** It removes the second cost above and is not
   a new write surface — it deletes state this server already owns, at a
-  `patch_id` the caller was handed. Cheap, and it makes the no-code-change
-  answer usable more than once.
+  `patch_id` the caller was handed. **It is not cheap, and this entry said it
+  was.** The continuity item for `discard_plan` below prices it: `registerTool`
+  is called 17 times, `context-engineering.md` caps the net surface at 15 → 17,
+  and both reserved slots are spent — so adding it is a decision to *exceed* the
+  documented cap, and that item warns specifically against spending a budgeted
+  slot inside a bug fix. Read the two together; the same tool cannot be a
+  budget decision two hundred lines down and free here.
 - **A current-content hash on the read surface.** #162 argues against it on the
   grounds that `toPublicDocument` is an allowlist on purpose, so a field the
   read path starts returning is a field every caller starts seeing. That
@@ -1211,7 +1236,13 @@ That leaves two questions, and they are separable:
   tool whose output is a hash, since a tool is opt-in per call. **The argument
   not applying is not the same as the change being safe** — what a hash over
   current content discloses to a `vault.read`-only principal has not been
-  worked through here, and that is the part still open.
+  worked through here, and that is the part still open. And the escape from the
+  allowlist argument is an escape into the same budget as the discard: a tool is
+  opt-in per call *because it is a tool*, which is the thing the cap counts.
+
+**Both options are cap-exceeding, so "separable" means separable from each
+other, not from the budget.** Whichever is taken first spends the decision;
+neither is a free consequence of the paragraph above it.
 
 Not claimed: that either is the right answer, or that the exposure is real
 enough to act on. The incident that prompted this was a lost *OAuth* response;
