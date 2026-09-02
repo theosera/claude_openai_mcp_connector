@@ -194,5 +194,6 @@ first one is true here.
 Nothing here inspects package *contents*. `pnpm audit` matches versions against a
 database: it says nothing about a package that was never reported, and nothing
 about install-time scripts. The controls for that live elsewhere — SHA-pinned
-GitHub Actions, `CODEOWNERS` on `.github/`, and the untrusted-repo intake rules
-in the global layer.
+GitHub Actions, `CODEOWNERS` review routing on `.github/` (which routes review;
+it does not block a merge), and the untrusted-repo intake rules in the global
+layer.
