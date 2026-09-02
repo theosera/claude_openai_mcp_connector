@@ -8,6 +8,39 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Refresh-token rotation gained a bounded replay-grace window** (incident
+  2026-08-30). Strict single-use rotation deleted the presented refresh token
+  before the client held its replacement, so one response lost over a dead
+  ingress turned the next refresh into `invalid_grant` and forced a full
+  re-authorization. A rotated token re-presented inside `ROTATION_GRACE_MS`
+  (60 s) now rotates again, and the replay revokes **every generation of its
+  family above its own** — not just the direct pair, which an interceptor
+  could escape by rotating what they captured once (independent review, P2).
+  Membership is a property of each token (a family id and a generation within
+  it) rather than forward links between records, so no intermediate has to
+  survive for its descendants to be reachable: a walk over links is only as
+  reachable as its least durable hop, and a failed presentation, the expiry
+  sweep and the hard cap can each remove one. The minted pair and its lineage
+  are persisted in **one atomic save**, closing the crash window in which disk
+  held a live pair the next replay could not reach (independent review, P2).
+  The window never extends on replay, survives restarts, and beyond it
+  single-use holds exactly as before.
+
+  Two properties are easy to state wrongly, so they are stated here. The state
+  file still holds no recoverable credential: tokens remain keyed by
+  `sha256(token)`, and the family id that joins them is an opaque random label
+  written in the clear — knowing it authenticates nothing. And the cap does not
+  quietly cancel the window: minting a successor spares the record the rotation
+  is standing on, which at a full map is its oldest entry and would otherwise
+  be evicted by the same call, stranding the retry the window exists to serve
+  and skipping the revocation that retry performs. That exemption is one key
+  for one mint — sparing every in-window record from every mint was measured
+  evicting freshly issued grants instead. The measurement behind that sits on
+  `enforceCap`'s `spare` parameter in `src/oauth/store.ts`, and is not repeated
+  here, so there is one copy of it to keep true. Pinned in `tests/oauth.test.ts`, with
+  the red/green mutation checks recorded beside the tests — including which of
+  them are not mutually exclusive, and which branch the mutations never reached.
+
 - **`scripts/funnel-watchdog.sh` + launchd recipe** (docs/operations.md §2):
   after a sleep/offline window the Tailscale Funnel ingress can stay dead
   while `tailscale funnel status` prints "Funnel on" — status reads config,

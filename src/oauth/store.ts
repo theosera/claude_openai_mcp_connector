@@ -17,8 +17,18 @@ import path from "node:path";
 //    fails CLOSED — the store starts empty and every session must re-auth,
 //  - authorization codes are single-use and short-lived, and are deliberately
 //    NEVER persisted (a restart mid-flow just restarts the flow),
-//  - refresh-token rotation deletes the presented token from disk immediately,
-//    so single-use semantics hold across restarts,
+//  - refresh-token rotation invalidates the presented token, with a short
+//    replay-grace window (ROTATION_GRACE_MS) so a rotation whose RESPONSE was
+//    lost in transit does not strand the client with an already-dead token: a
+//    rotated token re-presented inside the window rotates again, and every
+//    generation minted downstream of the lost response is revoked at that
+//    moment (the legitimate client provably never received it, and an
+//    interceptor who rotated what they captured is reached however many hops
+//    they took — see revokeFamilyAbove, which finds them by what the records
+//    carry rather than by links between them, so no intermediate record has to
+//    survive for its descendants to be reachable). The window never
+//    extends on replay, its state is written to disk on every transition, and
+//    beyond it single-use semantics hold across restarts exactly as before,
 //  - every collection is capped and pruned to bound memory (DoS via unbounded
 //    dynamic client registration / token minting).
 
@@ -31,6 +41,30 @@ const DEFAULT_MAX_TOKENS = 2000;
 // authorize->token round-trip so an in-flight registration (registered, not yet
 // exchanged for a token) is never swept mid-flow.
 const DEFAULT_CLIENT_ORPHAN_GRACE_MS = 60 * 60 * 1000;
+
+// How long a refresh token stays replayable after it was rotated. Sized for
+// "the rotation response was lost on an unreliable link and the client retries
+// promptly" — NOT for offline recovery (a client that comes back hours later
+// re-authorizes, as before).
+//
+// What the window bounds is the OPPORTUNITY to replay. It does not bound what a
+// replay yields: whoever presents the token is served an independently
+// rotatable pair on the ordinary refresh TTL, which goes on rotating after the
+// window shuts. Nor is the exposure contained once it surfaces — the replay
+// does revoke the legitimate client's pair, so the theft shows up as a forced
+// re-auth rather than hiding, but a later legitimate re-authorization mints a
+// new family and leaves the replayer's alive.
+//
+// That is a trade taken knowingly, not an oversight. This is a public client
+// using PKCE: at refresh time there is nothing only the legitimate client
+// holds, so recovery cannot be bound to it, and the choice is between stranding
+// a client whose response was lost and letting a copied token escalate. A
+// shorter window moves along that line rather than leaving it;
+// proof-of-possession (DPoP, RFC 9449) is what would remove it, and it is not
+// implemented here. #159 carries the measurements and the reasoning; it was
+// closed by accepting the trade, so what is written above is the decision and
+// not a placeholder for one.
+export const ROTATION_GRACE_MS = 60 * 1000;
 
 const STATE_VERSION = 1;
 const STATE_SALT_BYTES = 16;
@@ -66,6 +100,35 @@ interface TokenRecord {
   scope: string;
   resource: string;
   expiresAt: number;
+  /**
+   * Refresh tokens only — set the first time the token is rotated. Presence
+   * marks the record as "already rotated, alive only for the replay-grace
+   * window"; `expiresAt` is capped to `rotatedAt + ROTATION_GRACE_MS` at the
+   * same moment, so the ordinary expiry sweep retires it. Never updated on
+   * replay (the window must not extend).
+   */
+  rotatedAt?: number;
+  /**
+   * The rotation lineage this token belongs to. A fresh grant opens a new
+   * family; every pair minted by rotating within it inherits the id. Opaque and
+   * random — it names a lineage, it is not derived from any token, so it never
+   * weakens hash-at-rest.
+   */
+  familyId: string;
+  /**
+   * Position in the lineage, counting from 0 at the fresh grant. A replay
+   * inside the grace window revokes every member of the same family ABOVE its
+   * own generation: the client re-presenting the OLD token proves the response
+   * carrying those never arrived, so if anyone else holds them it is an
+   * interceptor.
+   *
+   * Membership is a property of each record, so revocation is a scan of the
+   * two maps rather than a walk of links between them. That is the whole point:
+   * a walk terminates at the first missing hop, and any deletion — a failed
+   * presentation, the expiry sweep, the hard cap — can remove one. A scan
+   * reaches the same descendants whether or not their ancestors still exist.
+   */
+  generation: number;
 }
 
 export interface OAuthStoreOptions {
@@ -101,14 +164,48 @@ function tokenKey(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
 
-/** Evict the oldest entries (Map preserves insertion order) until size <= max. */
-function enforceCap<K, V>(map: Map<K, V>, max: number): void {
+/**
+ * Evict the oldest entries (Map preserves insertion order) until size <= max.
+ *
+ * `spare` names one key the sweep reaches for last: the refresh record a
+ * rotation is currently minting a successor for. That record is the oldest
+ * live entry by construction — it was issued before everything minted from it,
+ * and capping its `expiresAt` for the replay window mutates a value, which
+ * does not move a Map entry. So a full map evicts exactly the record the
+ * rotation is standing on, and the linkage assigned to it a line later is
+ * written to an object no longer in the map: the lost-response retry finds
+ * nothing, AND the revocation that retry would have performed never runs.
+ *
+ * It is a preference, not a veto — when `spare` is the only entry left the
+ * sweep takes it anyway, so one key can never hold the map above its cap.
+ *
+ * ⚠️ Deliberately narrow. Sparing in-window records from EVERY mint was built
+ * and measured (2026-09-02) and is worse: with the map saturated by records
+ * inside their windows, the sweep starts evicting freshly issued grants
+ * instead — survival vector 111100 for six roots at cap 4, where the last two
+ * grants were evicted in the same call that issued them. A 60-second recovery
+ * convenience must not cost new authorizations. What that leaves open is an
+ * interceptor who drives the sweep on purpose; it is measured and bounded on
+ * `rotateRefreshToken` rather than hidden here.
+ */
+function enforceCap<K, V>(map: Map<K, V>, max: number, spare?: K): void {
   while (map.size > max) {
-    const oldest = map.keys().next().value as K | undefined;
-    if (oldest === undefined) {
+    let victim: K | undefined;
+    let oldest: K | undefined;
+    for (const key of map.keys()) {
+      if (oldest === undefined) {
+        oldest = key;
+      }
+      if (key !== spare) {
+        victim = key;
+        break;
+      }
+    }
+    const doomed = victim ?? oldest;
+    if (doomed === undefined) {
       break;
     }
-    map.delete(oldest);
+    map.delete(doomed);
   }
 }
 
@@ -218,27 +315,56 @@ export class OAuthStore {
   }
 
   issueTokens(clientId: string, scope: string, resource: string): IssuedTokens {
+    const issued = this.mintTokens(clientId, scope, resource);
+    this.save();
+    return issued;
+  }
+
+  /**
+   * Mint a pair WITHOUT saving. Exists so `rotateRefreshToken` can persist the
+   * revocation of the superseded generations and the pair that replaces them in
+   * ONE atomic save (tmp + rename): a save between them is a crash window where
+   * disk holds one of the two states nothing else can repair. Every
+   * non-rotation caller goes through `issueTokens`, which saves immediately.
+   *
+   * `lineage` omitted means a fresh grant: a new family at generation 0.
+   */
+  private mintTokens(
+    clientId: string,
+    scope: string,
+    resource: string,
+    lineage?: { familyId: string; generation: number },
+    spareRefreshKey?: string
+  ): IssuedTokens {
     this.prune();
     const accessToken = randomSecret();
     const refreshToken = randomSecret();
+    const familyId = lineage?.familyId ?? randomSecret();
+    const generation = lineage?.generation ?? 0;
     this.accessTokens.set(tokenKey(accessToken), {
       clientId,
       scope,
       resource,
+      familyId,
+      generation,
       expiresAt: this.now() + this.options.accessTokenTtlSec * 1000
     });
     this.refreshTokens.set(tokenKey(refreshToken), {
       clientId,
       scope,
       resource,
+      familyId,
+      generation,
       expiresAt: this.now() + this.options.refreshTokenTtlSec * 1000
     });
     // Enforce the hard cap even when every entry is still live (pruning only
     // removes expired ones): evict the oldest live tokens so a client minting
     // tokens faster than they expire cannot grow the maps without bound.
     enforceCap(this.accessTokens, this.maxTokens);
-    enforceCap(this.refreshTokens, this.maxTokens);
-    this.save();
+    // Only the refresh map takes the preference: a rotated root's own access
+    // token was superseded by its first rotation and is not part of what a
+    // replay hands back.
+    enforceCap(this.refreshTokens, this.maxTokens, spareRefreshKey);
     return {
       accessToken,
       refreshToken,
@@ -264,22 +390,118 @@ export class OAuthStore {
     return { clientId: record.clientId, scope: record.scope, resource: record.resource };
   }
 
-  /** Refresh-token rotation: the presented refresh token is invalidated. */
+  /**
+   * Refresh-token rotation with a bounded replay-grace window.
+   *
+   * Why not strict single-use: the response carrying the new pair travels over
+   * the same unreliable link that motivates refreshing at all. Deleting the
+   * presented token BEFORE the client has the replacement means one lost
+   * response strands the client with nothing but a dead token — the next
+   * refresh is `invalid_grant` and the user is forced back through the full
+   * authorize flow (observed in production, 2026-08-30 incident). So:
+   *
+   *  - First presentation: mark the record rotated (`rotatedAt`), cap its
+   *    `expiresAt` to the grace window, and mint a fresh pair.
+   *  - Re-presentation INSIDE the window: the client provably never received
+   *    the previous response, so revoke every generation of this token's
+   *    family above its own (if an interceptor holds any of it — even after
+   *    rotating what they captured — it dies here) and mint another fresh
+   *    pair. `rotatedAt` is never touched again — replays cannot extend the
+   *    window.
+   *  - Re-presentation AFTER the window: the record has expired (the cap above)
+   *    or been swept; the token is dead, exactly as under strict single-use.
+   *
+   * Every transition is saved to disk immediately, so replay semantics hold
+   * across restarts the same way single-use failure did before.
+   */
   rotateRefreshToken(refreshToken: string, clientId: string): IssuedTokens | null {
     const key = tokenKey(refreshToken);
     const record = this.refreshTokens.get(key);
     if (!record) {
       return null;
     }
-    this.refreshTokens.delete(key);
-    if (record.expiresAt <= this.now() || record.clientId !== clientId) {
-      // The deletion above must still reach disk: single-use semantics for a
-      // presented refresh token hold across restarts even on a failed rotation.
+    const t = this.now();
+    if (record.expiresAt <= t || record.clientId !== clientId) {
+      this.refreshTokens.delete(key);
+      // Nothing else is revoked here, deliberately. This arm is reached by a
+      // spent or misdirected presentation, which is not evidence that the
+      // lineage is compromised — and revoking on it would let anyone holding a
+      // COPY of a spent token destroy the legitimate client's live pair at
+      // will. Removing this record cannot hide a descendant either: membership
+      // lives on the descendants themselves, so a later replay of an ancestor
+      // still reaches them by generation.
+      //
+      // The deletion must still reach disk: a dead presented token stays dead
+      // across restarts even on a failed rotation.
       this.save();
       return null;
     }
-    // issueTokens() saves, covering the deletion in the success path too.
-    return this.issueTokens(clientId, record.scope, record.resource);
+    if (record.rotatedAt === undefined) {
+      record.rotatedAt = t;
+      // The ordinary expiry sweep (evictExpired / load) retires the record once
+      // the window closes — no separate cleanup path to get wrong.
+      record.expiresAt = Math.min(record.expiresAt, t + ROTATION_GRACE_MS);
+    } else {
+      // Replay inside the window (outside it, the expiry check above already
+      // returned). Everything minted downstream of the lost response is
+      // revoked — every generation of this family above this one, not just the
+      // pair directly minted for it: an interceptor who captured the lost
+      // response can rotate it and put their live pair further up the lineage.
+      this.revokeFamilyAbove(record.familyId, record.generation);
+    }
+    // Mint WITHOUT saving, then save ONCE: the revocation above and the pair
+    // that replaces it must hit disk in the same atomic write, or a crash
+    // between two saves leaves disk holding one without the other.
+    // `key` is spared from the cap for the length of this mint: inserting the
+    // successor must not evict the record this rotation is standing on.
+    //
+    // ⚠️ Residual, stated rather than fixed — and it is not merely bad luck.
+    // Once this call returns the record is an ordinary entry again, and an
+    // interceptor holding the lost response can push it out DELIBERATELY:
+    // rotating the chain they captured adds an entry per rotation, and at
+    // `maxTokens - 1` rotations inside the window the root is swept, so the
+    // replay that would have revoked their family returns `invalid_grant`
+    // instead and their pair survives. Measured independently by two sessions
+    // (2026-09-02): at cap 4 the flip is exactly at 3 rotations, and a large
+    // cap is the control. Nothing outside this file sets `maxTokens`, so the
+    // shipped cost is ~1999 rotations inside ROTATION_GRACE_MS (60 s);
+    // whether that rate is reachable through the HTTP endpoint was NOT
+    // measured, and is the number to check before re-weighing this.
+    //
+    // Not closed here because the obvious close is worse: sparing every
+    // in-window record from every mint was built and measured evicting
+    // freshly issued grants instead (see enforceCap). Pre-filling does not
+    // help an attacker — eviction is insertion-ordered, so entries older than
+    // the root are swept first, and the cap must be filled after it exists.
+    const issued = this.mintTokens(
+      clientId,
+      record.scope,
+      record.resource,
+      { familyId: record.familyId, generation: record.generation + 1 },
+      key
+    );
+    this.save();
+    return issued;
+  }
+
+  /**
+   * Delete every access and refresh token in `familyId` above `generation`.
+   *
+   * A scan, not a walk. The records that must die are identified by what they
+   * carry, so no intermediate record has to survive for them to be found —
+   * which is the failure this replaced: links stored in the records themselves
+   * made the chain only as reachable as its least durable hop, and three
+   * separate deletion paths could remove one. Cost is bounded by the token cap
+   * (`maxTokens`), which the two maps are held under at every mint.
+   */
+  private revokeFamilyAbove(familyId: string, generation: number): void {
+    for (const map of [this.accessTokens, this.refreshTokens]) {
+      for (const [key, record] of map) {
+        if (record.familyId === familyId && record.generation > generation) {
+          map.delete(key);
+        }
+      }
+    }
   }
 
   private prune(): void {
@@ -380,12 +602,31 @@ export class OAuthStore {
             typeof record.expiresAt === "number" &&
             record.expiresAt > t
           ) {
-            into.set(record.tokenHash, {
+            const loaded: TokenRecord = {
               clientId: record.clientId,
               scope: record.scope,
               resource: record.resource,
-              expiresAt: record.expiresAt
-            });
+              expiresAt: record.expiresAt,
+              // A record whose lineage did not survive validation is loaded
+              // into a family of its own at generation 0: it can neither
+              // revoke another token nor be revoked by one. That is the
+              // conservative reading of unusable state — the alternative,
+              // defaulting to a shared id, would let one malformed record
+              // revoke every live token in the store.
+              familyId: typeof record.familyId === "string" ? record.familyId : randomSecret(),
+              generation:
+                typeof record.generation === "number" && Number.isInteger(record.generation) && record.generation >= 0
+                  ? record.generation
+                  : 0
+            };
+            // Rotation-grace state must survive a restart, or a replay after a
+            // supervisor bounce would look like a first rotation and re-open
+            // the window. Validated individually; an absent field (a pre-grace
+            // state file) loads as never-rotated.
+            if (typeof record.rotatedAt === "number") {
+              loaded.rotatedAt = record.rotatedAt;
+            }
+            into.set(record.tokenHash, loaded);
           }
         }
       };
