@@ -148,11 +148,17 @@ was outstanding:
 
   **What bounds it today is not a fix.** #173 rate-limits `POST /token` on a
   quota derived from the access-token TTL, charged only on a successful refresh
-  grant and keyed on the socket peer: 30 per minute at the default TTL (66x the
-  rotations the eviction needs, 33x across a fixed-window boundary), 240 at the
-  configurable one-second floor (8x, 4x). That holds under the documented
-  deployment, where a tunnel terminates at `127.0.0.1` and every remote caller
-  shares one bucket. A direct bind gives an attacker one bucket per source IP.
+  grant and keyed on the socket peer. Read the headroom in the direction
+  `src/httpServer.ts` states it — the eviction's requirement measured against
+  what one window permits, never the reverse: at the default TTL the quota is
+  30 a minute and the ~1999 rotations are **66x** that, halving to **33x**
+  across a fixed-window boundary, since the window is fixed rather than sliding
+  and two full quotas can land either side of one. At the configurable
+  one-second floor the quota rises to 240 and the headroom narrows to 8x and
+  4x — the tightest the range gets, and still not close. That holds under
+  the documented deployment, where a tunnel terminates at `127.0.0.1` and
+  every remote caller shares one bucket. A direct bind gives an attacker one
+  bucket per source IP.
   #174 separately removed a **one-request** sibling of the same end state, so
   what remains is the expensive version.
 
