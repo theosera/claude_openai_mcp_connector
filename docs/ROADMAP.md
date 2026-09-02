@@ -1152,8 +1152,19 @@ systemd bundle, a container image, and a one-page "deploy to a $5 VPS" guide.
 watchdog (`scripts/funnel-watchdog.sh` + launchd recipe in
 [`operations.md §2`](./operations.md#macos-tailscale-funnel--launchd)) —
 `tailscale funnel status` reads config, not liveness, so a post-sleep dead
-ingress served 502s for hours while every local signal looked green. The rest
-of this item is unchanged.
+ingress served 502s for hours while every local signal looked green.
+
+**Amended 2026-08-31 (second incident):** that watchdog closes the _sleep/idle_
+variant only. A network-path change under tailscaled — a VPN toggled on or off,
+a gateway or Wi-Fi switch — leaves the edge holding a stale route, and
+re-asserting the funnel is a no-op against it; recovery needs `tailscale down`
+then `up` first. Automating that inside the watchdog was declined deliberately,
+because it drops every tunnel on the machine, so the second variant stays a
+manual runbook step. **A landed slice is not a closed failure mode**, and this
+amendment exists because that correction reached `CHANGELOG.md` and
+`operations.md` without reaching this line.
+
+The rest of this item is unchanged.
 
 ### Observability 💭
 
@@ -1255,6 +1266,17 @@ That leaves two questions, and they are separable:
 **Both options are cap-exceeding, so "separable" means separable from each
 other, not from the budget.** Whichever is taken first spends the decision;
 neither is a free consequence of the paragraph above it.
+
+**The same hole has a second face, on the plan side, and it is not the one
+above.** A `plan_*` request that never reached the server leaves nothing to
+settle: no `patch_id` was ever handed back, so there is no staged state to
+query and the only recovery is to resend the whole document. That cost is not
+fixed. A vault note grows as it is appended to, and one incident measured the
+same document resent at 20,822 → 40,929 → 51,990 bytes across three attempts,
+so the price of a lost request rises with the note it carries. Resumability on
+the send side — a delta-based plan, or a content-addressed resume — is the
+other half of "what happened to what I sent", and it is recorded here so the
+two faces are designed together rather than patched apart.
 
 Not claimed: that either is the right answer, or that the exposure is real
 enough to act on. The incident that prompted this was a lost *OAuth* response;
