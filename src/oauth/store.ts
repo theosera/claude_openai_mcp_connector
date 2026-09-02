@@ -249,11 +249,23 @@ export class OAuthStore {
   registerClient(redirectUris: string[], clientName?: string): RegisteredClient {
     this.prune();
     // Reap aged tokenless registrations HERE — a new registration is the moment
-    // reconnect churn accumulates — and NOT inside the shared prune()/issueTokens
-    // path: a refresh rotation deletes the presented token, then calls
-    // issueTokens() -> prune() BEFORE the replacement is inserted, so an aged
-    // client is briefly tokenless and must not be swept mid-rotation. The client
-    // added below is within its grace window, so it is never the one pruned.
+    // reconnect churn accumulates — and NOT inside the shared prune()/mintTokens
+    // path. The hazard first written here has stopped existing: it said a
+    // rotation deletes the presented token and so leaves an aged client briefly
+    // tokenless between prune() and the replacement's insertion. Since the
+    // replay-grace window landed, a successful rotation KEEPS that record, so a
+    // live refresh token spans the whole mint and that window never opens.
+    //
+    // What the placement is actually for: a registration that has not yet
+    // exchanged its code holds no token, so anything reaping tokenless clients
+    // would take it mid-flow. Calling it only here does not make that safe —
+    // clientOrphanGraceMs (default one hour) does, and it is a sizing
+    // assumption rather than a structural one. See #184; a consent screen left
+    // open past the hour breaks it.
+    //
+    // The client added below is not the one at risk, and not because of any
+    // window: it does not exist yet. It is constructed and inserted after this
+    // line.
     this.pruneOrphanClients();
     if (this.clients.size >= DEFAULT_MAX_CLIENTS) {
       // Evict the oldest registration rather than growing without bound.
@@ -544,11 +556,14 @@ export class OAuthStore {
    * registration with no surviving token is dead weight that would otherwise
    * linger until the hard client cap evicts it. Invoked only from registerClient
    * (where reconnect churn accumulates) and after a state-file load —
-   * deliberately NOT from the shared prune()/issueTokens path, where a refresh
-   * rotation leaves an aged client momentarily tokenless (old token deleted,
-   * replacement not yet inserted) and must not be swept. The grace window also
-   * protects an in-flight registration that has not yet completed the token
-   * exchange.
+   * deliberately NOT from the shared prune()/mintTokens path. The reason given
+   * for that used to be a rotation leaving an aged client momentarily tokenless
+   * between prune() and the replacement's insertion; the replay-grace window
+   * ended it, because a successful rotation keeps the presented record. What
+   * the grace window protects is an in-flight registration — no token until the
+   * code is exchanged — and it protects it by being an hour long, not by any
+   * structural guarantee. The other caller on that path is
+   * createAuthorizationCode. See #184.
    */
   private pruneOrphanClients(): void {
     const t = this.now();

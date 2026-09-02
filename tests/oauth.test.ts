@@ -667,11 +667,21 @@ describe("OAuthStore", () => {
   });
 
   it("keeps an aged client's registration through a refresh rotation (no prune race)", () => {
-    // Regression (Codex review on #44): rotateRefreshToken deletes the presented
-    // token, then issueTokens runs prune() before inserting the replacement. For
-    // an aged client whose access token also expired, that was a momentary
-    // tokenless gap in which the registration got swept — after which /authorize
-    // failed with "Unknown client_id" for a session that was rotating normally.
+    // Regression (Codex review on #44). The mechanism it was written against no
+    // longer exists, and the sentence describing it is kept because a test
+    // whose reason has been deleted looks like a test nobody has a reason for:
+    //
+    //   "rotateRefreshToken deletes the presented token, then issueTokens runs
+    //    prune() before inserting the replacement. For an aged client whose
+    //    access token also expired, that was a momentary tokenless gap in which
+    //    the registration got swept — after which /authorize failed with
+    //    'Unknown client_id' for a session that was rotating normally."
+    //
+    // Since the replay-grace window, a successful rotation keeps the presented
+    // record, so no such gap opens and this passes for a different reason than
+    // the one it was written for. It still earns its place: it pins that a
+    // rotation does not cost an aged client its registration, which is the
+    // property #44 cared about, by whichever mechanism holds it.
     let t = 1_000_000;
     const store = new OAuthStore({ ...opts, clientOrphanGraceMs: 1000, now: () => t });
     const client = store.registerClient(["https://x/cb"]);

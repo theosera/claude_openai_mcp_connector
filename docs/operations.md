@@ -94,8 +94,37 @@ same store, so one file covers every web client). Security properties:
   password-rotated state file fails **closed**: the server starts with empty
   OAuth state and clients simply re-authorize. Rotating the password is
   therefore also how you revoke all persisted sessions at once.
-- Authorization codes are never persisted (they are 60s single-use), and
-  refresh-token rotation invalidates the old token on disk immediately.
+- Authorization codes are never persisted; they are single-use with a TTL of
+  60 seconds by default, configurable via `MCP_OAUTH_CODE_TTL`.
+- A rotated refresh token is **not** invalidated immediately — it is
+  deliberately kept, on disk as well, for a replay-grace window
+  (`ROTATION_GRACE_MS`, 60 s), so a client that lost the response can present
+  it again: that presentation revokes everything minted above it and issues a
+  fresh pair. **That window is an upper bound, not a guarantee** — the record
+  can stop being usable earlier, and being refused is not the same as being
+  gone. A later mint can evict it under the token cap, a replay of an ancestor
+  revokes it as part of that family, and a presentation under the wrong
+  `client_id` is refused while leaving it in place. Read
+  `src/oauth/store.ts::rotateRefreshToken` for which arm does which;
+  enumerating them here is how a list ends up one short.
+- The cap case is narrower than "the map filled up". `enforceCap` runs during a
+  mint, and only while the map is **over** `maxTokens` — sitting at the cap
+  sweeps nothing. It then evicts in insertion order, so the entry it takes is
+  the oldest one that is not the record the current rotation is standing on;
+  that may well be some other client's, not this one's.
+- What bounds the cap case in a deployment is not this window at all. `POST
+  /token` is rate-limited, charged **only on a successful `refresh_token`
+  grant** and keyed on `req.socket.remoteAddress`. The quota derives from
+  `accessTokenTtlSec` and is 30 per 60-second window at the default TTL, so
+  the thousands of rotations an eviction needs are not available to one peer.
+- Persistence is narrower than "deletions reach disk". The three arms of
+  `rotateRefreshToken` — expiry, a never-rotated `client_id` mismatch, and a
+  successful rotation — each write through as they happen. Other paths do not:
+  `validateAccessToken` and `evictExpired` remove records without calling
+  `save()`. And `save()` reports its own failures as warnings without failing
+  the request, so even on the arms that do call it, "written" means attempted
+  rather than confirmed.
+- What none of this buys you any more is single use across a restart.
 
 **Fix 2: don't let the process die.** Run it supervised with auto-restart
 (below). Without the state file a restart costs a re-auth; with it, a restart
