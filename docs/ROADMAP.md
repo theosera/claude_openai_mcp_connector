@@ -119,6 +119,46 @@ was outstanding:
   so where it used to claim more. The measurements are on #159; they were taken
   against a revision that predates the family id, and have not been reproduced
   since. 🔭
+- **The cap can sweep the record the replay revokes on, and the only candidate
+  fix does not move the threshold (#170).** 🔭 The grace window's replay does two
+  things — serves the stranded client, and revokes everything minted downstream
+  of the lost response — and both need the rotated record still in
+  `refreshTokens`. Rotation is net +1 there (the presented record stays, carrying
+  its window; a successor is added), `enforceCap` evicts in insertion order, and
+  `spare` protects the record only for the length of the mint standing on it. So
+  an interceptor who rotates the chain they captured pushes the record out
+  deliberately at `maxTokens - 1` rotations inside the window, and the replay
+  that would have revoked their family returns `invalid_grant` instead.
+
+  **What is measured, and at which revision.** Reproduced at `8218f76`, driving
+  `OAuthStore` in process: the threshold is exactly `maxTokens - 1` at caps 4, 6,
+  8, 12 and 16 (3 / 5 / 7 / 11 / 15). Controls: nought rotations always survives,
+  and cap 1000 survives fifty. `DEFAULT_MAX_TOKENS` is 2000 and `maxTokens` is
+  set nowhere outside `src/oauth/store.ts`, so the shipped figure is ~1999
+  rotations inside `ROTATION_GRACE_MS`.
+
+  **The one candidate that was left does not work.** #170 named moving the
+  presented record to the tail of insertion order, and reasoned — explicitly as
+  reasoning, not measurement — that the threshold would stay because the
+  attacker's own rotations re-insert after it. Measured at `8218f76` against the
+  unmodified store: **identical thresholds at every cap tested**, with the
+  variant's line confirmed to execute 334 times in the run, so this is a real
+  null result and not a mutation that failed to reach. The reasoning was right,
+  which leaves **no candidate fix on the table**.
+
+  **What bounds it today is not a fix.** #173 rate-limits `POST /token` on a
+  quota derived from the access-token TTL, charged only on a successful refresh
+  grant and keyed on the socket peer: 30 per minute at the default TTL (66x the
+  rotations the eviction needs, 33x across a fixed-window boundary), 240 at the
+  configurable one-second floor (8x, 4x). That holds under the documented
+  deployment, where a tunnel terminates at `127.0.0.1` and every remote caller
+  shares one bucket. A direct bind gives an attacker one bucket per source IP.
+  #174 separately removed a **one-request** sibling of the same end state, so
+  what remains is the expensive version.
+
+  **Not measured by anyone:** reachability of that rate through a public tunnel,
+  end to end. Whether the bound is sufficient is a judgement about deployment
+  shape, not a measurement, and it is the decision that gates any work here.
 - Pinned by `tests/oauth.test.ts`. See
   [`operations.md §1.B`](./operations.md#b-oauth-state--in-memory-by-default-persistable-via-a-state-file).
 
