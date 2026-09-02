@@ -634,8 +634,8 @@ in code and pinned by tests:
 DENY`, and `Referrer-Policy: no-referrer`.
 
 Supply-chain & governance: GitHub Actions are SHA-pinned, workflows run with
-`permissions: contents: read`, CODEOWNERS gates `.github/`, Dependabot + CodeQL
-are enabled, and a 3-layer Claude Code agent governance model
+`permissions: contents: read`, CODEOWNERS routes `.github/` review to its
+owner, Dependabot + CodeQL are enabled, and a 3-layer Claude Code agent governance model
 (`CLAUDE.global.md` → `CLAUDE.md` → `.claude/skills/`) keeps the AI workflow
 inside the same guardrails. See [`SECURITY.md`](./SECURITY.md) for the full
 threat model and the curated mapping to the Reusable Security Baseline.

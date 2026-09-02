@@ -88,9 +88,10 @@ new behavior).
 2. Open a PR against `main` and fill in the PR template.
 3. Make sure **CI is green** — a red build won't be reviewed.
 4. Changes under `.github/`, `SECURITY.md`, `CLAUDE.md`, `.claude/`, and the
-   security-boundary source files require **code-owner review** (see
-   [`.github/CODEOWNERS`](./.github/CODEOWNERS)); expect an extra review pass
-   there.
+   security-boundary source files are **routed to the code owner** for review
+   (see [`.github/CODEOWNERS`](./.github/CODEOWNERS)); expect an extra review
+   pass there. Routing is not a merge gate — see
+   [`SECURITY.md`](./SECURITY.md) for what actually blocks.
 5. Note any user-facing change in `CHANGELOG.md` under `[Unreleased]`.
 
 Small, well-tested PRs with a clear description get merged fastest. Thanks for

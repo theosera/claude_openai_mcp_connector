@@ -220,8 +220,8 @@ HTTP 401/per-surface tool registration, and the full OAuth flow
 audience-bound `/mcp`).
 
 Supply chain: GitHub Actions are SHA-pinned, workflows run least-privilege
-(`contents: read`, per-job elevation), CODEOWNERS gates `.github/`, Dependabot +
-CodeQL are enabled.
+(`contents: read`, per-job elevation), CODEOWNERS routes `.github/` review to
+its owner, Dependabot + CodeQL are enabled.
 
 ---
 

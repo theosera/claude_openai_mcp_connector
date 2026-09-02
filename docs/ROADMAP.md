@@ -1198,6 +1198,13 @@ Still open: an unprefixed search pays the full scan, so the
 tail is nearer than its "> 10k notes" trigger suggests — its **other** trigger,
 search p95 over 200 ms, is already met at 2,880 notes.
 
+**That count carries no as-of, and vault counts move.** Re-counting on 2026-09-01
+found 2,801 `.md` files indexed, 2,462 of them carrying frontmatter — and the file
+count moved by 181 inside a single hour, almost entirely files with no frontmatter.
+Neither number is stated in the same unit as "notes" here, so this is **not** a
+correction of 2,880: it is the reason to re-take the count, and the p95 measured
+against it, before either is used to decide the inverted index is due.
+
 ---
 
 ## Mid-term
