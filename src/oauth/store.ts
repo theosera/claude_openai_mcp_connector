@@ -421,19 +421,45 @@ export class OAuthStore {
       return null;
     }
     const t = this.now();
-    if (record.expiresAt <= t || record.clientId !== clientId) {
+    if (record.expiresAt <= t) {
       this.refreshTokens.delete(key);
       // Nothing else is revoked here, deliberately. This arm is reached by a
-      // spent or misdirected presentation, which is not evidence that the
-      // lineage is compromised — and revoking on it would let anyone holding a
-      // COPY of a spent token destroy the legitimate client's live pair at
-      // will. Removing this record cannot hide a descendant either: membership
-      // lives on the descendants themselves, so a later replay of an ancestor
-      // still reaches them by generation.
+      // spent presentation, which is not evidence that the lineage is
+      // compromised — and revoking on it would let anyone holding a COPY of a
+      // spent token destroy the legitimate client's live pair at will.
+      // Removing this record cannot hide a descendant either: membership lives
+      // on the descendants themselves, so a later replay of an ancestor still
+      // reaches them by generation.
       //
       // The deletion must still reach disk: a dead presented token stays dead
       // across restarts even on a failed rotation.
       this.save();
+      return null;
+    }
+    if (record.clientId !== clientId) {
+      // Misdirected presentation. Refused, and — for a record inside its
+      // replay-grace window — refused WITHOUT touching it.
+      //
+      // `client_id` arrives unauthenticated on the /token form (public client,
+      // token_endpoint_auth_method "none"), so a mismatch proves nothing about
+      // the presenter: anyone who has seen the refresh token can send it under
+      // any client_id they like. Deleting an already-rotated record on that
+      // basis would hand them the one thing they want gone — a re-presentation
+      // of THIS record is the sole trigger for revokeFamilyAbove, so destroying
+      // it turns the legitimate client's retry into a plain `invalid_grant`
+      // and lets an interceptor of the lost response keep rotating what they
+      // captured, unrevoked and unnoticed.
+      //
+      // A never-rotated record is still deleted, exactly as before: it has no
+      // family above it, so no revocation trigger is lost with it.
+      //
+      // Still no revocation on this arm — see the reasoning above; treating a
+      // mismatch as reuse evidence is what would let a copied token kill the
+      // live pair.
+      if (record.rotatedAt === undefined) {
+        this.refreshTokens.delete(key);
+        this.save();
+      }
       return null;
     }
     if (record.rotatedAt === undefined) {

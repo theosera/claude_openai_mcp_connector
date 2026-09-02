@@ -281,7 +281,10 @@ describe("OAuthStore", () => {
     t += ROTATION_GRACE_MS + 1;
     expect(store.rotateRefreshToken(tokens.refreshToken, "c")).toBeNull(); // reused after grace
     expect(store.rotateRefreshToken(rotated!.refreshToken, "wrong")).toBeNull(); // wrong client
-    // The wrong-client presentation above killed the successor too — strict, as before.
+    // The wrong-client presentation above killed the successor too — strict, as
+    // before. The successor has never been rotated, so nothing depends on it
+    // surviving; a record inside its replay window is kept instead (see "keeps
+    // the record a replay must revoke on…").
     expect(store.rotateRefreshToken(rotated!.refreshToken, "c")).toBeNull();
   });
 
@@ -315,6 +318,14 @@ describe("OAuthStore", () => {
   //  J. enforceCap の `key !== spare` を true に潰す → 同じ 1 本だけ赤
   // ⚠️ I/J は互いに素ではない (同じ不変条件の別々の壊し方)。赤が名指しできるのは
   //    「spare 免除が効いていない」までで、2 つの site のどちらが壊れたかは区別しない。
+  // 2026-09-02、client 不一致アームが in-grace record を消さなくなった件 (F1) の実測。
+  //  K. 不一致アームを元に戻す (rotatedAt を見ず常に delete + save)
+  //     → 「keeps the record a replay must revoke on…」1 本だけ赤。赤の理由は
+  //       「retry が null」= root が消され replay トリガが失われたこと自体。
+  // ⚠️ 逆に「消えた intermediate に届く」probe は、この修正で**自分の削除手段を
+  //    失った** (in-grace record を消せる到達可能な提示が無くなった)。map を直接
+  //    叩く形に変え、delete の戻り値を assert して CONTROL の写しに退化しないよう
+  //    固定した。
   // ⛔ `const doomed = victim ?? oldest` の fallback は 715 本のどれにも到達しない。
   //    ⭕ `victim === undefined` で throw する探針を入れて全 715 本を回し、一度も
   //    発火しないことを確認した。max >= 1 では非 spare キーを 1 つ削った時点で
@@ -391,9 +402,21 @@ describe("OAuthStore", () => {
     const tokens = store.issueTokens("c", "vault.read", "r");
     const lost = store.rotateRefreshToken(tokens.refreshToken, "c");
     const hop1 = store.rotateRefreshToken(lost!.refreshToken, "c");
-    // The one added line: the interceptor re-presents the INTERMEDIATE with a
-    // mismatched client, which deletes it.
-    expect(store.rotateRefreshToken(lost!.refreshToken, "wrong")).toBeNull();
+    // The one added line: the INTERMEDIATE is removed before the replay.
+    //
+    // It is removed directly, from the map. This line used to re-present the
+    // intermediate with a mismatched client_id, which deleted it — that
+    // deletion is exactly what the F1 fix removed (see "keeps the record a
+    // replay must revoke on…" below), and no reachable presentation deletes an
+    // in-grace record any more: a rotated record's window always closes at or
+    // after its parent's, so it cannot be expired out either while the replay
+    // below is still possible. Reaching in keeps the property pinned instead
+    // of letting the probe quietly become a copy of the CONTROL above. The map
+    // is private only at compile time, and its key is sha256(token), as at rest.
+    const removed = (store as unknown as { refreshTokens: Map<string, unknown> }).refreshTokens.delete(
+      crypto.createHash("sha256").update(lost!.refreshToken).digest("hex")
+    );
+    expect(removed).toBe(true); // a reach-in that hit nothing would leave this a copy of the CONTROL
     t += 30_000;
     expect(store.rotateRefreshToken(tokens.refreshToken, "c")).not.toBeNull();
     expect(store.validateAccessToken(hop1!.accessToken)).toBeNull();
@@ -422,6 +445,32 @@ describe("OAuthStore", () => {
     expect(store.rotateRefreshToken(spent.refreshToken, client as string)).toBeNull();
     expect(store.validateAccessToken(live.accessToken)?.clientId).toBe("c");
     expect(store.rotateRefreshToken(live.refreshToken, "c")).not.toBeNull();
+  });
+
+  it("keeps the record a replay must revoke on when a mismatched client_id presents it", () => {
+    // F1 (2026-09-02): `client_id` reaches this method unauthenticated from the
+    // /token form (public client, token_endpoint_auth_method "none"), so the
+    // mismatch arm was a state-changing primitive anyone could fire. Firing it
+    // on the ROOT — the record whose re-presentation is the ONLY trigger for
+    // revokeFamilyAbove — disarmed the family revocation in one request: the
+    // client's retry then found nothing, returned a plain `invalid_grant`
+    // indistinguishable from expiry, and the interceptor's captured pair went
+    // on rotating undetected. The suite reached the mismatch arm only on an
+    // INTERMEDIATE, where nothing depends on the record surviving.
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, now: () => t });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    const lost = store.rotateRefreshToken(tokens.refreshToken, "c"); // response intercepted
+    expect(lost).not.toBeNull();
+    // The interceptor tries to destroy the root before the client retries.
+    expect(store.rotateRefreshToken(tokens.refreshToken, "wrong")).toBeNull();
+    t += 30_000;
+    // The retry still works — and still revokes what the interceptor holds.
+    const replayed = store.rotateRefreshToken(tokens.refreshToken, "c");
+    expect(replayed).not.toBeNull();
+    expect(store.validateAccessToken(lost!.accessToken)).toBeNull();
+    expect(store.rotateRefreshToken(lost!.refreshToken, "c")).toBeNull();
+    expect(store.validateAccessToken(replayed!.accessToken)?.clientId).toBe("c");
   });
 
   // The cap and the replay window meet on one record. Measured 2026-09-01 by
