@@ -59,7 +59,7 @@ including this passage:
 
 ```
 gh api repos/<owner>/<repo>/rulesets --jq '.[].id'
-gh api repos/<owner>/<repo>/rulesets/<id> --jq '{rules, bypass_actors}'
+gh api repos/<owner>/<repo>/rulesets/<id> --jq '{enforcement, rules, bypass_actors}'
 ```
 
 Measured 2026-09-03 01:10 JST on ruleset `Branch-protection` (enforcement
@@ -69,8 +69,19 @@ Measured 2026-09-03 01:10 JST on ruleset `Branch-protection` (enforcement
 review request and blocks nothing. Merges of CODEOWNERS-owned paths with zero
 approvals are the expected behaviour under that configuration, not an anomaly.
 
-To make review actually gate a merge, the field to change is
-`required_approving_review_count`, not `CODEOWNERS`.
+**What does block**, on the same ruleset and the same measurement:
+`required_status_checks` — `build (22.x)`, `build (24.13.0)`, `CodeQL`, with
+`strict_required_status_checks_policy` `true`, so a branch that has fallen
+behind its base is stopped until it is updated — and
+`required_review_thread_resolution` `true`, so one unresolved review thread
+stops a merge on its own. Those two are what a red "merge is blocked" has
+meant here.
+
+To make review itself gate a merge, the field to change is
+`required_approving_review_count`. ⚠️ That alone is not sufficient: the
+`bypass_actors` entry above lets `RepositoryRole` 5 bypass the rule
+regardless, so raising the count gates everyone except the actor who has been
+merging. Read `bypass_actors` in the same breath as any count.
 
 ## Curated mapping to the Reusable Security Baseline
 

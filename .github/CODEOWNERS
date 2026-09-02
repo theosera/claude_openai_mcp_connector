@@ -1,4 +1,4 @@
-# CODEOWNERS — require owner review for CI/CD and security-critical surfaces.
+# CODEOWNERS — route review of CI/CD and security-critical surfaces to an owner.
 #
 # `.github/` (workflows / Actions / Dependabot) is the highest-value target for
 # supply-chain attacks ("poisoned pipeline execution"): one PR that rewrites a

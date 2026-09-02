@@ -380,6 +380,11 @@ CAS は読んだ版一致時のみ更新、append/CAS は in-process mutex で�
   実測: #156 は 6 本、#161 は 1 本で止まっていた)。
   ⚠️ **強制を増やしたいなら触るのは CODEOWNERS ではなく `required_approving_review_count`。**
   ⛔ **ただしそれは全 PR を所有者 1 人待ちにする** — 採否は運用コストの判断で、コードの判断ではない。
+  ⛔ **さらに、それだけでは足りない**: 同 ruleset の `bypass_actors` が `RepositoryRole` 5 に
+  `bypass_mode: always` を与えているので、**count を上げても、実際に merge している当人は素通りする**。
+  ⇒ **count を語るときは必ず `bypass_actors` と対で読む。**
+  ★ **本節の正典は `SECURITY.md` の「What CODEOWNERS does, and what it does not」** —
+  contributor 向けの面に置いてある。⛔ 両方を育てない (`GD-NO-DUPLICATION`)。
 
 ## Branch naming
 
