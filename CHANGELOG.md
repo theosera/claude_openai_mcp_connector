@@ -1389,6 +1389,14 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Over-cap frontmatter fails **loudly**: the read path logs it and indexes the
   note body-only (exactly like any other malformed frontmatter), and the write
   paths refuse rather than dropping metadata.
+  **Those figures are as of that 2,381-note vault**, and a headroom ratio is a
+  fact about the largest note rather than about the cap, so it goes stale on its
+  own as the vault grows. Re-measured 2026-09-01 over the 2,801 files the server
+  indexed that day (2,462 carrying frontmatter — a count that moved by 181
+  within the hour it was taken, so treat it as this sample's denominator rather
+  than the vault's size), counted the way the guard counts: median 272 B, max
+  1,771 B — ~4.6x, nothing over the cap and no unterminated block. The cap did
+  not have to move; the ratio did. Re-take the maximum before quoting a ratio.
 
   **Behaviour change:** a note carrying kilobytes of `source_refs` in its
   frontmatter is now refused. The test suite previously pinned a session-archive
