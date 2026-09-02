@@ -98,9 +98,20 @@ export async function startHttpServer(
   // The quota is derived rather than fixed, because `MCP_OAUTH_ACCESS_TTL` is
   // configurable and a client honouring a short `expires_in` refreshes exactly as
   // often as the TTL tells it to: a flat 30/min would answer 429 to that client's
-  // *valid* refreshes. Deriving keeps the guard effective across the whole range —
-  // even at a one-second TTL the ceiling stays two orders of magnitude below the
-  // ~1999 rotations the eviction needs.
+  // *valid* refreshes. Deriving keeps the guard effective across the range, and
+  // the headroom against the ~1999 rotations the eviction needs is:
+  //
+  //   TTL     quota   headroom   across a window boundary
+  //   3600 s     30      66x                 33x
+  //      1 s    240       8x                  4x
+  //
+  // The second column halves at a boundary because the window is fixed rather
+  // than sliding, and two full quotas can land either side of one (measured:
+  // 30 + 30 inside a millisecond). Comfortable at every TTL, and nowhere near
+  // the "two orders of magnitude" the first version of this comment claimed:
+  // that needed 100x and the default gives 66x, so it was wrong at the default
+  // and not only at the one-second edge it went out of its way to name. The
+  // numbers above were measured; the sentence they replace was not.
   const refreshesPerWindowPerClient = Math.ceil(60 / Math.max(1, config.oauth?.accessTokenTtlSec ?? 3600));
   const limiters: OAuthLimiters | undefined = oauth
     ? {
