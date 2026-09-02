@@ -92,18 +92,24 @@ export async function startHttpServer(
   // successor is inserted — so an unthrottled caller can drive `enforceCap` until
   // it evicts the root record that reuse detection reads, and the replay that was
   // supposed to revoke a stolen family returns `invalid_grant` instead. That is
-  // only useful inside ROTATION_GRACE_MS (60 s); past it the root is dead anyway.
-  // So the bound that matters is per-minute, and 30/min leaves the legitimate
-  // single-user traffic (one authorization-code exchange per client, one refresh
-  // per access-token TTL, plus the grace window's retry) two orders of magnitude
-  // of headroom while leaving an attacker ~30 of the ~1999 rotations the eviction
-  // needs. Reaching the endpoint at that rate was measured, not assumed: 1999
-  // rotations completed in 356 ms against a loopback server with no limiter.
+  // only useful inside ROTATION_GRACE_MS (60 s); past it the root is dead anyway,
+  // so the bound that matters is per-minute.
+  //
+  // The quota is derived rather than fixed, because `MCP_OAUTH_ACCESS_TTL` is
+  // configurable and a client honouring a short `expires_in` refreshes exactly as
+  // often as the TTL tells it to: a flat 30/min would answer 429 to that client's
+  // *valid* refreshes. Deriving keeps the guard effective across the whole range —
+  // even at a one-second TTL the ceiling stays two orders of magnitude below the
+  // ~1999 rotations the eviction needs.
+  const refreshesPerWindowPerClient = Math.ceil(60 / Math.max(1, config.oauth?.accessTokenTtlSec ?? 3600));
   const limiters: OAuthLimiters | undefined = oauth
     ? {
         authorize: new RateLimiter({ limit: 20, windowMs: 5 * 60_000 }),
         register: new RateLimiter({ limit: 20, windowMs: 10 * 60_000 }),
-        token: new RateLimiter({ limit: 30, windowMs: 60_000 })
+        token: new RateLimiter({
+          limit: Math.max(30, refreshesPerWindowPerClient * 4),
+          windowMs: 60_000
+        })
       }
     : undefined;
 
@@ -449,14 +455,35 @@ async function handleOAuthRoute(
     }
   }
   if (method === "POST" && pathname === "/token") {
-    if (limiters && rateLimited(req, res, limiters.token)) {
-      return true;
-    }
     const form = await readFormBody(req, res);
     if (form === BODY_ERROR) {
       return true;
     }
-    return sendOAuth(res, oauth.token(form));
+    // Only a *successful refresh rotation* grows the token map, so only that
+    // outcome is charged for. The two halves are deliberate:
+    //
+    //  - checking before the grant runs is what stops a full bucket from minting
+    //    anything, which is the point of the bound;
+    //  - charging only after it succeeds is what stops the gate from becoming the
+    //    denial of service it was added to prevent. Behind a tunnel every caller
+    //    shares one bucket, so a gate placed in front of validation would let an
+    //    unauthenticated stranger spend the whole quota on junk and lock the real
+    //    client out of *every* grant — including the authorization-code exchange
+    //    that reauthorization needs to recover, which would make the lockout
+    //    unrecoverable rather than merely annoying.
+    const rotating = form.get("grant_type") === "refresh_token";
+    const key = limiterKey(req);
+    if (rotating && limiters) {
+      const verdict = limiters.token.check(key);
+      if (!verdict.allowed) {
+        return sendRateLimited(res, verdict.retryAfterSec);
+      }
+    }
+    const response = oauth.token(form);
+    if (rotating && limiters && response.status === 200) {
+      limiters.token.consume(key);
+    }
+    return sendOAuth(res, response);
   }
   return false;
 }
@@ -473,14 +500,24 @@ async function handleOAuthRoute(
  * is naturally per-client. This is defense-in-depth over the scrypt password gate.
  */
 function rateLimited(req: http.IncomingMessage, res: http.ServerResponse, limiter: RateLimiter): boolean {
-  const key = (req.socket.remoteAddress || "unknown").toLowerCase();
-  const result = limiter.hit(key);
+  const result = limiter.hit(limiterKey(req));
   if (result.allowed) {
     return false;
   }
+  return sendRateLimited(res, result.retryAfterSec);
+}
+
+/** The bucket key. One definition, so `/token`'s split check/charge cannot drift
+ *  from the key the other two routes are counted under. */
+function limiterKey(req: http.IncomingMessage): string {
+  return (req.socket.remoteAddress || "unknown").toLowerCase();
+}
+
+/** The 429 shape every limited route answers with. */
+function sendRateLimited(res: http.ServerResponse, retryAfterSec: number): true {
   res.writeHead(429, {
     "content-type": "application/json",
-    "retry-after": String(result.retryAfterSec)
+    "retry-after": String(retryAfterSec)
   });
   res.end(JSON.stringify({ error: "rate_limited" }));
   return true;

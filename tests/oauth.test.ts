@@ -90,6 +90,47 @@ async function oauthObtainToken(issuer: string, scope: string): Promise<string> 
   return (await tokenRes.json()).access_token;
 }
 
+/** The same flow, returning the refresh token and the client it is bound to. */
+async function oauthObtainRefresh(issuer: string): Promise<{ clientId: string; refreshToken: string }> {
+  const redirectUri = "http://127.0.0.1:9999/cb";
+  const reg = await (
+    await fetch(`${issuer}/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ redirect_uris: [redirectUri] })
+    })
+  ).json();
+  const { verifier, challenge } = pkcePair();
+  const authRes = await fetch(`${issuer}/authorize`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      response_type: "code",
+      client_id: reg.client_id,
+      redirect_uri: redirectUri,
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+      state: "s",
+      scope: "vault.read",
+      password: "hunter2"
+    }).toString(),
+    redirect: "manual"
+  });
+  const code = new URL(authRes.headers.get("location")!).searchParams.get("code")!;
+  const tokenRes = await fetch(`${issuer}/token`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      client_id: reg.client_id,
+      redirect_uri: redirectUri,
+      code_verifier: verifier
+    }).toString()
+  });
+  return { clientId: reg.client_id, refreshToken: (await tokenRes.json()).refresh_token };
+}
+
 async function listToolNamesOverHttp(issuer: string, token: string): Promise<string[]> {
   const transport = new StreamableHTTPClientTransport(new URL(`${issuer}/mcp`), {
     // `connection: close` keeps these requests out of the client's keep-alive
@@ -1229,42 +1270,159 @@ describe("OAuth end-to-end over HTTP", () => {
     };
     server = await startHttpServer(store, config);
 
-    // Deliberately invalid grants: what is under test is the gate in front of
-    // the handler, not the grant itself. A rejected grant still reaches
-    // `oauth.token(...)` and answers 400, so 400 is the "allowed" reading here
-    // and 429 is the gate firing — which also keeps the test from depending on
-    // rotation state that the limiter would truncate half way through.
-    const hit = async () =>
-      fetch(`${issuer}/token`, {
+    // Real rotations, because only a successful one grows the map this bounds.
+    const { clientId, refreshToken } = await oauthObtainRefresh(issuer);
+    let current = refreshToken;
+    let rotations = 0;
+    let limited: Response | undefined;
+    for (let i = 0; i < 60; i++) {
+      const res = await fetch(`${issuer}/token`, {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
           grant_type: "refresh_token",
-          refresh_token: "not-a-real-refresh-token",
-          client_id: "not-a-real-client"
+          refresh_token: current,
+          client_id: clientId
         }).toString()
       });
-
-    const statuses: number[] = [];
-    for (let i = 0; i < 40; i++) {
-      statuses.push((await hit()).status);
+      if (res.status === 429) {
+        limited = res;
+        break;
+      }
+      const body = (await res.json()) as { refresh_token: string };
+      current = body.refresh_token;
+      rotations += 1;
     }
 
     // The gate fires...
-    const firstLimited = statuses.indexOf(429);
-    expect(firstLimited).toBeGreaterThan(-1);
+    expect(limited).toBeDefined();
     // ...and not before the endpoint has served the traffic a single user
-    // actually produces. Without this half, a limit of 1 would pass the line
+    // actually produces. Without this half a limit of 1 would satisfy the line
     // above while breaking every legitimate refresh.
-    expect(firstLimited).toBeGreaterThanOrEqual(30);
-    expect(statuses.slice(0, 30).every((s) => s === 400)).toBe(true);
+    expect(rotations).toBeGreaterThanOrEqual(30);
 
     // The rejection is the documented shape, not an incidental error page: a
     // client that cannot read `Retry-After` cannot back off correctly.
-    const limited = await hit();
-    expect(limited.status).toBe(429);
-    expect(Number(limited.headers.get("retry-after"))).toBeGreaterThan(0);
-    expect(await limited.json()).toEqual({ error: "rate_limited" });
+    expect(Number(limited!.headers.get("retry-after"))).toBeGreaterThan(0);
+    expect(await limited!.json()).toEqual({ error: "rate_limited" });
+  });
+
+  it("does not let unauthenticated junk at /token spend the budget a real grant needs", async () => {
+    // The bound has to sit where only a successful rotation pays for it. Behind
+    // a tunnel every caller shares one bucket, so a gate placed in FRONT of grant
+    // validation lets a stranger who holds no token at all spend the whole quota
+    // on rejected requests — and the lockout then covers the authorization-code
+    // exchange too, so reauthorization cannot recover from it. The assertion is
+    // deliberately negative: it is about what the junk must NOT have consumed.
+    const store = await makeStore();
+    const port = await freePort();
+    const issuer = `http://127.0.0.1:${port}`;
+    const config: HttpConfig = {
+      host: "127.0.0.1",
+      port,
+      authToken: "static-bearer-unused-here",
+      authTokenScopes: [SCOPE_READ, SCOPE_WRITE],
+      allowWrite: false,
+      allowSkillWrite: false,
+      allowAuditWrite: false,
+      allowLegacyCreateDocument: false,
+      allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
+      allowedOrigins: [],
+      oauth: {
+        issuer,
+        loginPassword: "hunter2",
+        accessTokenTtlSec: 3600,
+        refreshTokenTtlSec: 86_400,
+        codeTtlSec: 60,
+        allowWrite: false
+      }
+    };
+    server = await startHttpServer(store, config);
+
+    // Far past the quota, from a caller holding nothing.
+    for (let i = 0; i < 200; i++) {
+      const junk = await fetch(`${issuer}/token`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: `junk-${i}`,
+          client_id: "junk-client"
+        }).toString()
+      });
+      expect(junk.status).not.toBe(429);
+    }
+
+    // A real authorization-code exchange still completes: recovery is available.
+    const real = await oauthObtainRefresh(issuer);
+    expect(real.refreshToken).toBeTruthy();
+
+    // ...and so does a real rotation.
+    const rotated = await fetch(`${issuer}/token`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: real.refreshToken,
+        client_id: real.clientId
+      }).toString()
+    });
+    expect(rotated.status).toBe(200);
+  });
+
+  it("raises the rotation quota when a short access-token TTL makes refreshes legitimate", async () => {
+    // `MCP_OAUTH_ACCESS_TTL` is configurable, and a client honouring a short
+    // `expires_in` refreshes exactly as often as it is told to. A flat quota
+    // would answer 429 to that client's *valid* traffic, so the quota is derived
+    // from the TTL. The guard survives the derivation: even here the ceiling is
+    // far below the ~1999 rotations the eviction needs.
+    const store = await makeStore();
+    const port = await freePort();
+    const issuer = `http://127.0.0.1:${port}`;
+    const config: HttpConfig = {
+      host: "127.0.0.1",
+      port,
+      authToken: "static-bearer-unused-here",
+      authTokenScopes: [SCOPE_READ, SCOPE_WRITE],
+      allowWrite: false,
+      allowSkillWrite: false,
+      allowAuditWrite: false,
+      allowLegacyCreateDocument: false,
+      allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
+      allowedOrigins: [],
+      oauth: {
+        issuer,
+        loginPassword: "hunter2",
+        accessTokenTtlSec: 1,
+        refreshTokenTtlSec: 86_400,
+        codeTtlSec: 60,
+        allowWrite: false
+      }
+    };
+    server = await startHttpServer(store, config);
+
+    const { clientId, refreshToken } = await oauthObtainRefresh(issuer);
+    let current = refreshToken;
+    let rotations = 0;
+    for (let i = 0; i < 45; i++) {
+      const res = await fetch(`${issuer}/token`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: current,
+          client_id: clientId
+        }).toString()
+      });
+      if (res.status === 429) {
+        break;
+      }
+      current = ((await res.json()) as { refresh_token: string }).refresh_token;
+      rotations += 1;
+    }
+    // A one-second TTL means 60 refreshes a minute is honest traffic for a single
+    // client; the flat 30 this replaces would have cut it off half way through.
+    expect(rotations).toBeGreaterThan(30);
   });
 
   it("gives /token its own bucket, so refreshes do not consume the /register budget", async () => {
@@ -1296,13 +1454,24 @@ describe("OAuth end-to-end over HTTP", () => {
     };
     server = await startHttpServer(store, config);
 
-    // Spend the whole /token budget.
-    for (let i = 0; i < 31; i++) {
-      await fetch(`${issuer}/token`, {
+    // Spend the whole /token budget with the only thing that charges it: real
+    // rotations.
+    const { clientId, refreshToken } = await oauthObtainRefresh(issuer);
+    let current = refreshToken;
+    for (let i = 0; i < 45; i++) {
+      const res = await fetch(`${issuer}/token`, {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: "x", client_id: "y" }).toString()
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: current,
+          client_id: clientId
+        }).toString()
       });
+      if (res.status === 429) {
+        break;
+      }
+      current = ((await res.json()) as { refresh_token: string }).refresh_token;
     }
 
     // /register still answers on its own budget.
