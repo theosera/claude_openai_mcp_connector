@@ -302,7 +302,7 @@ Skill は将来の agent 指示として実行されるため、一般ノート�
    ⚠️ **audit pair と同一視しない。** あちらは plan/apply の無い single-call write だが、Skill 作成は
    二段階なので確認を経る。**それでも gate が要る理由は別にある** — **Skill は後続セッションが
    「指示として」読み込む**もので、監査レポートは data として読み戻される。
-   ★ **ワイヤ上で実測済み** (2026-09-02、両 transport の 2×2): subdir のみなら
+   ★ **ワイヤ上で実測済み** (2026-09-02 JST、両 transport の 2×2): subdir のみなら
    `skills=reserved-only` で **stdio 12 / HTTP 8 tools のどちらにも `plan_skill_create` は出ない**。
    flag も立てると **stdio 14 / HTTP 10** になり、実際に呼べる。**flag だけ (subdir 無し) は起動拒否。**
    ⭕ HTTP 側は `documents=off` のまま **8 → 10** なので、item 4 の「後者だけでは一般 document
