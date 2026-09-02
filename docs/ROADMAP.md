@@ -1160,6 +1160,51 @@ of this item is unchanged.
 Minimal, privacy-preserving operational signals (health endpoint, structured
 logs that never include note content or secrets) to make "is it up?" obvious.
 
+### A client whose apply response was lost cannot settle whether it landed 💭
+
+`apply_planned_update` and `apply_planned_document_create` unlink the patch on
+success, so a retry after a lost response answers "the plan is gone" — which
+does not separate *applied* from *expired*. `applied_sha256` was added for
+exactly this and could not serve it (the response carrying the field is the
+response that was lost, and no read tool returns the raw bytes to compare
+against); it was removed in `bf932d3` rather than shipped with a claim it does
+not meet, and **#162** carries the design question so the need is not lost with
+it.
+
+**One answer already works with no code change**, and is worth recording
+because it changes what the remaining question is. The client still holds the
+*plan* response, which carries `expected_sha256` — the hash of the content
+before the change. Re-planning the same document returns a fresh
+`expected_sha256`: different from the one in hand means the apply landed, equal
+means it did not. Two costs come with it, and neither is small. A third party
+editing the document in between confounds the answer — it reports whether the
+document changed, not whether *this* apply landed (the same confounder
+`expected_sha256` already lives with, and what stale-reject exists to catch).
+And re-planning stages a patch that **nothing can discard**: the tool surface
+has `plan_*` and `apply_*` and no way to abandon one, so each check leaves a
+staged plan behind until it ages out.
+
+That leaves two questions, and they are separable:
+
+- **A discard for a staged plan.** It removes the second cost above and is not
+  a new write surface — it deletes state this server already owns, at a
+  `patch_id` the caller was handed. Cheap, and it makes the no-code-change
+  answer usable more than once.
+- **A current-content hash on the read surface.** #162 argues against it on the
+  grounds that `toPublicDocument` is an allowlist on purpose, so a field the
+  read path starts returning is a field every caller starts seeing. That
+  argument is about a *field*: it does not transfer to an independent read-only
+  tool whose output is a hash, since a tool is opt-in per call. **The argument
+  not applying is not the same as the change being safe** — what a hash over
+  current content discloses to a `vault.read`-only principal has not been
+  worked through here, and that is the part still open.
+
+Not claimed: that either is the right answer, or that the exposure is real
+enough to act on. The incident that prompted this was a lost *OAuth* response;
+the apply path's exposure to the same failure is structural but was never
+observed. Doing nothing remains a live option, and this entry exists so that
+choosing it is a decision rather than an omission.
+
 ---
 
 ## Larger bets (need validation)
