@@ -38,13 +38,20 @@ export class RateLimiter {
   }
 
   /**
-   * Report whether `key` has budget left WITHOUT spending any.
+   * Report whether `key` has budget left without spending any.
    *
    * A gate that both counts and decides can only be placed before the work it
    * guards, which makes every rejected request — including one an unauthenticated
    * caller can send for free — spend from the same budget the legitimate caller
    * needs. Splitting the two lets a caller check first and charge only for the
    * outcome that is actually worth bounding.
+   *
+   * Spending nothing is not the same as touching nothing: like `hit`, this
+   * creates the bucket when there is none, and creating it fixes when the window
+   * starts. On a route reachable before the request is validated, that lets an
+   * unauthenticated caller choose the window's phase — enough to line a burst up
+   * with a boundary it would otherwise have to wait for, not enough to change
+   * what one window admits.
    */
   check(key: string): RateLimitResult {
     return this.record(key, false);
