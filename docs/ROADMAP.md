@@ -72,6 +72,53 @@ was outstanding:
 - Kept the existing security properties (opaque 256-bit tokens, single-use
   short-lived codes that are **never persisted**, refresh rotation invalidated
   on disk immediately, capped/pruned collections) and single-user simplicity.
+- **Amended 2026-08-30 (incident-driven):** strict single-use rotation turned
+  one lost token response over a dead ingress into a forced full re-auth — the
+  presented refresh token was already deleted when the response carrying its
+  replacement vanished. Rotation now has a bounded replay-grace window
+  (`ROTATION_GRACE_MS`, 60 s): a rotated token re-presented inside the window
+  rotates again and **revokes every generation minted downstream of the lost
+  response** (an interceptor who captured it — even one who then rotated what
+  they captured — loses it; the legitimate client provably never received it).
+  The revocation and the pair that replaces it are persisted in ONE atomic
+  save, so no crash window leaves disk holding one without the other. The
+  window never extends on replay, its state persists across restarts, and
+  beyond it single-use holds exactly as before. Pinned by
+  `tests/oauth.test.ts`, with mutation checks recorded beside the tests.
+- **Amended 2026-09-01:** the first form of that revocation stored the lineage
+  as forward links inside the token records, and a walk over links is only as
+  reachable as its least durable hop — a failed presentation, the expiry sweep,
+  and the hard cap can each remove one, and independent review found the first
+  of those. Membership is now a property of each token (a family id and a
+  generation within it), so a replay revokes the family above its own
+  generation by scanning rather than walking, and no intermediate has to
+  survive for its descendants to be reachable. The alternative — keeping the
+  links and revoking descendants on the failure paths — closes the same gap and
+  was measured buying it with availability: a copy of a spent token could
+  destroy the legitimate client's live pair while gaining nothing. Two tests
+  assert that non-revocation directly, because a fix that pays that price
+  passes every other test here.
+- **Closed 2026-09-02 by accepting the trade, not by removing it (#159):** the
+  grace window bounds the *opportunity* to replay a rotated token, and does not
+  bound what a replay *yields* — whoever presents the token is served an
+  independently rotatable pair on the ordinary refresh TTL, which goes on
+  rotating after the window shuts. The replay does revoke the legitimate
+  client's pair, so the theft surfaces as a forced re-auth rather than hiding,
+  but a later legitimate re-authorization mints a new family and leaves the
+  replayer's alive; surfacing is not containment. That is a deliberate trade of
+  a public client using PKCE: at refresh time there is nothing only the
+  legitimate client holds, so recovery cannot be bound to it, and the choice is
+  between stranding a client whose rotation response was lost and letting a
+  copied token escalate. **Proof-of-possession (DPoP, RFC 9449) is the only
+  option that removes the tension rather than moving along it, and it is not
+  implemented here** — it needs the clients this server exists for (ChatGPT,
+  Claude.ai) to speak it, which has not been checked. Shortening the window
+  moves along the same line and changes nothing about what a successful replay
+  yields. This is recorded here so that the options already taken are not read
+  as having solved it: what closed #159 was the decision, and the code now says
+  so where it used to claim more. The measurements are on #159; they were taken
+  against a revision that predates the family id, and have not been reproduced
+  since. 🔭
 - Pinned by `tests/oauth.test.ts`. See
   [`operations.md §1.B`](./operations.md#b-oauth-state--in-memory-by-default-persistable-via-a-state-file).
 
