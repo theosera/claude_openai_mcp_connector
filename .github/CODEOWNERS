@@ -2,9 +2,18 @@
 #
 # `.github/` (workflows / Actions / Dependabot) is the highest-value target for
 # supply-chain attacks ("poisoned pipeline execution"): one PR that rewrites a
-# workflow can exfiltrate secrets / tokens. Gating it behind code-owner review
-# mechanically blocks that class of attack. Takes effect once branch protection
-# enables "Require review from Code Owners".
+# workflow can exfiltrate secrets / tokens.
+#
+# This file ROUTES review to an owner. Whether anything BLOCKS a merge is a
+# property of the ruleset, not of this file. Read it; do not infer it here:
+#   gh api repos/<owner>/<repo>/rulesets --jq '.[].id'
+#   gh api repos/<owner>/<repo>/rulesets/<id> --jq '{rules, bypass_actors}'
+# Measured 2026-09-03 01:10 JST: require_code_owner_review true, but
+# required_approving_review_count 0 and bypass_actors grants RepositoryRole 5
+# bypass_mode "always" -- so ownership here routes review and blocks nothing.
+# An earlier version of this comment said it "mechanically blocks" once branch
+# protection enabled code-owner review. That precondition is now satisfied and
+# the claim still did not come true, so the hedge was falsified, not unmet.
 #
 # Syntax: <pattern> <owner...>  — last match wins (most specific line applies).
 

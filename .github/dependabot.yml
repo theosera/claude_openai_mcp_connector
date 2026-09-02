@@ -4,7 +4,8 @@
 # hardening); floating tags are intentionally not followed, so without Dependabot
 # those pins silently go stale. This opens weekly PRs (grouped to reduce noise)
 # bumping action SHAs + their `# vX.Y.Z` comments and npm deps. PRs that touch
-# .github/ are CODEOWNERS-gated → reviewed before merge.
+# .github/ are routed to the code owner for review. CODEOWNERS routes; it does
+# not block a merge — see SECURITY.md for what the ruleset actually enforces.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
