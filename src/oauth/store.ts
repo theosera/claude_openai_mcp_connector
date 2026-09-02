@@ -45,10 +45,23 @@ const DEFAULT_CLIENT_ORPHAN_GRACE_MS = 60 * 60 * 1000;
 // How long a refresh token stays replayable after it was rotated. Sized for
 // "the rotation response was lost on an unreliable link and the client retries
 // promptly" — NOT for offline recovery (a client that comes back hours later
-// re-authorizes, as before). Keeping it short bounds the extra exposure: a
-// stolen rotated token is useful for at most this window, and using it revokes
-// the legitimate client's pair, which surfaces the theft as a forced re-auth
-// instead of hiding it.
+// re-authorizes, as before).
+//
+// What the window bounds is the OPPORTUNITY to replay. It does not bound what a
+// replay yields: whoever presents the token is served an independently
+// rotatable pair on the ordinary refresh TTL, which goes on rotating after the
+// window shuts. Nor is the exposure contained once it surfaces — the replay
+// does revoke the legitimate client's pair, so the theft shows up as a forced
+// re-auth rather than hiding, but a later legitimate re-authorization mints a
+// new family and leaves the replayer's alive.
+//
+// That is a trade taken knowingly, not an oversight. This is a public client
+// using PKCE: at refresh time there is nothing only the legitimate client
+// holds, so recovery cannot be bound to it, and the choice is between stranding
+// a client whose response was lost and letting a copied token escalate. A
+// shorter window moves along that line rather than leaving it;
+// proof-of-possession (DPoP, RFC 9449) is what would remove it. #159 carries
+// the measurements and the open decision.
 export const ROTATION_GRACE_MS = 60 * 1000;
 
 const STATE_VERSION = 1;
