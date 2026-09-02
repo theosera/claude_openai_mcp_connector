@@ -59,6 +59,37 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A refresh token presented under the wrong `client_id` no longer deletes the
+  record a replay revokes on.** `rotateRefreshToken` handled expiry and a failed
+  client binding in one arm that deleted either way, and `client_id` arrives
+  unauthenticated on the `/token` form — a public client authenticating with
+  `none` — so a mismatch proves nothing about who sent it. Anyone holding a
+  refresh token could therefore present it under any `client_id` and destroy the
+  in-grace record whose re-presentation is the sole trigger for the family
+  revocation added above. The legitimate client's retry then returned a plain
+  `invalid_grant`, indistinguishable from an expired token, while an interceptor
+  of the lost response kept rotating what they captured. A record with
+  `rotatedAt` set is now refused without being touched; a never-rotated one is
+  still deleted, exactly as before, because it has no family above it and so
+  carries no trigger to lose.
+
+  The entry above says membership lives on each token rather than on forward
+  links, so **no intermediate has to survive for its descendants to be
+  reachable**. That is true and is not what failed here: the record that has to
+  survive is the one the retry presents, and a generation walk cannot start from
+  a record that is gone. Reachability of descendants and reachability of the
+  trigger are separate properties, and only the first was pinned.
+
+  The arm still does not revoke on a mismatch. Treating one as reuse evidence
+  closes the same gap and was measured buying it at the price the entry above
+  already names — a copy of a spent token could destroy the legitimate client's
+  live pair — and the existing test that asserts non-revocation goes red under
+  exactly that change. Removing the deletion costs nothing on that axis, because
+  it withdraws a capability rather than granting one. Pinned in
+  `tests/oauth.test.ts`; the probe that used a mismatched presentation to delete
+  an intermediate now deletes it directly, and was checked against the failure it
+  exists to catch so that it did not decay into a copy of its own control.
+
 - **A `.claude-session-vault` marker no longer decides where a session transcript
   is pushed.** The marker is committed at a vault clone's root, which means it is
   committable by anyone who can land a file in a repository this machine checks
