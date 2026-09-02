@@ -67,7 +67,8 @@ const TRANSIENT_FS_CODES = new Set(["EAGAIN", "EMFILE", "ENFILE"]);
  * the ones the next sweep reached first. The cache did not shrink; it stopped
  * working.
  *
- * Measured on the reference vault, 2,894 notes / 48.6 MB on disk:
+ * Measured 2026-08-16 on the reference vault as it stood that day, 2,894 notes
+ * / 48.6 MB on disk:
  *
  *     body characters                27,217,461
  *     + foldedBody + compactBody     53,675,452   (~1.97x the body)
@@ -88,6 +89,13 @@ const TRANSIENT_FS_CODES = new Set(["EAGAIN", "EMFILE", "ENFILE"]);
  * about 116 MB of source text — past that a deployment should raise
  * MCP_DOCUMENT_CACHE_MAX_CHARS rather than discover the degradation, and the
  * first eviction now says so on stderr.
+ *
+ * That 2.4x is AS OF the vault above. The numerator is the cap and holds still;
+ * the denominator is whatever the vault happens to hold, so the ratio decays
+ * without anyone touching this file — and it decays on note SIZE, not note
+ * count, which moves the two independently. Re-take the working set before
+ * quoting a headroom figure, the way the frontmatter ratio above has to be
+ * re-taken.
  *
  * ⚠️ What this number does NOT convert to is heap, and the tempting arithmetic
  * is wrong. Dividing one heapUsed reading (168.6 MB) by the vault's retained

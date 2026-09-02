@@ -174,9 +174,10 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the existing byte guard recorded the trade as unavoidable: an 8 KiB cap would
   also refuse a legitimate large `name` + `description`, an accept-to-reject
   change. **Counting line starts does not charge that.** A legitimate block is a
-  handful of lines whatever its size; the largest one in this repository opens
-  **7**, against a limit of **256**. A 200-line block scalar is still accepted,
-  and there is a test that says so.
+  handful of lines whatever its size; the largest one in this repository opened
+  **7** on 2026-08-31, against a limit of **256**. That count tracks whichever
+  `SKILL.md` files the repository holds, so re-take it before quoting it. A
+  200-line block scalar is still accepted, and there is a test that says so.
 
   Counted the way the guard counts: the block begins at the opening delimiter's
   own newline, so that newline is one of them. Counting from after it gives 6 and
@@ -888,16 +889,18 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   now appear as `candidates[]` on an unresolved link instead.
 
   **This removes backlinks, and the number is not buried.** Measured against the
-  reference vault (2,891 notes, single root): backlink edges drop **4,027 → 349
-  (−91%)**. Every one of the 46 links that resolved through a *unique* title
-  still lands on the same note, and filename matching adds 249 edges that did
-  not resolve before. The 3,927 that disappear are all fan-out from titles
-  several notes shared — 580 of the 606 links producing them name a file **no
-  note in the vault has**, which Obsidian itself shows as unresolved and this
-  server was attaching to every note that happened to share an H1. Two limits
-  stay on the record: this is n=1, and a vault that genuinely operates `title`
-  as an identifier would split differently; and `aliases` appears nowhere in
-  that vault, so that half of the rule is pinned by tests rather than measured.
+  reference vault as it stood on 2026-08-16 (2,891 notes, single root): backlink
+  edges drop **4,027 → 349 (−91%)**. Every one of the 46 links that resolved
+  through a *unique* title still lands on the same note, and filename matching
+  adds 249 edges that did not resolve before. The 3,927 that disappear are all
+  fan-out from titles several notes shared — 580 of the 606 links producing them
+  name a file **no note in the vault has**, which Obsidian itself shows as
+  unresolved and this server was attaching to every note that happened to share
+  an H1. Three limits stay on the record: these counts are as of the date above
+  and the vault has moved since, so re-take them before quoting them; this is
+  n=1, and a vault that genuinely operates `title` as an identifier would split
+  differently; and `aliases` appears nowhere in that vault, so that half of the
+  rule is pinned by tests rather than measured.
 
   In multi-root deployments, implicit forms resolve **within the linking note's
   own root** — only the explicit `<root>:<path>` form crosses, because root
@@ -955,18 +958,20 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **The new parse-cache bound was three times too small, so it turned the cache
   off.** The cap counts `body + foldedBody + compactBody` in UTF-16 characters,
   but 24,000,000 was chosen against a vault's size **on disk** — two different
-  units. Measured on the reference vault (2,894 notes, 48.6 MB on disk): 27.2M
-  body characters plus 53.7M of derived copies is **80.9M**, so a single scan
-  never fit. Every read path here enumerates the whole vault, so the entries
-  evicted during a sweep were the ones the next sweep reached first: a warm full
-  scan went **91 ms → 689 ms** and `search` **150 ms → 724 ms**, with retained
-  heap unchanged after a forced GC (168.6 MB → 168.3 MB). The default is now
-  192,000,000 — the measured working set with 2.4x of headroom — overridable
-  with **`MCP_DOCUMENT_CACHE_MAX_CHARS`** for a larger vault, and the first
-  eviction now says on stderr that scans will re-parse instead of leaving that
-  to a stopwatch. The eviction tests no longer inherit the shipped default:
-  they state their own budget, so re-sizing it cannot quietly stop them from
-  evicting.
+  units. Measured on the reference vault as it stood on 2026-08-16 (2,894 notes,
+  48.6 MB on disk): 27.2M body characters plus 53.7M of derived copies is
+  **80.9M**, so a single scan never fit. Every read path here enumerates the
+  whole vault, so the entries evicted during a sweep were the ones the next
+  sweep reached first: a warm full scan went **91 ms → 689 ms** and `search`
+  **150 ms → 724 ms**, with retained heap unchanged after a forced GC (168.6 MB
+  → 168.3 MB). The default is now 192,000,000 — the measured working set with
+  2.4x of headroom — overridable with **`MCP_DOCUMENT_CACHE_MAX_CHARS`** for a
+  larger vault, and the first eviction now says on stderr that scans will
+  re-parse instead of leaving that to a stopwatch. The eviction tests no longer
+  inherit the shipped default: they state their own budget, so re-sizing it
+  cannot quietly stop them from evicting. That 2.4x is a fact about what the
+  vault held that day rather than about the cap, so it decays without anyone
+  touching the code: re-take the working set before quoting a headroom figure.
 
 - **The parse cache had no bound, no eviction, and no delete path.** Every note
   read was retained for the life of the process — body plus the two derived
