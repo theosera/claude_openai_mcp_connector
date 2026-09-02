@@ -260,7 +260,8 @@ DCR + metadata discovery 必須**。`src/oauth/` の最小単一ユーザ AS。*
    token のみ単発 sha256 の constant-time 比較で可)。`MCP_OAUTH_ENABLED` 時に issuer URL
    (`MCP_HTTP_PUBLIC_URL`) かパスワード未設定なら `loadOAuthConfig` が**起動拒否**。
 5. **token は opaque 256-bit + rotation + audience/scope 束縛** — access/refresh とも CSPRNG、
-   TTL 失効、refresh は回転 (旧 refresh は無効化)。token は **canonical resource `${issuer}/mcp`
+   TTL 失効、refresh は回転 (旧 refresh は**即時無効化ではない** — 60 秒の replay grace の間
+   わざと生かし、その再提示で家系を revoke する。下の 7 を見よ)。token は **canonical resource `${issuer}/mcp`
    に audience-bound (RFC 8707)**。`/mcp` は static bearer **または** 「有効 access token かつ
    audience 一致」を受理 (`authenticate`)。401 時は `WWW-Authenticate: Bearer resource_metadata="…"`。
    **scope enforcement**: granted scope = 要求 ∩ サーバ許可 (`vault.write` は document/Skill の
@@ -278,8 +279,12 @@ DCR + metadata discovery 必須**。`src/oauth/` の最小単一ユーザ AS。*
    置かない)。file は atomic write (tmp+rename)・mode `0600`・dir `0700`。**HMAC-SHA256**
    (`MCP_OAUTH_PASSWORD` から scrypt 導出、per-file salt) で完全性を守り、改ざん/破損/version
    不一致/password 変更は**空 state で fail-closed** (詳細をログに echo しない)。auth code は
-   **永続化しない** (60s 単回)。refresh rotation の失効 (失敗経路含む) は**即 disk 反映**して
-   単回性を再起動越しに維持。load 時に期限切れを drop。save 失敗は auth を壊さず警告のみ。
+   **永続化しない** (60s 単回)。refresh rotation の失効 (失敗経路含む) は**即 disk 反映**する。
+   ⚠️ **ただし単回性は維持していない** — 回転した refresh は 60 秒の replay grace の間わざと
+   生き残る (上の 5)。**この 1 文は「即 disk 反映して単回性を再起動越しに維持」と書いていた**
+   が、grace window が入った時点で後半だけが偽になった。**前半は今も真** — 消えるときは即座に
+   disk へ落ちる。⭐ 訂正の根が「即時失効」でなく「有効範囲を書かなかったこと」である点を残す。
+   load 時に期限切れを drop。save 失敗は auth を壊さず警告のみ。
 
 ### INV-8 Constrained Skill bundle creation
 

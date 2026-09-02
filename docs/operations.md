@@ -94,8 +94,13 @@ same store, so one file covers every web client). Security properties:
   password-rotated state file fails **closed**: the server starts with empty
   OAuth state and clients simply re-authorize. Rotating the password is
   therefore also how you revoke all persisted sessions at once.
-- Authorization codes are never persisted (they are 60s single-use), and
-  refresh-token rotation invalidates the old token on disk immediately.
+- Authorization codes are never persisted (they are 60s single-use). A rotated
+  refresh token is **not** invalidated immediately — it is deliberately kept,
+  on disk as well, for a 60-second replay-grace window, so a client that lost
+  the response can present it again: that presentation revokes everything
+  minted above it and issues a fresh pair. Only once the window closes is it
+  rejected and removed. Removals do reach disk immediately, on the failure
+  paths too; what they no longer buy you is single use across a restart.
 
 **Fix 2: don't let the process die.** Run it supervised with auto-restart
 (below). Without the state file a restart costs a re-auth; with it, a restart
