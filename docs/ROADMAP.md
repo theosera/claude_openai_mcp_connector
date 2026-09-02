@@ -1180,19 +1180,31 @@ lifetime, and the squash merge left no commit in the history to point at.
 > or removes the field in code — but a check that a reader cannot run is worse
 > than none, so the numbers are gone and the claim stands on its own.
 
-The implementation is not lost with the close. Three remote branches still carry
-it, measured 2026-09-02 with `git ls-remote --heads origin` and a grep at each
-tip's sha rather than at a local ref:
+The implementation is not lost with the close. Three tags preserve it:
 
-| branch | tip | files |
+| tag | commit | files carrying the field |
 | --- | --- | --- |
-| `claude/incident-resilience` (#156, closed unmerged) | `52196cfc5141` | `CHANGELOG.md`, `src/server.ts`, `tests/knowledgeStore.test.ts` |
-| `claude/oauth-token-family-revocation` | `0990e9f80441` | same three |
-| `claude/oauth-revoke-descendants-on-failure` | `2b73fb9f2e26` | same three |
+| `preserved/applied-sha256-incident-resilience` | `52196cfc5141a8caf458b1d81a22035cd8f5b4c1` | `CHANGELOG.md`, `src/server.ts`, `tests/knowledgeStore.test.ts` |
+| `preserved/applied-sha256-token-family-revocation` | `0990e9f804418f9d4efb7d0cdd9087f656dcdd8e` | same three |
+| `preserved/applied-sha256-revoke-descendants-on-failure` | `2b73fb9f2e262fca8f34ffa618e34f2d08e379cf` | same three |
 
-The first is the branch the other two descend from, so a list naming only the
-later two makes it look deletable. **#162** carries the design question; this
-table is what makes the code recoverable after it closes.
+`git fetch origin --tags` then `git show <tag>:src/server.ts` reads any of them
+from a fresh clone.
+
+> **Tags, not branch tips.** The first draft of this table named the three
+> branches these commits sit on, which does not preserve anything: a branch is
+> deleted when its work closes, its commits become unreachable and eligible for
+> collection, and an abbreviated hash cannot be resolved by a clone that no
+> longer has the object — the same failure as the removal-commit reference this
+> entry started with, one step along. The tags were pushed 2026-09-02 and the
+> full forty-hex ids are given so the table does not depend on a reader's clone
+> having the objects already.
+
+The first is the commit the other two descend from, so a list naming only the
+later two makes it look expendable.
+
+**#162** carries the design question; these tags are what make the code
+recoverable after it closes.
 
 **For an update, one answer already works with no code change**, and is worth
 recording because it changes what the remaining question is. The client still
