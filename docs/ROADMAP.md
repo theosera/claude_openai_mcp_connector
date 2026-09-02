@@ -1159,13 +1159,94 @@ systemd bundle, a container image, and a one-page "deploy to a $5 VPS" guide.
 watchdog (`scripts/funnel-watchdog.sh` + launchd recipe in
 [`operations.md §2`](./operations.md#macos-tailscale-funnel--launchd)) —
 `tailscale funnel status` reads config, not liveness, so a post-sleep dead
-ingress served 502s for hours while every local signal looked green. The rest
-of this item is unchanged.
+ingress served 502s for hours while every local signal looked green.
+
+**Amended 2026-08-31 (second incident):** that watchdog closes the _sleep/idle_
+variant only. A network-path change under tailscaled — a VPN toggled on or off,
+a gateway or Wi-Fi switch — leaves the edge holding a stale route, and
+re-asserting the funnel is a no-op against it; recovery needs `tailscale down`
+then `up` first. Automating that inside the watchdog was declined deliberately,
+because it drops every tunnel on the machine, so the second variant stays a
+manual runbook step. **A landed slice is not a closed failure mode**, and this
+amendment exists because that correction reached `CHANGELOG.md` and
+`operations.md` without reaching this line.
+
+The rest of this item is unchanged.
 
 ### Observability 💭
 
 Minimal, privacy-preserving operational signals (health endpoint, structured
 logs that never include note content or secrets) to make "is it up?" obvious.
+
+### A client whose apply response was lost cannot settle whether it landed 💭
+
+`apply_planned_update` and `apply_planned_document_create` unlink the patch on
+success, so a retry after a lost response answers "the plan is gone" — which
+does not separate *applied* from *expired*. `applied_sha256` was added for
+exactly this and could not serve it (the response carrying the field is the
+response that was lost, and no read tool returns the raw bytes to compare
+against). It was dropped rather than shipped with a claim it does not meet, and
+**it never reached `main`**: it was added and removed inside one branch's
+lifetime, and the squash merge left no commit in the history to point at
+(`git log -S applied_sha256 main` is empty, while the same search for
+`expected_sha256` returns three). **#162** is therefore the only durable record
+of it, and carries the design question so the need is not lost with the field.
+
+**For an update, one answer already works with no code change**, and is worth
+recording because it changes what the remaining question is. The client still
+holds the *plan* response, which carries `expected_sha256` — the hash of the
+content before the change. Re-planning the same document returns a fresh
+`expected_sha256`: different from the one in hand means the apply landed, equal
+means it did not.
+
+**A create is a different question and has a simpler answer.** `plan_document_create`
+returns `content_sha256` — the bytes it will write — and no `expected_sha256`,
+because there is no prior content to hash, so the comparison above has nothing
+to compare. It does not need one: creates are `wx`, so the target either exists
+or it does not, and fetching the planned path settles it. What that does not
+settle is *whose* create landed if two clients raced for the same path; the
+`wx` flag means only one of them did, and the loser cannot tell itself apart
+from a client whose own apply landed.
+
+Two costs come with the update answer, and neither is small. A third party
+editing the document in between confounds the answer — it reports whether the
+document changed, not whether *this* apply landed (the same confounder
+`expected_sha256` already lives with, and what stale-reject exists to catch).
+And re-planning stages a patch that **nothing can discard**: the tool surface
+has `plan_*` and `apply_*` and no way to abandon one, so each check leaves a
+staged plan behind until it ages out.
+
+That leaves two questions, and they are separable:
+
+- **A discard for a staged plan.** It removes the second cost above and is not
+  a new write surface — it deletes state this server already owns, at a
+  `patch_id` the caller was handed. Cheap, and it makes the no-code-change
+  answer usable more than once.
+- **A current-content hash on the read surface.** #162 argues against it on the
+  grounds that `toPublicDocument` is an allowlist on purpose, so a field the
+  read path starts returning is a field every caller starts seeing. That
+  argument is about a *field*: it does not transfer to an independent read-only
+  tool whose output is a hash, since a tool is opt-in per call. **The argument
+  not applying is not the same as the change being safe** — what a hash over
+  current content discloses to a `vault.read`-only principal has not been
+  worked through here, and that is the part still open.
+
+**The same hole has a second face, on the plan side, and it is not the one
+above.** A `plan_*` request that never reached the server leaves nothing to
+settle: no `patch_id` was ever handed back, so there is no staged state to
+query and the only recovery is to resend the whole document. That cost is not
+fixed. A vault note grows as it is appended to, and one incident measured the
+same document resent at 20,822 → 40,929 → 51,990 bytes across three attempts,
+so the price of a lost request rises with the note it carries. Resumability on
+the send side — a delta-based plan, or a content-addressed resume — is the
+other half of "what happened to what I sent", and it is recorded here so the
+two faces are designed together rather than patched apart.
+
+Not claimed: that either is the right answer, or that the exposure is real
+enough to act on. The incident that prompted this was a lost *OAuth* response;
+the apply path's exposure to the same failure is structural but was never
+observed. Doing nothing remains a live option, and this entry exists so that
+choosing it is a decision rather than an omission.
 
 ---
 
