@@ -60,8 +60,10 @@ const DEFAULT_CLIENT_ORPHAN_GRACE_MS = 60 * 60 * 1000;
 // holds, so recovery cannot be bound to it, and the choice is between stranding
 // a client whose response was lost and letting a copied token escalate. A
 // shorter window moves along that line rather than leaving it;
-// proof-of-possession (DPoP, RFC 9449) is what would remove it. #159 carries
-// the measurements and the open decision.
+// proof-of-possession (DPoP, RFC 9449) is what would remove it, and it is not
+// implemented here. #159 carries the measurements and the reasoning; it was
+// closed by accepting the trade, so what is written above is the decision and
+// not a placeholder for one.
 export const ROTATION_GRACE_MS = 60 * 1000;
 
 const STATE_VERSION = 1;
