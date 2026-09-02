@@ -35,7 +35,9 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   be evicted by the same call, stranding the retry the window exists to serve
   and skipping the revocation that retry performs. That exemption is one key
   for one mint — sparing every in-window record from every mint was measured
-  evicting freshly issued grants instead. Pinned in `tests/oauth.test.ts`, with
+  evicting freshly issued grants instead. The measurement behind that sits on
+  `enforceCap`'s `spare` parameter in `src/oauth/store.ts`, and is not repeated
+  here, so there is one copy of it to keep true. Pinned in `tests/oauth.test.ts`, with
   the red/green mutation checks recorded beside the tests — including which of
   them are not mutually exclusive, and which branch the mutations never reached.
 

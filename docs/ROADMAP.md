@@ -98,6 +98,27 @@ was outstanding:
   destroy the legitimate client's live pair while gaining nothing. Two tests
   assert that non-revocation directly, because a fix that pays that price
   passes every other test here.
+- **Closed 2026-09-02 by accepting the trade, not by removing it (#159):** the
+  grace window bounds the *opportunity* to replay a rotated token, and does not
+  bound what a replay *yields* — whoever presents the token is served an
+  independently rotatable pair on the ordinary refresh TTL, which goes on
+  rotating after the window shuts. The replay does revoke the legitimate
+  client's pair, so the theft surfaces as a forced re-auth rather than hiding,
+  but a later legitimate re-authorization mints a new family and leaves the
+  replayer's alive; surfacing is not containment. That is a deliberate trade of
+  a public client using PKCE: at refresh time there is nothing only the
+  legitimate client holds, so recovery cannot be bound to it, and the choice is
+  between stranding a client whose rotation response was lost and letting a
+  copied token escalate. **Proof-of-possession (DPoP, RFC 9449) is the only
+  option that removes the tension rather than moving along it, and it is not
+  implemented here** — it needs the clients this server exists for (ChatGPT,
+  Claude.ai) to speak it, which has not been checked. Shortening the window
+  moves along the same line and changes nothing about what a successful replay
+  yields. This is recorded here so that the options already taken are not read
+  as having solved it: what closed #159 was the decision, and the code now says
+  so where it used to claim more. The measurements are on #159; they were taken
+  against a revision that predates the family id, and have not been reproduced
+  since. 🔭
 - Pinned by `tests/oauth.test.ts`. See
   [`operations.md §1.B`](./operations.md#b-oauth-state--in-memory-by-default-persistable-via-a-state-file).
 
