@@ -1167,16 +1167,30 @@ success, so a retry after a lost response answers "the plan is gone" — which
 does not separate *applied* from *expired*. `applied_sha256` was added for
 exactly this and could not serve it (the response carrying the field is the
 response that was lost, and no read tool returns the raw bytes to compare
-against); it was removed in `bf932d3` rather than shipped with a claim it does
-not meet, and **#162** carries the design question so the need is not lost with
-it.
+against). It was dropped rather than shipped with a claim it does not meet, and
+**it never reached `main`**: it was added and removed inside one branch's
+lifetime, and the squash merge left no commit in the history to point at
+(`git log -S applied_sha256 main` is empty, while the same search for
+`expected_sha256` returns three). **#162** is therefore the only durable record
+of it, and carries the design question so the need is not lost with the field.
 
-**One answer already works with no code change**, and is worth recording
-because it changes what the remaining question is. The client still holds the
-*plan* response, which carries `expected_sha256` — the hash of the content
-before the change. Re-planning the same document returns a fresh
+**For an update, one answer already works with no code change**, and is worth
+recording because it changes what the remaining question is. The client still
+holds the *plan* response, which carries `expected_sha256` — the hash of the
+content before the change. Re-planning the same document returns a fresh
 `expected_sha256`: different from the one in hand means the apply landed, equal
-means it did not. Two costs come with it, and neither is small. A third party
+means it did not.
+
+**A create is a different question and has a simpler answer.** `plan_document_create`
+returns `content_sha256` — the bytes it will write — and no `expected_sha256`,
+because there is no prior content to hash, so the comparison above has nothing
+to compare. It does not need one: creates are `wx`, so the target either exists
+or it does not, and fetching the planned path settles it. What that does not
+settle is *whose* create landed if two clients raced for the same path; the
+`wx` flag means only one of them did, and the loser cannot tell itself apart
+from a client whose own apply landed.
+
+Two costs come with the update answer, and neither is small. A third party
 editing the document in between confounds the answer — it reports whether the
 document changed, not whether *this* apply landed (the same confounder
 `expected_sha256` already lives with, and what stale-reject exists to catch).
