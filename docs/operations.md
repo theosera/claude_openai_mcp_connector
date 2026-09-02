@@ -98,9 +98,20 @@ same store, so one file covers every web client). Security properties:
   refresh token is **not** invalidated immediately — it is deliberately kept,
   on disk as well, for a 60-second replay-grace window, so a client that lost
   the response can present it again: that presentation revokes everything
-  minted above it and issues a fresh pair. Only once the window closes is it
-  rejected and removed. Removals do reach disk immediately, on the failure
-  paths too; what they no longer buy you is single use across a restart.
+  minted above it and issues a fresh pair. **Sixty seconds is an upper bound,
+  not a guarantee** — the record can stop being usable earlier, and being
+  refused is not the same as being gone. It is swept once the token map hits
+  its cap, a replay of an ancestor revokes it as part of that family, and a
+  presentation under the wrong `client_id` is refused while leaving it in
+  place. Read `src/oauth/store.ts::rotateRefreshToken` for which arm does
+  which; enumerating them here is how a list ends up one short. What bounds
+  the cap case in practice is not this window at all: `POST /token` is
+  rate-limited from the access-token TTL, 30/min at the default, so the
+  thousands of rotations a sweep needs are not available to one peer.
+  Deletions are written through to the state file as they happen, on the
+  failure paths too — but `save()` reports its own failures as warnings and
+  does not fail the request, so "written" means attempted, not confirmed.
+  What none of this buys you any more is single use across a restart.
 
 **Fix 2: don't let the process die.** Run it supervised with auto-restart
 (below). Without the state file a restart costs a re-auth; with it, a restart
