@@ -130,12 +130,24 @@ was outstanding:
   deliberately at `maxTokens - 1` rotations inside the window, and the replay
   that would have revoked their family returns `invalid_grant` instead.
 
-  **What is measured, and at which revision.** Reproduced at `8218f76`, driving
-  `OAuthStore` in process: the threshold is exactly `maxTokens - 1` at caps 4, 6,
-  8, 12 and 16 (3 / 5 / 7 / 11 / 15). Controls: nought rotations always survives,
-  and cap 1000 survives fifty. `DEFAULT_MAX_TOKENS` is 2000 and `maxTokens` is
-  set nowhere outside `src/oauth/store.ts`, so the shipped figure is ~1999
-  rotations inside `ROTATION_GRACE_MS`.
+  **What is measured, at which revision, and under which setup.** Reproduced at
+  `8218f76`, driving `OAuthStore` in process: the threshold is exactly
+  `maxTokens - 1` at caps 4, 6, 8, 12 and 16 (3 / 5 / 7 / 11 / 15). Controls:
+  nought rotations survives, and cap 1000 survives fifty. `DEFAULT_MAX_TOKENS`
+  is 2000 and `maxTokens` is set nowhere outside `src/oauth/store.ts`, so the
+  shipped figure is ~1999 rotations inside `ROTATION_GRACE_MS`.
+
+  **The setup has to be pinned, because a different one lands on a different
+  number.** The figure above is the interceptor of the comment above it: they
+  hold no grant of their own and rotate the chain captured from the victim.
+  Giving them a grant issued *before* the victim's changes nothing. Giving them
+  one issued *after* the victim's root subtracts one — `maxTokens - 2` at every
+  cap tested — because that grant occupies an insertion slot ahead of the
+  entries the attacker's own rotations add, and the control weakens with it:
+  nought rotations no longer survives at cap 2. Independently reproduced by a
+  second session that read only the pinned revision and this figure, picked the
+  third setup, and landed on `maxTokens - 2` — which is how the omission was
+  found. Recording the revision was not enough.
 
   **The one candidate that was left does not work.** #170 named moving the
   presented record to the tail of insertion order, and reasoned — explicitly as
