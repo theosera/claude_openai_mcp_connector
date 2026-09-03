@@ -580,8 +580,18 @@ export class OAuthStore {
    * with no machine-readable OAuth error, but an evicted holder breaks
    * silently and later — at an `/authorize` it had no reason to expect to
    * fail, while it was still refreshing successfully — and an in-flight
-   * registration breaks now, in a flow someone is watching. Between those two
-   * this picks the failure that is visible when it happens.
+   * registration breaks now.
+   *
+   * "Now" is narrower than it sounds, and the narrowing is the useful part.
+   * The eviction is only immediately visible while the flow is still short of
+   * its code: once `/authorize` has issued one, redemption never consults the
+   * registry — `tokenFromCode` does not call `getClient`, and evicting a
+   * client leaves its pending codes alone — so the exchange succeeds and
+   * nothing surfaces. Measured 2026-09-03: a client evicted after its code was
+   * issued still redeemed it and received a valid access token. A tokenless
+   * registration may also simply be idle, with nobody waiting on it at all.
+   * So what this arm buys is a failure that is visible *during the pre-code
+   * window*, not at every eviction, and that is what it is chosen for.
    *
    * "Those two" is itself a sizing assumption — `refreshTokenTtlSec >=
    * clientOrphanGraceMs` — which is the kind of thing #184 was filed about, so
