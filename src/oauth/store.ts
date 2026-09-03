@@ -268,11 +268,7 @@ export class OAuthStore {
     // line.
     this.pruneOrphanClients();
     if (this.clients.size >= DEFAULT_MAX_CLIENTS) {
-      // Evict the oldest registration rather than growing without bound.
-      const oldest = [...this.clients.values()].sort((a, b) => a.createdAt - b.createdAt)[0];
-      if (oldest) {
-        this.clients.delete(oldest.clientId);
-      }
+      this.evictOneClientForCap();
     }
     const client: RegisteredClient = {
       clientId: `client_${randomSecret()}`,
@@ -548,6 +544,41 @@ export class OAuthStore {
       if (record.expiresAt <= t) this.codes.delete(code);
     }
     this.evictExpired();
+  }
+
+  /**
+   * Free one slot for a new registration, preferring one that holds no live
+   * credential.
+   *
+   * Age alone is the wrong order to delete in. A client whose registration is
+   * evicted while it still holds a valid access token — or a refresh token it
+   * can rotate — keeps working at `/token` and fails only the next time it
+   * reaches `/authorize`, where `getClient` no longer knows it. The registry
+   * and the credentials it is supposed to describe then disagree, and the
+   * client cannot refresh its way out: recovery costs a re-registration.
+   * Measured 2026-09-03 on #184: with the shipped cap, a client holding a live
+   * pair was evicted by 100 registrations while its access token still
+   * validated and its refresh token still rotated.
+   *
+   * Tokenless registrations have no such state to contradict, so they go
+   * first, oldest first. `prune()` has already run at the top of
+   * `registerClient`, so an expired token is not counted as live.
+   *
+   * The bound is unchanged: exactly one registration is removed per call, and
+   * when every one of them holds a live token the oldest still goes — the cap
+   * has to be enforced with something. `DEFAULT_MAX_CLIENTS` has no options
+   * field and no environment override, so this order is the shipped one and
+   * an operator cannot tune around it.
+   */
+  private evictOneClientForCap(): void {
+    const holdsLiveToken = new Set<string>();
+    for (const record of this.accessTokens.values()) holdsLiveToken.add(record.clientId);
+    for (const record of this.refreshTokens.values()) holdsLiveToken.add(record.clientId);
+    const oldestFirst = [...this.clients.values()].sort((a, b) => a.createdAt - b.createdAt);
+    const victim = oldestFirst.find((client) => !holdsLiveToken.has(client.clientId)) ?? oldestFirst[0];
+    if (victim) {
+      this.clients.delete(victim.clientId);
+    }
   }
 
   /**
