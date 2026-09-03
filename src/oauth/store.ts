@@ -564,6 +564,23 @@ export class OAuthStore {
    * first, oldest first. `prune()` has already run at the top of
    * `registerClient`, so an expired token is not counted as live.
    *
+   * That preference has a cost, and it lands on the class #184 is about. The
+   * orphan sweep immediately above has already removed every tokenless
+   * registration past its grace window, so every tokenless candidate left here
+   * is one still inside it: a registration that has not exchanged its code
+   * yet. Preferring them means an in-flight authorization is now the first
+   * thing offered to the cap. Measured 2026-09-03 either side of #185, with an
+   * oldest token-holder and a second in-flight registration and the cap driven
+   * past its limit: before, the holder was evicted and the in-flight one
+   * survived; after, exactly the reverse.
+   *
+   * It is a trade and not an oversight. Both evictions end in the same 400
+   * with no machine-readable OAuth error, but an evicted holder breaks
+   * silently and later — at an `/authorize` it had no reason to expect to
+   * fail, while it was still refreshing successfully — and an in-flight
+   * registration breaks now, in a flow someone is watching. The cap has to
+   * take one of them; this picks the failure that is visible when it happens.
+   *
    * The bound is unchanged: exactly one registration is removed per call, and
    * when every one of them holds a live token the oldest still goes — the cap
    * has to be enforced with something. `DEFAULT_MAX_CLIENTS` has no options
