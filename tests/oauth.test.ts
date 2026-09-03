@@ -656,6 +656,71 @@ describe("OAuthStore", () => {
     expect(store.getClient(pending.clientId)).toBeDefined(); // within grace, survives
   });
 
+  // #184. The window is a sizing assumption about human latency, so the branch
+  // it turns on has to be pinned at the point where it turns. The test above
+  // only shows that a client aged 0 ms survives; it never advances the clock,
+  // so nothing here reached the comparison until this test.
+  //
+  // The bracket is the exact boundary, not a pair straddling it: the guard is
+  // `>=`, and a -1ms/+1ms pair satisfies `>` and `>=` alike. Measured over HTTP
+  // by a second session on 2026-09-03: at age === grace, /authorize answers 400.
+  it("sweeps an in-flight registration once it reaches the orphan grace window (#184)", () => {
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, clientOrphanGraceMs: 60_000, now: () => t });
+    const pending = store.registerClient(["https://x/cb"]); // registered, no token yet
+
+    t += 59_999; // one tick short of the window
+    store.registerClient(["https://mid/cb"]); // triggers orphan pruning
+    expect(store.getClient(pending.clientId)).toBeDefined();
+
+    t += 1; // exactly at the window: `>=`, so this is the sweeping side
+    store.registerClient(["https://late/cb"]);
+    expect(store.getClient(pending.clientId)).toBeUndefined();
+  });
+
+  // The cap is a second deletion path and it does not consult the grace window
+  // at all. What it must consult is whether the registration still describes
+  // live credentials: evicting one that does leaves the client able to refresh
+  // at /token but unable to authorize again, and re-registration is its only
+  // way back.
+  //
+  // Scope, so the next reader does not over-read this: /token never looks the
+  // registry up (getClient has one caller, validateAuthorizeParams), so what
+  // this protects is the next authorize, not the token path.
+  it("evicts a tokenless registration before one that still holds a live token", () => {
+    const t = 1_000_000;
+    const store = new OAuthStore({ ...opts, now: () => t });
+    const holder = store.registerClient(["https://holder/cb"]);
+    store.issueTokens(holder.clientId, "vault.read", "r");
+    const tokenless = store.registerClient(["https://tokenless/cb"]);
+
+    for (let i = 0; i < 300; i += 1) {
+      store.registerClient([`https://churn-${i}/cb`]);
+    }
+
+    // Reached: the cap really did evict, so the assertion below is not vacuous.
+    expect(store.getClient(tokenless.clientId)).toBeUndefined();
+    expect(store.getClient(holder.clientId)).toBeDefined();
+  });
+
+  // The fallback arm, exercised on purpose. A `victim ?? oldest` branch that no
+  // test drives is a green that means nothing (measured on the token cap's
+  // equivalent arm, 2026-09-02: unreachable from the whole suite).
+  it("still evicts when every registration holds a live token", () => {
+    const t = 1_000_000;
+    const store = new OAuthStore({ ...opts, now: () => t });
+    const first = store.registerClient(["https://first/cb"]);
+    store.issueTokens(first.clientId, "vault.read", "r");
+
+    for (let i = 0; i < 300; i += 1) {
+      const churn = store.registerClient([`https://live-${i}/cb`]);
+      store.issueTokens(churn.clientId, "vault.read", "r");
+    }
+
+    // Nothing is protected, so the cap falls back to age and the oldest goes.
+    expect(store.getClient(first.clientId)).toBeUndefined();
+  });
+
   it("prunes a client once its last token expires", () => {
     let t = 1_000_000;
     const store = new OAuthStore({ ...opts, clientOrphanGraceMs: 1000, now: () => t });
