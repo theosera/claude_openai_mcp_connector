@@ -564,22 +564,39 @@ export class OAuthStore {
    * first, oldest first. `prune()` has already run at the top of
    * `registerClient`, so an expired token is not counted as live.
    *
-   * That preference has a cost, and it lands on the class #184 is about. The
-   * orphan sweep immediately above has already removed every tokenless
-   * registration past its grace window, so every tokenless candidate left here
-   * is one still inside it: a registration that has not exchanged its code
-   * yet. Preferring them means an in-flight authorization is now the first
-   * thing offered to the cap. Measured 2026-09-03 either side of #185, with an
-   * oldest token-holder and a second in-flight registration and the cap driven
-   * past its limit: before, the holder was evicted and the in-flight one
-   * survived; after, exactly the reverse.
+   * That preference has a cost, and under the shipped TTLs it lands on the
+   * class #184 is about. The orphan sweep immediately above has already
+   * removed every tokenless registration past its grace window, so every
+   * tokenless candidate left here is one still inside it — and a completed
+   * flow holds its refresh token for thirty days while a registration only has
+   * to outlive an hour to leave the sweep's reach, so what is left inside is
+   * an authorization still in flight. Preferring them means that is now the
+   * first thing offered to the cap. Measured 2026-09-03 either side of #185,
+   * with an oldest token-holder and a second in-flight registration and the
+   * cap driven past its limit: before, the holder was evicted and the
+   * in-flight one survived; after, exactly the reverse.
    *
    * It is a trade and not an oversight. Both evictions end in the same 400
    * with no machine-readable OAuth error, but an evicted holder breaks
    * silently and later — at an `/authorize` it had no reason to expect to
    * fail, while it was still refreshing successfully — and an in-flight
-   * registration breaks now, in a flow someone is watching. The cap has to
-   * take one of them; this picks the failure that is visible when it happens.
+   * registration breaks now, in a flow someone is watching. Between those two
+   * this picks the failure that is visible when it happens.
+   *
+   * "Those two" is itself a sizing assumption — `refreshTokenTtlSec >=
+   * clientOrphanGraceMs` — which is the kind of thing #184 was filed about, so
+   * it is written down rather than leaned on quietly. Drop
+   * `MCP_OAUTH_REFRESH_TTL` below the hour and a client that completed its
+   * flow goes tokenless while still inside the grace window: a third class,
+   * neither in flight nor holding credentials, and the one the cap then takes
+   * first. Measured 2026-09-03 at a 60 s refresh TTL, on both sides of #185:
+   * the completed-then-expired client was evicted and the in-flight one
+   * survived. Found by a second session, which built the counterexample rather
+   * than accepting the claim that there was none.
+   *
+   * There is no lever on the other side of that relation: `clientOrphanGraceMs`
+   * has no environment binding, so an operator shortening sessions cannot
+   * widen the grace to restore it.
    *
    * The bound is unchanged: exactly one registration is removed per call, and
    * when every one of them holds a live token the oldest still goes — the cap
