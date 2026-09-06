@@ -39,12 +39,31 @@ command -v jq >/dev/null 2>&1 || exit 0
 # was never looked at leaves the transcript going wherever that origin points.
 # Both sources are out of band: an env var, and a file under the user's config
 # dir, which is outside every checkout and so cannot arrive in a clone.
-VAULT_ORIGIN_PIN="${SESSION_VAULT_ORIGIN:-}"
+# Trim the way git_url_id does, because the emptiness test below decides
+# whether the pin file is read at all. Untrimmed, a stray space in the env
+# var is non-empty, the file is skipped, and every candidate is then judged
+# against a pin that resolves to nothing -- the operator is told their
+# clones are wrong when the environment is.
+VAULT_ORIGIN_PIN="$(printf '%s' "${SESSION_VAULT_ORIGIN:-}" \
+  | sed -E -e 's/^[[:space:]]+//' -e 's/[[:space:]]+$//')"
+# Remember WHY there is no pin, so the message below can tell the operator
+# something they can act on. "No pin" and "a pin file you already wrote that
+# yields nothing" need different fixes, and until now they printed the same
+# line -- which told the operator to create the file they had just created.
+pin_file_state=absent
 if [ -z "$VAULT_ORIGIN_PIN" ]; then
   pin_file="${XDG_CONFIG_HOME:-$HOME/.config}/session-archive/vault-origin"
   if [ -f "$pin_file" ]; then
-    VAULT_ORIGIN_PIN="$(grep -v '^[[:space:]]*#' "$pin_file" 2>/dev/null \
-      | grep -m1 -v '^[[:space:]]*$' || true)"
+    if [ -r "$pin_file" ]; then
+      VAULT_ORIGIN_PIN="$(grep -v '^[[:space:]]*#' "$pin_file" 2>/dev/null \
+        | grep -m1 -v '^[[:space:]]*$' || true)"
+      VAULT_ORIGIN_PIN="$(printf '%s' "$VAULT_ORIGIN_PIN" \
+        | sed -E -e 's/^[[:space:]]+//' -e 's/[[:space:]]+$//')"
+      if [ -n "$VAULT_ORIGIN_PIN" ]; then pin_file_state=ok
+      else pin_file_state=empty; fi
+    else
+      pin_file_state=unreadable
+    fi
   fi
 fi
 
@@ -111,6 +130,12 @@ if [ -z "$VAULT_REPO" ]; then
       "$scan_count" >&2
   elif [ -n "$VAULT_ORIGIN_PIN" ] && [ "$marked_count" -gt 0 ]; then
     printf 'session-archive: %s marked vault clone(s) under $HOME, none with the pinned origin. Not archiving.\n' \
+      "$marked_count" >&2
+  elif [ "$marked_count" -gt 0 ] && [ "$pin_file_state" = empty ]; then
+    printf 'session-archive: %s marked vault clone(s) under $HOME, and the vault pin file exists but holds no non-comment line. Add the vault remote to it, or set SESSION_VAULT_ORIGIN. Not archiving.\n' \
+      "$marked_count" >&2
+  elif [ "$marked_count" -gt 0 ] && [ "$pin_file_state" = unreadable ]; then
+    printf 'session-archive: %s marked vault clone(s) under $HOME, and the vault pin file exists but could not be read. Check its permissions. Not archiving.\n' \
       "$marked_count" >&2
   elif [ "$marked_count" -gt 0 ]; then
     printf 'session-archive: %s marked vault clone(s) under $HOME but no vault pin, and a marker committed inside a clone cannot authorize a push destination. Set SESSION_VAULT_REPO, or pin the vault remote in SESSION_VAULT_ORIGIN or ~/.config/session-archive/vault-origin. Not archiving.\n' \
@@ -308,7 +333,9 @@ mask() {
     -e 's/sk-[A-Za-z0-9_-]{20,}/***MASKED***/g' \
     -e 's/AIza[0-9A-Za-z_-]{35}/***MASKED***/g' \
     -e 's/xox[baprs]-[A-Za-z0-9-]{10,}/***MASKED***/g' \
-    -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----/s/.*/***MASKED***/'
+    -e 's/-----BEGIN [A-Z ]*PRIVATE KEY-----/***MASKED***/g' \
+    -e 's/-----END [A-Z ]*PRIVATE KEY-----/***MASKED***/g' \
+    -e '/^[[:space:]]*[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/.*/***MASKED***/'
 }
 
 # --- render the transcript to Markdown --------------------------------------
@@ -368,7 +395,10 @@ body_jq='
   # U+2029 / U+0085 / form feed are not CommonMark line endings, so folding them
   # would widen fences that no reader could have closed.
   def fence($lang; $text):
-    ($text // "") as $t
+    # 採寸の【前】に正規化する。採寸後に文字を削除しうるフィルタは、封じ込めの
+    # 問いを開け直す（F2）。パターンは strip_ansi と同一に保つこと — あちらで
+    # 剥がれてこちらで剥がれない列が 1 つでもあると、穴がそのまま戻る。
+    (($text // "") | gsub("\u001b\\[[0-9;]*[mK]"; "")) as $t
     | ([ $t
          | split("\n")[] | split("\r")[]
          | select(startswith("~") or startswith(" "))
