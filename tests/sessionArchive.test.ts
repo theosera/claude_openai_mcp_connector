@@ -690,6 +690,65 @@ describe("session-archive PEM key masking", () => {
     expect(runMask(mutate(mask, CATCH_ALL_RUN, NEVER_MATCHES, "the whole-line base64 rule"), hexKey)).toBe(hexKey);
   });
 
+  it("masks a key whose BEGIN, body and END are collapsed onto one line", () => {
+    // The shape a Write or Bash tool input takes once the renderer prints it as
+    // JSON: the newlines become escapes and the whole key arrives on one line.
+    // A line-anchored rule cannot see it -- the line is not base64 end to end --
+    // and nothing in this suite covered the shape until now.
+    expect(runMask(mask, `${PEM_OPEN} ${BODY[0]} ${PEM_CLOSE}`)).not.toContain(BODY[0]);
+  });
+
+  it("leaks that one-line key once the in-range run rule stops firing, so the pass above means something", () => {
+    const downgraded = mutate(mask, IN_RANGE_RUN, NEVER_MATCHES, "the in-range run rule");
+
+    // The whole-line catch-all is still there and still cannot see this line,
+    // because the markers and the spaces around them are not base64.
+    expect(runMask(downgraded, `${PEM_OPEN} ${BODY[0]} ${PEM_CLOSE}`)).toContain(BODY[0]);
+  });
+
+  it("leaves the rest of a command intact after a BEGIN marker that never ends", () => {
+    // The rule this replaced was a sed range with no upper bound, so one BEGIN
+    // marker with no END blanked every REMAINING line: the audit record of what
+    // ran, destroyed by its own input. Nothing below is key material; the whole
+    // point is that the lines SURVIVE.
+    const commands = ["git status --short", "git log --oneline -3", "pnpm test"];
+    const masked = runMask(mask, [PEM_OPEN, ...commands].join("\n"));
+
+    for (const command of commands) {
+      expect(masked).toContain(command);
+    }
+
+    // ...and the range IS open across those lines -- a long run inside one of
+    // them still goes -- so the survivals above are not the vacuous kind where
+    // the range never opened and nothing was ever examined.
+    const withRun = runMask(mask, [PEM_OPEN, `echo ${BODY[0]}`].join("\n"));
+    expect(withRun).toContain("echo ");
+    expect(withRun).not.toContain(BODY[0]);
+
+    // ...and loosening the run's lower bound to a single character destroys
+    // them, so the survivals above are the bounded substitution's doing rather
+    // than an accident of these particular strings.
+    const unbounded = mutate(mask, IN_RANGE_RUN, "{1,}", "the in-range run rule's lower bound");
+    expect(runMask(unbounded, [PEM_OPEN, ...commands].join("\n"))).not.toContain(commands[1]);
+  });
+
+  it("takes an in-range run at 12 characters and leaves 11, which is where the residue lives", () => {
+    // The in-range rule takes runs of 12 or more, so a PEM body's short final
+    // line survives -- the cost SKILL.md records as "12 文字未満の連なり". The
+    // scan report describes this residue as reaching 32 characters, but 32 is
+    // the WHOLE-LINE rule's threshold; in range the boundary is 12. Pinning the
+    // number keeps a later edit from moving it silently in either direction,
+    // and keeps the two thresholds from being written up as one.
+    const run = (length: number) => "A".repeat(length);
+    const withTail = (tail: string) => [PEM_OPEN, ...BODY, tail, PEM_CLOSE].join("\n");
+
+    expect(runMask(mask, withTail(run(11)))).toContain(run(11));
+    expect(runMask(mask, withTail(run(12)))).not.toContain(run(12));
+
+    const downgraded = mutate(mask, IN_RANGE_RUN, NEVER_MATCHES, "the in-range run rule");
+    expect(runMask(downgraded, withTail(run(12)))).toContain(run(12));
+  });
+
   it("confines a planted opening marker to the FENCED block it was planted in", () => {
     // The cost of the range is real and belongs in a test rather than in prose:
     // inside it, ANY run of 12+ base64 characters goes, an ordinary long
