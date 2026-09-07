@@ -30,3 +30,16 @@ updates:
       npm:
         patterns:
           - "*"
+        # Majors are kept OUT of the group, so one arrives as its own pull
+        # request instead of inside a batch. docs/dependency-policy.md already
+        # required that -- "Majors are opt-in ... never as part of a batch" --
+        # but until this line the rule was carried only by whoever read the
+        # diff, and #195 batched vitest ^4.1.11 -> ^5.0.0 with four minor and
+        # patch bumps and was merged that way. Excluded here means "its own
+        # PR", not "never": Dependabot still opens majors, one at a time, where
+        # the compatibility check the policy asks for has something to attach
+        # to. The github-actions group above is deliberately left alone; its
+        # majors are a separate decision, not an oversight.
+        update-types:
+          - "minor"
+          - "patch"
