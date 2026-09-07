@@ -202,6 +202,21 @@ That self-report is a claim, not an independent measurement — an agent that wa
 re-routed may or may not be able to see it. A matching report is weak
 confirmation; a mismatching one is strong evidence. Not the reverse.
 
+**And the answer may not be single-valued.** The first agent asked under this
+rule was dispatched as `fable`. It answered `claude-fable-5-1` — and then showed
+its working: its own prompt carried *two* statements of the same kind, in
+conflict. An environment section named Opus 5 with a May 2026 cutoff; a later,
+agent-specific line named Fable 5.1 with a June 2026 cutoff. It reported the
+later one, said plainly it had no way to decide which reflected the served
+model, and handed over both. The team config alongside it held `"model":
+"fable"` — the requested value, never the served one.
+
+So ask for the evidence, not just the name: which statements the prompt
+carries, and where each sits. **An agent that answers with one name has told you
+less than one that shows you two.** A single confident name is the shape this
+question fails in, because the conflict is upstream of the agent's ability to
+see it.
+
 When the reported model is not the requested one — a `fable` dispatch answering
 as an Opus-class model, or any other substitution — **record it**: which model
 was asked for, which was reported, the shape of the task, and whether it was
