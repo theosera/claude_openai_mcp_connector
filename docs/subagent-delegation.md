@@ -171,6 +171,15 @@ never to be answered from recall. As of 2026-09-08 the table puts Claude Fable
 5.1 (`fable`) above Claude Opus 5 (`opus`), at twice the per-token price. The
 sentence you are reading is a cache. The skill is not.
 
+`claude-api` ships with Claude Code; it is not a file in this repository, and
+committing it here would be the wrong repair. A vendored copy would pin the
+model table inside this repo — the very thing the paragraph above just told you
+not to trust — and it would go stale the way the sentence naming Fable will.
+For a reader who does not have the skill (a fresh checkout, a different
+harness), the fallback is not this file's names either: it is the provider's own
+current model list, which is where the skill's table comes from. Read that, and
+then come back and fix the names here if they have moved.
+
 ### Ask whether the task is security-adjacent before reaching for the top tier
 
 The top tier is not automatic even for a right-hand-column task. Ask first
