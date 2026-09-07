@@ -81,11 +81,11 @@ mask() {
   # A run substitution cannot reach a fence line at all (no `~` is in the run
   # class), so the note's structure survives whatever the range covers. That is
   # also what makes the bound below safe: with a blanking action, ANY bound -- a
-  # line ceiling, a blank line, the very fence line this range ends at -- blanks
-  # a fence line somewhere other than the END marker, and inverts the parity of
+  # line ceiling, a blank line, the very tilde run this range ends at -- can blank
+  # a fence line somewhere other than the END marker, and invert the parity of
   # everything after it.
   #
-  # The range ends at the END marker or at the next `~~~` fence line. BOTH halves
+  # The range ends at the END marker or at the next `~~~` run. BOTH halves
   # of that bound are weaker than they look, so neither is claimed here as more
   # than it is:
   #
@@ -95,15 +95,33 @@ mask() {
   #     assistant or user TEXT turns: a marker planted in one of those runs on
   #     through every following turn until the next block's opening fence, or to
   #     the END OF THE NOTE when no fenced block follows, substituting every 12+
-  #     base64 run on the way. What that costs is readability in those turns
-  #     (long identifiers, hashes, base64-shaped paths); it cannot cost
-  #     structure, because a substitution never deletes a line. A test pins that
-  #     reach, so this paragraph cannot quietly stop being true.
+  #     character run on the way. That run class is NOT base64: it is every
+  #     alphanumeric plus `+ / = \`, and `/` is a member, so a run does not stop
+  #     at a path separator. It therefore consumes ordinary twelve-letter words,
+  #     whole hashes, and a whole absolute path as a SINGLE run
+  #     (`/home/runner/work/repo/checkout`). What replaces them is
+  #     `***MASKED***`, the same token a genuine redaction produces, so content
+  #     destroyed this way reads as routine hygiene rather than as damage and
+  #     prompts no one to look at it. Measured on a note of 30 synthetic
+  #     `git log` lines and 3 repeated absolute paths: clean, 0 tokens masked
+  #     and 30/30 SHAs and 3/3 paths kept; with ONE 31-byte marker planted, 91
+  #     masked and 0/30 and 0/3 kept. That is the cost, and it is taken
+  #     deliberately -- this range is what masks a prefixed key body at all. It
+  #     cannot cost structure, because a substitution never deletes a line. A
+  #     test pins that reach, so this paragraph cannot quietly stop being true.
   #   - A `~~~` line is not only the renderer's. Content is fenced but emitted
   #     VERBATIM, so a column-0 tilde run in a tool result's OWN body ends this
   #     range early, and the body lines after it are left to the whole-line rule
   #     -- which, behind a prefix, does not see them. That is a leak an attacker
   #     can reach for.
+  #     Nor is that terminator a fence. The address is `^~{3,}`, unanchored at
+  #     its right end, so a column-0 `~~~ label` closes this range (measured:
+  #     all six prefixed body lines after it leak) even though the
+  #     session-archive renderer scores that exact shape as closing nothing and
+  #     deliberately does not widen a fence for it. The renderer's own comment
+  #     says as much about that construction, so whichever of the two a
+  #     reader meets first: "it cannot close a fence" is NOT a reason to think
+  #     it cannot close this range.
   #     What it does not reach: a BEGIN marker that appears AFTER the tilde
   #     run reopens the range, so key material introduced past that point is
   #     masked again. It is POSITION that saves it, not possession -- a
@@ -143,9 +161,14 @@ mask() {
   # pasted without its markers. `archive-session.sh` already carried it and
   # it is byte-identical there; `capture-command.sh` gains it here. Nothing
   # added above can make it MASK less than before. It does FIRE less often --
-  # the in-range rule pre-empts it on lines it would have blanked -- but
-  # always to the same masked result, which is why the distinction is drawn
-  # here rather than left for a reader to trip over.
+  # the in-range rule pre-empts it on lines it would have blanked -- and a
+  # pre-empted line is masked just as completely, though not byte-for-byte:
+  # this rule replaces the WHOLE line and so drops any surrounding
+  # whitespace, where a run substitution keeps it, leaving `  ***MASKED***  `
+  # rather than `***MASKED***`. Measured across every whitespace shape this
+  # rule accepts, that retained whitespace is the ONLY residue, and no key
+  # material survives on either path. The distinction is drawn here rather
+  # than left for a reader to trip over.
   sed -E \
     -e 's/gh[pousr]_[A-Za-z0-9]{20,}/***MASKED***/g' \
     -e 's/github_pat_[A-Za-z0-9_]{20,}/***MASKED***/g' \
