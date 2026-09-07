@@ -109,7 +109,7 @@ to one rule living in two files.
 
 The axis is **not difficulty**. It is whether a miss leaves a trace.
 
-| | Cheapest tier that fits | Strongest model available |
+| | Cheapest tier that fits | The top tier — name it, do not assume it |
 | --- | --- | --- |
 | Shape of the task | single-source lookup, fetch, mechanical scan, "where is X" | cross-checking sources, judging whether a claim holds, any statement of completeness, absence, or agreement |
 | Why | the answer is one thing, and a reader can check it | **a miss leaves nothing behind to check** |
@@ -154,6 +154,67 @@ wrote it. No count is given here on purpose: the tally was still moving while
 this file was being written, and a number without an as-of goes stale faster
 than the point it is supporting.
 
+### The superlative is a trap: name the model
+
+"Strongest model available" names no model, so it resolves to whatever the
+reader already believes sits on top — and that belief is exactly the kind of
+fact that moves. On 2026-09-08 a session read this section, classified a
+merge-state question into the right-hand column correctly, and dispatched to
+`opus`. The operator asked whether Fable was not the stronger of the two; the
+`claude-api` skill settled it in one line. The classification was right and the
+model was wrong, which is the worst shape for this mistake to take — nothing
+about the dispatch looked irregular, so nothing prompted a second look.
+
+**Do not resolve the superlative from memory.** Load the `claude-api` skill and
+read its model table; that skill's own trigger says model-choice questions are
+never to be answered from recall. As of 2026-09-08 the table puts Claude Fable
+5.1 (`fable`) above Claude Opus 5 (`opus`), at twice the per-token price. The
+sentence you are reading is a cache. The skill is not.
+
+### Ask whether the task is security-adjacent before reaching for the top tier
+
+The top tier is not automatic even for a right-hand-column task. Ask first
+whether the work sits near secrets or a security boundary — `.env` files, API
+keys and tokens, credential handling, authentication, permission or deny
+configuration, or a review whose subject is any of those.
+
+If it does, dispatch to `opus` rather than `fable`.
+
+The reason is an operator observation, not a measurement made here, and it is
+written that way on purpose: the operator reports having seen agents on
+security-adjacent work behave as though they had been dropped to an Opus-class
+model partway through. **This document does not establish that mechanism.** No
+run has been instrumented for it here, and the observation would look the same
+if the cause were a property of the task rather than of the routing. What
+follows from it is a choice, not a theory: if the top tier does not reliably
+stay the top tier in that neighbourhood, asking for it there buys an
+expectation instead of a capability — and an expectation that fails quietly is
+worse than a tier chosen deliberately. Choose `opus`, and know what ran.
+
+### Record what actually ran, especially when it is not what was asked for
+
+The spawning tool takes a model. It does not report which model served the run.
+The only route to that fact is to ask, so **every delegated brief should require
+the agent to state the model it is running as**, at the top of its report rather
+than buried inside it.
+
+That self-report is a claim, not an independent measurement — an agent that was
+re-routed may or may not be able to see it. A matching report is weak
+confirmation; a mismatching one is strong evidence. Not the reverse.
+
+When the reported model is not the requested one — a `fable` dispatch answering
+as an Opus-class model, or any other substitution — **record it**: which model
+was asked for, which was reported, the shape of the task, and whether it was
+security-adjacent. One instance is an anecdote and a run of them is a pattern,
+but only if they are written down somewhere the next reader will look; without
+a record this stays an impression, and an impression cannot be checked.
+
+That record does not belong in this repository. This one is public, and what
+would make the record useful — the session, the task, the timing — is the same
+operational detail that has already had to be requested for removal from it
+once. Keep it in the operator's own notes, and keep the requested model in the
+brief so the two can be compared at all.
+
 ## What cannot be set, and do not pretend otherwise
 
 The agent-spawning tool takes a **model**. At the time of writing it takes no
@@ -161,8 +222,11 @@ The agent-spawning tool takes a **model**. At the time of writing it takes no
 session. Read the tool's own parameter list before relying on that sentence —
 it is a cache, and caches go stale.
 
+It also returns no **served model** — what was requested is the only model the
+caller ever sees, which is why the section above asks the agent itself.
+
 Never describe an agent as having run at an effort level that was not actually
-settable. A run reported as more thorough than it was is worse than one reported
+settable, or on a model that was only ever the one requested. A run reported as more thorough than it was is worse than one reported
 plainly, because the report is what the next reader trusts instead of re-running
 the work.
 
