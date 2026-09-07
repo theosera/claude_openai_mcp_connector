@@ -39,12 +39,31 @@ command -v jq >/dev/null 2>&1 || exit 0
 # was never looked at leaves the transcript going wherever that origin points.
 # Both sources are out of band: an env var, and a file under the user's config
 # dir, which is outside every checkout and so cannot arrive in a clone.
-VAULT_ORIGIN_PIN="${SESSION_VAULT_ORIGIN:-}"
+# Trim the way git_url_id does, because the emptiness test below decides
+# whether the pin file is read at all. Untrimmed, a stray space in the env
+# var is non-empty, the file is skipped, and every candidate is then judged
+# against a pin that resolves to nothing -- the operator is told their
+# clones are wrong when the environment is.
+VAULT_ORIGIN_PIN="$(printf '%s' "${SESSION_VAULT_ORIGIN:-}" \
+  | sed -E -e 's/^[[:space:]]+//' -e 's/[[:space:]]+$//')"
+# Remember WHY there is no pin, so the message below can tell the operator
+# something they can act on. "No pin" and "a pin file you already wrote that
+# yields nothing" need different fixes, and until now they printed the same
+# line -- which told the operator to create the file they had just created.
+pin_file_state=absent
 if [ -z "$VAULT_ORIGIN_PIN" ]; then
   pin_file="${XDG_CONFIG_HOME:-$HOME/.config}/session-archive/vault-origin"
   if [ -f "$pin_file" ]; then
-    VAULT_ORIGIN_PIN="$(grep -v '^[[:space:]]*#' "$pin_file" 2>/dev/null \
-      | grep -m1 -v '^[[:space:]]*$' || true)"
+    if [ -r "$pin_file" ]; then
+      VAULT_ORIGIN_PIN="$(grep -v '^[[:space:]]*#' "$pin_file" 2>/dev/null \
+        | grep -m1 -v '^[[:space:]]*$' || true)"
+      VAULT_ORIGIN_PIN="$(printf '%s' "$VAULT_ORIGIN_PIN" \
+        | sed -E -e 's/^[[:space:]]+//' -e 's/[[:space:]]+$//')"
+      if [ -n "$VAULT_ORIGIN_PIN" ]; then pin_file_state=ok
+      else pin_file_state=empty; fi
+    else
+      pin_file_state=unreadable
+    fi
   fi
 fi
 
@@ -111,6 +130,12 @@ if [ -z "$VAULT_REPO" ]; then
       "$scan_count" >&2
   elif [ -n "$VAULT_ORIGIN_PIN" ] && [ "$marked_count" -gt 0 ]; then
     printf 'session-archive: %s marked vault clone(s) under $HOME, none with the pinned origin. Not archiving.\n' \
+      "$marked_count" >&2
+  elif [ "$marked_count" -gt 0 ] && [ "$pin_file_state" = empty ]; then
+    printf 'session-archive: %s marked vault clone(s) under $HOME, and the vault pin file exists but holds no non-comment line. Add the vault remote to it, or set SESSION_VAULT_ORIGIN. Not archiving.\n' \
+      "$marked_count" >&2
+  elif [ "$marked_count" -gt 0 ] && [ "$pin_file_state" = unreadable ]; then
+    printf 'session-archive: %s marked vault clone(s) under $HOME, and the vault pin file exists but could not be read. Check its permissions. Not archiving.\n' \
       "$marked_count" >&2
   elif [ "$marked_count" -gt 0 ]; then
     printf 'session-archive: %s marked vault clone(s) under $HOME but no vault pin, and a marker committed inside a clone cannot authorize a push destination. Set SESSION_VAULT_REPO, or pin the vault remote in SESSION_VAULT_ORIGIN or ~/.config/session-archive/vault-origin. Not archiving.\n' \
@@ -296,6 +321,92 @@ mask() {
   #
   # That keyword rule is therefore left BYTE-IDENTICAL to its previous form: it
   # is the fallback that keeps this change from ever masking less than before.
+  #
+  # A PEM key body often arrives with a LINE PREFIX, and the whole-line rule
+  # at the bottom sees none of them: `cat -n` writes a line number and a TAB,
+  # a quoted transcript writes `> `, `grep -n` writes `file:12:`. (A diff `+` is
+  # NOT one of those: `+` is in the base64 alphabet, so a `+`-prefixed body line
+  # was already whole-line base64 and was already masked. The tests pin both
+  # halves of that, because the wrong half is easy to assume.) So the body is
+  # masked INSIDE the marker range, where a long base64 run is key material
+  # whatever precedes it on the line.
+  #
+  # That range SUBSTITUTES runs -- it never blanks a line, and that is the whole
+  # design. The session-archive copy of this function masks an ASSEMBLED note
+  # that already carries that hook's `~~~~~~` fences (the ops-logging copy masks
+  # a command string and folds it to one line afterwards, so no fence of its own
+  # is at stake there), and a range that replaces whole lines deletes a CLOSING
+  # fence along with the key: blank an odd number of fence lines and the parity
+  # of everything after them inverts, and the next tool result is read as
+  # top-level prose -- untrusted output promoted to something the operator said.
+  # A run substitution cannot reach a fence line at all (no `~` is in the run
+  # class), so the note's structure survives whatever the range covers. That is
+  # also what makes the bound below safe: with a blanking action, ANY bound -- a
+  # line ceiling, a blank line, the very fence line this range ends at -- blanks
+  # a fence line somewhere other than the END marker, and inverts the parity of
+  # everything after it.
+  #
+  # The range ends at the END marker or at the next `~~~` fence line. BOTH halves
+  # of that bound are weaker than they look, so neither is claimed here as more
+  # than it is:
+  #
+  #   - Confinement holds for FENCED blocks ONLY. The session-archive renderer
+  #     fences tool results, thinking, and tool inputs, so a marker planted in
+  #     one of those cannot reach past its own block. It does NOT fence
+  #     assistant or user TEXT turns: a marker planted in one of those runs on
+  #     through every following turn until the next block's opening fence, or to
+  #     the END OF THE NOTE when no fenced block follows, substituting every 12+
+  #     base64 run on the way. What that costs is readability in those turns
+  #     (long identifiers, hashes, base64-shaped paths); it cannot cost
+  #     structure, because a substitution never deletes a line. A test pins that
+  #     reach, so this paragraph cannot quietly stop being true.
+  #   - A `~~~` line is not only the renderer's. Content is fenced but emitted
+  #     VERBATIM, so a column-0 tilde run in a tool result's OWN body ends this
+  #     range early, and the body lines after it are left to the whole-line rule
+  #     -- which, behind a prefix, does not see them. That is a leak an attacker
+  #     can reach for.
+  #     What it does not reach: a BEGIN marker that appears AFTER the tilde
+  #     run reopens the range, so key material introduced past that point is
+  #     masked again. It is POSITION that saves it, not possession -- a
+  #     tilde planted between a key's own BEGIN line and its body closes the
+  #     range before the body starts, and every body line is then left to
+  #     the whole-line rule, which behind a prefix does not see them: 6 of 6
+  #     leaking behind a `cat -n` prefix. That is the construction an
+  #     attacker picks, so do not read this bullet as a bound on the leak.
+  #
+  # Read the two copies separately here, because this rule replaces something
+  # different in each. `archive-session.sh` gains it outright: no input it
+  # masked before is masked less. `capture-command.sh` had a whole-line
+  # BLANKING range over the same markers, and this trades in both directions
+  # at once. It masks LESS inside a block: base64 runs shorter than 12
+  # characters -- a final body line of 4 or 8, where roughly one key size in
+  # eight lands, at most 6 bytes of the trailing DER field -- plus non-base64
+  # header text such as `Proc-Type:`, plus anything after a column-0 tilde
+  # planted in the body. At the construction above, a tilde before any body
+  # line, the archive copy is merely EQUAL to its base rather than better,
+  # and this copy goes from fully masked to fully leaked. It also masks MORE,
+  # in two ways that are not small: it gains the whole-line base64 catch-all
+  # it never had, and it removes an UNBOUNDED failure. The old range had no
+  # terminator but the END marker, so under POSIX sed an unterminated marker
+  # anywhere in a multi-line command blanked every REMAINING line of the
+  # logged command -- a `grep` for the marker text destroyed all 501 lines of
+  # a command carrying no key material at all. A run substitution cannot do
+  # that, and the tilde gives the range a second way to close. That failure
+  # was this copy's alone; the archive copy never had the mode, which is why
+  # it is recorded here and not as a general note.
+  #
+  # The range deliberately does NOT end at a blank line: an RFC 1421 encrypted
+  # key writes `Proc-Type:` / `DEK-Info:` headers, then a BLANK LINE, and only
+  # then its body -- a blank-line bound would stop exactly where the key material
+  # starts.
+  #
+  # The whole-line rule below stays LAST: it is the catch-all for a body
+  # pasted without its markers. `archive-session.sh` already carried it and
+  # it is byte-identical there; `capture-command.sh` gains it here. Nothing
+  # added above can make it MASK less than before. It does FIRE less often --
+  # the in-range rule pre-empts it on lines it would have blanked -- but
+  # always to the same masked result, which is why the distinction is drawn
+  # here rather than left for a reader to trip over.
   sed -E \
     -e 's/gh[pousr]_[A-Za-z0-9]{20,}/***MASKED***/g' \
     -e 's/github_pat_[A-Za-z0-9_]{20,}/***MASKED***/g' \
@@ -308,7 +419,10 @@ mask() {
     -e 's/sk-[A-Za-z0-9_-]{20,}/***MASKED***/g' \
     -e 's/AIza[0-9A-Za-z_-]{35}/***MASKED***/g' \
     -e 's/xox[baprs]-[A-Za-z0-9-]{10,}/***MASKED***/g' \
-    -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----/s/.*/***MASKED***/'
+    -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----|^~{3,}/s/[A-Za-z0-9+\/=]{12,}/***MASKED***/g' \
+    -e 's/-----BEGIN [A-Z ]*PRIVATE KEY-----/***MASKED***/g' \
+    -e 's/-----END [A-Z ]*PRIVATE KEY-----/***MASKED***/g' \
+    -e '/^[[:space:]]*[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/.*/***MASKED***/'
 }
 
 # --- render the transcript to Markdown --------------------------------------
@@ -368,7 +482,10 @@ body_jq='
   # U+2029 / U+0085 / form feed are not CommonMark line endings, so folding them
   # would widen fences that no reader could have closed.
   def fence($lang; $text):
-    ($text // "") as $t
+    # 採寸の【前】に正規化する。採寸後に文字を削除しうるフィルタは、封じ込めの
+    # 問いを開け直す（F2）。パターンは strip_ansi と同一に保つこと — あちらで
+    # 剥がれてこちらで剥がれない列が 1 つでもあると、穴がそのまま戻る。
+    (($text // "") | gsub("\u001b\\[[0-9;]*[mK]"; "")) as $t
     | ([ $t
          | split("\n")[] | split("\r")[]
          | select(startswith("~") or startswith(" "))
