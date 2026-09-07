@@ -600,7 +600,7 @@ function toolResults(...contents: string[]): unknown[] {
 
 /**
  * Assistant text turns, which the renderer writes at TOP LEVEL with no fence —
- * the half of the note the fence-line range terminator does not bound.
+ * the half of the note the tilde-run range terminator does not bound.
  */
 function textTurns(...texts: string[]): unknown[] {
   return texts.map((text, index) => ({
@@ -710,7 +710,7 @@ describe("session-archive PEM key masking", () => {
 
     // Reverse verification: without that bound the range runs on, and the next
     // block's identical token goes with it.
-    const unbounded = mutate(mask, RANGE_TERMINATOR, "", "the fence-line range terminator");
+    const unbounded = mutate(mask, RANGE_TERMINATOR, "", "the tilde-run range terminator");
     expect(renderThenMask(renderer, unbounded, transcript)).toContain("***MASKED*** is in the next block");
   });
 
@@ -730,8 +730,9 @@ describe("session-archive PEM key masking", () => {
 
     const note = renderThenMask(renderer, mask, transcript);
 
-    // Reached: the planted turn and every unfenced turn after it. The cost is
-    // readability — a long ordinary identifier goes with the key material.
+    // Reached: the planted turn and every unfenced turn after it. `token` holds
+    // no key material, and what replaces it is the redaction token itself, so
+    // the loss reads as routine hygiene rather than as damage.
     expect(note).toContain("***MASKED*** is in the planted turn");
     expect(note).toContain("***MASKED*** is in the next turn");
     // Not reached: the next block's opening fence ends the range, so that block
@@ -790,7 +791,7 @@ describe("session-archive PEM key masking", () => {
 
     expect(bodyLinesSurviving(runMask(mask, encrypted))).toBe(0);
 
-    const blankBound = mutate(mask, RANGE_TERMINATOR, "|^[[:space:]]*$", "the fence-line range terminator");
+    const blankBound = mutate(mask, RANGE_TERMINATOR, "|^[[:space:]]*$", "the tilde-run range terminator");
     expect(bodyLinesSurviving(runMask(blankBound, encrypted))).toBe(BODY.length);
   });
 
