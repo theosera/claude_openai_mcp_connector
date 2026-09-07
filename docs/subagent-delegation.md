@@ -180,6 +180,13 @@ configuration, or a review whose subject is any of those.
 
 If it does, dispatch to `opus` rather than `fable`.
 
+Both names there are literal, and they are meant to be. The spawning tool's
+model list holds cheaper entries too, so a phrase like "the tier below" would
+resolve to one of them for a reader who counts differently — the same defect
+this section opened with, one level down. **Pass `model` explicitly on every
+dispatch.** Omitted, it falls back to the agent definition's own model or to a
+session default, and a default is not a choice anyone made for this task.
+
 The reason is an operator observation, not a measurement made here, and it is
 written that way on purpose: the operator reports having seen agents on
 security-adjacent work behave as though they had been dropped to an Opus-class
