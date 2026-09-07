@@ -158,7 +158,7 @@ than the point it is supporting.
 
 "Strongest model available" names no model, so it resolves to whatever the
 reader already believes sits on top — and that belief is exactly the kind of
-fact that moves. On 2026-09-08 a session read this section, classified a
+fact that moves. On 2026-09-08 (JST) a session read this section, classified a
 merge-state question into the right-hand column correctly, and dispatched to
 `opus`. The operator asked whether Fable was not the stronger of the two; the
 `claude-api` skill settled it in one line. The classification was right and the
@@ -167,7 +167,7 @@ about the dispatch looked irregular, so nothing prompted a second look.
 
 **Do not resolve the superlative from memory.** Load the `claude-api` skill and
 read its model table; that skill's own trigger says model-choice questions are
-never to be answered from recall. As of 2026-09-08 the table puts Claude Fable
+never to be answered from recall. As of 2026-09-08 (JST) the table puts Claude Fable
 5.1 (`fable`) above Claude Opus 5 (`opus`), at twice the per-token price. The
 sentence you are reading is a cache. The skill is not.
 
@@ -205,7 +205,8 @@ if the cause were a property of the task rather than of the routing. What
 follows from it is a choice, not a theory: if the top tier does not reliably
 stay the top tier in that neighbourhood, asking for it there buys an
 expectation instead of a capability — and an expectation that fails quietly is
-worse than a tier chosen deliberately. Choose `opus`, and know what ran.
+worse than a tier chosen deliberately. Choose `opus`, and then ask what ran —
+the next section is about why asking is the only move available.
 
 ### Record what actually ran, especially when it is not what was asked for
 
@@ -219,7 +220,8 @@ re-routed may or may not be able to see it. A matching report is weak
 confirmation; a mismatching one is strong evidence. Not the reverse.
 
 **And the answer may not be single-valued.** The first agent asked under this
-rule was dispatched as `fable`. It answered `claude-fable-5-1` — and then showed
+rule was dispatched as `fable` on 2026-09-08 (JST). It answered
+`claude-fable-5-1` — and then showed
 its working: its own prompt carried *two* statements of the same kind, in
 conflict. An environment section named Opus 5 with a May 2026 cutoff; a later,
 agent-specific line named Fable 5.1 with a June 2026 cutoff. It reported the
