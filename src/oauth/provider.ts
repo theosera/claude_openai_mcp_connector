@@ -265,6 +265,24 @@ export class OAuthProvider {
     return tokenResponse(tokens);
   }
 
+  /**
+   * Let the store see a refresh presentation that will NOT be granted.
+   *
+   * The endpoint calls this on the one path that answers without reaching
+   * `token()` — the rate-limited refusal — so that a replay still trips the
+   * family revocation it is the sole trigger for. It reads the same two form
+   * fields `tokenFromRefresh` reads, which is why it lives beside it: the
+   * refused presentation and the granted one must never disagree about which
+   * bytes were presented, or the observation would be of a different token than
+   * the one the caller sent.
+   *
+   * Returns nothing on purpose. There is no response to shape here; the caller
+   * has already decided what it is sending back.
+   */
+  observeRefreshReplay(form: URLSearchParams): void {
+    this.store.observeRotationReplay(form.get("refresh_token") ?? "", form.get("client_id") ?? "");
+  }
+
   private tokenFromRefresh(form: URLSearchParams): OAuthHttpResponse {
     const refreshToken = form.get("refresh_token") ?? "";
     const clientId = form.get("client_id") ?? "";

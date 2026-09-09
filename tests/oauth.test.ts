@@ -544,6 +544,551 @@ describe("OAuthStore", () => {
     expect(store.rotateRefreshToken(others[0].refreshToken, "other")).toBeNull();
   });
 
+  // 2026-09-09、#170 の rotated-token tombstone を足した際の実測。
+  // ★ mutation ごとに「入れたこと」と「届いたこと」を別々に確認した — patch の anchor が
+  //   ちょうど 1 回一致したこと (入れた) と、狙った assert が実際に赤くなったこと (届いた)。
+  //   届かない mutation は「ガードが効いていて緑」と区別が付かないので、赤くなった assert を
+  //   テスト名と assert の文言で残す (行番号はキャッシュなので書かない)。
+  //  L. record が見つからない枝から replayAgainstTombstone の呼び出しを外す
+  //     → #170 の 4 本が赤。狙いは「swept the root out of the cap」の
+  //       `validateAccessToken(held.accessToken)).toBeNull()`。
+  //       ★「after the window closes」は緑のまま — revoke *しない* ことを assert する側なので、
+  //       正しく反応しない (H1 の失敗アーム 2 本と同じ形)
+  //  M. tombstone の expiresAt を record の窓 + ROTATION_GRACE_MS にする (= 窓の延長)
+  //     → 「after the window closes」の `?.clientId).toBe("c") // and after` が赤。
+  //       ⭐ 加えて既存の restart 2 本 (「single-use across restarts once the grace closes」/
+  //       「window survives, and never re-opens」) も赤 — 窓が延びないことは、この新しい
+  //       マップについても**既存の suite が独立に**押さえていた
+  //  N. tombstone 側の client_id 照合を外す
+  //     → 「mismatched client_id」の `// nothing revoked` 1 本だけ赤
+  //  O. enforceTombstoneCap を enforceCap (oldest-first) に差し替える
+  //     → 「floods past the tombstone cap」の `tombstones.has(rootKey)).toBe(true)` だけが赤。
+  //       その直前の size の assert は緑のまま = 落ちたのは容量ではなく**順序**である
+  //  P. save の payload から rotatedTombstones を落とす
+  //     → 「carries the tombstone across a restart」の on-disk sha256 の assert が赤。
+  //       root の record は cap に掃かれて refreshTokens 側に無いので、その hash が state file に
+  //       現れる場所は tombstone だけ = この assert は永続化そのものを見ている
+  //  Q. enforceTombstoneCap の呼び出しごと消す (= 無上限)
+  //     → 同じ「floods past」の `tombstones.size).toBe(maxTokens)` が赤 (実測 9 対 4)
+  //  R. enforceTombstoneCap の多 family 選択を「最新」から「最古」へ (ループに break を足す)
+  //     ★ 先に名指しした狙いの assert = 「still fits the cap」の
+  //       `expect(outcome.tombstonePresent).toBe(true)`。実際にそこが赤 (expected false to be true)。
+  //       ⛔ 同テストの `aliveAfterRetry` は【到達していない】 — 上の assert が先に落ちるので、
+  //       R が確立したのは機構の assert までである (結果の assert は R では踏めていない)。
+  //     ⚠️ O と互いに素ではない — 「floods past the tombstone cap」の `has(rootKey)` も同時に赤。
+  //       どちらも「追い出しが新参の側でなくなった」ことの別の見え方で、赤は 2 つの site を
+  //       区別しない。
+  //     ⭕ cap 5 側 (「no longer fits the cap」) は緑のまま — 制限を pin する側なので正しく
+  //       反応しない (H1 の失敗アーム・L の「after the window closes」と同じ形)。
+  // ⚠️ L は O/Q と互いに素ではない (呼び出しを外せば cap のテストも赤くなる)。L の赤が
+  //    名指しできるのは「tombstone 経路が効いていない」までで、cap の順序と上限を切り分けるのは
+  //    O と Q である。
+  // ⛔ load 側の tombstone 検証 (壊れた entry を drop する分岐) は H1〜H4 のときの
+  //    familyId / generation fallback と同じ理由で**テストで踏めていない** — その分岐に入る
+  //    state file は HMAC を通す必要があり、writer をテスト内に再実装しない限り作れない。
+  //    ⇒ 未カバーとして申告する。
+  // #170. The residual `rotateRefreshToken` states rather than fixes: sparing
+  // the presented record lasts exactly one mint, after which it is an ordinary
+  // entry again and an interceptor holding the lost response can push it out on
+  // purpose. Rotating the chain they captured inserts one entry per hop, and at
+  // `maxTokens - 1` hops inside the window the root — the oldest entry — is
+  // swept. The replay that would have revoked their family then finds nothing.
+  //
+  // The main assertion is that the family IS revoked, and it is stated on the
+  // interceptor's live pair rather than on the replay's return value: the record
+  // carrying the client's scope/resource is gone, so no fix can hand a usable
+  // pair back here, and "the replay succeeded" would pin the wrong thing.
+  it("revokes the family on replay after the interceptor swept the root out of the cap (#170)", () => {
+    let t = 1_000_000;
+    const maxTokens = 4;
+    const store = new OAuthStore({ ...opts, maxTokens, now: () => t });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    const lost = store.rotateRefreshToken(tokens.refreshToken, "c"); // response intercepted
+    expect(lost).not.toBeNull();
+
+    // The interceptor rotates what they captured, `maxTokens - 1` times. Every
+    // rotation inserts one refresh entry; the root is the oldest, so the last
+    // one evicts it.
+    let held = lost!;
+    for (let i = 0; i < maxTokens - 1; i += 1) {
+      const next = store.rotateRefreshToken(held.refreshToken, "c");
+      expect(next).not.toBeNull();
+      held = next!;
+    }
+
+    // Positive control for the premise: the sweep really happened. Without it
+    // this test could pass on a store where the root simply survived, which is a
+    // different property and is already pinned above.
+    const rootKey = crypto.createHash("sha256").update(tokens.refreshToken).digest("hex");
+    expect((store as unknown as { refreshTokens: Map<string, unknown> }).refreshTokens.has(rootKey)).toBe(false);
+    // Second control: the pair the assertions below are stated on is ALIVE at
+    // this point, so "it is gone" cannot pass because the cap took it instead.
+    expect(store.validateAccessToken(held.accessToken)?.clientId).toBe("c");
+
+    t += 30_000; // the legitimate client retries inside the window
+    store.rotateRefreshToken(tokens.refreshToken, "c");
+
+    // Both legs of the interceptor's live pair are dead.
+    expect(store.validateAccessToken(held.accessToken)).toBeNull();
+    expect(store.rotateRefreshToken(held.refreshToken, "c")).toBeNull();
+  });
+
+  // The tombstone must not become a second, longer window. It is written with
+  // the record's ALREADY-CAPPED expiry and never rewritten, so it closes at the
+  // same instant, and past that instant a swept root is an ordinary dead token.
+  it("does not revoke on a swept root presented after the window closes (#170)", () => {
+    let t = 1_000_000;
+    const maxTokens = 4;
+    // The access TTL is raised so advancing past the grace window does not
+    // expire the interceptor's pair on its own — without it the assertion below
+    // would pass for the wrong reason.
+    const store = new OAuthStore({ ...opts, accessTokenTtlSec: 3600, maxTokens, now: () => t });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    let held = store.rotateRefreshToken(tokens.refreshToken, "c")!;
+    for (let i = 0; i < maxTokens - 1; i += 1) {
+      held = store.rotateRefreshToken(held.refreshToken, "c")!;
+    }
+    const rootKey = crypto.createHash("sha256").update(tokens.refreshToken).digest("hex");
+    expect((store as unknown as { refreshTokens: Map<string, unknown> }).refreshTokens.has(rootKey)).toBe(false);
+
+    t += ROTATION_GRACE_MS + 1; // one tick past the window the rotation opened
+    expect(store.validateAccessToken(held.accessToken)).not.toBeNull(); // control: alive before
+    expect(store.rotateRefreshToken(tokens.refreshToken, "c")).toBeNull();
+    expect(store.validateAccessToken(held.accessToken)?.clientId).toBe("c"); // and after
+  });
+
+  it("refuses a mismatched client_id on the tombstone path without revoking or disarming (#170)", () => {
+    // The record path's F1 property, restored on the path that replaces it:
+    // `client_id` arrives unauthenticated, so a mismatch is neither evidence of
+    // reuse (do not revoke) nor a licence to destroy the trigger (do not delete).
+    let t = 1_000_000;
+    const maxTokens = 4;
+    const store = new OAuthStore({ ...opts, accessTokenTtlSec: 3600, maxTokens, now: () => t });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    let held = store.rotateRefreshToken(tokens.refreshToken, "c")!;
+    for (let i = 0; i < maxTokens - 1; i += 1) {
+      held = store.rotateRefreshToken(held.refreshToken, "c")!;
+    }
+    expect(store.validateAccessToken(held.accessToken)?.clientId).toBe("c"); // control
+
+    expect(store.rotateRefreshToken(tokens.refreshToken, "wrong")).toBeNull();
+    expect(store.validateAccessToken(held.accessToken)?.clientId).toBe("c"); // nothing revoked
+
+    // ...and the trigger survived that presentation: the right client still fires it.
+    t += 1_000;
+    expect(store.rotateRefreshToken(tokens.refreshToken, "c")).toBeNull();
+    expect(store.validateAccessToken(held.accessToken)).toBeNull();
+  });
+
+  // The tombstone map has a cap of its own, so it has an eviction order of its
+  // own, and reusing enforceCap's oldest-first would hand the interceptor the
+  // same lever one map over: their hops would push out the tombstone written
+  // first, which is the root's. Every hop inherits the captured family, so the
+  // sweep aims at exactly that — see enforceTombstoneCap.
+  it("keeps the root's tombstone when the interceptor floods past the tombstone cap (#170)", () => {
+    let t = 1_000_000;
+    const maxTokens = 4;
+    const store = new OAuthStore({ ...opts, accessTokenTtlSec: 3600, maxTokens, now: () => t });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    let held = store.rotateRefreshToken(tokens.refreshToken, "c")!;
+    // Twice the cap in hops: the map is driven past its bound repeatedly, not
+    // merely filled to it.
+    for (let i = 0; i < 2 * maxTokens; i += 1) {
+      held = store.rotateRefreshToken(held.refreshToken, "c")!;
+    }
+    const tombstones = (store as unknown as { rotatedTombstones: Map<string, unknown> }).rotatedTombstones;
+    // Two controls, because "the root survived" is also what an unbounded map
+    // and a flood that never reached the cap would produce. The map is held at
+    // its bound...
+    expect(tombstones.size).toBe(maxTokens);
+    // ...and what survived it is the root's tombstone, not just some tombstone.
+    const rootKey = crypto.createHash("sha256").update(tokens.refreshToken).digest("hex");
+    expect(tombstones.has(rootKey)).toBe(true);
+    expect(store.validateAccessToken(held.accessToken)?.clientId).toBe("c"); // the pair is alive
+
+    t += 30_000;
+    expect(store.rotateRefreshToken(tokens.refreshToken, "c")).toBeNull(); // no pair comes back
+    expect(store.validateAccessToken(held.accessToken)).toBeNull(); // but the family died
+    expect(store.rotateRefreshToken(held.refreshToken, "c")).toBeNull();
+  });
+
+  it("carries the tombstone across a restart, hashed at rest (#170)", async () => {
+    // Rotation-grace state is persisted for the same reason `rotatedAt` is: a
+    // replay after a supervisor bounce must still revoke what the lost response
+    // minted. The record swept by the cap is not on disk either, so without the
+    // tombstone the gap simply reopens at every restart.
+    const os = await import("node:os");
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "oauth-tombstone-"));
+    const file = path.join(dir, "state.json");
+    const maxTokens = 4;
+    let t = 1_000_000;
+    const persisted = { ...opts, accessTokenTtlSec: 3600, maxTokens, persistPath: file, persistSecret: "s3cret" };
+    const store = new OAuthStore({ ...persisted, now: () => t });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    let held = store.rotateRefreshToken(tokens.refreshToken, "c")!;
+    for (let i = 0; i < maxTokens - 1; i += 1) {
+      held = store.rotateRefreshToken(held.refreshToken, "c")!;
+    }
+    // Hash-at-rest (INV-7 item 7) covers the new map too: the state file holds
+    // sha256(token) and never the token.
+    const onDisk = await fs.readFile(file, "utf8");
+    expect(onDisk).not.toContain(tokens.refreshToken);
+    expect(onDisk).toContain(crypto.createHash("sha256").update(tokens.refreshToken).digest("hex"));
+
+    t += 30_000;
+    const reloaded = new OAuthStore({ ...persisted, now: () => t });
+    expect(reloaded.validateAccessToken(held.accessToken)?.clientId).toBe("c"); // control: survived the restart
+    expect(reloaded.rotateRefreshToken(tokens.refreshToken, "c")).toBeNull();
+    expect(reloaded.validateAccessToken(held.accessToken)).toBeNull();
+    expect(reloaded.rotateRefreshToken(held.refreshToken, "c")).toBeNull();
+  });
+
+  /**
+   * #170 の入力② を組む。1 つの窓の中で generation `generations` まで回した client が、
+   * 次の rotation の応答を失い、介在者がその先を `interceptorHops` 回 chain rotate した
+   * あとで、client が手元の世代を retry する。
+   *
+   * ⚠️ setup が壊れたときは `harness:` で始まる Error を投げる。被験体の失敗
+   * (revocation が起きない) と器具の失敗 (chain が途中で切れて replay に到達しなかった)
+   * は、赤の文言で区別できなければならない — 後者は「安全」でも「危険」でもなく、
+   * 何も測っていないという意味である。
+   */
+  function replayAfterInWindowChain(options: { maxTokens: number; generations: number; interceptorHops: number }) {
+    let t = 1_000_000;
+    const store = new OAuthStore({
+      ...opts,
+      // alive 判定が TTL 失効で汚れないように長めに取る。既定の 60s だと、下の
+      // 陽性対照が「生きている」を偽る側に倒れる。
+      accessTokenTtlSec: 3600,
+      maxTokens: options.maxTokens,
+      now: () => t
+    });
+    const rotate = (token: string, what: string) => {
+      const next = store.rotateRefreshToken(token, "c");
+      if (!next) {
+        throw new Error(`harness: ${what} returned null; the scenario never reached the replay`);
+      }
+      return next;
+    };
+    let held = store.issueTokens("c", "vault.read", "r");
+    for (let generation = 1; generation <= options.generations; generation += 1) {
+      held = rotate(held.refreshToken, `the client's rotation to generation ${generation}`);
+    }
+    const clientHolds = held; // client の手元に残る世代 — これを retry する
+    let intercepted = rotate(clientHolds.refreshToken, "the rotation whose response is lost");
+    for (let hop = 1; hop <= options.interceptorHops; hop += 1) {
+      intercepted = rotate(intercepted.refreshToken, `the interceptor's chain rotation ${hop}`);
+    }
+    t += 30_000; // ROTATION_GRACE_MS (60s) の窓の中で client が retry する
+    const tombstones = (store as unknown as { rotatedTombstones: Map<string, unknown> }).rotatedTombstones;
+    const tombstonePresent = tombstones.has(crypto.createHash("sha256").update(clientHolds.refreshToken).digest("hex"));
+    const aliveBeforeRetry = store.validateAccessToken(intercepted.accessToken) !== null;
+    store.rotateRefreshToken(clientHolds.refreshToken, "c");
+    return {
+      tombstonePresent,
+      aliveBeforeRetry,
+      aliveAfterRetry: store.validateAccessToken(intercepted.accessToken) !== null
+    };
+  }
+
+  // 入力② — 1 つの窓の中で複数世代を回した client の gen-k replay。墓標は世代ごとに
+  // FIRST rotation で書かれるので gen-k のそれは (k+1) 番目で、満杯のマップに来た新参は
+  // 入場できない。⇒ 覆えるのは `k + 1 <= maxTokens` のときだけで、その境界を両側から踏む。
+  //
+  // ⭐ 落ちる側の欠落を作るのは介在者ではなく client 自身の窓内 rotation である。
+  // 追い出されるのは常に**新参**の側なので、既に書かれた墓標を flood で押し出すことは
+  // できない (enforceTombstoneCap)。⇒ 既定 cap 2000 では k <= 1999 まで覆え、それを
+  // 破るには client が 60 秒に 2000 回転している必要がある。
+  it("revokes a gen-k replay after an in-window chain while that generation still fits the cap (#170)", () => {
+    // k = 5 ⇒ 墓標は 6 個目。cap 6 は「ちょうど入る」側の境界 (6 <= 6)。
+    const outcome = replayAfterInWindowChain({ maxTokens: 6, generations: 5, interceptorHops: 10 });
+    // ★ 陽性対照。これが無いと「圧力が token map から掃いただけ」を revocation と
+    //   読んでしまう (実際に姉妹案の初回測定がその形で交絡した)。retry の直前に
+    //   介在者の pair が生きていて初めて、直後の死は revocation の結果だと言える。
+    expect(outcome.aliveBeforeRetry).toBe(true);
+    expect(outcome.tombstonePresent).toBe(true);
+    expect(outcome.aliveAfterRetry).toBe(false);
+  });
+
+  it("cannot revoke a gen-k replay once that generation no longer fits the cap (#170)", () => {
+    // 同じ k = 5 に cap 5。墓標 6 個目は満杯のマップへの新参なので入場できない。
+    // ⚠️ これは望ましい挙動ではなく**制限の申告**である。unmodified な挙動と同値まで
+    //    戻るだけで悪化はしない (実測: cap 5 では両版とも revocation が起きない)。
+    //    ⛔ この赤を「直す」前に、上の 2 段落を読むこと — 追い出し順序を oldest-first に
+    //    変えるとこちら側は動くが、#170 本体 (root の墓標) が flood で落ちるようになる。
+    const outcome = replayAfterInWindowChain({ maxTokens: 5, generations: 5, interceptorHops: 9 });
+    expect(outcome.aliveBeforeRetry).toBe(true); // 同じ陽性対照 — 圧力が掃いたのではない
+    expect(outcome.tombstonePresent).toBe(false);
+    expect(outcome.aliveAfterRetry).toBe(true);
+  });
+
+  // 2026-09-09、F1 (rate-limit がガード自身を沈黙させる) を閉じた際の実測。
+  // ★ 各 mutation について「入れたこと」と「届いたこと」を別々に確認した — anchor が
+  //   ちょうど 1 回一致したこと (入れた) と、**先に名指しした** assert が実際に赤くなったこと
+  //   (届いた)。届かない mutation は「ガードが効いていて緑」と区別が付かない (#122 / #125 で
+  //   計 6 件)。狙いはテスト名と assert の文言で残す — 行番号はキャッシュなので書かない。
+  //  S. httpServer の 429 経路から `oauth.observeRefreshReplay(form)` を外す (= 修正前の姿)
+  //     → 「still revokes the stolen family when the rotation quota is exhausted」の
+  //       `expect(await mcpStatus(held)).toBe(401)` が赤 (expected 200 to be 401)。1 本だけ。
+  //     ⭐ これが finding そのものの再現でもある。修正前に**先に赤を見てから**実装した。
+  //  T. observe の `!record` 枝から replayAgainstTombstone の呼び出しを外す
+  //     → 狙いどおり「after the root was swept」の
+  //       `validateAccessToken(held.accessToken)).toBeNull()` が赤。
+  //     ⚠️ 同時に persistence の「skips the write ... once the root has been swept」も赤 —
+  //       ただしそこで落ちたのは sentinel ではなく**その手前の control** (revoke が起きたこと)。
+  //       つまり 2 本は互いに素ではなく、どちらも「tombstone 枝が動いていない」の別の見え方。
+  //  U. observe の client_id 照合を外す
+  //     → 「mismatched client_id while observing」の `?.clientId).toBe("c") // nothing revoked`
+  //       が赤 (expected undefined to be 'c')。1 本だけ。
+  //  V. observe の expiresAt 検査を外す
+  //     → 「does not extend the replay window, and sees nothing past it」の
+  //       `?.clientId).toBe("c") // nothing revoked` が赤。1 本だけ。
+  //  W. 未 rotate の枝で return せず rotation の記帳 (rotatedAt 押印 + 窓への切り詰め) をする
+  //     → 「changes no state for a presentation that is not a replay」の
+  //       `expect(maps.refreshTokens.get(rootKey)).toEqual(before)` が赤 (6 field 対 5 field)。
+  //  W2. 同じ枝の早期 return を**丸ごと消す** (記帳もしない)
+  //     → **全 91 本が緑のまま** (実測、推測ではない)。未 rotate の record はその family の
+  //       最新世代なので `revokeFamilyAbove` が 0 件で戻り、save も走らないため。
+  //     ⇒ この枝で pin できているのは「**記帳しないこと**」(W) であって「**入らないこと**」では
+  //       ない。W はそこを踏むように**わざと**書いた mutation で、W2 はその射程を測るために
+  //       走らせた対照である。⛔ W だけを見て「この枝は pin 済み」と読まないこと。
+  //  X. observe の最後を rotateRefreshToken への委譲に差し替える (= mint する)
+  //     → 「mints nothing while observing」の `expect(maps.accessTokens.size).toBe(1)` が赤
+  //       (expected 2 to be 1)。⭕ 件数を厳密値にしてあるので「2 revoke して 2 mint」でも赤になる。
+  //     ⚠️ Y と互いに素ではない — mint は save を伴うので persistence 側の sentinel も同時に赤。
+  //  Y. observe の record 枝の save を無条件に戻す
+  //     → 「persists an observed revocation, and skips the write when it removes nothing」の
+  //       `expect(await fs.readFile(file, "utf8")).toBe("SENTINEL")` が赤。1 本だけ。
+  //  Z. replayAgainstTombstone の save を無条件に戻す
+  //     → 「skips the write on a repeat observation once the root has been swept」の
+  //       同じ sentinel assert が赤。1 本だけ。
+  //     ⚠️ Y と Z は別々の call site なので**互いに素**。片方だけ戻すと片方だけ赤くなることを
+  //       実測した (だから 2 本に分けてある — 1 本なら片側が pin されないまま残る)。
+  //  AA. observe の revoke する腕で record.expiresAt を now + ROTATION_GRACE_MS に延ばす
+  //     → 「does not extend the window on the arm that actually revokes」の
+  //       `maps.refreshTokens.get(rootKey)!.expiresAt).toBe(closesAt)` が赤
+  //       (expected 1090000 to be 1060000)。
+  //  AB. 同じ腕で **tombstone 側の** expiresAt だけを延ばす
+  //     → 同テストの `maps.rotatedTombstones.get(rootKey)!.expiresAt).toBe(closesAt)` が赤。
+  //     ⭐ AA と AB は**互いに素** — 赤くなった行を実測で確認した (AA=934 行目 / AB=935 行目)。
+  //       ⛔ 同じ数値 (1090000 対 1060000) が出るので、**メッセージだけでは区別が付かない**。
+  //       record を延ばすと先に来る record 側で止まり、tombstone だけ延ばすと record 側を
+  //       通過して tombstone 側で落ちる。⇒ **2 つの map は別々の write なので、片方だけ
+  //       pin すると、もう片方は自由に drift する。** だから assert も 2 本ある。
+  //  AC. 同じ腕を throw に潰す (到達性の probe = W2 の教訓をこの腕に当てたもの)
+  //     → 新テストを含む 6 本が赤。⇒ ★ **新テストの assert は確かにこの腕まで届いている**
+  //       (「延ばしていないから緑」と「腕に入っていないから緑」は区別が付かないので、
+  //       AA/AB が赤いことに加えて、これを別に測った)。
+  // ⚠️ **窓のテストが 2 本あるのは分割ではなく被覆である。**
+  //    「sees nothing past it」は観測を窓の**閉じた後**に置くので、pin しているのは
+  //    **期限切れの腕** (expiresAt 検査で return する側)。⛔ 初版はこの 1 本で INV-7 item 7 を
+  //    押さえたつもりだったが、**revoke する腕には窓の assert が 1 つも無かった**。
+  //    ⇒ 上の新テストがその腕で、⭕ **観測が腕に届いたことを control (held が revoke された)
+  //    で先に示してから**窓を assert する (control が無いと、早期 return した版でも緑になる)。
+  // ⛔ **未カバーとして申告する**: observe 経路の CPU コスト (revokeFamilyAbove の O(maxTokens)
+  //    走査を over-quota で無制限に回せること) は**測っていない**。上の Y/Z が bound したのは
+  //    disk write だけで、走査そのものは残る。body の parse より安いという見積もりに留まる。
+  // F1 (2026-09-09). `/token` checks the refresh-rotation quota BEFORE
+  // `oauth.token(form)` runs, and `rotateRefreshToken` is the only way into
+  // replay detection, so a full bucket silences the trigger outright — and the
+  // interceptor's own valid rotations are what fill it. `observeRotationReplay`
+  // is the refusal path's way to show the store the presentation without
+  // granting on it.
+  //
+  // The contract is subtractive, so most of what follows is stated negatively:
+  // what it must NOT mint, NOT write, NOT extend and NOT delete. A test that
+  // only asserted "the family is revoked" would stay green if this quietly grew
+  // the power to hand a pair back.
+
+  it("revokes the family from the refusal path while the record is still there (F1)", () => {
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, accessTokenTtlSec: 3600, now: () => t });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    const lost = store.rotateRefreshToken(tokens.refreshToken, "c")!; // response intercepted
+    const held = store.rotateRefreshToken(lost.refreshToken, "c")!; // interceptor rotates it
+    expect(store.validateAccessToken(held.accessToken)?.clientId).toBe("c"); // control: alive
+
+    // Inside the window the legitimate client retries — and the endpoint refuses
+    // it, because the interceptor spent the quota getting here.
+    t += 30_000;
+    store.observeRotationReplay(tokens.refreshToken, "c");
+
+    // Both legs of the interceptor's live pair are dead anyway.
+    expect(store.validateAccessToken(held.accessToken)).toBeNull();
+    expect(store.rotateRefreshToken(held.refreshToken, "c")).toBeNull();
+  });
+
+  it("does not extend the window on the arm that actually revokes (F1)", () => {
+    // The sibling above observes PAST the close, so it returns at the expiry
+    // check: what it pins is the expired arm. Nothing pinned the window on the
+    // arm that reaches `revokeFamilyAbove` — an in-window presentation of a
+    // rotated record — which is the arm the refusal path exists to run.
+    //
+    // INV-7 item 7: the grace window is a cap, never a renewal. Being refused
+    // must not become a way to renew it, or a 429 would keep a dead token alive.
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, accessTokenTtlSec: 3600, now: () => t });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    const lost = store.rotateRefreshToken(tokens.refreshToken, "c")!;
+    const held = store.rotateRefreshToken(lost.refreshToken, "c")!;
+    const maps = store as unknown as {
+      refreshTokens: Map<string, { expiresAt: number }>;
+      rotatedTombstones: Map<string, { expiresAt: number }>;
+    };
+    const rootKey = crypto.createHash("sha256").update(tokens.refreshToken).digest("hex");
+    const closesAt = maps.refreshTokens.get(rootKey)!.expiresAt;
+    // Control: record and tombstone close at the same instant, so a single
+    // `closesAt` is the right thing to compare both against afterwards.
+    expect(maps.rotatedTombstones.get(rootKey)!.expiresAt).toBe(closesAt);
+
+    t += 30_000; // well inside the window
+    store.observeRotationReplay(tokens.refreshToken, "c");
+
+    // This control comes FIRST because it is what makes the two assertions
+    // below non-vacuous: it proves the revoking arm actually ran. Without it,
+    // both would pass just as well on a version that returned early and never
+    // reached the arm being tested — the shape W2 measured one map over.
+    expect(store.validateAccessToken(held.accessToken)).toBeNull();
+
+    // Neither window moved, on the arm that did the work. Both maps, because
+    // they are separate writes: pinning one leaves the other free to drift.
+    expect(maps.refreshTokens.get(rootKey)!.expiresAt).toBe(closesAt);
+    expect(maps.rotatedTombstones.get(rootKey)!.expiresAt).toBe(closesAt);
+  });
+
+  it("revokes the family from the refusal path after the root was swept (F1)", () => {
+    // The other arm: the cap took the record, so the tombstone is the only thing
+    // left that names the family. Both arms have to work from the refusal path,
+    // because the attack that fills the bucket is the same one that fills the cap.
+    let t = 1_000_000;
+    const maxTokens = 4;
+    const store = new OAuthStore({ ...opts, accessTokenTtlSec: 3600, maxTokens, now: () => t });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    let held = store.rotateRefreshToken(tokens.refreshToken, "c")!;
+    for (let i = 0; i < maxTokens - 1; i += 1) {
+      held = store.rotateRefreshToken(held.refreshToken, "c")!;
+    }
+    const rootKey = crypto.createHash("sha256").update(tokens.refreshToken).digest("hex");
+    // Controls: the sweep really happened, and the pair really is alive.
+    expect((store as unknown as { refreshTokens: Map<string, unknown> }).refreshTokens.has(rootKey)).toBe(false);
+    expect(store.validateAccessToken(held.accessToken)?.clientId).toBe("c");
+
+    t += 30_000;
+    store.observeRotationReplay(tokens.refreshToken, "c");
+    expect(store.validateAccessToken(held.accessToken)).toBeNull();
+  });
+
+  it("mints nothing while observing, and hands nothing back (F1)", () => {
+    // The whole reason the gate sits in front of the grant is that a full bucket
+    // must not mint. Observing is added behind that gate, so it has to be
+    // counted: an exact record count, because "fewer than before" would stay
+    // green on a version that revoked two and minted two.
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, accessTokenTtlSec: 3600, now: () => t });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    const lost = store.rotateRefreshToken(tokens.refreshToken, "c")!;
+    store.rotateRefreshToken(lost.refreshToken, "c");
+    const maps = store as unknown as {
+      accessTokens: Map<string, unknown>;
+      refreshTokens: Map<string, unknown>;
+    };
+    // Three generations in each map before the replay: 0 (issued), 1 (lost), 2
+    // (the interceptor's).
+    expect(maps.accessTokens.size).toBe(3);
+    expect(maps.refreshTokens.size).toBe(3);
+
+    t += 30_000;
+    const returned = store.observeRotationReplay(tokens.refreshToken, "c") as unknown;
+
+    // Nothing is handed back — there is no pair to give, and the caller is being
+    // refused. A signature that could return one is a signature that could be
+    // wired into a response by mistake.
+    expect(returned).toBeUndefined();
+    // Generations 1 and 2 are gone from both maps and generation 0 remains, so
+    // each map holds exactly one. A mint would make it two.
+    expect(maps.accessTokens.size).toBe(1);
+    expect(maps.refreshTokens.size).toBe(1);
+  });
+
+  it("changes no state for a presentation that is not a replay (F1)", () => {
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, accessTokenTtlSec: 3600, now: () => t });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    const maps = store as unknown as {
+      refreshTokens: Map<string, { rotatedAt?: number; expiresAt: number }>;
+      rotatedTombstones: Map<string, unknown>;
+    };
+    const rootKey = crypto.createHash("sha256").update(tokens.refreshToken).digest("hex");
+    const before = { ...maps.refreshTokens.get(rootKey)! };
+
+    // Unknown: neither a record nor a tombstone. Must not throw, must not write.
+    // This is the shape a stranger's junk takes, and it is the common case on a
+    // public endpoint.
+    store.observeRotationReplay("nothing-hashes-to-this", "c");
+    // Never rotated: exactly the grant the caller was refused. Doing the
+    // rotation's bookkeeping here would be minting by halves — stamping
+    // `rotatedAt` caps this record's expiry to the 60 s grace window, which
+    // burns the client's own token on a request that hands them nothing.
+    store.observeRotationReplay(tokens.refreshToken, "c");
+
+    expect(maps.refreshTokens.get(rootKey)).toEqual(before);
+    expect(maps.rotatedTombstones.size).toBe(0);
+    // Stated behaviourally as well, because the field comparison above would
+    // pass on a version that wrote and then restored: past the grace window the
+    // untouched record is still live, since its expiry was never capped to it.
+    t += ROTATION_GRACE_MS + 1;
+    expect(store.rotateRefreshToken(tokens.refreshToken, "c")).not.toBeNull();
+  });
+
+  it("refuses a mismatched client_id while observing, without revoking or disarming (F1)", () => {
+    // Same reasoning as both granting arms: `client_id` arrives unauthenticated
+    // on the /token form, so a mismatch proves nothing about the presenter and
+    // must not be treated as reuse evidence — otherwise anyone holding a copy
+    // could kill the live pair on a presentation the real client never made.
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, accessTokenTtlSec: 3600, now: () => t });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    const lost = store.rotateRefreshToken(tokens.refreshToken, "c")!;
+    const held = store.rotateRefreshToken(lost.refreshToken, "c")!;
+    expect(store.validateAccessToken(held.accessToken)?.clientId).toBe("c"); // control
+
+    store.observeRotationReplay(tokens.refreshToken, "wrong");
+    expect(store.validateAccessToken(held.accessToken)?.clientId).toBe("c"); // nothing revoked
+
+    // ...and the trigger survived that presentation: the right client still
+    // fires it. Refusing must not be a way to disarm.
+    t += 1_000;
+    store.observeRotationReplay(tokens.refreshToken, "c");
+    expect(store.validateAccessToken(held.accessToken)).toBeNull();
+  });
+
+  it("does not extend the replay window, and sees nothing past it (F1)", () => {
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, accessTokenTtlSec: 3600, now: () => t });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    const lost = store.rotateRefreshToken(tokens.refreshToken, "c")!;
+    const held = store.rotateRefreshToken(lost.refreshToken, "c")!;
+    const maps = store as unknown as {
+      refreshTokens: Map<string, { expiresAt: number }>;
+      rotatedTombstones: Map<string, { expiresAt: number }>;
+    };
+    const rootKey = crypto.createHash("sha256").update(tokens.refreshToken).digest("hex");
+    const closesAt = maps.refreshTokens.get(rootKey)!.expiresAt;
+    // Control: record and tombstone close at the same instant, as #170 requires.
+    expect(maps.rotatedTombstones.get(rootKey)!.expiresAt).toBe(closesAt);
+
+    // One tick past the close. The refused presentation must not reopen it — a
+    // refusal that quietly renewed the window would be a way to keep a dead
+    // token alive by being rate-limited.
+    t += ROTATION_GRACE_MS + 1;
+    expect(store.validateAccessToken(held.accessToken)?.clientId).toBe("c"); // control: alive
+    store.observeRotationReplay(tokens.refreshToken, "c");
+
+    expect(store.validateAccessToken(held.accessToken)?.clientId).toBe("c"); // nothing revoked
+    expect(maps.refreshTokens.get(rootKey)!.expiresAt).toBe(closesAt);
+    expect(maps.rotatedTombstones.get(rootKey)!.expiresAt).toBe(closesAt);
+  });
+
   it("revokes only the family that was replayed, never a bystander's", () => {
     let t = 1_000_000;
     const store = new OAuthStore({ ...opts, now: () => t });
@@ -917,6 +1462,93 @@ describe("OAuthStore persistence", () => {
     store.issueTokens("c", "vault.read", "r");
     const stat = await fs.stat(file);
     expect(stat.mode & 0o777).toBe(0o600);
+  });
+
+  it("persists an observed revocation, and skips the write when it removes nothing (F1)", async () => {
+    const file = await stateFilePath();
+    let t = 1_000_000;
+    const store = new OAuthStore({
+      ...opts,
+      accessTokenTtlSec: 3600,
+      persistPath: file,
+      persistSecret: secret,
+      now: () => t
+    });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    const lost = store.rotateRefreshToken(tokens.refreshToken, "c")!;
+    const held = store.rotateRefreshToken(lost.refreshToken, "c")!;
+
+    t += 30_000;
+    store.observeRotationReplay(tokens.refreshToken, "c");
+
+    // Half one: it reached disk. The refusal path has no mint after it to carry
+    // the revocation into a shared save, so a restart would otherwise resurrect
+    // exactly what the replay was for.
+    const reloaded = new OAuthStore({
+      ...opts,
+      accessTokenTtlSec: 3600,
+      persistPath: file,
+      persistSecret: secret,
+      now: () => t
+    });
+    expect(reloaded.validateAccessToken(held.accessToken)).toBeNull();
+    // Control for that: the file really loaded. A fail-closed empty state would
+    // satisfy the line above for the wrong reason, and generation 0 was never
+    // part of what the replay revokes.
+    expect(reloaded.validateAccessToken(tokens.accessToken)?.clientId).toBe("c");
+
+    // Half two: the refusal path is reachable without limit — that is what it is
+    // for — so a repeat presentation must not be one whole-file rewrite per
+    // request. The sentinel is how a SKIPPED write is observed: a save replaces
+    // the file, so surviving bytes mean no save was attempted.
+    await fs.writeFile(file, "SENTINEL", "utf8");
+    store.observeRotationReplay(tokens.refreshToken, "c");
+    expect(await fs.readFile(file, "utf8")).toBe("SENTINEL");
+
+    // Control for the sentinel: a call that DOES change state still writes, so
+    // the assertion above is about the skip and not about a store that had
+    // quietly stopped persisting altogether.
+    store.issueTokens("c", "vault.read", "r");
+    expect(await fs.readFile(file, "utf8")).not.toBe("SENTINEL");
+  });
+
+  it("skips the write on a repeat observation once the root has been swept (F1)", async () => {
+    // The same write-skip on the other arm. Stated separately rather than
+    // assumed from the record arm: it is a second `save()` call site, and the
+    // arm it sits on is the one the #170 scenario actually lands in.
+    const file = await stateFilePath();
+    let t = 1_000_000;
+    const maxTokens = 4;
+    const store = new OAuthStore({
+      ...opts,
+      accessTokenTtlSec: 3600,
+      maxTokens,
+      persistPath: file,
+      persistSecret: secret,
+      now: () => t
+    });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    let held = store.rotateRefreshToken(tokens.refreshToken, "c")!;
+    for (let i = 0; i < maxTokens - 1; i += 1) {
+      held = store.rotateRefreshToken(held.refreshToken, "c")!;
+    }
+    const rootKey = crypto.createHash("sha256").update(tokens.refreshToken).digest("hex");
+    // Control: the record really was swept, so the tombstone arm is what runs.
+    expect((store as unknown as { refreshTokens: Map<string, unknown> }).refreshTokens.has(rootKey)).toBe(false);
+
+    t += 30_000;
+    store.observeRotationReplay(tokens.refreshToken, "c");
+    expect(store.validateAccessToken(held.accessToken)).toBeNull(); // control: it did revoke
+
+    // The second presentation finds nothing left above the root, so there is no
+    // state change to persist and no file to rewrite.
+    await fs.writeFile(file, "SENTINEL", "utf8");
+    store.observeRotationReplay(tokens.refreshToken, "c");
+    expect(await fs.readFile(file, "utf8")).toBe("SENTINEL");
+
+    // Control for the sentinel, as above.
+    store.issueTokens("c", "vault.read", "r");
+    expect(await fs.readFile(file, "utf8")).not.toBe("SENTINEL");
   });
 });
 
@@ -1429,6 +2061,119 @@ describe("OAuth end-to-end over HTTP", () => {
     // client that cannot read `Retry-After` cannot back off correctly.
     expect(Number(limited!.headers.get("retry-after"))).toBeGreaterThan(0);
     expect(await limited!.json()).toEqual({ error: "rate_limited" });
+  });
+
+  it("still revokes the stolen family when the rotation quota is exhausted (F1)", async () => {
+    // The gate at `/token` answers 429 BEFORE `oauth.token(form)` runs, and
+    // `rotateRefreshToken` — with it `replayAgainstTombstone` and
+    // `revokeFamilyAbove` — is reachable ONLY through that call. So an
+    // interceptor holding a captured chain can rotate it until the shared
+    // bucket is full (behind a tunnel every caller shares one key), and the
+    // victim's replay — the sole trigger for revocation — never reaches the
+    // store at all. The window then closes, the tombstone expires, and the
+    // stolen family is never revoked: the mitigation becomes unreachable
+    // exactly when it is needed.
+    //
+    // Asserted on the interceptor's live access token rather than on the
+    // replay's return value. Over quota the reply MUST stay a 429, so "the
+    // replay succeeded" would pin the wrong thing — the same reason #170 states
+    // its main assertion on the held pair.
+    const store = await makeStore();
+    const port = await freePort();
+    const issuer = `http://127.0.0.1:${port}`;
+    const config: HttpConfig = {
+      host: "127.0.0.1",
+      port,
+      authToken: "static-bearer-unused-here",
+      authTokenScopes: [SCOPE_READ, SCOPE_WRITE],
+      allowWrite: false,
+      allowSkillWrite: false,
+      allowAuditWrite: false,
+      allowLegacyCreateDocument: false,
+      allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
+      allowedOrigins: [],
+      oauth: {
+        issuer,
+        loginPassword: "hunter2",
+        accessTokenTtlSec: 3600,
+        refreshTokenTtlSec: 86_400,
+        codeTtlSec: 60,
+        allowWrite: false
+      }
+    };
+    server = await startHttpServer(store, config);
+
+    const rotate = (refreshToken: string, clientId: string) =>
+      fetch(`${issuer}/token`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: refreshToken,
+          client_id: clientId
+        }).toString()
+      });
+    // Whether a pair is still live, read through the resource it is bound to.
+    // 200 = the access token still authenticates; 401 = its family was revoked.
+    const mcpStatus = async (accessToken: string): Promise<number> =>
+      (
+        await fetch(`${issuer}/mcp`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+            authorization: `Bearer ${accessToken}`
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" })
+        })
+      ).status;
+
+    const { clientId, refreshToken: root } = await oauthObtainRefresh(issuer);
+
+    // The victim rotates once and loses the response. This pair is what the
+    // interceptor captured.
+    const lost = (await (await rotate(root, clientId)).json()) as {
+      refresh_token: string;
+      access_token: string;
+    };
+
+    // The interceptor rotates the captured chain until the shared bucket is
+    // full. Only a 200 is charged, so these are exactly the successful
+    // rotations the quota was sized for — the attacker spends it with valid
+    // traffic, which is why no input filter can tell this apart.
+    let current = lost.refresh_token;
+    let held = lost.access_token;
+    let limited = false;
+    for (let i = 0; i < 60; i++) {
+      const res = await rotate(current, clientId);
+      if (res.status === 429) {
+        limited = true;
+        break;
+      }
+      const body = (await res.json()) as { refresh_token: string; access_token: string };
+      current = body.refresh_token;
+      held = body.access_token;
+    }
+
+    // Positive controls for the setup, so the assertion at the end cannot pass
+    // for the wrong reason: the bucket really is exhausted, and the pair the
+    // revocation has to kill really is alive at this moment.
+    expect(limited).toBe(true);
+    expect(await mcpStatus(held)).toBe(200);
+
+    // The victim retries with the root it still holds — the presentation that
+    // must revoke everything minted above it.
+    const replay = await rotate(root, clientId);
+
+    // What the caller sees is unchanged. The gate still refuses, in the
+    // documented shape, and still mints nothing.
+    expect(replay.status).toBe(429);
+    expect(Number(replay.headers.get("retry-after"))).toBeGreaterThan(0);
+    expect(await replay.json()).toEqual({ error: "rate_limited" });
+
+    // ...and the store observed the presentation anyway, so the stolen family
+    // is dead. This is the assertion the finding is about.
+    expect(await mcpStatus(held)).toBe(401);
   });
 
   it("does not let unauthenticated junk at /token spend the budget a real grant needs", async () => {

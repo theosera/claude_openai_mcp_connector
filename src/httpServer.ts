@@ -482,11 +482,22 @@ async function handleOAuthRoute(
     //    client out of *every* grant — including the authorization-code exchange
     //    that reauthorization needs to recover, which would make the lockout
     //    unrecoverable rather than merely annoying.
+    //
+    // What the refusal must NOT do is swallow the presentation. Replay
+    // detection lives behind `oauth.token(form)` and nowhere else, so a 429
+    // returned here is also the one case where re-presenting a rotated token
+    // revokes nothing — and an interceptor can arrange it, because their own
+    // valid rotations are what fill the shared bucket. The victim's replay then
+    // arrives inside a full window, is refused, and the stolen family survives
+    // the window and the tombstone both. So the store is shown the presentation
+    // first, on a path that can revoke but cannot mint, and only then is the
+    // same 429 sent. The gate is unmoved: same check, same charge, same reply.
     const rotating = form.get("grant_type") === "refresh_token";
     const key = limiterKey(req);
     if (rotating && limiters) {
       const verdict = limiters.token.check(key);
       if (!verdict.allowed) {
+        oauth.observeRefreshReplay(form);
         return sendRateLimited(res, verdict.retryAfterSec);
       }
     }
