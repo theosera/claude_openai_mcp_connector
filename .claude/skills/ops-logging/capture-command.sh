@@ -61,6 +61,61 @@ mask() {
   # That keyword rule is therefore left BYTE-IDENTICAL to its previous form: it
   # is the fallback that keeps this change from ever masking less than before.
   #
+  # `Authorization: <scheme> <credential>` is TWO tokens, and that keyword rule
+  # ends its value at the first whitespace: it eats the SCHEME word and leaves
+  # the credential in the clear one space to the right of a `***MASKED***`
+  # marker, which reads as a successful redaction. `Bearer` was the only shape
+  # that escaped, because the dedicated rule above takes the token AFTER the
+  # scheme -- which is also why `Bearer` is absent from the scheme list below:
+  # that rule fires first, so nothing bearer-shaped ever reaches this one. The
+  # rule takes the CREDENTIAL and leaves the scheme word standing, even though
+  # the keyword rule below then masks that word too and the note ends up
+  # carrying two markers side by side. Consuming the scheme here would read
+  # better and measures WORSE: that rule ends its value at whitespace, so
+  # `***MASKED***"` is a single token to it and the closing quote of a
+  # `curl -H "<header>" <url>` goes with it. The value stops at a quote or a
+  # comma as well as at whitespace, so that command keeps its closing quote and
+  # its URL -- the same bound, and the same reason, as the quoted-run rules
+  # above.
+  #
+  # The scheme is an ALLOWLIST, not `[A-Za-z][A-Za-z0-9-]*`. A general scheme
+  # word turns this into "mask the second word after any keyword", which reaches
+  # this note's own UNQUOTED frontmatter (`project:` / `repos: [...]` /
+  # `tags: [...]`, masked value by value further down) and leaves the note
+  # unparseable for a checkout named after a mask keyword. The list holds the
+  # single-opaque-token schemes; an unlisted scheme is left exactly where the
+  # keyword rule had it.
+  #
+  # The negated address is LOAD-BEARING, not decoration. sed applies each `-e`
+  # in order to the pattern space AS IT STANDS, so a substitution here can
+  # destroy the text a LATER rule's ADDRESS is matched against -- and the PEM
+  # range below is addressed on the BEGIN marker. Without this address, a line
+  # of the form `token: Basic <PEM BEGIN marker>` loses that marker to the value
+  # class, the range never opens, and the body lines that follow behind a
+  # `cat -n` / `> ` / `grep -n` prefix -- exactly the ones the whole-line
+  # catch-all structurally cannot match -- are written out VERBATIM: key
+  # material this hook masked BEFORE this rule existed. Measured at 54 of 54
+  # (6 scheme spellings x 3 prefixes x 3 marker placements) with the address
+  # removed, and 0 of 54 with it. Two things that do NOT fix it: excluding a
+  # leading `-` from the value class closes only that one spelling, since a
+  # value of `X<PEM BEGIN marker>` starts at `X` and swallows the marker anyway;
+  # and moving this rule below the PEM rules disables it outright, because the
+  # keyword rule below has already replaced the scheme word with `***MASKED***`
+  # by the time it would run. Skipping marker lines is what holds, and it costs
+  # nothing: on such a line the keyword rule still masks the scheme, exactly as
+  # it did before.
+  #
+  # RESIDUE, recorded here rather than left for the next reader to discover: a
+  # PARAMETER-LIST scheme closes only PARTLY. A Digest header carries
+  # `username=`, `realm=` and `response=` parameters with QUOTED values, and the
+  # value class ends at the first `"`, so the `response=` hash stays readable
+  # beside the marker -- the very shape this rule closes for the opaque schemes.
+  # Dropping `,` from the value class does not help; what stops it is the quote.
+  # OAuth 1.0a headers have the same shape. It is unchanged ground rather than
+  # new ground (the keyword rule alone masked the scheme word and stopped in the
+  # same place), and a test pins it so the marker is never read as more than it
+  # is.
+  #
   # A PEM key body often arrives with a LINE PREFIX, and the whole-line rule
   # at the bottom sees none of them: `cat -n` writes a line number and a TAB,
   # a quoted transcript writes `> `, `grep -n` writes `file:12:`. (A diff `+` is
@@ -173,17 +228,18 @@ mask() {
     -e 's/gh[pousr]_[A-Za-z0-9]{20,}/***MASKED***/g' \
     -e 's/github_pat_[A-Za-z0-9_]{20,}/***MASKED***/g' \
     -e 's#(://[^/:@[:space:]]+):[^/@[:space:]]+@#\1:***MASKED***@#g' \
+    -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----|^~{3,}/s/[A-Za-z0-9+\/=]{12,}/***MASKED***/g' \
+    -e 's/-----BEGIN [A-Z ]*PRIVATE KEY-----/***MASKED***/g' \
+    -e 's/-----END [A-Z ]*PRIVATE KEY-----/***MASKED***/g' \
     -e 's/([Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+)[^[:space:]]+/\1***MASKED***/g' \
     -e "s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+\")([^\"\\\\]|\\\\.)*\"/\1***MASKED***\"/Ig" \
     -e "s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\]|\\\\.)*'/\1***MASKED***'/Ig" \
+    -e "/-----(BEGIN|END) [A-Z ]*PRIVATE KEY-----/!s/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+(Basic|Digest|Token|ApiKey|OAuth|SSWS)[[:space:]]+)[^[:space:],\"']+/\1***MASKED***/Ig" \
     -e 's/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)[^[:space:]]+/\1***MASKED***/Ig' \
     -e 's/AKIA[0-9A-Z]{16}/***MASKED***/g' \
     -e 's/sk-[A-Za-z0-9_-]{20,}/***MASKED***/g' \
     -e 's/AIza[0-9A-Za-z_-]{35}/***MASKED***/g' \
     -e 's/xox[baprs]-[A-Za-z0-9-]{10,}/***MASKED***/g' \
-    -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----|^~{3,}/s/[A-Za-z0-9+\/=]{12,}/***MASKED***/g' \
-    -e 's/-----BEGIN [A-Z ]*PRIVATE KEY-----/***MASKED***/g' \
-    -e 's/-----END [A-Z ]*PRIVATE KEY-----/***MASKED***/g' \
     -e '/^[[:space:]]*[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/.*/***MASKED***/'
 }
 cmd_masked="$(printf '%s' "$cmd"    | mask | tr '\n' ' ')"

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { parseMarkdownSafe } from "../src/frontmatter.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const hookPath = path.join(repoRoot, ".claude", "skills", "session-archive", "archive-session.sh");
@@ -916,6 +917,218 @@ describe("session-archive PEM key masking", () => {
 });
 
 /**
+ * An `Authorization` header is TWO tokens, and the keyword rule ends its value at
+ * the first whitespace: it takes the SCHEME word and leaves the credential one
+ * space to its right, beside a `***MASKED***` marker that reads as a successful
+ * redaction. `Bearer` alone escaped that, because a dedicated rule above takes
+ * the token after it.
+ *
+ * The rule that closes it sits ABOVE the keyword rule — below it the scheme word
+ * has already become `***MASKED***`, and the rule could never fire — and carries
+ * a NEGATED ADDRESS that keeps it off any line holding a PEM marker. That address
+ * is the load-bearing half: sed applies each `-e` in order to the pattern space
+ * AS IT STANDS, so a substitution here runs BEFORE the PEM range's address is
+ * evaluated and can eat the very marker that address matches on. The range then
+ * never opens, and a body line behind a `cat -n` / `> ` / `grep -n` prefix — the
+ * shape the whole-line catch-all structurally cannot match — is emitted verbatim.
+ *
+ * That regression is INVISIBLE to a single-line corpus, because the range is the
+ * only multi-line construct in the script. The cases below therefore feed mask()
+ * whole BLOCKS, and the reverse verifications delete the address rather than the
+ * rule, since deleting the rule cannot show it.
+ */
+
+/** The scheme allowlist, as the shell source spells it. */
+const AUTH_SCHEMES = "(Basic|Digest|Token|ApiKey|OAuth|SSWS)";
+/** The negated address that keeps the rule off any line carrying a PEM marker. */
+const PEM_MARKER_ADDRESS = `/${DASHES}(BEGIN|END) [A-Z ]*PRIVATE KEY${DASHES}/!`;
+/** The value class, and the "just forbid a leading dash" fix that is NOT enough. */
+const AUTH_VALUE = String.raw`[^[:space:],\"']+`;
+const AUTH_VALUE_NO_DASH = String.raw`[^-[:space:],\"'][^[:space:],\"']*`;
+/** Synthetic: base64 of the RFC 7617 example string, never a live credential. */
+const CREDENTIAL = "QWxhZGRpbjpvcGVuc2VzYW1lLXNlY3JldA";
+const AUTH_HEADER = "Authorization";
+const MASKED = "***MASKED***";
+
+/** The bare keyword rule, as the shell source spells its value class. */
+const BARE_KEYWORD_VALUE = String.raw`[=:[:space:]]+)[^[:space:]]+`;
+
+/**
+ * Puts the three PEM rules back BEHIND the keyword rules, where they sat before
+ * they were moved ahead of them. The defect is an ORDERING one — an earlier rule
+ * consuming the marker a later range's address is matched against — so the
+ * mutation has to be an ordering one too: no substring edit reproduces it.
+ */
+function pemRulesLast(maskFn: string): string {
+  const lines = maskFn.split("\n");
+  const pem: number[] = [];
+  lines.forEach((line, index) => {
+    if (line.trim().startsWith("-e") && line.includes("PRIVATE KEY") && !line.includes("!s/")) pem.push(index);
+  });
+  expect(pem).toHaveLength(3);
+  const block = pem.map((index) => lines[index]);
+  const rest = lines.filter((_, index) => !pem.includes(index));
+  const at = rest.findIndex((line) => line.includes(BARE_KEYWORD_VALUE));
+  expect(at).toBeGreaterThan(-1);
+  return [...rest.slice(0, at + 1), ...block, ...rest.slice(at + 1)].join("\n");
+}
+
+/** A key block whose ONLY opening marker is the value of a mask keyword. */
+function keywordOpenedBlock(prefix: (line: string, lineNumber: number) => string, opener: string): string {
+  return [opener, ...BODY.map((line, index) => prefix(line, index + 2)), prefix(PEM_CLOSE, BODY.length + 2)].join("\n");
+}
+
+describe("session-archive auth-scheme masking", () => {
+  let mask: string;
+
+  beforeAll(async () => {
+    mask = await shippedMask(hookPath);
+  });
+
+  it("masks the credential after the scheme, in every spelling the header arrives in", () => {
+    // Two markers, not one: this rule keeps the scheme word standing and the
+    // keyword rule below then masks it as well. That is deliberate — see the
+    // shell string case below for what consuming the scheme here would cost.
+    expect(runMask(mask, `${AUTH_HEADER}: Basic ${CREDENTIAL}`)).toBe(`${AUTH_HEADER}: ${MASKED} ${MASKED}`);
+    expect(runMask(mask, `${AUTH_HEADER.toUpperCase()}: BASIC ${CREDENTIAL}`)).toBe(
+      `${AUTH_HEADER.toUpperCase()}: ${MASKED} ${MASKED}`
+    );
+    expect(runMask(mask, `${AUTH_HEADER.toLowerCase()}\tBasic ${CREDENTIAL}`)).toBe(
+      `${AUTH_HEADER.toLowerCase()}\t${MASKED} ${MASKED}`
+    );
+    expect(runMask(mask, `Proxy-${AUTH_HEADER}: Token ${CREDENTIAL}`)).toBe(
+      `Proxy-${AUTH_HEADER}: ${MASKED} ${MASKED}`
+    );
+  });
+
+  it("leaves the shell string and the URL around a masked header intact", () => {
+    // The value stops at the quote, so `curl` keeps its closing quote and its
+    // URL. It is also why the scheme word is KEPT rather than consumed: the
+    // keyword rule below ends its value at whitespace, so `***MASKED***"` would
+    // be one token to it and the closing quote would go with it.
+    const command = `curl -H "${AUTH_HEADER}: Basic ${CREDENTIAL}" https://api.example.com/v1/items`;
+
+    expect(runMask(mask, command)).toBe(
+      `curl -H "${AUTH_HEADER}: ${MASKED} ${MASKED}" https://api.example.com/v1/items`
+    );
+  });
+
+  it("leaks the credential once the scheme allowlist stops matching, so the passes above mean something", () => {
+    const downgraded = mutate(mask, AUTH_SCHEMES, "(ZZNOSUCHSCHEMEZZ)", "the auth-scheme allowlist");
+
+    // Exactly the finding: the scheme word masked, the credential in the clear
+    // one space to the right of a marker that reads as a successful redaction.
+    expect(runMask(downgraded, `${AUTH_HEADER}: Basic ${CREDENTIAL}`)).toBe(`${AUTH_HEADER}: ${MASKED} ${CREDENTIAL}`);
+  });
+
+  for (const [label, prefix] of PREFIXED) {
+    it(`still masks a key body behind ${label} when a mask keyword's value is the BEGIN marker`, () => {
+      // MULTI-LINE on purpose. The marker exists on ONE line here — the keyword
+      // line — so a rule that eats it takes the range's address with it.
+      const block = keywordOpenedBlock(prefix, `token: Basic ${PEM_OPEN}`);
+
+      expect(bodyLinesSurviving(runMask(mask, block))).toBe(0);
+
+      // Reverse verification takes TWO mutations now, and that is the point: the
+      // address alone no longer decides the outcome, because the PEM rules run
+      // ahead of every keyword rule. Undo BOTH and every body line comes back —
+      // key material the mask handled before either guard existed, which makes
+      // it a weakening rather than a missed catch.
+      const unguarded = mutate(pemRulesLast(mask), PEM_MARKER_ADDRESS, "", "the PEM-marker address");
+      expect(bodyLinesSurviving(runMask(unguarded, block))).toBe(BODY.length);
+
+      // And each guard alone still holds, so neither is decoration.
+      expect(bodyLinesSurviving(runMask(pemRulesLast(mask), block))).toBe(0);
+      expect(bodyLinesSurviving(runMask(mutate(mask, PEM_MARKER_ADDRESS, "", "the address"), block))).toBe(0);
+    });
+  }
+
+  for (const [label, opener] of [
+    ["a bare keyword", `key=${PEM_OPEN}`],
+    ["the Bearer rule", `bearer ${PEM_OPEN}`]
+  ] as const) {
+    it(`masks a key body opened by ${label}, which has no scheme word to stop at`, () => {
+      // The negated address fixed ONE rule. Every other rule that ends its value
+      // at whitespace eats the marker the same way, and the range then never
+      // opens. Ordering is what closes the class: the PEM rules run first, so
+      // there is nothing left for a keyword rule to take the address with.
+      const block = keywordOpenedBlock(PREFIXED[0][1], opener);
+
+      expect(bodyLinesSurviving(runMask(mask, block))).toBe(0);
+
+      // Reverse verification: put the PEM rules back behind the keyword rules
+      // and every body line comes back into the note.
+      expect(bodyLinesSurviving(runMask(pemRulesLast(mask), block))).toBe(BODY.length);
+    });
+  }
+
+  it("holds when the marker is glued to a non-dash character, which a value-class fix would miss", () => {
+    // The narrow fix for the case above is "do not let the value START with a
+    // dash". It closes one spelling only: glue the marker to any other character
+    // and the value class swallows it again. The address does not care where the
+    // marker sits on the line, so it is the address that is shipped.
+    const [, catN] = PREFIXED[0];
+    const glued = keywordOpenedBlock(catN, `token: Basic X${PEM_OPEN}`);
+
+    expect(bodyLinesSurviving(runMask(mask, glued))).toBe(0);
+
+    const dashFixOnly = mutate(
+      mutate(pemRulesLast(mask), PEM_MARKER_ADDRESS, "", "the PEM-marker address"),
+      AUTH_VALUE,
+      AUTH_VALUE_NO_DASH,
+      "the auth-scheme value class"
+    );
+    expect(bodyLinesSurviving(runMask(dashFixOnly, glued))).toBe(BODY.length);
+  });
+
+  it("keeps an unquoted frontmatter value from losing the word beside it", () => {
+    // Why the scheme is an ALLOWLIST and not `[A-Za-z][A-Za-z0-9-]*`. `project:`
+    // / `repos: [...]` / `tags: [...]` are written UNQUOTED and masked value by
+    // value, and those values are checkout basenames: a repo named after a mask
+    // keyword must not take the NEXT repo's name down with it.
+    const repos = "token=v1 connector-mcp";
+
+    expect(runMask(mask, repos)).toBe(`token=${MASKED} connector-mcp`);
+
+    // Reverse verification: widen the scheme to any word and the neighbour goes.
+    const widened = mutate(mask, AUTH_SCHEMES, "([A-Za-z][A-Za-z0-9-]*)", "the auth-scheme allowlist");
+    expect(runMask(widened, repos)).toBe(`token=${MASKED} ${MASKED}`);
+  });
+
+  it("closes an opaque-token scheme completely and a Digest parameter list only partly", () => {
+    // RESIDUE, pinned rather than described. `Digest` is a parameter list, not one
+    // opaque token: the value ends at the first quote, so the `response=` hash —
+    // the credential — stays readable beside the marker. Dropping `,` from the
+    // value class does not help; what stops it is the quote. OAuth 1.0a headers
+    // have the same shape. The pre-existing keyword rule leaked the same bytes, so
+    // this is unchanged ground, but it must not be read as a closed case.
+    const response = "abc123";
+    const parameters = `${AUTH_HEADER}: Digest username="alice", realm="r", response=${response}`;
+
+    expect(runMask(mask, `${AUTH_HEADER}: Digest ${CREDENTIAL}`)).toBe(`${AUTH_HEADER}: ${MASKED} ${MASKED}`);
+    expect(runMask(mask, parameters)).toBe(
+      `${AUTH_HEADER}: ${MASKED} ${MASKED}"alice", realm="r", response=${response}`
+    );
+  });
+
+  it("leaves a scheme outside the allowlist exactly where the keyword rule had it", () => {
+    // Not a regression and not a fix: `Negotiate` / `NTLM` / `AWS4-HMAC-SHA256`
+    // behave as they did before. Adding one is a one-token change, and this
+    // assertion is what turns red to say the documentation needs the same edit.
+    expect(runMask(mask, `${AUTH_HEADER}: Negotiate ${CREDENTIAL}`)).toBe(`${AUTH_HEADER}: ${MASKED} ${CREDENTIAL}`);
+  });
+
+  it("masks one more word of prose when a mask keyword is followed by a scheme word", () => {
+    // The cost, measured rather than denied: the word after the scheme goes even
+    // when it is not a credential. Across the 102 tracked text files at the base
+    // commit (43,016 lines, each streamed whole so the ranges can open) the rule
+    // changes none of them; the only lines whose masking it changes anywhere are
+    // the ones this change itself adds, this one among them.
+    expect(runMask(mask, "key: Basic knowledge for reviewers")).toBe(`key: ${MASKED} ${MASKED} for reviewers`);
+  });
+});
+
+/**
  * The other thing this hook decides is WHERE the rendered transcript goes: it is
  * written into a clone under $HOME and `git push`-ed to that clone's origin.
  *
@@ -1024,12 +1237,13 @@ async function markedClone(fixture: Fixture, name: string): Promise<{ dir: strin
 function runHook(
   fixture: Fixture,
   env: NodeJS.ProcessEnv,
-  script: string = hookPath
+  script: string = hookPath,
+  cwd: string = fixture.home
 ): { status: number | null; stderr: string } {
   const payload = JSON.stringify({
     session_id: SESSION_ID,
     transcript_path: fixture.transcript,
-    cwd: fixture.home,
+    cwd,
     hook_event_name: "PreCompact"
   });
   const result = spawnSync("bash", [script, "precompact"], { input: payload, env, encoding: "utf8" });
@@ -1187,5 +1401,168 @@ describe("session-archive vault authorization", () => {
     const notes = notesPushedTo(planted.remote, fixture);
     expect(notes).toHaveLength(1);
     expect(git(["-C", planted.remote, "show", `refs/heads/main:${notes[0]}`], fixture)).toContain(TRANSCRIPT_CANARY);
+  });
+});
+
+/**
+ * The frontmatter of that note is not decoration: this server parses it on every
+ * read. `project`, `repos` and `tags` carry the BASENAMES of the checkouts the
+ * session worked in, and `mask` can rewrite one of them to `***MASKED***`
+ * outright. Emitted bare, a scalar starting with `*` is a YAML alias, the whole
+ * block throws, and `parseMarkdownSafe` degrades the note to no id, no title, no
+ * project and `tags: []` — for every reader on the MCP side.
+ *
+ * These tests drive the SHIPPED hook end to end and parse what the vault
+ * actually received with the server's own reader, so what they measure is the
+ * note the read path gets, not a re-implementation of it.
+ */
+
+/** The three emitter lines, quoted as shipped, next to the bare form they replaced. */
+const QUOTED_EMITTER: Array<[quoted: string, bare: string]> = [
+  [`    printf 'project: "%s"\\n' "$(yaml_escape "$project_masked")"`, `    printf 'project: %s\\n' "$project_masked"`],
+  [
+    `    printf 'repos: [%s]\\n' "$(yaml_seq "$repos_masked")"`,
+    `    printf 'repos: [%s]\\n' "$(printf '%s' "$repos_masked" | sed 's/ /, /g')"`
+  ],
+  [
+    `    printf 'tags: [%s]\\n' "$(yaml_seq "claude-code-session $repos_masked")"`,
+    `    printf 'tags: [claude-code-session, %s]\\n' "$(printf '%s' "$repos_masked" | sed 's/ /, /g')"`
+  ]
+];
+
+/**
+ * The emitter as it was BEFORE the fix: the three path-derived values written
+ * bare into the YAML. Used to show these tests can observe the failure they
+ * screen for, and to record what the read path saw before — a check that would
+ * pass with the guard removed is evidence of nothing.
+ */
+async function hookWithBareFrontmatterValues(fixture: Fixture): Promise<string> {
+  let script = await fs.readFile(hookPath, "utf8");
+  for (const [quoted, bare] of QUOTED_EMITTER) {
+    if (!script.includes(quoted)) {
+      // Reverse-verifying this suite un-quotes the emitter on purpose and then
+      // lands here: say which failure it is, so a real regression is not read as
+      // a broken test helper.
+      throw new Error(
+        "the frontmatter emitter no longer quotes project/repos/tags — either the anchor moved, or the " +
+          "hook has regressed to exactly the bare emission this suite exists to catch. The failures " +
+          "above are the real signal."
+      );
+    }
+    script = script.replace(quoted, bare);
+  }
+  const downgraded = path.join(fixture.root, "archive-session.bare-frontmatter.sh");
+  await fs.writeFile(downgraded, script);
+  return downgraded;
+}
+
+/** A checkout named `name` under $HOME — the session's cwd, and the source of `project`/`repos`. */
+async function checkoutNamed(fixture: Fixture, name: string): Promise<string> {
+  const dir = path.join(fixture.home, name);
+  await fs.mkdir(dir, { recursive: true });
+  git(["init", "-q", dir], fixture);
+  return dir;
+}
+
+/** Archive one session worked in a checkout named `name`, and read the pushed note back. */
+async function archiveFrom(name: string, emitter: "shipped" | "bare" = "shipped") {
+  const fixture = await makeFixture();
+  const vault = await markedClone(fixture, "vault-clone");
+  const checkout = await checkoutNamed(fixture, name);
+  const script = emitter === "bare" ? await hookWithBareFrontmatterValues(fixture) : hookPath;
+
+  const { status } = runHook(fixture, hookEnv(fixture, { SESSION_VAULT_ORIGIN: vault.remote }), script, checkout);
+
+  const notes = notesPushedTo(vault.remote, fixture);
+  if (notes.length !== 1) {
+    throw new Error(
+      `expected one archived note for a checkout named ${JSON.stringify(name)}, got ${notes.length} ` +
+        `(hook exit ${status}). The hook also exits 0 without \`jq\` or \`git\` on PATH, so check those ` +
+        "before reading this as a regression."
+    );
+  }
+  return parseMarkdownSafe(git(["-C", vault.remote, "show", `refs/heads/main:${notes[0]}`], fixture));
+}
+
+describe("session-archive note frontmatter", () => {
+  afterAll(async () => {
+    await Promise.all(fixtureRoots.map((root) => fs.rm(root, { recursive: true, force: true })));
+  });
+
+  // Any name `mask` rewrites in FULL. Measured with the 32-character
+  // hash-shaped name the catch-all whole-line rule matches — what a worktree
+  // named after a commit looks like — rather than a literal credential.
+  const MASKED_WHOLE = "abcdefghijklmnopqrstuvwxyz012345";
+
+  it("keeps the note readable when mask() rewrites the checkout name", async () => {
+    const note = await archiveFrom(MASKED_WHOLE);
+
+    expect(note.parseError).toBeUndefined();
+    expect(note.frontmatter.id).toBe(`cc-session-${SESSION_ID}`);
+    expect(note.frontmatter.project).toBe("***MASKED***");
+    // A sequence of quoted ELEMENTS: quoting the whole `[...]` would parse too,
+    // and silently turn a list the server's allowlist covers into a string.
+    expect(note.frontmatter.repos).toEqual(["***MASKED***"]);
+    expect(note.frontmatter.tags).toEqual(["claude-code-session", "***MASKED***"]);
+  });
+
+  it("loses the whole frontmatter once those three values go out bare", async () => {
+    const note = await archiveFrom(MASKED_WHOLE, "bare");
+
+    expect(note.parseError).toMatch(/unidentified alias/);
+    // Not a degraded field — a degraded NOTE: no identity, no project, no tags.
+    expect(note.frontmatter.id).toBeUndefined();
+    expect(note.frontmatter.project).toBeUndefined();
+    expect(note.frontmatter.tags).toEqual([]);
+  });
+
+  it("gives the read path the literal name where YAML used to auto-type it", async () => {
+    const named = await archiveFrom("null");
+    expect(named.frontmatter.project).toBe("null");
+    expect(named.frontmatter.tags).toEqual(["claude-code-session", "null"]);
+
+    const dated = await archiveFrom("2026-01-01");
+    expect(dated.frontmatter.project).toBe("2026-01-01");
+    expect(dated.frontmatter.tags).toEqual(["claude-code-session", "2026-01-01"]);
+
+    // What quoting changed, measured: bare, `null` parsed to YAML null, so
+    // normalizeMetadata DELETED project and filtered the tag out of the list…
+    const bareNamed = await archiveFrom("null", "bare");
+    expect(bareNamed.frontmatter.project).toBeUndefined();
+    expect(bareNamed.frontmatter.tags).toEqual(["claude-code-session"]);
+
+    // …and a date-shaped name parsed to a Date that `String(value)` renders per
+    // timezone and locale, so one note named two projects depending on who read it.
+    const bareDated = await archiveFrom("2026-01-01", "bare");
+    expect(bareDated.frontmatter.project).not.toBe("2026-01-01");
+    expect(String(bareDated.frontmatter.project)).toContain("GMT");
+  });
+
+  it("adds no empty member for a name with edge or doubled spaces", async () => {
+    // `repos`/`tags` are split on the space that separates two checkouts, so a
+    // space INSIDE one name splits it. Quoting each fragment would keep the
+    // empty ones as `""`, which the read path's `item != null` filter cannot
+    // drop; the emitter drops them instead, leaving what bare emission left.
+    const trailing = await archiveFrom("myrepo ");
+    expect(trailing.frontmatter.repos).toEqual(["myrepo"]);
+    expect(trailing.frontmatter.tags).toEqual(["claude-code-session", "myrepo"]);
+    // Quoting DOES change `project` here: YAML trimmed a bare scalar, and a
+    // quoted one keeps the trailing space the checkout actually has.
+    expect(trailing.frontmatter.project).toBe("myrepo ");
+
+    const doubled = await archiveFrom("a  b");
+    expect(doubled.frontmatter.repos).toEqual(["a", "b"]);
+    expect(doubled.frontmatter.tags).toEqual(["claude-code-session", "a", "b"]);
+    expect(doubled.frontmatter.project).toBe("a  b");
+
+    const bareTrailing = await archiveFrom("myrepo ", "bare");
+    expect(bareTrailing.frontmatter.tags).toEqual(["claude-code-session", "myrepo"]);
+    expect(bareTrailing.frontmatter.project).toBe("myrepo");
+
+    const bareDoubled = await archiveFrom("a  b", "bare");
+    expect(bareDoubled.frontmatter.tags).toEqual(["claude-code-session", "a", "b"]);
+    // The bare null nothing under src/ ever reads, and the reason `tags` above
+    // matches: the filter took it back out on the way to the read path.
+    expect(bareDoubled.frontmatter.repos).toEqual(["a", null, "b"]);
   });
 });

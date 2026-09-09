@@ -116,6 +116,32 @@ terminal-ops-logs/
   閉じ引用符が無い値は上の keyword 規則が空白までマスクするので、被覆は落ちない。
 - ⚠️ **上の keyword 規則は「引用値規則の落ち先」なので byte 単位で変えない。**
   変えると「以前はマスクされていた入力が平文で残る」経路ができる。
+- **auth scheme 付きヘッダ** (`Authorization: <scheme> <credential>`) は **2 トークン**なので、
+  上の keyword 規則は**空白で値を切って scheme 語だけを消し、credential を marker の
+  右隣に平文で残す** (= 成功した redaction に見える)。`Bearer` だけは専用規則が
+  後続 token を取るので無事だった。**keyword + scheme + credential を 1 本で消す規則**を
+  keyword 規則の**直上**に置く (直下では scheme 語が既に `***MASKED***` になっていて発火できない)。
+  scheme は **allowlist** (`Basic` / `Digest` / `Token` / `ApiKey` / `OAuth` / `SSWS`) — 汎用の
+  scheme 語にすると「keyword の次の次の語を消す」規則になり、**引用符無しの frontmatter**
+  (`project:` / `repos: [...]` / `tags: [...]`) の隣の値まで巻き込む。
+  ⚠️ **この規則の否定 address (`/…PRIVATE KEY…/!`) は飾りではなく必須である。**
+  sed は `-e` を**その時点の pattern space に順に**適用するので、ここでの置換は
+  **下の PEM range の address が評価される前に marker を食える**。食うと range は開かず、
+  prefix 付き (`cat -n` / `> ` / `grep -n`) の鍵本体は行頭固定 catch-all にかからないまま
+  **そのまま出る** — **address を外すと多行ケース 54/54 で本体 6/6 行が漏れる** (実測)。
+  ⛔ **「値の先頭の `-` を禁じる」では直らない** (marker を別の文字に接ぐ形で食われる: 実測 6/6 漏れ)。
+  ⛔ **「PEM 規則の下へ移す」でも直らない** (keyword 規則が先に scheme 語を消すので不発: 実測)。
+  ⚠️ **残渣 1**: `Digest` や OAuth 1.0a のような**パラメータ列**の scheme は値が引用符で終わるので
+  `response=` が残る。**base と同じ漏れ**で悪化ではないが、**閉じてもいない** (テストで pin 済み)。
+  ⚠️ **残渣 2**: allowlist 外の scheme (`Negotiate` / `NTLM` / `AWS4-HMAC-SHA256`) は base のまま。
+  ⚠️ **代償**: keyword の直後に scheme 語が来る散文は**次の 1 語**も消える。
+  **実測**: base commit 時点の追跡テキスト **102 ファイル / 43,016 行**を
+  **ファイル全体 1 ストリーム**で新旧 `mask()` に通して**差分 0 行**
+  (`MASKED` を含む行数 916 → 916、マスクが減った行 0)。本変更が足した文面まで含めても
+  差分は **5 行**で、すべて本規則自身のコメント・テスト本文であり**マスクが増える側**である。
+  ⚠️ **測り方を変えた**: 従来の **1 行ずつ**の corpus では、**range address を持つ規則の回帰を
+  原理的に観測できない**。上の実測は**ファイル全体を 1 ストリーム**で通し、加えて
+  多行の PEM corpus (scheme x prefix x marker 位置) で base と比べている。
 - ⚠️ **引用値を丸ごとマスクする代償**: 秘密でない `"key": "…"` や keyword に続く引用句も消える。
   **マスク過剰側に倒す判断**であって「影響なし」ではない。
   **実測** — 追跡下の `.md/.ts/.sh/.json/.yml` **99 ファイル / 36,330 行**を新旧両方の `mask()` に
