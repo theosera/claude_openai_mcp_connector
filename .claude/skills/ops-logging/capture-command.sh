@@ -186,8 +186,28 @@ mask() {
     -e 's/-----END [A-Z ]*PRIVATE KEY-----/***MASKED***/g' \
     -e '/^[[:space:]]*[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/.*/***MASKED***/'
 }
-cmd_masked="$(printf '%s' "$cmd"    | mask | tr '\n' ' ')"
-intent_masked="$(printf '%s' "$intent" | mask | tr '\n' ' ')"
+# ⭐ 1 行の byte 上限。⛔ 上限が要る理由は可読性ではなく【リポの成長】である:
+#    実測 2026-09-09 — 5,004 行のうち 2,000 B を超えるのは 357 行 (7.1%) だけだが、
+#    その 357 行が全体 3,350,112 B の 43% を占めていた。日付ファイルはコミットの
+#    たびに丸ごと新しい blob として積まれるので、長い行は二次的に効く。
+#    ⇒ 2,000 B で切ると 3,350,112 B → 約 2,622,773 B (22% 減)。中央値は 322 B
+#      なので、⭕ ほとんどの行は無傷のまま通る。
+# ⛔ byte で切ると UTF-8 の途中で切れる。⭐ iconv -c で末尾の不完全な列を落とすので、
+#    この関数は locale に依存しない (実測: C / en_US.UTF-8 / ja_JP.UTF-8 の 3 つで
+#    同じ出力・いずれも妥当な UTF-8)。⛔ ${s:0:N} は locale で文字/byte が入れ替わる。
+# ⚠️ 失うもの: 長いコマンドの末尾。⭐ 省略した byte 数を必ず書き残すので、
+#    「短いコマンドだった」と「切られた」を後から区別できる。
+CLIP_BYTES="${OPS_LOG_CLIP_BYTES:-2000}"
+clip() {
+  s=$1; max=$2
+  n=$(printf '%s' "$s" | wc -c | tr -d ' ')
+  [ "$n" -le "$max" ] && { printf '%s' "$s"; return; }
+  head=$(printf '%s' "$s" | head -c "$max" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null)
+  printf '%s …(%s B 省略)' "$head" "$((n - max))"
+}
+
+cmd_masked="$(clip "$(printf '%s' "$cmd"    | mask | tr '\n' ' ')" "$CLIP_BYTES")"
+intent_masked="$(clip "$(printf '%s' "$intent" | mask | tr '\n' ' ')" "$CLIP_BYTES")"
 
 # --- route to <origin_repo>/<date>.md ------------------------------------
 # Every repo logs into its OWN folder, named after the origin repo — created
