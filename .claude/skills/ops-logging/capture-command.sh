@@ -198,16 +198,28 @@ mask() {
 # ⚠️ 失うもの: 長いコマンドの末尾。⭐ 省略した byte 数を必ず書き残すので、
 #    「短いコマンドだった」と「切られた」を後から区別できる。
 CLIP_BYTES="${OPS_LOG_CLIP_BYTES:-2000}"
+# ⭐ intent の取り分は予算の 1/4 まで。⛔ 先に intent を丸ごと確保すると、実測で
+#    9,154 B の intent が在るため cmd が潰れる — コマンドが主記録なので本末転倒。
+#    実測 2026-09-09 (6,056 行): intent の中央値 24 B / 90%点 86 B ⇒ ⭕ 実運用では
+#    ほぼ全額が cmd に回る。
+INTENT_BYTES=$(( CLIP_BYTES / 4 ))
 clip() {
   s=$1; max=$2
   n=$(printf '%s' "$s" | wc -c | tr -d ' ')
   [ "$n" -le "$max" ] && { printf '%s' "$s"; return; }
-  head=$(printf '%s' "$s" | head -c "$max" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null)
+  # ⛔ iconv は末尾が不完全な列だと rc=1 を返す (実測)。この hook は `set -euo pipefail`
+  #    の下で走るので、許容しないと【代入ごと】落ちて行が無音で消える。head -c が
+  #    早くパイプを閉じると printf が SIGPIPE で 141 になるのも同じ。⇒ 明示的に飲む。
+  #    ⭕ 「hook はツール実行をブロックしない」は ops-logging のハードルール。
+  head=$(printf '%s' "$s" | head -c "$max" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null || true)
   printf '%s …(%s B 省略)' "$head" "$((n - max))"
 }
 
-cmd_masked="$(clip "$(printf '%s' "$cmd"    | mask | tr '\n' ' ')" "$CLIP_BYTES")"
-intent_masked="$(clip "$(printf '%s' "$intent" | mask | tr '\n' ' ')" "$CLIP_BYTES")"
+# ⭐ 予算は【行 1 本】に対して掛ける。⛔ フィールドごとに掛けると、両方が上限に
+#    達した行が上限の 2 倍になる (実測: 2,000 B を超える intent が 26 行 実在)。
+intent_masked="$(clip "$(printf '%s' "$intent" | mask | tr '\n' ' ')" "$INTENT_BYTES")"
+intent_n=$(printf '%s' "$intent_masked" | wc -c | tr -d ' ')
+cmd_masked="$(clip "$(printf '%s' "$cmd"    | mask | tr '\n' ' ')" "$(( CLIP_BYTES - intent_n ))")"
 
 # --- route to <origin_repo>/<date>.md ------------------------------------
 # Every repo logs into its OWN folder, named after the origin repo — created
