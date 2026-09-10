@@ -587,8 +587,37 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
 ## pre-commit レビューの発火 (CLAUDE.md 発火表の詳細)
 
 `CLAUDE.md` は「`fs` write 経路 / write surface の gate を触ったら commit 前に
-**(a) `/claude-security` の change scan、無ければ (b) `/security-review`**」とだけ言う。
-その根拠と、両者の違いはここが持つ。
+**(b) `/security-review`** を回す」とだけ言う。その根拠と、(a) との違いはここが持つ。
+
+⛔⛔ **なぜ commit 前が (b) なのか (2026-09-10 訂正 / 2026-09-11 再訂正)**: (a) の **change scan は
+commit 済みの diff しか読まない** — job 定義の逐語: "Only committed changes are scanned. Uncommitted
+work in the tree is not part of any diff this job builds"。⇒ **commit 前に回すと、未コミット分を
+落とした「非空だが stale」な diff を読む**。⛔ ⭐ **落ちる作業は同じファイルの中にあるので、
+レポートはそのファイル名を挙げ、走査済みに見える。**
+
+⚠️ **実測 2026-09-11 06:58 JST**: 未コミット作業を抱えた枝で `merge-base..HEAD` = 4 files / 755 行
+(**空ではない**)、落ちた未コミット分 = **同じ 4 files** / 488 行。⚠️ 数値は枝が進むと動く
+(同じ枝を後で測った別席は違う値を得た) — ⭐ 動かないのは「**非空**」と「**落ちた分が同じファイルの
+中にある**」の 2 点。
+
+⭕ **空 diff のほうは器具が止める** — job 定義: "a range with no changed files is not scanned at all
+— tell the user there is no diff and stop" (`jobs/scan-changes.md`)、`coverage.emptyDiff` が真なら
+"deliver *the range contains no changed files* as the whole outcome"。加えて sub-menu の branch 選択肢は
+"offered ONLY when HEAD is on a branch with commits ahead of a base that resolved"。
+⇒ ★ **「指摘 0 件を走査したと記録」は空 diff からは起きない。気づけないのは stale のほうだけ。**
+
+⛔ **旧版は「commit 前に回すと常に空 diff になり、指摘 0 件を『走査した』と記録してしまう」と
+書いていた。その推論が誤り** (逐語引用そのものは正しい)。⇒ ⭐ **結論 (change scan は commit 前の
+器具ではない) は変わらず、むしろ強まる** — 空振りは器具が止めるので気づくが、**stale な緑は本物の
+レポートの形で出るので誰も気づかない**。⚠️ **4 席が独立にここで止まった** (2026-09-10)。
+
+⇒ ⭕ (a) を commit 前に使いたければ **codebase scan に `--scope` を付ける** (作業ツリーを読む)。
+⇒ ⛔ **change scan は commit した後 / push の前**。
+
+⚠️ 下の「空 diff 事故」の実測は `origin/HEAD` 未設定によるもので、**症状が違う別の欠陥**である
+(あちらは**空** diff、こちらは**非空の stale** diff)。⛔ **旧版はこの 2 つを「同じ症状」と書いていた
+— それが誤り。** ⇒ ★ **症状で書いた注意書きは、症状が違う欠陥を捕まえない。** だから 2 つ目は
+「既知の注意点」に見えて温存されたのではなく、**注意書きの射程外だった**。
 
 **(a) と (b) は同じものの強弱ではなく、層が違う** (公式 docs も別レイヤとして並べている):
 

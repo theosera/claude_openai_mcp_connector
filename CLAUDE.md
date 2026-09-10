@@ -52,22 +52,61 @@ HTTP は **opt-in の OAuth 2.1 authorization server** (`src/oauth/`、PKCE S256
 | セッション間・エージェント間でブロック / パッチ / 数値 / レシピをファイルや貼り付けで受け渡す前後 | `handoff-block-integrity` |
 | 「一致」「0 件」「全部緑」「存在しない」「完了」など同一性・悉皆・不在の主張を書く直前、テストの緑を安全の根拠にする前、検査・逆検証・スキャンを設計する前、件数を報告する前 | `measurement-scope` |
 | 複数の Claude セッション (Web/CLI) が同じ文書群・同じリポを分担編集する体制を組む / 参加する前、他セッションの成果物に帰属や評価を書く前、/compact の前後 | `multi-session-collab` |
-| **★ ここだけ「着手前」でなく「commit する前」** — **`fs` に書く経路を新設/変更した** (`src/atomicWrite.ts` / `knowledgeStore` の write・apply / `skillStore` / `auditStore` / `oauth/store` の永続化)、または **write tool・write surface の gate を足した/変えた**変更を commit する前                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | **(a) `/claude-security` の change scan** — 使えなければ **(b) `/security-review`** |
-| **★ これも「commit する前」** — **アーカイブ / ログ出力の escape・fence・マスキング規則を変えた**変更 (`archive-session.sh` の fence 生成、`capture-command.sh` の秘匿マスク、および本リポ側の public-safe copy) を commit する前。⚠️ **別リポ (`terminal-ops-logs`) の shell でも発火する** | **(a) `/claude-security` の change scan** — 使えなければ **(b) `/security-review`** |
+| **★ ここだけ「着手前」でなく「commit する前」** — **`fs` に書く経路を新設/変更した** (`src/atomicWrite.ts` / `knowledgeStore` の write・apply / `skillStore` / `auditStore` / `oauth/store` の永続化)、または **write tool・write surface の gate を足した/変えた**変更を commit する前                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | **(b) `/security-review`**（★ 未コミット差分を読む）— ⛔ **(a) の change scan はここでは使えない**（下記） |
+| **★ これも「commit する前」** — **アーカイブ / ログ出力の escape・fence・マスキング規則を変えた**変更 (`archive-session.sh` の fence 生成、`capture-command.sh` の秘匿マスク、および本リポ側の public-safe copy) を commit する前。⚠️ **別リポ (`terminal-ops-logs`) の shell でも発火する** | **(b) `/security-review`**（★ 未コミット差分を読む）— ⛔ **(a) の change scan はここでは使えない**（下記） |
 
 > ⚠️ **`claim-freshness` の詳細な手順は、下の「状態鮮度の発火表」が正典**。上の行は発火の入口で、
 > skill 本体は携行版である — 矛盾したらそちらが勝つ (`GD-NO-DUPLICATION`: 同じ規則を 2 枚持つと片方が腐る)。
 
-> **発火が「commit する前」なのは、探す対象が設計ではなく実装だから** (着手前に回しても
-> 差分が無い)。**(a) が本命** — 脅威モデルを作り**全指摘を別エージェントが独立検証**する。
-> **(b) はその弱い部分集合** (単一パス) だが、**プラグインの前提を満たさない環境でも必ず走る**
-> ための分岐で、**(b) で足りた回を (a) 不要の根拠にしない**。
+> **発火が「commit する前」なのは、探す対象が設計ではなく実装だから** (着手前に回しても差分が無い)。
+>
+> ⛔⛔ **ただし (a) の change scan は、この発火では使えない。** その job は **commit 済みの diff しか
+> 読まない** — job 定義の逐語: "Only committed changes are scanned. Uncommitted work in the tree is
+> not part of any diff this job builds"。⇒ **commit 前に回すと、未コミット分を落とした
+> 「非空だが stale」な diff を読む**。⛔ ⭐ **落ちる作業は同じファイルの中にあるので、レポートは
+> そのファイル名を挙げ、走査済みに見える。**
+> ⚠️ **実測 2026-09-11 06:58 JST**: 未コミット作業を抱えた枝で `merge-base..HEAD` = 4 files / 755 行
+> (**空ではない**)、落ちた未コミット分 = **同じ 4 files** / 488 行。⚠️ 数値は枝が進むと動く —
+> ⭐ 動かないのは「**非空**」と「**落ちた分が同じファイルの中にある**」の 2 点。
+> ⭕ **空 diff のほうは器具が止める** — job 定義: "a range with no changed files is not scanned at
+> all — tell the user there is no diff and stop"。⇒ ★ **気づけないのは stale のほうだけ。**
+> ⛔ **旧版は「commit 前に回すと常に空 diff」「下の『空 diff を確かめる』はこの形も指す」と
+> 書いていた。どちらも誤り** — ⇒ ⭐ **結論 (change scan は commit 前の器具ではない) は変わらず、
+> むしろ強まる**。空振りは器具が止めるので気づくが、**stale な緑は本物のレポートの形で出るので
+> 誰も気づかない**。
+> ⚠️ **実測 2026-09-10**: 4 席が独立にここで止まった。★ **文言と器具の食い違いを放置したまま
+> 「注意して回す」で運用していたので、注意深い席ほど止まり、素通りした席は射程外の緑を実施済みと
+> 記録しかけた。**
+>
+> ⇒ ⭕ **commit 前の本命は (b) `/security-review`** — 未コミット差分をそのまま読む。
+> ⇒ ⭐ (a) を使いたければ **codebase scan に `--scope` を付ける** (作業ツリーを読むので commit 不要)。
+> ⇒ ⛔ **change scan を使うのは commit した後 / push の前**。
+>
+> ⭐ **1 つの変更に両方は要らない。** commit 前に (b) か scoped codebase scan を回したなら、
+> commit 後の change scan は**不要**。⛔ 逆も同じ。★ 選ぶのは**どの時点で回すか**であって、回数ではない。
+> ⚠️ **この 1 行が無いと、次の席は「(i) を選んだら (b) も要るのか」でもう一度止まる**
+> (2026-09-10、実際にそこで止まった席がある)。
+>
+> ⭐ **ただし「1 回」は「いつでも 1 回」ではない — 走査は commit 直前の最後の操作にする。**
+> ⇒ ⛔ **走査の後に編集したら、その編集は走査の対象になっていない**ので、⭐ **その編集は次の走査の
+> 対象である**。⚠️ 走査結果は**回した瞬間のツリーのキャッシュ**で、後の編集を被覆しない
+> (`claim-freshness` の「キャッシュを現在の状態として提示しない」がそのまま当たる)。
+> ⛔ **「diff が変わるたび再走」にはしない** — 上限が無く、下の「毎回回す規約は守られなくなり…」に
+> 自分で抵触する。⭕ **縛るのは順序** (走査を最後に置く) **であって、回数ではない**。
+>
+> **(a) の強み**は脅威モデルを作り**全指摘を別エージェントが独立検証**すること。**(b) は単一パス**なので、
+> **(b) で足りた回を (a) 不要の根拠にしない**。
 >
 > ⚠️ **逆検証の代わりにしない。** 逆検証は**書いたガードが効くか**、レビューは**書かなかった
 > ガード**を見る — 別の失敗モードである。
 >
 > ⚠️ **走らせる前に diff が空でないことを確かめる。** 空 diff をレビューして「指摘なし」に
-> なる事故が実際に起きかけた。
+> なる事故が実際に起きかけた — ★ `origin/HEAD` 未設定によるもの (skill 側に経緯あり)。
+> ⚠️ ⭐ **上の commit 境界の件は、これとは症状が違う別の欠陥である** — ★ あちらは**非空の stale
+> diff** を作るので、⛔ **この「空でないことを確かめる」を守っても検出できない** (しかも毎回起きる)。
+> ⛔ **旧版はこの 2 つを「同じ症状」と書いていた。それが誤り** — ⇒ ★ **症状で書いた注意書きは、
+> 症状が違う欠陥を捕まえない。** だから 2 つ目は「既知の注意点」に見えたのではなく、
+> **注意書きの射程外だった**。
 >
 > 実測・両者の詳しい違い・空 diff 事故の経緯は **`mcp-vault-security` skill の
 > 「pre-commit レビューの発火」**節。
