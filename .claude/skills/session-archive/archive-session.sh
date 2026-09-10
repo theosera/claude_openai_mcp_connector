@@ -697,17 +697,60 @@ body_jq='
     # top-level prose. Do NOT fold CR into LF to close this: the whole-text
     # gsub("\r\n?"; "\n") is the quadratic pass rejected at the top of this
     # renderer. split/join is linear and restores every byte it did not escape.
-    def esc: sub("^(?<s> {0,3})(?<h>#{1,6}[ \t])"; "\(.s)\\\(.h)");
+    # ATX is not the only shape that forges a turn; three more reach top-level
+    # prose, and an ATX-only rule let all three through (F5 / F3 of the
+    # 2026-09-09 scan):
+    #   - a setext underline (=== / ---) makes a HEADING of the line above it;
+    #   - a block-level raw HTML opener (<h2>, <div>, ...), which a reading view
+    #     renders, so <h2> forges exactly the shape ATX does;
+    #   - a fence run at column 0 that the turn never closes. That flips fence
+    #     parity for the REST of the note: the opening fence of the next tool
+    #     result closes the one the turn opened, and the result body lands at
+    #     top level as prose. Nothing downstream measures a text turn, so nothing catches it.
+    # Each is escaped only in the shape that actually forges, because the broad
+    # form costs too much. Measured over two transcripts, 729 text turns /
+    # 8,024 lines: ATX 694 lines (already escaped before this change); a setext
+    # underline preceded by a NON-BLANK line, 1 -- every setext-shaped line
+    # would be 16 and would also escape thematic breaks, which forge nothing;
+    # the narrowed HTML opener, 0; a leading fence run, 861 -- but a run in a
+    # turn that LEAVES A FENCE OPEN, 0 (also 0 over 2,885 turns of a third
+    # transcript). Escaping all 861 is the "7,336 more lines" this renderer rejected
+    # above; escaping only the unbalanced ones costs nothing and fires on
+    # exactly the attack. Old-vs-new over those 729 turns differs by 1 line.
+    # The fence state is computed over the whole turn BEFORE any line is
+    # escaped, so the escaping cannot change the decision that drives it.
+    # split("\r") on an empty string returns [] in jq, not [""], so a blank line
+    # would contribute zero entries; normalise it back to [""] or the "line
+    # above" test silently skips blanks and reads the paragraph before them.
+    # That defect was caught by the thematic-break control, not by review.
+    def fence_m: if test("^ {0,3}(~{3,}|`{3,})") then capture("^ {0,3}(?<run>~{3,}|`{3,})(?<info>.*)$") else null end;
+    def esc_bs: sub("^(?<s> {0,3})"; "\(.s)\\");
     # ANSI colour and line-clear sequences are removed here, per line and BEFORE
-    # esc, for the same reason fence removes them: the assembled note no longer
-    # passes through strip_ansi, and a text turn is the one body path that did
-    # not go through fence. Left in, `ESC[0m## User` is not an ATX heading to
-    # esc (the line does not START with `#`) but IS one to a renderer that
-    # discards the sequence first -- an unescaped, forged turn. Same pattern as
-    # fence and strip_ansi; keep the three in step.
-    split("\n")
-    | map(gsub("\u001b\\[[0-9;]*[mK]"; "") | split("\r") | map(esc) | join("\r"))
-    | join("\n");
+    # every escape below, for the same reason fence removes them: the assembled
+    # note no longer passes through strip_ansi, and a text turn is the one body
+    # path that did not go through fence. Left in, `ESC[0m## User` is not an ATX
+    # heading to the rule below (the line does not START with `#`) but IS one to
+    # a renderer that discards the sequence first -- an unescaped, forged turn.
+    # Same pattern as fence and strip_ansi; keep the three in step.
+    (split("\n") | map(gsub("\u001b\\[[0-9;]*[mK]"; "") | split("\r") | if length == 0 then [""] else . end)) as $g
+    | ([$g[] | length]) as $sizes
+    | ([$g[] | .[]]) as $L
+    | ((reduce $L[] as $l ({o:null, n:0};
+          ($l | fence_m) as $m
+          | if $m == null then .
+            elif .o == null then
+              (if ($m.run[0:1]) == "`" and ($m.info | test("`")) then . else {o:($m.run[0:1]), n:($m.run|length)} end)
+            elif ($m.run[0:1]) == .o and (($m.run|length) >= .n) and ($m.info | test("^[[:space:]]*$")) then {o:null, n:0}
+            else . end)) | .o != null) as $unbalanced
+    | [ range(0; $L|length) as $i
+        | $L[$i]
+        | sub("^(?<s> {0,3})(?<h>#{1,6}[ \t])"; "\(.s)\\\(.h)")
+        | if ($i > 0) and ($L[$i-1] | test("[^[:space:]]")) and test("^ {0,3}(=+|-+)[[:space:]]*$") then esc_bs else . end
+        | if test("^ {0,3}</?(?:[hH][1-6]|[hH][rR]|[dD][iI][vV]|[pP]|[sS]ection|[aA]rticle|[hH]eader|[tT]able|[bB]lockquote)\\b") then esc_bs else . end
+        | if $unbalanced and ((fence_m) != null) then esc_bs else . end ] as $E
+    | reduce range(0; $sizes|length) as $k ({out: [], p: 0};
+        {out: (.out + [ $E[.p : .p + $sizes[$k]] | join("\r") ]), p: (.p + $sizes[$k])})
+    | .out | join("\n");
   def clean_user:
     gsub("<(?:local-command-caveat|local-command-stdout|local-command-stderr|command-name|command-message|command-args|system-reminder|user-prompt-submit-hook|bash-input|bash-stdout|bash-stderr)[^>]*>.*?</[^>]+>"; ""; "s")
     | gsub("^[[:space:]]+|[[:space:]]+$"; "");

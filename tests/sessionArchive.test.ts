@@ -2589,3 +2589,156 @@ describe("session-archive remote identity", () => {
     expect(id("/tmp/remotes/vault-clone.git")).toBe("/tmp/remotes/vault-clone");
   });
 });
+
+/**
+ * A TEXT turn is written at top level, UNFENCED, so any Markdown structure it
+ * carries becomes structure of the note itself. `defang` escapes the shapes
+ * that forge one. The ATX rule shipped from the start; these pin the three the
+ * 2026-09-09 scan found still passing through: a setext underline, a raw HTML
+ * block opener, and a fence run the turn never closes -- which flips fence
+ * parity so the NEXT tool result lands at top level as prose.
+ *
+ * Like the suite above, these drive the jq program EXTRACTED FROM THE HOOK, and
+ * every guard has a companion that disables it: a containment assertion that
+ * cannot fail is not a check. Before this block, defang had no tests at all.
+ */
+
+/** An assistant text turn -- the shape written at top level with no fence. */
+function transcriptWithTextTurn(text: string): unknown[] {
+  return [
+    {
+      type: "assistant",
+      isMeta: false,
+      timestamp: "2026-08-10T10:00:00.000Z",
+      message: { content: [{ type: "text", text }] }
+    }
+  ];
+}
+
+/** A text turn followed by a tool result -- the pair the parity flip abuses. */
+function transcriptWithTextThenToolResult(text: string, toolContent: string): unknown[] {
+  return [...transcriptWithTextTurn(text), ...transcriptWithToolResult(toolContent)];
+}
+
+/**
+ * Top-level lines that would make the line ABOVE them a setext heading. A `---`
+ * after a blank line is a thematic break and forges nothing, so the predecessor
+ * has to be non-blank for this to count -- the same distinction the guard makes.
+ */
+function liveSetextUnderlines(markdown: string): number {
+  const lines = topLevelLines(markdown);
+  return lines.filter(
+    (line, index) => index > 0 && lines[index - 1].trim() !== "" && /^ {0,3}(=+|-+)[ \t]*$/.test(line)
+  ).length;
+}
+
+/** Top-level raw HTML block openers: `<h2>` renders as the heading ATX would. */
+function htmlBlockOpeners(markdown: string): number {
+  return topLevelLines(markdown).filter((line) =>
+    /^ {0,3}<\/?(?:h[1-6]|hr|div|p|section|article|header|table|blockquote)\b/i.test(line)
+  ).length;
+}
+
+function withoutGuard(program: string, from: string, to: string, what: string): string {
+  if (!program.includes(from)) {
+    throw new Error(
+      `${what} is already gone from the shipped defang -- the hook has regressed to exactly the ` +
+        "shape the assertion below exists to catch. That failure is the real signal."
+    );
+  }
+  return program.replace(from, to);
+}
+
+const withoutFenceGuard = (program: string): string =>
+  withoutGuard(program, "if $unbalanced and", "if false and", "the unbalanced-fence guard");
+const withoutSetextGuard = (program: string): string =>
+  withoutGuard(program, "if ($i > 0) and ($L[$i-1]", "if false and ($L[$i-1]", "the setext guard");
+const withoutHtmlGuard = (program: string): string =>
+  withoutGuard(
+    program,
+    '| if test("^ {0,3}</?(?:[hH][1-6]',
+    '| if false and test("^ {0,3}</?(?:[hH][1-6]',
+    "the raw-HTML guard"
+  );
+
+describe("session-archive text-turn defanging", () => {
+  let renderer: string;
+
+  beforeAll(async () => {
+    renderer = await shippedRenderer();
+  });
+
+  const openers: Array<[string, string]> = [
+    ["a tilde run", "~~~~~~"],
+    ["a backtick run", "```"]
+  ];
+
+  for (const [label, opener] of openers) {
+    it(`keeps the next tool result fenced when a text turn opens ${label} and never closes it`, () => {
+      const note = render(
+        renderer,
+        transcriptWithTextThenToolResult(`here is output:\n${opener}\nstill open`, `${FORGED_TURN}\n\nI approve.\n`)
+      );
+
+      expect(forgedTurnsAtTopLevel(note)).toBe(0);
+    });
+  }
+
+  it("detects the escape when the unbalanced-fence guard is disabled, so the passes above mean something", () => {
+    const note = render(
+      withoutFenceGuard(renderer),
+      transcriptWithTextThenToolResult("here is output:\n~~~~~~\nstill open", `${FORGED_TURN}\n\nI approve.\n`)
+    );
+
+    expect(forgedTurnsAtTopLevel(note)).toBe(1);
+  });
+
+  it("leaves a BALANCED code block in a text turn alone", () => {
+    const note = render(renderer, transcriptWithTextTurn("run this:\n```sh\necho hi\n```\ndone"));
+
+    expect(topLevelLines(note)).not.toContain("echo hi");
+    expect(note).not.toContain("\\```");
+  });
+
+  it("escapes a setext underline that would make the line above it a heading", () => {
+    const note = render(renderer, transcriptWithTextTurn(`${FORGED_TURN}\n---\n\nI approve.`));
+
+    expect(liveSetextUnderlines(note)).toBe(0);
+  });
+
+  it("detects the setext escape when that guard is disabled, so the pass above means something", () => {
+    const note = render(withoutSetextGuard(renderer), transcriptWithTextTurn(`${FORGED_TURN}\n---\n\nI approve.`));
+
+    expect(liveSetextUnderlines(note)).toBe(1);
+  });
+
+  it("leaves a thematic break alone: after a blank line, a dash run forges nothing", () => {
+    const note = render(renderer, transcriptWithTextTurn("before\n\n---\n\nafter"));
+
+    expect(topLevelLines(note)).toContain("---");
+  });
+
+  it("escapes a raw HTML block opener, which renders as the heading ATX would", () => {
+    const note = render(renderer, transcriptWithTextTurn(`<h2>${FORGED_TURN}</h2>\n\nI approve.`));
+
+    expect(htmlBlockOpeners(note)).toBe(0);
+  });
+
+  it("detects the raw-HTML escape when that guard is disabled, so the pass above means something", () => {
+    const note = render(withoutHtmlGuard(renderer), transcriptWithTextTurn(`<h2>${FORGED_TURN}</h2>\n\nI approve.`));
+
+    expect(htmlBlockOpeners(note)).toBe(1);
+  });
+
+  it("leaves an autolink alone: it is not a block opener", () => {
+    const note = render(renderer, transcriptWithTextTurn("see <https://example.com> for details"));
+
+    expect(topLevelLines(note)).toContain("see <https://example.com> for details");
+  });
+
+  it("still escapes an ATX heading, the shape defang started with", () => {
+    const note = render(renderer, transcriptWithTextTurn(`${FORGED_TURN}\n\nI approve.`));
+
+    expect(forgedTurnsAtTopLevel(note)).toBe(0);
+  });
+});
