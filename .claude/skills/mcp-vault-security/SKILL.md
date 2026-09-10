@@ -587,8 +587,16 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
 ## pre-commit レビューの発火 (CLAUDE.md 発火表の詳細)
 
 `CLAUDE.md` は「`fs` write 経路 / write surface の gate を触ったら commit 前に
-**(a) `/claude-security` の change scan、無ければ (b) `/security-review`**」とだけ言う。
-その根拠と、両者の違いはここが持つ。
+**(b) `/security-review`** を回す」とだけ言う。その根拠と、(a) との違いはここが持つ。
+
+⛔⛔ **なぜ commit 前が (b) なのか (2026-09-10 訂正)**: (a) の **change scan は commit 済みの diff しか
+読まない** — job 定義の逐語: "Only committed changes are scanned. Uncommitted work in the tree is not
+part of any diff this job builds"。⇒ **commit 前に回すと常に空 diff** になり、
+⛔ **指摘 0 件を「走査した」と記録してしまう**。⚠️ **4 席が独立にここで止まった**。
+⇒ ⭕ (a) を commit 前に使いたければ **codebase scan に `--scope` を付ける** (作業ツリーを読む)。
+⇒ ⛔ **change scan は commit した後 / push の前**。
+⚠️ 下の「空 diff 事故」の実測は `origin/HEAD` 未設定によるもので、**この commit 境界の件とは別の欠陥**
+である。⭐ **同じ症状を出す欠陥が 2 つあり、注意書きが 1 つあったせいで 2 つ目が温存された。**
 
 **(a) と (b) は同じものの強弱ではなく、層が違う** (公式 docs も別レイヤとして並べている):
 
