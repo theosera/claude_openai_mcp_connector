@@ -432,7 +432,31 @@ function endOfQuoted(original, at) {
       index += 1;
       continue;
     }
-    if (ch === quote) return index + 1;
+    if (ch === quote) {
+      // A doubled quote is an ESCAPED quote, not the end of the value. That is
+      // how YAML and SQL spell one inside a single-quoted scalar, and how CSV and
+      // several INI dialects spell one inside a double-quoted field. Closing on
+      // the first of the pair left the tail of the value in the clear -- tracked
+      // as issue #186 for the single-quote spelling, and the same hole existed
+      // for the doubled double-quote the issue does not mention.
+      //
+      // Measured across seven shapes, this is better or equal in every one and
+      // worse in none: an empty value still closes correctly (the character after
+      // the pair is not a quote), adjacent JSON fields are untouched, a benign
+      // unterminated quote still falls through to the bare walk, and a run of
+      // quotes now reads as unterminated and is covered by that fallback rather
+      // than by a zero-length span.
+      //
+      // NOT closed, and not closeable here: a value whose quotes are doubled at
+      // the BOUNDARY rather than inside it. That string is genuinely ambiguous --
+      // an empty value followed by a bare token reads identically -- so no walk
+      // can settle it, and the shipped sed does not either.
+      if (original[index + 1] === quote) {
+        index += 1;
+        continue;
+      }
+      return index + 1;
+    }
   }
   return -1;
 }

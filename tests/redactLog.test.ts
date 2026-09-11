@@ -345,6 +345,35 @@ describe("findings from the pre-commit review", () => {
     expect(redactText(`$c['password'] = '${CANARY}'`).text).toContain(CANARY);
   });
 
+  it("treats a doubled quote as an escape, closing #186 in both spellings", () => {
+    const TAIL = "TA1L" + "_x9";
+    // The issue names the single-quote spelling; the same hole existed for the
+    // doubled double-quote, which it does not mention.
+    for (const quote of ["'", '"']) {
+      const input = `password: ${quote}${CANARY}${quote}${quote}${TAIL}${quote}`;
+      const out = redactText(input);
+      expect(out.status).toBe("ok");
+      expect(out.text).not.toContain(CANARY);
+      expect(out.text).not.toContain(TAIL);
+    }
+
+    // Regressions this could have caused, measured and pinned. An empty value
+    // closes correctly because the character after the pair is not a quote, so
+    // it is neither masked nor read as unterminated.
+    expect(redactText(`password: "" next`).text).toContain("next");
+    // An adjacent field keeps its own value.
+    const json = redactText(`{"password":"${CANARY}","user":"bob"}`);
+    expect(json.text).not.toContain(CANARY);
+    expect(json.text).toContain("bob");
+    // A backslash escape still works.
+    expect(redactText(`password: '${CANARY}\\'${TAIL}'`).text).not.toContain(CANARY);
+
+    // A recorded limit rather than a silent one: quotes doubled at the BOUNDARY
+    // are ambiguous -- an empty value followed by a bare token reads identically
+    // -- so no walk settles it, and the shipped sed does not either.
+    expect(redactText(`password: ""${CANARY}"" ${TAIL}`).text).toContain(CANARY);
+  });
+
   it("keeps the line count when a quoted value ends in a backslash", () => {
     // The escape skip ran before the line check, so a backslash at end of line
     // consumed the newline and the walk continued onto the next line, joining
