@@ -246,60 +246,11 @@ fi
 date_start="$(jq -rs '[ .[] | .timestamp // empty | select(length > 0) ] | first // empty | .[0:10]' "$transcript")"
 [ -n "$date_start" ] || date_start="$(date +%Y-%m-%d)"
 
-# Title priority: aiTitle (the session title Claude Code generates and keeps
-# updating — take the LAST value), then the latest summary entry, then the
-# first real user message, then the session id.
-title="$(jq -rs '[ .[] | .aiTitle // empty | select(type == "string" and length > 0) ] | last // empty | .[0:80]' "$transcript")"
-if [ -z "$title" ]; then
-  title="$(jq -rs '[ .[] | select(.type == "summary") | .summary // empty | select(length > 0) ] | last // empty | .[0:80]' "$transcript")"
-fi
-if [ -z "$title" ]; then
-  title="$(jq -rs '[ .[]
-      | select(.type == "user" and ((.isMeta // false) | not))
-      | .message.content
-      | if type == "string" then .
-        elif type == "array" then ([ .[] | select(.type == "text") | .text // "" ] | join(" "))
-        else "" end
-      | gsub("<(?:local-command-caveat|local-command-stdout|local-command-stderr|command-name|command-message|command-args|system-reminder|user-prompt-submit-hook|bash-input|bash-stdout|bash-stderr)[^>]*>.*?</[^>]+>"; ""; "s")
-      | gsub("[[:space:]]+"; " ") | select(length > 0)
-    ] | first // empty | .[0:80]' "$transcript")"
-fi
-[ -n "$title" ] || title="Claude Code session $sid8"
+# mask() is defined here, not further down, because safe_title (below) must
+# be built from a MASKED title: the filename is committed and pushed, so a
+# credential in the title would leave the machine in cleartext even though
+# the body copy is redacted. It reads no variables, so moving it is inert.
 
-# Filename-safe title: separators become spaces (keeps word boundaries, same
-# convention as the local session-log hook), decoration/link chars are dropped.
-# All affected chars are ASCII, so this is byte-safe for UTF-8 titles.
-safe_title="$(printf '%s' "$title" | tr '/\\:|<>' '      ' | tr -d '*?"#^[]' | tr -d '\000-\037' \
-  | sed 's/[[:space:]]\{1,\}/ /g; s/^[ .-]*//; s/[ .-]*$//')"
-[ -n "$safe_title" ] || safe_title="session"
-# Destination path (relative to the vault) differs by mode:
-#   latest     -> <subdir>/<date>_<title>_<sid8>.md              (one note/session, overwritten each turn)
-#   precompact -> <subdir>/_precompact/..precompact-<stamp>.md   (additive point-in-time snapshots)
-old_rel=""
-if [ "$mode" = "precompact" ]; then
-  rel_path="$SUBDIR/_precompact/${date_start}_${safe_title}_${sid8}.precompact-$(date -u +%Y%m%d-%H%M%S).md"
-else
-  rel_path="$SUBDIR/${date_start}_${safe_title}_${sid8}.md"
-fi
-dest="$VAULT_REPO/$rel_path"
-dest_dir="$(dirname "$dest")"
-mkdir -p "$dest_dir"
-
-# One note per session (latest mode only): the session-id suffix is the stable
-# key. If an earlier turn archived this session under a different title-derived
-# name (the summary title can appear or change mid-session), move that note to
-# the current name instead of leaving a stale duplicate with the same id.
-if [ "$mode" != "precompact" ]; then
-  for existing in "$dest_dir"/*"_${sid8}.md"; do
-    [ -f "$existing" ] || continue
-    [ "$existing" = "$dest" ] && continue
-    mv -f "$existing" "$dest"
-    old_rel="$SUBDIR/$(basename "$existing")"
-    break
-  done
-fi
-
-# --- secret masking (same rules as ops-logging capture-command.sh) ---------
 mask() {
   # A credential in tool output is usually QUOTED ("access_token": "…",
   # {'api_key':'…'}), and the keyword rule at the bottom cannot see it: it ends
@@ -321,6 +272,61 @@ mask() {
   #
   # That keyword rule is therefore left BYTE-IDENTICAL to its previous form: it
   # is the fallback that keeps this change from ever masking less than before.
+  #
+  # `Authorization: <scheme> <credential>` is TWO tokens, and that keyword rule
+  # ends its value at the first whitespace: it eats the SCHEME word and leaves
+  # the credential in the clear one space to the right of a `***MASKED***`
+  # marker, which reads as a successful redaction. `Bearer` was the only shape
+  # that escaped, because the dedicated rule above takes the token AFTER the
+  # scheme -- which is also why `Bearer` is absent from the scheme list below:
+  # that rule fires first, so nothing bearer-shaped ever reaches this one. The
+  # rule takes the CREDENTIAL and leaves the scheme word standing, even though
+  # the keyword rule below then masks that word too and the note ends up
+  # carrying two markers side by side. Consuming the scheme here would read
+  # better and measures WORSE: that rule ends its value at whitespace, so
+  # `***MASKED***"` is a single token to it and the closing quote of a
+  # `curl -H "<header>" <url>` goes with it. The value stops at a quote or a
+  # comma as well as at whitespace, so that command keeps its closing quote and
+  # its URL -- the same bound, and the same reason, as the quoted-run rules
+  # above.
+  #
+  # The scheme is an ALLOWLIST, not `[A-Za-z][A-Za-z0-9-]*`. A general scheme
+  # word turns this into "mask the second word after any keyword", which reaches
+  # this note's own UNQUOTED frontmatter (`project:` / `repos: [...]` /
+  # `tags: [...]`, masked value by value further down) and leaves the note
+  # unparseable for a checkout named after a mask keyword. The list holds the
+  # single-opaque-token schemes; an unlisted scheme is left exactly where the
+  # keyword rule had it.
+  #
+  # The negated address is LOAD-BEARING, not decoration. sed applies each `-e`
+  # in order to the pattern space AS IT STANDS, so a substitution here can
+  # destroy the text a LATER rule's ADDRESS is matched against -- and the PEM
+  # range below is addressed on the BEGIN marker. Without this address, a line
+  # of the form `token: Basic <PEM BEGIN marker>` loses that marker to the value
+  # class, the range never opens, and the body lines that follow behind a
+  # `cat -n` / `> ` / `grep -n` prefix -- exactly the ones the whole-line
+  # catch-all structurally cannot match -- are written out VERBATIM: key
+  # material this hook masked BEFORE this rule existed. Measured at 54 of 54
+  # (6 scheme spellings x 3 prefixes x 3 marker placements) with the address
+  # removed, and 0 of 54 with it. Two things that do NOT fix it: excluding a
+  # leading `-` from the value class closes only that one spelling, since a
+  # value of `X<PEM BEGIN marker>` starts at `X` and swallows the marker anyway;
+  # and moving this rule below the PEM rules disables it outright, because the
+  # keyword rule below has already replaced the scheme word with `***MASKED***`
+  # by the time it would run. Skipping marker lines is what holds, and it costs
+  # nothing: on such a line the keyword rule still masks the scheme, exactly as
+  # it did before.
+  #
+  # RESIDUE, recorded here rather than left for the next reader to discover: a
+  # PARAMETER-LIST scheme closes only PARTLY. A Digest header carries
+  # `username=`, `realm=` and `response=` parameters with QUOTED values, and the
+  # value class ends at the first `"`, so the `response=` hash stays readable
+  # beside the marker -- the very shape this rule closes for the opaque schemes.
+  # Dropping `,` from the value class does not help; what stops it is the quote.
+  # OAuth 1.0a headers have the same shape. It is unchanged ground rather than
+  # new ground (the keyword rule alone masked the scheme word and stopped in the
+  # same place), and a test pins it so the marker is never read as more than it
+  # is.
   #
   # A PEM key body often arrives with a LINE PREFIX, and the whole-line rule
   # at the bottom sees none of them: `cat -n` writes a line number and a TAB,
@@ -434,19 +440,77 @@ mask() {
     -e 's/gh[pousr]_[A-Za-z0-9]{20,}/***MASKED***/g' \
     -e 's/github_pat_[A-Za-z0-9_]{20,}/***MASKED***/g' \
     -e 's#(://[^/:@[:space:]]+):[^/@[:space:]]+@#\1:***MASKED***@#g' \
-    -e 's/([Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+)[^[:space:]]+/\1***MASKED***/g' \
-    -e "s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+\")([^\"\\\\]|\\\\.)*\"/\1***MASKED***\"/Ig" \
-    -e "s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\]|\\\\.)*'/\1***MASKED***'/Ig" \
-    -e 's/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)[^[:space:]]+/\1***MASKED***/Ig' \
+    -e 's/([Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+/\1***MASKED***/g' \
+    -e "/-----(BEGIN|END) ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/!s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+\")([^\"\\\\]|\\\\.)*\"/\1***MASKED***\"/Ig" \
+    -e "s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+\")([^\"\\\\-]|\\\\.|-{1,4}([^\"\\\\-]|\\\\.))*-{0,4}\"/\1***MASKED***\"/Ig" \
+    -e "/-----(BEGIN|END) ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/!s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\]|\\\\.)*'/\1***MASKED***'/Ig" \
+    -e "s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\-]|\\\\.|-{1,4}([^'\\\\-]|\\\\.))*-{0,4}'/\1***MASKED***'/Ig" \
+    -e "s/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+(Basic|Digest|Token|ApiKey|OAuth|SSWS)[[:space:]]+)([^[:space:],\"'-]|-{1,4}[^[:space:],\"'-])+/\1***MASKED***/Ig" \
+    -e 's/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+/\1***MASKED***/Ig' \
+    -e '/-----BEGIN ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/,/-----END ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----|^~{3,}/s/[A-Za-z0-9+\/=]{12,}/***MASKED***/g' \
+    -e 's/-----BEGIN ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/***MASKED***/g' \
+    -e 's/-----END ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/***MASKED***/g' \
     -e 's/AKIA[0-9A-Z]{16}/***MASKED***/g' \
     -e 's/sk-[A-Za-z0-9_-]{20,}/***MASKED***/g' \
     -e 's/AIza[0-9A-Za-z_-]{35}/***MASKED***/g' \
     -e 's/xox[baprs]-[A-Za-z0-9-]{10,}/***MASKED***/g' \
-    -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----|^~{3,}/s/[A-Za-z0-9+\/=]{12,}/***MASKED***/g' \
-    -e 's/-----BEGIN [A-Z ]*PRIVATE KEY-----/***MASKED***/g' \
-    -e 's/-----END [A-Z ]*PRIVATE KEY-----/***MASKED***/g' \
     -e '/^[[:space:]]*[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/.*/***MASKED***/'
 }
+
+# Title priority: aiTitle (the session title Claude Code generates and keeps
+# updating — take the LAST value), then the latest summary entry, then the
+# first real user message, then the session id.
+title="$(jq -rs '[ .[] | .aiTitle // empty | select(type == "string" and length > 0) ] | last // empty | .[0:80]' "$transcript")"
+if [ -z "$title" ]; then
+  title="$(jq -rs '[ .[] | select(.type == "summary") | .summary // empty | select(length > 0) ] | last // empty | .[0:80]' "$transcript")"
+fi
+if [ -z "$title" ]; then
+  title="$(jq -rs '[ .[]
+      | select(.type == "user" and ((.isMeta // false) | not))
+      | .message.content
+      | if type == "string" then .
+        elif type == "array" then ([ .[] | select(.type == "text") | .text // "" ] | join(" "))
+        else "" end
+      | gsub("<(?:local-command-caveat|local-command-stdout|local-command-stderr|command-name|command-message|command-args|system-reminder|user-prompt-submit-hook|bash-input|bash-stdout|bash-stderr)[^>]*>.*?</[^>]+>"; ""; "s")
+      | gsub("[[:space:]]+"; " ") | select(length > 0)
+    ] | first // empty | .[0:80]' "$transcript")"
+fi
+[ -n "$title" ] || title="Claude Code session $sid8"
+
+# Filename-safe title: separators become spaces (keeps word boundaries, same
+# convention as the local session-log hook), decoration/link chars are dropped.
+# All affected chars are ASCII, so this is byte-safe for UTF-8 titles.
+safe_title="$(printf '%s' "$title" | mask | tr '/\\:|<>' '      ' | tr -d '*?"#^[]' | tr -d '\000-\037' \
+  | sed 's/[[:space:]]\{1,\}/ /g; s/^[ .-]*//; s/[ .-]*$//')"
+[ -n "$safe_title" ] || safe_title="session"
+# Destination path (relative to the vault) differs by mode:
+#   latest     -> <subdir>/<date>_<title>_<sid8>.md              (one note/session, overwritten each turn)
+#   precompact -> <subdir>/_precompact/..precompact-<stamp>.md   (additive point-in-time snapshots)
+old_rel=""
+if [ "$mode" = "precompact" ]; then
+  rel_path="$SUBDIR/_precompact/${date_start}_${safe_title}_${sid8}.precompact-$(date -u +%Y%m%d-%H%M%S).md"
+else
+  rel_path="$SUBDIR/${date_start}_${safe_title}_${sid8}.md"
+fi
+dest="$VAULT_REPO/$rel_path"
+dest_dir="$(dirname "$dest")"
+mkdir -p "$dest_dir"
+
+# One note per session (latest mode only): the session-id suffix is the stable
+# key. If an earlier turn archived this session under a different title-derived
+# name (the summary title can appear or change mid-session), move that note to
+# the current name instead of leaving a stale duplicate with the same id.
+if [ "$mode" != "precompact" ]; then
+  for existing in "$dest_dir"/*"_${sid8}.md"; do
+    [ -f "$existing" ] || continue
+    [ "$existing" = "$dest" ] && continue
+    mv -f "$existing" "$dest"
+    old_rel="$SUBDIR/$(basename "$existing")"
+    break
+  done
+fi
+
+# --- secret masking (same rules as ops-logging capture-command.sh) ---------
 
 # --- render the transcript to Markdown --------------------------------------
 # Full raw log: user/assistant text verbatim, thinking blocks, tool calls with
@@ -502,9 +566,11 @@ body_jq='
   # ONLY thing the splitting can change is the fence length, and CR that content
   # legitimately carries (Windows-authored files, curl progress redraws)
   # survives it intact. $t is not the text as it ARRIVED, though: it is bound
-  # from $text with `ESC[...m` and `ESC[...K` already removed, and the assembled
-  # note passes through strip_ansi again before the write, so those two classes
-  # are gone twice over. Terminal control sequences outside them are untouched
+  # from $text with `ESC[...m` and `ESC[...K` already removed, and that is the
+  # ONLY removal the body gets: the assembled note no longer passes through
+  # strip_ansi, which now covers the frontmatter and title alone. A second pass
+  # ran AFTER this measurement and could collapse a nested sequence into a bare
+  # closing fence, so it was moved off the body. Terminal control sequences outside them are untouched
   # by either pass and do reach the note. It stops at U+000D: U+2028 /
   # U+2029 / U+0085 / form feed are not CommonMark line endings, so folding them
   # would widen fences that no reader could have closed.
@@ -512,7 +578,11 @@ body_jq='
     # 採寸の【前】に正規化する。採寸後に文字を削除しうるフィルタは、封じ込めの
     # 問いを開け直す（F2）。パターンは strip_ansi と同一に保つこと — あちらで
     # 剥がれてこちらで剥がれない列が 1 つでもあると、穴がそのまま戻る。
-    (($text // "") | gsub("\u001b\\[[0-9;]*[mK]"; "")) as $t
+    # Strip PER LINE, not over the whole text. A whole-text gsub materialises the
+    # match array and rebuilds the string once per match, so it costs O(matches x
+    # length) -- the same quadratic the CR fold was rejected for two paragraphs
+    # above. Splitting first bounds each pass by its own line.
+    (($text // "") | split("\n") | map(gsub("\u001b\\[[0-9;]*[mK]"; "")) | join("\n")) as $t
     | ([ $t
          | split("\n")[] | split("\r")[]
          | select(startswith("~") or startswith(" "))
@@ -523,6 +593,29 @@ body_jq='
     | $f + $lang + "\n" + $t + "\n" + $f;
   # Strip harness-injected wrapper tags from USER text only (command echoes,
   # system reminders, hook output). Actual user words stay verbatim.
+  # Text turns are written at TOP LEVEL, unfenced, so a line the model echoed can
+  # become real note structure -- a forged User heading with a plausible timestamp,
+  # read back over MCP as what the operator said. Escape only the ATX heading run:
+  # over this conversation it is 3,982 lines of 58,507 (6.8%), while also escaping
+  # tilde and backtick runs would add 7,336 more, nearly all backticks in code the
+  # operator wrote. Tilde-fence lines occurred 0 times in two independent samples.
+  # Setext underlines and blockquotes stay untouched: they cannot forge the
+  # heading-plus-timestamp shape a turn is written as.
+  # This runs where the turn is assembled and nothing measures a text turn, so no
+  # later pass can undo it -- the fence sizer never sees these lines.
+  def defang:
+    # A "line" here has to mean what def fence means by it. fence sizes over
+    # split("\n")[] | split("\r")[], so a bare CR already ends a line for the
+    # measurement -- and CommonMark agrees: LF, CR and CRLF are all line
+    # endings. Splitting on "\n" alone let "text\r## Fake" through, measured as
+    # one line and rendered as two, the second an unescaped ATX heading in
+    # top-level prose. Do NOT fold CR into LF to close this: the whole-text
+    # gsub("\r\n?"; "\n") is the quadratic pass rejected at the top of this
+    # renderer. split/join is linear and restores every byte it did not escape.
+    def esc: sub("^(?<s> {0,3})(?<h>#{1,6}[ \t])"; "\(.s)\\\(.h)");
+    split("\n")
+    | map(split("\r") | map(esc) | join("\r"))
+    | join("\n");
   def clean_user:
     gsub("<(?:local-command-caveat|local-command-stdout|local-command-stderr|command-name|command-message|command-args|system-reminder|user-prompt-submit-hook|bash-input|bash-stdout|bash-stderr)[^>]*>.*?</[^>]+>"; ""; "s")
     | gsub("^[[:space:]]+|[[:space:]]+$"; "");
@@ -538,13 +631,13 @@ body_jq='
     | (.message.content // []) as $content
     | if .type == "user" then
         (if ($content | type) == "string" then
-           (($content | clean_user) as $cleaned
+           (($content | clean_user | defang) as $cleaned
             | if ($cleaned | length) > 0
               then [ "## 👤 User — " + ($line | ts) + "\n\n" + $cleaned ] else [] end)
          else
            [ $content[]
              | if .type == "text" then
-                 (((.text // "") | clean_user) as $cleaned
+                 (((.text // "") | clean_user | defang) as $cleaned
                   | if ($cleaned | length) > 0
                     then "## 👤 User — " + ($line | ts) + "\n\n" + $cleaned else empty end)
                elif .type == "tool_result" then "#### 📥 Tool result\n\n" + fence(""; (.content | tool_result_text))
@@ -552,7 +645,7 @@ body_jq='
          end)
       else
         [ $content[]
-          | if .type == "text" then "## 🤖 Assistant — " + ($line | ts) + "\n\n" + (.text // "")
+          | if .type == "text" then "## 🤖 Assistant — " + ($line | ts) + "\n\n" + ((.text // "") | defang)
             elif .type == "thinking" then "#### 💭 Thinking\n\n" + fence(""; (.thinking // ""))
             elif .type == "tool_use" then
               (if .name == "Bash" then
@@ -567,6 +660,41 @@ body_jq='
 '
 
 yaml_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+# `project` / `repos` / `tags` carry basenames of the checkouts worked in, and
+# `mask` can replace one outright with `***MASKED***`. Emitted BARE, a scalar
+# starting with `*` is a YAML alias, so the whole frontmatter throws and
+# parseMarkdownSafe degrades the note to NO frontmatter — no id, no title, no
+# project, `tags: []` — for every reader on the MCP side. Quote them the way
+# `title` and `branch` already are.
+#
+# yaml_seq quotes each ELEMENT, never the whole flow sequence: `repos: "a, b"`
+# parses, but the list silently becomes a string, and `tags` is on the server's
+# frontmatter allowlist, so that type change would travel into the read path.
+# Escaping runs BEFORE the space split, so a `"` or `\` inside a name cannot
+# close its own element and open a frontmatter key of its own.
+#
+# Empty fragments (a name with a leading, trailing or doubled space) are
+# DROPPED rather than quoted. Bare, `[a, , b]` parsed to a null that the read
+# path's `item != null` filter (src/frontmatter.ts, toStringArray) took back out
+# of `tags`, whereas a quoted `""` would PASS that filter and add a member. So
+# dropping is what keeps `tags` exactly the array the bare emitter delivered,
+# and it leaves `repos` — which `toPublicDocument` (src/server.ts) returns
+# wholesale, so it DOES reach every client's `fetch_document` payload — those
+# same names without the bare null between them.
+#
+# What quoting does change, for the names YAML used to auto-type: a checkout
+# named `null` reached the read path with `project` DELETED and its tag
+# filtered out, and one named `2026-01-01` as a Date that `String(value)`
+# renders differently per timezone and locale — both are now the literal name.
+# `project` also keeps edge whitespace that a bare scalar was trimmed of
+# (`repos`/`tags` do not, per the paragraph above). All pinned in
+# tests/sessionArchive.test.ts.
+yaml_seq() {
+  local escaped
+  escaped="$(yaml_escape "$1" | sed 's/  */ /g; s/^ //; s/ $//')"
+  [ -n "$escaped" ] || return 0
+  printf '"%s"' "$(printf '%s' "$escaped" | sed 's/ /", "/g')"
+}
 # ANSI escape sequences (colors, line clears) leak into raw tool output and
 # make the note unreadable in Obsidian — strip them everywhere.
 ESC_CHAR="$(printf '\033')"
@@ -596,21 +724,23 @@ branch_masked="$(printf '%s' "$branch" | mask)"
 project_masked="$(printf '%s' "$repo" | mask)"
 repos_masked="$(printf '%s' "$repos" | mask)"
 {
-  printf -- '---\n'
-  printf 'id: cc-session-%s\n' "$session_id"
-  printf 'title: "%s"\n' "$(yaml_escape "$title_masked")"
-  printf 'client: claude-code\n'
-  printf 'project: %s\n' "$project_masked"
-  printf 'date: %s\n' "$date_start"
-  printf 'branch: "%s"\n' "$(yaml_escape "$branch_masked")"
-  printf 'session_id: %s\n' "$session_id"
-  printf 'repos: [%s]\n' "$(printf '%s' "$repos_masked" | sed 's/ /, /g')"
-  printf 'tags: [claude-code-session, %s]\n' "$(printf '%s' "$repos_masked" | sed 's/ /, /g')"
-  printf 'updated_at: %s\n' "$now_iso"
-  printf -- '---\n\n'
-  printf '# %s\n\n' "$title_masked"
+  {
+    printf -- '---\n'
+    printf 'id: cc-session-%s\n' "$session_id"
+    printf 'title: "%s"\n' "$(yaml_escape "$title_masked")"
+    printf 'client: claude-code\n'
+    printf 'project: "%s"\n' "$(yaml_escape "$project_masked")"
+    printf 'date: %s\n' "$date_start"
+    printf 'branch: "%s"\n' "$(yaml_escape "$branch_masked")"
+    printf 'session_id: %s\n' "$session_id"
+    printf 'repos: [%s]\n' "$(yaml_seq "$repos_masked")"
+    printf 'tags: [%s]\n' "$(yaml_seq "claude-code-session $repos_masked")"
+    printf 'updated_at: %s\n' "$now_iso"
+    printf -- '---\n\n'
+    printf '# %s\n\n' "$title_masked"
+  } | strip_ansi
   { cat "$body_tmp"; printf '\n'; } | mask
-} | strip_ansi > "$tmp"
+} > "$tmp"
 
 # Idempotence: skip the rewrite if nothing changed apart from the updated_at
 # stamp. Do NOT exit here — a commit from a previous turn may still be
@@ -633,9 +763,9 @@ trap - EXIT
   fi
   if ! git diff --cached --quiet; then
     if [ "$mode" = "precompact" ]; then
-      git commit -q -m "claude session: precompact snapshot $date_start $repo ($sid8)" || exit 0
+      git commit -q -m "claude session: precompact snapshot $date_start $project_masked ($sid8)" || exit 0
     else
-      git commit -q -m "claude session: $date_start $repo ($sid8)" || exit 0
+      git commit -q -m "claude session: $date_start $project_masked ($sid8)" || exit 0
     fi
   fi
   # Push whenever unpushed session commits remain — including one committed on
