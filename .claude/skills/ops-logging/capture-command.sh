@@ -244,8 +244,40 @@ mask() {
     -e 's/xox[baprs]-[A-Za-z0-9-]{10,}/***MASKED***/g' \
     -e '/^[[:space:]]*[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/.*/***MASKED***/'
 }
-cmd_masked="$(printf '%s' "$cmd"    | mask | tr '\n' ' ')"
-intent_masked="$(printf '%s' "$intent" | mask | tr '\n' ' ')"
+# ⭐ 1 行の byte 上限。⛔ 上限が要る理由は可読性ではなく【リポの成長】である:
+#    実測 2026-09-09 — 5,004 行のうち 2,000 B を超えるのは 357 行 (7.1%) だけだが、
+#    その 357 行が全体 3,350,112 B の 43% を占めていた。日付ファイルはコミットの
+#    たびに丸ごと新しい blob として積まれるので、長い行は二次的に効く。
+#    ⇒ 2,000 B で切ると 3,350,112 B → 約 2,622,773 B (22% 減)。中央値は 322 B
+#      なので、⭕ ほとんどの行は無傷のまま通る。
+# ⛔ byte で切ると UTF-8 の途中で切れる。⭐ iconv -c で末尾の不完全な列を落とすので、
+#    この関数は locale に依存しない (実測: C / en_US.UTF-8 / ja_JP.UTF-8 の 3 つで
+#    同じ出力・いずれも妥当な UTF-8)。⛔ ${s:0:N} は locale で文字/byte が入れ替わる。
+# ⚠️ 失うもの: 長いコマンドの末尾。⭐ 省略した byte 数を必ず書き残すので、
+#    「短いコマンドだった」と「切られた」を後から区別できる。
+CLIP_BYTES="${OPS_LOG_CLIP_BYTES:-2000}"
+# ⭐ intent の取り分は予算の 1/4 まで。⛔ 先に intent を丸ごと確保すると、実測で
+#    9,154 B の intent が在るため cmd が潰れる — コマンドが主記録なので本末転倒。
+#    実測 2026-09-09 (6,056 行): intent の中央値 24 B / 90%点 86 B ⇒ ⭕ 実運用では
+#    ほぼ全額が cmd に回る。
+INTENT_BYTES=$(( CLIP_BYTES / 4 ))
+clip() {
+  s=$1; max=$2
+  n=$(printf '%s' "$s" | wc -c | tr -d ' ')
+  [ "$n" -le "$max" ] && { printf '%s' "$s"; return; }
+  # ⛔ iconv は末尾が不完全な列だと rc=1 を返す (実測)。この hook は `set -euo pipefail`
+  #    の下で走るので、許容しないと【代入ごと】落ちて行が無音で消える。head -c が
+  #    早くパイプを閉じると printf が SIGPIPE で 141 になるのも同じ。⇒ 明示的に飲む。
+  #    ⭕ 「hook はツール実行をブロックしない」は ops-logging のハードルール。
+  head=$(printf '%s' "$s" | head -c "$max" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null || true)
+  printf '%s …(%s B 省略)' "$head" "$((n - max))"
+}
+
+# ⭐ 予算は【行 1 本】に対して掛ける。⛔ フィールドごとに掛けると、両方が上限に
+#    達した行が上限の 2 倍になる (実測: 2,000 B を超える intent が 26 行 実在)。
+intent_masked="$(clip "$(printf '%s' "$intent" | mask | tr '\n' ' ')" "$INTENT_BYTES")"
+intent_n=$(printf '%s' "$intent_masked" | wc -c | tr -d ' ')
+cmd_masked="$(clip "$(printf '%s' "$cmd"    | mask | tr '\n' ' ')" "$(( CLIP_BYTES - intent_n ))")"
 
 # --- route to <origin_repo>/<date>.md ------------------------------------
 # Every repo logs into its OWN folder, named after the origin repo — created
