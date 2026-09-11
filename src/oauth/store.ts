@@ -131,6 +131,31 @@ interface TokenRecord {
   generation: number;
 }
 
+/**
+ * What a rotated refresh record leaves behind, so that the replay trigger no
+ * longer depends on the record surviving.
+ *
+ * The record is kept after rotation for exactly one reason: re-presenting it is
+ * the SOLE trigger for `revokeFamilyAbove`. Anything that removes it early
+ * disarms that trigger silently, and the hard cap is such a path an interceptor
+ * can drive on purpose (#170 — see the note in `rotateRefreshToken`). This
+ * carries the three things the trigger needs (which family, from which
+ * generation, until when) plus the client it was bound to, and nothing else.
+ *
+ * It is not a second copy of a credential. The key is the same sha256(token)
+ * the token maps already use, `familyId` is opaque and random, and there is no
+ * scope or resource here to mint on: a tombstone can revoke, it can never
+ * issue.
+ */
+interface RotationTombstone {
+  /** Bound at rotation time. A mismatched client_id is refused here, as on the record path. */
+  clientId: string;
+  familyId: string;
+  generation: number;
+  /** The record's CAPPED expiry, copied verbatim — the window must not extend. */
+  expiresAt: number;
+}
+
 export interface OAuthStoreOptions {
   accessTokenTtlSec: number;
   refreshTokenTtlSec: number;
@@ -209,7 +234,62 @@ function enforceCap<K, V>(map: Map<K, V>, max: number, spare?: K): void {
   }
 }
 
+/**
+ * Hold the tombstone map at its cap.
+ *
+ * ⚠️ Deliberately NOT `enforceCap`'s oldest-first order, and that difference is
+ * the whole reason the map exists. Tombstones are written by rotating, which is
+ * the primitive #170 is about: an interceptor rotating the chain they captured
+ * writes one per hop. Oldest-first would hand them the same lever one map
+ * over — flood it and the victim's tombstone, written first, is swept first,
+ * and the fix would buy nothing but a factor of two.
+ *
+ * So the sweep is aimed at the flood instead:
+ *   1. the NEWEST tombstone of a family that holds more than one, else
+ *   2. the newest overall — which, called from an insert, is the entry that
+ *      just arrived.
+ * An interceptor can only rotate inside the family they captured (every hop
+ * inherits its `familyId`), so their hops are exactly what (1) selects, and the
+ * one tombstone that must survive — the root's — is the oldest of that family
+ * and the last of it to go. The property that follows, and the one to preserve
+ * if this is ever rewritten: a tombstone already written is never displaced by
+ * a later rotation.
+ *
+ * Normal use does not reach this at all. A family writes one tombstone per
+ * FIRST rotation of a record and each lives ROTATION_GRACE_MS (60 s), so a
+ * second live tombstone in one family means two successful rotations inside a
+ * minute.
+ */
+function enforceTombstoneCap(map: Map<string, RotationTombstone>, max: number): void {
+  while (map.size > max) {
+    const perFamily = new Map<string, number>();
+    for (const tombstone of map.values()) {
+      perFamily.set(tombstone.familyId, (perFamily.get(tombstone.familyId) ?? 0) + 1);
+    }
+    let doomed: string | undefined;
+    // Map preserves insertion order, so the LAST match is the newest.
+    for (const [key, tombstone] of map) {
+      if ((perFamily.get(tombstone.familyId) ?? 0) > 1) {
+        doomed = key;
+      }
+    }
+    if (doomed === undefined) {
+      for (const key of map.keys()) {
+        doomed = key;
+      }
+    }
+    if (doomed === undefined) {
+      break;
+    }
+    map.delete(doomed);
+  }
+}
+
 interface PersistedTokenRecord extends TokenRecord {
+  tokenHash: string;
+}
+
+interface PersistedTombstone extends RotationTombstone {
   tokenHash: string;
 }
 
@@ -217,6 +297,22 @@ interface PersistedPayload {
   clients: RegisteredClient[];
   accessTokens: PersistedTokenRecord[];
   refreshTokens: PersistedTokenRecord[];
+  /**
+   * Added after STATE_VERSION 1 shipped, and deliberately WITHOUT bumping it: a
+   * bump fails closed, so every live session would re-authorize to gain a field
+   * that is additive in both directions. An older file loads it as absent (`??
+   * []`, like `clients`); an older binary reading a newer file ignores the key,
+   * and the MAC is taken over the payload string either way.
+   *
+   * The cost of not bumping, stated rather than discovered later: rolling
+   * back to a binary without this field disables the mitigation SILENTLY.
+   * The state file still loads, the key is ignored, and nothing is logged,
+   * so an operator cannot tell "the mitigation is running" from "the
+   * mitigation is gone" - #170 simply returns, and nothing gets worse. The
+   * alternative costs every live session a re-authorization, which is the
+   * higher price; this is the trade, not an oversight.
+   */
+  rotatedTombstones?: PersistedTombstone[];
 }
 
 export class OAuthStore {
@@ -225,8 +321,28 @@ export class OAuthStore {
   /** Keyed by sha256(token) — raw token values are never stored anywhere. */
   private readonly accessTokens = new Map<string, TokenRecord>();
   private readonly refreshTokens = new Map<string, TokenRecord>();
+  /**
+   * Rotated refresh records, keyed the same way, outliving the records
+   * themselves (#170). Keyed by sha256(token) in memory and at rest, exactly as
+   * the token maps are.
+   */
+  private readonly rotatedTombstones = new Map<string, RotationTombstone>();
   private readonly now: () => number;
   private readonly maxTokens: number;
+  /**
+   * Tombstone cap. The same number as `maxTokens` rather than a new knob:
+   *  - a tombstone is written only where a refresh record is first rotated, so
+   *    the two maps grow on the same events and one bound describes both;
+   *  - a tombstone is smaller than the TokenRecord it outlives, so this raises
+   *    a bound the operator has already accepted by less than the refresh map
+   *    itself costs;
+   *  - in steady state it is far below that, because a tombstone lives
+   *    ROTATION_GRACE_MS (60 s) while a refresh record lives the refresh TTL
+   *    (default 30 days). Filling it therefore takes `maxTokens` rotations
+   *    inside one minute — the same rate the #170 note names, and whether that
+   *    rate is reachable through the HTTP endpoint is still NOT measured.
+   */
+  private readonly maxTombstones: number;
   private readonly clientOrphanGraceMs: number;
   private readonly persistPath?: string;
   /** scrypt(persistSecret, salt) — derived once per store, cached for saves. */
@@ -236,6 +352,7 @@ export class OAuthStore {
   constructor(private readonly options: OAuthStoreOptions) {
     this.now = options.now ?? Date.now;
     this.maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS;
+    this.maxTombstones = this.maxTokens;
     this.clientOrphanGraceMs = options.clientOrphanGraceMs ?? DEFAULT_CLIENT_ORPHAN_GRACE_MS;
     if (options.persistPath) {
       if (!options.persistSecret) {
@@ -426,6 +543,10 @@ export class OAuthStore {
     const key = tokenKey(refreshToken);
     const record = this.refreshTokens.get(key);
     if (!record) {
+      // The record is gone — expired and swept, revoked, or evicted by the cap.
+      // A live tombstone says it was ROTATED before it went, which makes this
+      // presentation a replay and not a stray dead token (#170).
+      this.replayAgainstTombstone(key, clientId);
       return null;
     }
     const t = this.now();
@@ -475,6 +596,20 @@ export class OAuthStore {
       // The ordinary expiry sweep (evictExpired / load) retires the record once
       // the window closes — no separate cleanup path to get wrong.
       record.expiresAt = Math.min(record.expiresAt, t + ROTATION_GRACE_MS);
+      // Remember the trigger independently of the record. `expiresAt` is copied
+      // AFTER the cap above and never recomputed, so the tombstone closes at
+      // the same instant the record's window does: this cannot extend the
+      // replay window by a tick, and past the window a tombstone is as dead as
+      // the record was. Pruning first keeps expired entries from spending cap
+      // room a live newcomer needs.
+      this.pruneTombstones();
+      this.rotatedTombstones.set(key, {
+        clientId: record.clientId,
+        familyId: record.familyId,
+        generation: record.generation,
+        expiresAt: record.expiresAt
+      });
+      enforceTombstoneCap(this.rotatedTombstones, this.maxTombstones);
     } else {
       // Replay inside the window (outside it, the expiry check above already
       // returned). Everything minted downstream of the lost response is
@@ -489,24 +624,29 @@ export class OAuthStore {
     // `key` is spared from the cap for the length of this mint: inserting the
     // successor must not evict the record this rotation is standing on.
     //
-    // ⚠️ Residual, stated rather than fixed — and it is not merely bad luck.
-    // Once this call returns the record is an ordinary entry again, and an
-    // interceptor holding the lost response can push it out DELIBERATELY:
-    // rotating the chain they captured adds an entry per rotation, and at
-    // `maxTokens - 1` rotations inside the window the root is swept, so the
-    // replay that would have revoked their family returns `invalid_grant`
-    // instead and their pair survives. Measured independently by two sessions
-    // (2026-09-02): at cap 4 the flip is exactly at 3 rotations, and a large
-    // cap is the control. Nothing outside this file sets `maxTokens`, so the
-    // shipped cost is ~1999 rotations inside ROTATION_GRACE_MS (60 s);
-    // whether that rate is reachable through the HTTP endpoint was NOT
-    // measured, and is the number to check before re-weighing this.
+    // The eviction that used to disarm the replay trigger no longer does
+    // (#170). Once this call returns the record is an ordinary entry again, and
+    // an interceptor holding the lost response can still push it out
+    // DELIBERATELY — rotating the chain they captured adds an entry per hop,
+    // and at `maxTokens - 1` hops inside the window the root is swept.
+    // Measured independently by two sessions (2026-09-02): at cap 4 the flip is
+    // exactly at 3 rotations. What changed is that the trigger no longer lives
+    // only on the record: `rotatedTombstones` carries the family, the
+    // generation and the window, so the replay still revokes every generation
+    // above the root when the record is gone.
     //
-    // Not closed here because the obvious close is worse: sparing every
-    // in-window record from every mint was built and measured evicting
-    // freshly issued grants instead (see enforceCap). Pre-filling does not
-    // help an attacker — eviction is insertion-ordered, so entries older than
-    // the root are swept first, and the cap must be filled after it exists.
+    // ⚠️ What the tombstone does NOT restore is the pair. A swept root means
+    // the scope and resource that pair would be minted on are gone with it, and
+    // the tombstone deliberately holds no copy of them, so the retry still
+    // answers `invalid_grant` and the client re-authorizes. Availability in
+    // that corner is not recovered — what is recovered is the revocation, which
+    // is the half nobody can perform later.
+    //
+    // Still not closed by sparing every in-window record from every mint: that
+    // was built and measured evicting freshly issued grants instead (see
+    // enforceCap). Pre-filling the token map does not help an attacker —
+    // eviction there is insertion-ordered, so entries older than the root are
+    // swept first, and the cap must be filled after it exists.
     const issued = this.mintTokens(
       clientId,
       record.scope,
@@ -528,13 +668,141 @@ export class OAuthStore {
    * separate deletion paths could remove one. Cost is bounded by the token cap
    * (`maxTokens`), which the two maps are held under at every mint.
    */
-  private revokeFamilyAbove(familyId: string, generation: number): void {
+  private revokeFamilyAbove(familyId: string, generation: number): number {
+    let removed = 0;
     for (const map of [this.accessTokens, this.refreshTokens]) {
       for (const [key, record] of map) {
         if (record.familyId === familyId && record.generation > generation) {
           map.delete(key);
+          removed += 1;
         }
       }
+    }
+    return removed;
+  }
+
+  /**
+   * Observe a refresh-token presentation for replay evidence, granting nothing.
+   *
+   * Exists because `rotateRefreshToken` is the only way into replay detection,
+   * and `/token` refuses over-quota refresh grants BEFORE it runs. An
+   * interceptor holding a captured chain can fill the shared bucket with their
+   * own valid rotations, and the victim's replay — the sole trigger for
+   * `revokeFamilyAbove` — then never reaches the store: the window closes, the
+   * tombstone expires, and the stolen family is never revoked. The mitigation
+   * becomes unreachable exactly when it is being exercised.
+   *
+   * The detection arms are the ones `rotateRefreshToken` reads, and
+   * deliberately nothing else:
+   *  - no mint, and no call that could mint — the caller has no pair to return
+   *    and must not gain one from a refused request;
+   *  - no field is written, so a window cannot be extended by a tick and a
+   *    rotated record cannot be re-opened;
+   *  - nothing is deleted on the failure arms. `rotateRefreshToken` drops an
+   *    expired record, and drops a never-rotated record on a client mismatch;
+   *    neither is repeated here, because over quota the honest answer is to
+   *    change no state at all.
+   *
+   * `client_id` is handled exactly as on the granting path: it arrives
+   * unauthenticated on the /token form, so a mismatch is not evidence and must
+   * not revoke — treating it as reuse evidence is what would let someone
+   * holding a copy kill a live pair on a presentation the real client never
+   * made.
+   *
+   * ⚠️ This does put store logic within reach of an over-quota, unauthenticated
+   * caller, so what it can be driven for is worth stating rather than assuming.
+   * The only capability past the two map lookups is `revokeFamilyAbove`, which
+   * deletes and can never issue, and reaching it needs the exact token bytes —
+   * whoever has those can already reach the same revocation below quota through
+   * the ordinary path, where they also get a pair back. So this is not new
+   * power; it is the same power in the corner where the gate had removed it.
+   * What is new is cost, and it is bounded: a stranger's junk returns after two
+   * map misses, and a token-holder's repeated presentations revoke nothing the
+   * second time, so they persist nothing (see `revokeFamilyAbove`). Producing
+   * something new to revoke takes a successful rotation, which is exactly what
+   * the bucket limits.
+   *
+   * ⛔ The gate itself is untouched — same check, same charge, same 429. Moving
+   * either is what the comment at the call site forbids, for a reason that
+   * still holds.
+   */
+  observeRotationReplay(refreshToken: string, clientId: string): void {
+    const key = tokenKey(refreshToken);
+    const record = this.refreshTokens.get(key);
+    if (!record) {
+      // Same fallback as the granting path: the record may be gone while its
+      // tombstone still names the family, the generation and the window.
+      this.replayAgainstTombstone(key, clientId);
+      return;
+    }
+    if (record.expiresAt <= this.now()) {
+      return;
+    }
+    if (record.clientId !== clientId) {
+      return;
+    }
+    if (record.rotatedAt === undefined) {
+      // A first presentation is not a replay. Rotating it is precisely what the
+      // caller was refused, and doing any part of it here would be minting by
+      // halves: stamping `rotatedAt` would burn the client's own token on a
+      // request that hands them nothing back.
+      return;
+    }
+    if (this.revokeFamilyAbove(record.familyId, record.generation) > 0) {
+      // No mint follows to carry this into a shared save, and a restart that
+      // resurrects revoked generations undoes exactly what this call was for.
+      this.save();
+    }
+  }
+
+  /**
+   * The replay trigger for a rotated record that is no longer in the map.
+   *
+   * `revokeFamilyAbove` is all that is reached from here: no pair is minted and
+   * the caller still returns `invalid_grant`, because the record carrying the
+   * scope and resource is gone and this holds no copy of them. The client that
+   * lost its response re-authorizes; the generations minted downstream of that
+   * lost response die, which is the half an eviction used to take away
+   * silently.
+   *
+   * ⚠️ This is not new power in anyone's hands, and the check below is where
+   * that is kept true. The same presentation revokes the same generations while
+   * the record survives, and only the holder of that exact token can make it —
+   * so a copy-holder's ability to force the legitimate client back through
+   * `/authorize` is restored here in the corner where an eviction had removed
+   * it, not created. That trade is the one ROTATION_GRACE_MS documents.
+   *
+   * A mismatched `client_id` is refused WITHOUT revoking, exactly as on the
+   * record path: it arrives unauthenticated on the /token form, so it is not
+   * evidence either way, and treating it as reuse evidence is what would let a
+   * copied token kill a live pair on a presentation the legitimate client never
+   * made.
+   */
+  private replayAgainstTombstone(key: string, clientId: string): void {
+    const tombstone = this.rotatedTombstones.get(key);
+    if (!tombstone) {
+      return;
+    }
+    if (tombstone.expiresAt <= this.now()) {
+      // Past the window this is an ordinary dead token, exactly as a swept
+      // record is. Left for the expiry sweep rather than deleted here, so
+      // presenting an expired tombstone changes no state at all.
+      return;
+    }
+    if (tombstone.clientId !== clientId) {
+      return;
+    }
+    if (this.revokeFamilyAbove(tombstone.familyId, tombstone.generation) > 0) {
+      // The revocation must reach disk on its own: there is no mint after it to
+      // carry it into a shared save, and a restart that resurrects revoked
+      // generations undoes exactly what this call was for.
+      //
+      // Guarded on having removed something. Nothing removed is nothing to
+      // persist, and the guard bounds a repeat presentation: this is reachable
+      // from `observeRotationReplay`, which an over-quota caller can drive
+      // without limit, and an unconditional save there would be one whole-file
+      // rewrite per request.
+      this.save();
     }
   }
 
@@ -661,6 +929,19 @@ export class OAuthStore {
     for (const [token, record] of this.refreshTokens) {
       if (record.expiresAt <= t) this.refreshTokens.delete(token);
     }
+    this.pruneTombstones();
+  }
+
+  /**
+   * Retire tombstones whose window has closed. Called from the ordinary expiry
+   * sweep and once more just before a tombstone is written, so a burst of
+   * expired entries cannot spend cap room a live newcomer needs.
+   */
+  private pruneTombstones(): void {
+    const t = this.now();
+    for (const [key, tombstone] of this.rotatedTombstones) {
+      if (tombstone.expiresAt <= t) this.rotatedTombstones.delete(key);
+    }
   }
 
   // --- persistence -----------------------------------------------------------
@@ -748,6 +1029,37 @@ export class OAuthStore {
       };
       loadTokens(payload.accessTokens, this.accessTokens);
       loadTokens(payload.refreshTokens, this.refreshTokens);
+      // Tombstones are rotation-grace state and are persisted for the same
+      // reason `rotatedAt` is: a replay after a supervisor bounce must still
+      // revoke what the lost response minted. A record swept by the cap is not
+      // on disk either, so without this the #170 gap simply reopens at every
+      // restart.
+      //
+      // ⚠️ A malformed entry is DROPPED, not repaired. The token loader gives a
+      // record with an unusable lineage a fresh family of its own so it can
+      // neither revoke nor be revoked; the conservative reading of the same
+      // damage here is no tombstone at all — one carrying an invented family
+      // would revoke nothing and only occupy the cap.
+      for (const tombstone of payload.rotatedTombstones ?? []) {
+        if (
+          typeof tombstone?.tokenHash === "string" &&
+          typeof tombstone.clientId === "string" &&
+          typeof tombstone.familyId === "string" &&
+          typeof tombstone.generation === "number" &&
+          Number.isInteger(tombstone.generation) &&
+          tombstone.generation >= 0 &&
+          typeof tombstone.expiresAt === "number" &&
+          tombstone.expiresAt > t
+        ) {
+          this.rotatedTombstones.set(tombstone.tokenHash, {
+            clientId: tombstone.clientId,
+            familyId: tombstone.familyId,
+            generation: tombstone.generation,
+            expiresAt: tombstone.expiresAt
+          });
+        }
+      }
+      enforceTombstoneCap(this.rotatedTombstones, this.maxTombstones);
       // Loaded state may carry clients whose tokens all expired (and so were
       // dropped above); sweep those now instead of waiting for the next write.
       this.pruneOrphanClients();
@@ -761,6 +1073,7 @@ export class OAuthStore {
       this.clients.clear();
       this.accessTokens.clear();
       this.refreshTokens.clear();
+      this.rotatedTombstones.clear();
       console.error("[oauth] state file failed verification; starting with empty OAuth state");
     }
   }
@@ -778,7 +1091,8 @@ export class OAuthStore {
       const payload: PersistedPayload = {
         clients: [...this.clients.values()],
         accessTokens: [...this.accessTokens.entries()].map(([tokenHash, r]) => ({ tokenHash, ...r })),
-        refreshTokens: [...this.refreshTokens.entries()].map(([tokenHash, r]) => ({ tokenHash, ...r }))
+        refreshTokens: [...this.refreshTokens.entries()].map(([tokenHash, r]) => ({ tokenHash, ...r })),
+        rotatedTombstones: [...this.rotatedTombstones.entries()].map(([tokenHash, r]) => ({ tokenHash, ...r }))
       };
       const payloadJson = JSON.stringify(payload);
       const mac = crypto.createHmac("sha256", this.hmacKey).update(payloadJson).digest("hex");
