@@ -101,7 +101,25 @@ function findHeadings(lines: readonly string[]): HeadingLine[] {
     if (fence !== undefined) {
       return;
     }
-    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    // `[ \t]` and not `\s`: CommonMark requires a space or tab after the hashes,
+    // and JavaScript's `\s` is wider -- U+00A0, U+3000, U+2000-200A, U+FEFF,
+    // \f and \v all satisfied it. The session-archive renderer escapes a forged
+    // turn heading with `#{1,6}[ \t]`, so every separator in the gap between the
+    // two classes produced a line that the renderer left alone and this parser
+    // read as a heading.
+    //
+    // That gap is worse than an ordinary mismatch because of which side is
+    // wider. A reading view follows CommonMark, so `##<NBSP>👤 User — …` is plain
+    // text to the operator looking at the note, and a heading only here -- in
+    // `outlineOf`, `selectSections` and the context package. A forged operator
+    // turn was therefore invisible on the one surface where a human would catch
+    // it. Measured: seven separators passed the renderer and were read as
+    // headings here.
+    //
+    // Narrowing this side rather than widening the renderer's is the choice that
+    // does not depend on which branch lands: three branches are rewriting that
+    // renderer, and this is the single consumer they all feed.
+    const heading = /^(#{1,6})[ \t]+(.*)$/.exec(line);
     if (heading) {
       headings.push({ level: heading[1].length, title: closeHashes(heading[2].trim()), lineIndex });
     }
