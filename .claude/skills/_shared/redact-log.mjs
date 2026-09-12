@@ -26,7 +26,7 @@
  * substitution logic is tested on its own before any pattern work lands.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -693,24 +693,28 @@ export function withoutProtected(spans, guards) {
     let from = lo;
     while (from > 0 && sorted[from - 1].end > span.start) from -= 1;
 
-    let pieces = [{ start: span.start, end: span.end }];
+    // One pass, with a monotone cursor. The previous shape rebuilt the whole
+    // `pieces` array once per intersecting guard, so a single span covering G
+    // guards cost O(G^2) -- measured at 6.9 s for one quoted value enclosing
+    // 50,000 armor delimiters (900 KB), against 0.09 s for the same labels with
+    // no enclosing quote. The binary search above fixed only the span-to-first-
+    // guard lookup; this is the other half, and it was still quadratic with that
+    // half in place.
+    //
+    // Guards arrive sorted by start and may overlap each other, which the cursor
+    // handles: it only ever moves forward, so an overlapping pair contributes one
+    // hole rather than two.
+    let cursor = span.start;
     for (let index = from; index < sorted.length && sorted[index].start < span.end; index += 1) {
       const guard = sorted[index];
-      const next = [];
-      for (const piece of pieces) {
-        if (guard.end <= piece.start || guard.start >= piece.end) {
-          next.push(piece);
-          continue;
-        }
-        if (piece.start < guard.start) next.push({ start: piece.start, end: guard.start });
-        if (guard.end < piece.end) next.push({ start: guard.end, end: piece.end });
+      if (guard.end <= cursor) continue;
+      if (guard.start > cursor) {
+        out.push({ start: cursor, end: Math.min(guard.start, span.end), kind: span.kind });
       }
-      pieces = next;
-      if (pieces.length === 0) break;
+      cursor = Math.max(cursor, guard.end);
+      if (cursor >= span.end) break;
     }
-    for (const piece of pieces) {
-      if (piece.end > piece.start) out.push({ start: piece.start, end: piece.end, kind: span.kind });
-    }
+    if (cursor < span.end) out.push({ start: cursor, end: span.end, kind: span.kind });
   }
   return out;
 }
@@ -794,7 +798,32 @@ async function main() {
 }
 
 // Importing this file must not run the CLI -- the tests import it directly.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+//
+// Both sides are RESOLVED before comparing. `import.meta.url` is already the
+// physical path, while `process.argv[1]` is whatever spelling the caller used:
+// with a symlink anywhere in that spelling -- a symlinked directory, a symlinked
+// file, or a project under /tmp on macOS where /tmp is itself a link -- the two
+// differ, `main()` never runs, stdout is empty, and the caller records an
+// omission while being told the redactor is present. Measured: invoking this
+// file through a symlinked parent produced no output at all.
+//
+// This is the same shape this suite diagnosed in a different instrument earlier
+// the same day -- a containment check comparing a resolved path against an
+// unresolved base. Worth stating plainly: having just found a bug class is not
+// protection against writing it.
+function invokedAsThisFile() {
+  const argv = process.argv[1];
+  if (!argv) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(argv);
+  } catch {
+    // A path that will not resolve is not this file, and refusing to run is the
+    // safe direction -- the import path is unaffected either way.
+    return false;
+  }
+}
+
+if (invokedAsThisFile()) {
   main().catch(() => {
     process.stdout.write(
       `${JSON.stringify({ text: omitted("redaction_failed"), status: "omitted", reason: "redaction_failed" })}\n`

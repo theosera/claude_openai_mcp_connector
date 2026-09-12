@@ -1,4 +1,8 @@
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
@@ -234,6 +238,65 @@ describe("credential vocabulary lifted from the shipped mask()", () => {
     const out = redactText(`value ${sample} end`);
     expect(out.status).toBe("ok");
     expect(out.text).toContain(sample);
+  });
+});
+
+/** The module under test, by its real path -- the tests import it from here too. */
+const SHIPPED_MODULE = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  ".claude",
+  "skills",
+  "_shared",
+  "redact-log.mjs"
+);
+
+describe("the command-line entry point", () => {
+  // These spawn `node` rather than importing, because the defect lives in the
+  // guard that decides whether an import should run the CLI. Importing cannot
+  // reach it.
+  const runThrough = (scriptPath: string) =>
+    spawnSync(process.execPath, [scriptPath], { input: '"probe"\n', encoding: "utf8" });
+
+  it("runs when invoked through a symlinked path", () => {
+    // `import.meta.url` is already physical while `process.argv[1]` is whatever
+    // spelling the caller used, so comparing them unresolved made a symlink
+    // anywhere in the path silently skip main(). The caller then saw empty
+    // stdout, recorded an omission for every fragment, and was told the redactor
+    // was present -- a total, silent failure with a reassuring message.
+    //
+    // This is on the critical path rather than hypothetical: the plan for the
+    // user-layer hooks replaces them with symlinks, and macOS makes /tmp itself
+    // a symlink.
+    const dir = mkdtempSync(join(tmpdir(), "redactor-entry-"));
+    try {
+      const link = join(dir, "linked-redact-log.mjs");
+      symlinkSync(SHIPPED_MODULE, link);
+      const viaLink = runThrough(link);
+      expect(viaLink.stdout.trim()).not.toBe("");
+      expect(JSON.parse(viaLink.stdout.trim())).toMatchObject({ status: "ok", text: "probe" });
+
+      // Control: the same invocation by its real path. Without this, a build that
+      // never ran the CLI at all would fail the assertion above for the wrong
+      // reason and the message would point at symlinks.
+      const direct = runThrough(SHIPPED_MODULE);
+      expect(JSON.parse(direct.stdout.trim())).toMatchObject({ status: "ok", text: "probe" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not run the CLI when the module is imported", () => {
+    // The negative control for the above. Resolving both sides must not widen
+    // the guard into "run whenever argv[1] exists" -- every test in this file
+    // imports the module, and a CLI that ran on import would write to stdout
+    // during the suite.
+    const probe = spawnSync(
+      process.execPath,
+      ["-e", `import(${JSON.stringify(SHIPPED_MODULE)}).then(() => process.stdout.write("imported"))`],
+      { encoding: "utf8" }
+    );
+    expect(probe.stdout).toBe("imported");
   });
 });
 
