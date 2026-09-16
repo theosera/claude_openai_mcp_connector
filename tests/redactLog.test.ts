@@ -286,6 +286,24 @@ describe("the command-line entry point", () => {
     }
   });
 
+  it("answers a non-string NDJSON fragment with the omission, not with its String() form", () => {
+    // `{"a":1}` is valid JSON and not a string. Coerced, it became the string
+    // "[object Object]" and came back `status: "ok"` -- a line the caller reads as
+    // a successfully redacted fragment. Passed as is, redactText's non-string
+    // contract answers `non_string_input`, which is what the caller needs to see.
+    const run = spawnSync(process.execPath, [SHIPPED_MODULE], {
+      input: '{"a":1}\n[1,2]\n42\n"still a string"\n',
+      encoding: "utf8"
+    });
+    const lines = run.stdout.trim().split("\n").map((line) => JSON.parse(line));
+    expect(lines).toHaveLength(4);
+    for (const answer of lines.slice(0, 3)) {
+      expect(answer).toMatchObject({ status: "omitted", reason: "non_string_input" });
+      expect(answer.text).not.toContain("[object Object]");
+    }
+    expect(lines[3]).toMatchObject({ status: "ok", text: "still a string" });
+  });
+
   it("does not run the CLI when the module is imported", () => {
     // The negative control for the above. Resolving both sides must not widen
     // the guard into "run whenever argv[1] exists" -- every test in this file

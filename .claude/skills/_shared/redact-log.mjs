@@ -793,7 +793,10 @@ async function main() {
       );
       continue;
     }
-    process.stdout.write(`${JSON.stringify(redactText(typeof fragment === "string" ? fragment : String(fragment)))}\n`);
+    // A non-string fragment goes to redactText AS IS, so its non-string contract
+    // answers with the fixed omission -- coercing it first turned an object into
+    // "[object Object]" and reported that string as redacted ok (review finding).
+    process.stdout.write(`${JSON.stringify(redactText(fragment))}\n`);
   }
 }
 
