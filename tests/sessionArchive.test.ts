@@ -1085,14 +1085,14 @@ async function hookReadingFirstPushUrlOnly(fixture: Fixture): Promise<string> {
 }
 
 /**
- * A second bare repository seeded with the vault clone's history, to stand as an
- * extra push URL on `origin`. It shares history on purpose: a push to it
- * fast-forwards, so whether the transcript lands there is decided by the pin
- * check alone. Two independent marked clones would only share a root commit
+ * A second bare repository seeded with the vault clone's history, suitable as
+ * another fetch or push URL on `origin`. It shares history on purpose: a push
+ * to it fast-forwards, so whether the transcript lands there is decided by the
+ * pin check alone. Two independent marked clones would only share a root commit
  * when created in the same second, which made the delivery observable in one
  * run and not the next.
  */
-function secondPushTarget(fixture: Fixture, vault: { dir: string }, name: string): string {
+function seededRemote(fixture: Fixture, vault: { dir: string }, name: string): string {
   const remote = path.join(fixture.root, "remotes", `${name}.git`);
   git(["init", "--bare", "-q", remote], fixture);
   git(["-C", vault.dir, "push", "-q", remote, "HEAD:main"], fixture);
@@ -1230,7 +1230,7 @@ describe("session-archive vault authorization", () => {
   it("refuses a clone whose origin carries a second push URL that is not the pinned vault", async () => {
     const fixture = await makeFixture();
     const vault = await markedClone(fixture, "vault-clone");
-    const second = secondPushTarget(fixture, vault, "second-target");
+    const second = seededRemote(fixture, vault, "second-target");
     // One remote, two push URLs. `git push` sends to both; `get-url --push`
     // without `--all` prints only the first, which is the pinned vault.
     git(["-C", vault.dir, "remote", "set-url", "--push", "origin", vault.remote], fixture);
@@ -1251,7 +1251,7 @@ describe("session-archive vault authorization", () => {
   it("delivers the session to the second push URL once the check reads only the first one", async () => {
     const fixture = await makeFixture();
     const vault = await markedClone(fixture, "vault-clone");
-    const second = secondPushTarget(fixture, vault, "second-target");
+    const second = seededRemote(fixture, vault, "second-target");
     git(["-C", vault.dir, "remote", "set-url", "--push", "origin", vault.remote], fixture);
     git(["-C", vault.dir, "remote", "set-url", "--add", "--push", "origin", second], fixture);
     const downgraded = await hookReadingFirstPushUrlOnly(fixture);
@@ -1263,6 +1263,62 @@ describe("session-archive vault authorization", () => {
     const notes = notesPushedTo(second, fixture);
     expect(notes).toHaveLength(1);
     expect(git(["-C", second, "show", `refs/heads/main:${notes[0]}`], fixture)).toContain(TRANSCRIPT_CANARY);
+  });
+
+  it("refuses a clone whose origin carries a second fetch URL that is not the pinned vault", async () => {
+    const fixture = await makeFixture();
+    const vault = await markedClone(fixture, "vault-clone");
+    const second = seededRemote(fixture, vault, "second-fetch-target");
+    // Isolate the fetch side of the check: push still names only the pinned
+    // vault, while the second fetch URL names a different repository.
+    git(["-C", vault.dir, "remote", "set-url", "--push", "origin", vault.remote], fixture);
+    git(["-C", vault.dir, "remote", "set-url", "--add", "origin", second], fixture);
+    expect(git(["-C", vault.dir, "remote", "get-url", "--all", "origin"], fixture).trim().split("\n")).toEqual([
+      vault.remote,
+      second
+    ]);
+
+    const { status, stderr } = runHook(fixture, hookEnv(fixture, { SESSION_VAULT_ORIGIN: vault.remote }));
+
+    expect(notesPushedTo(second, fixture)).toEqual([]);
+    expect(notesPushedTo(vault.remote, fixture)).toEqual([]);
+    expect(stderr).toContain("Not archiving");
+    expect(status).toBe(0);
+  });
+
+  it("accepts multiple fetch and push URL spellings when every one identifies the pinned vault", async () => {
+    const fixture = await makeFixture();
+    const vault = await markedClone(fixture, "vault-clone");
+    const fileUrl = `file://${vault.remote}`;
+    git(["-C", vault.dir, "remote", "set-url", "--add", "origin", fileUrl], fixture);
+    git(["-C", vault.dir, "remote", "set-url", "--push", "origin", vault.remote], fixture);
+    git(["-C", vault.dir, "remote", "set-url", "--add", "--push", "origin", fileUrl], fixture);
+    expect(git(["-C", vault.dir, "remote", "get-url", "--all", "origin"], fixture).trim().split("\n")).toHaveLength(2);
+    expect(
+      git(["-C", vault.dir, "remote", "get-url", "--push", "--all", "origin"], fixture).trim().split("\n")
+    ).toHaveLength(2);
+
+    const { status, stderr } = runHook(fixture, hookEnv(fixture, { SESSION_VAULT_ORIGIN: vault.remote }));
+
+    expect(notesPushedTo(vault.remote, fixture)).toHaveLength(1);
+    expect(stderr).not.toContain("Not archiving");
+    expect(status).toBe(0);
+  });
+
+  it("refuses an explicitly selected clone when origin has no URL", async () => {
+    const fixture = await makeFixture();
+    const vault = await markedClone(fixture, "vault-clone");
+    git(["-C", vault.dir, "remote", "remove", "origin"], fixture);
+    expect(git(["-C", vault.dir, "remote"], fixture).trim()).toBe("");
+
+    const { status, stderr } = runHook(
+      fixture,
+      hookEnv(fixture, { SESSION_VAULT_REPO: vault.dir, SESSION_VAULT_ORIGIN: vault.remote })
+    );
+
+    expect(notesPushedTo(vault.remote, fixture)).toEqual([]);
+    expect(stderr).toContain("does not have the pinned origin");
+    expect(status).toBe(0);
   });
 
   it("refuses a pin whose path differs from the origin only by case", async () => {
@@ -1337,6 +1393,11 @@ describe("session-archive remote identity", () => {
     const id = await shippedUrlId();
     expect(id("ssh://git@host.example:2222/owner/vault")).toBe("host.example:2222/owner/vault");
     expect(id("ssh://git@host.example:2222/owner/vault")).not.toBe(id("ssh://git@host.example/owner/vault"));
+  });
+
+  it("keeps a bracketed IPv6 host and its port together while preserving path case", async () => {
+    const id = await shippedUrlId();
+    expect(id("ssh://git@[2001:DB8::A]:2222/Owner/Vault.git")).toBe("[2001:db8::a]:2222/Owner/Vault");
   });
 
   it("folds case on the host only, so a case-sensitive server's two repositories stay two", async () => {
