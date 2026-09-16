@@ -306,7 +306,11 @@ terminal-ops-logs/
   **鍵本体の直前で止まる**。
 - ⭐⭐ **marker regex が覆う armor label の全数** (2026-09-11 実測 / owner 指示「PEM は重要、徹底的に」)。
   出荷している形は `{5ダッシュ}(BEGIN|END) ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE){5ダッシュ}` で、
-  **mask() 内の 6 出現すべてが同一** (range の start/end・BEGIN/END 置換・address 付き引用値 2 本)。
+  **label の alternation `([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)` は mask() 内の 7 出現すべてが同一**
+  (range ブロックの外側 BEGIN・内側 BEGIN / END の 3・BEGIN / END 置換の 2・address 付き引用値 2 本)。
+  ⚠️ `(BEGIN|END)` という alternation を持つのは address 付き引用値の 2 本だけで、range は
+  BEGIN と END を別々の address に綴り、置換規則は 1 語ずつ綴る — 「6 出現が同一」と書いていた旧版は
+  この 2 種類の綴りを 1 つに数えていた (レビュー指摘・2026-09-17 訂正)。
   ⇒ ⭕ **範囲が開く (= prefix 付き本体が守られる)**: `RSA PRIVATE KEY` / `PRIVATE KEY` /
   `ENCRYPTED PRIVATE KEY` / `EC PRIVATE KEY` / `DSA PRIVATE KEY` / `OPENSSH PRIVATE KEY` /
   **`SSH2 ENCRYPTED PRIVATE KEY`** (★ 数字を許して直った) / **`PGP MESSAGE`** (★ `PRIVATE KEY` を

@@ -58,8 +58,10 @@ mask() {
   # value still falls through to the keyword rule below and is masked to
   # whitespace there, exactly as it was before these rules existed.
   #
-  # That keyword rule is therefore left BYTE-IDENTICAL to its previous form: it
-  # is the fallback that keeps this change from ever masking less than before.
+  # That keyword rule is the fallback that keeps this change from ever masking
+  # less than before. (It has changed once since this paragraph was first
+  # written: its value class is dash-bounded now, for the marker reason below.
+  # The test pins its SHIPPED spelling, not identity with an older one.)
   #
   # `Authorization: <scheme> <credential>` is TWO tokens, and that keyword rule
   # ends its value at the first whitespace: it eats the SCHEME word and leaves
@@ -86,24 +88,31 @@ mask() {
   # single-opaque-token schemes; an unlisted scheme is left exactly where the
   # keyword rule had it.
   #
-  # The negated address is LOAD-BEARING, not decoration. sed applies each `-e`
-  # in order to the pattern space AS IT STANDS, so a substitution here can
-  # destroy the text a LATER rule's ADDRESS is matched against -- and the PEM
-  # range below is addressed on the BEGIN marker. Without this address, a line
-  # of the form `token: Basic <PEM BEGIN marker>` loses that marker to the value
-  # class, the range never opens, and the body lines that follow behind a
-  # `cat -n` / `> ` / `grep -n` prefix -- exactly the ones the whole-line
-  # catch-all structurally cannot match -- are written out VERBATIM: key
-  # material this hook masked BEFORE this rule existed. Measured at 54 of 54
-  # (6 scheme spellings x 3 prefixes x 3 marker placements) with the address
-  # removed, and 0 of 54 with it. Two things that do NOT fix it: excluding a
-  # leading `-` from the value class closes only that one spelling, since a
-  # value of `X<PEM BEGIN marker>` starts at `X` and swallows the marker anyway;
-  # and moving this rule below the PEM rules disables it outright, because the
-  # keyword rule below has already replaced the scheme word with `***MASKED***`
-  # by the time it would run. Skipping marker lines is what holds, and it costs
-  # nothing: on such a line the keyword rule still masks the scheme, exactly as
-  # it did before.
+  # What keeps the marker intact for the range is the VALUE CLASS, not an
+  # address: the scheme rule below carries none. sed applies each `-e` in order
+  # to the pattern space AS IT STANDS, so a substitution here can destroy the
+  # text a LATER rule's ADDRESS is matched against -- and the PEM range below
+  # is addressed on the BEGIN marker. A value class that can cross a five-dash
+  # run takes `token: Basic <PEM BEGIN marker>` whole, the range never opens,
+  # and the body lines that follow behind a `cat -n` / `> ` / `grep -n` prefix
+  # are written out VERBATIM (the prefixed catch-all further down now takes
+  # those lines too, which is why the tests silence it when they measure this
+  # rule alone). Measured at 54 of 54 (6 scheme spellings x 3 prefixes x 3
+  # marker placements) with the plain class, and 0 of 54 with the dash-bounded
+  # one. Two things that do NOT fix it: excluding a leading `-` from the value
+  # class closes only that one spelling, since a value of `X<PEM BEGIN marker>`
+  # starts at `X` and swallows the marker anyway; and moving this rule below
+  # the PEM rules disables it outright, because the keyword rule below has
+  # already replaced the scheme word with `***MASKED***` by the time it would
+  # run. A class that cannot cross `-----` is what holds, and it costs nothing:
+  # on such a line the rule still masks the credential up to the dashes.
+  #
+  # The negated marker address survives on exactly TWO rules: the UNBOUNDED
+  # double- and single-quoted halves above, whose value must run to the closing
+  # quote and so cannot be dash-bounded -- they skip marker lines instead, and
+  # their bounded twins cover those lines. (An earlier version of this
+  # paragraph said the address sat on this rule; the tests that count the
+  # addressed rules say two, and they are right.)
   #
   # RESIDUE, recorded here rather than left for the next reader to discover: a
   # PARAMETER-LIST scheme closes only PARTLY. A Digest header carries

@@ -471,7 +471,7 @@ const QUOTED_RULES = "]?[=:";
 /** The required closing quote that bounds the double-quoted rule to one line. */
 const DQ_CLOSE = String.raw`)*\"/`;
 
-/** Byte-identical to the rule as it stood before this change — the no-less-masked fallback. */
+/** The keyword fallback rule as SHIPPED (dash-bounded since 569cfe2): the pin is on this spelling, not on identity with an older one. */
 const BARE_KEYWORD_RULE =
   String.raw`    -e 's/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+/\1***MASKED***/Ig' ` +
   "\\"; // trailing line-continuation: String.raw cannot end on a backslash
@@ -544,7 +544,18 @@ describe("session-archive secret masking", () => {
     expect(runMask(mask, `password: "p@ss\\"word"`)).toBe("password: ***MASKED***");
   });
 
-  it("keeps the keyword rule byte-identical to its previous form, since it is that fallback", () => {
+  it("spells every DASH_BOUNDED entry the way the shipped mask() spells it, so a mutation can reach it", () => {
+    // withoutDashBoundaryOn throws when the guarded spelling is absent, but only
+    // for the entry a test actually passes. The dq / sq entries once carried a
+    // spelling no rule used (the nested escape alternative was missing), and no
+    // caller passed them, so the table drifted silently -- a review finding.
+    // Pinning every entry here turns that drift into a red.
+    for (const [which, [guarded]] of Object.entries(DASH_BOUNDED)) {
+      expect(mask, `DASH_BOUNDED.${which}`).toContain(guarded);
+    }
+  });
+
+  it("keeps the keyword rule in its shipped spelling, since it is the no-less-masked fallback", () => {
     expect(mask).toContain(BARE_KEYWORD_RULE);
     const withoutFallback = mutate(mask, `${BARE_KEYWORD_RULE}\n`, "", "the keyword fallback rule");
     expect(runMask(withoutFallback, `token: "abc123`)).toBe(`token: "abc123`);
@@ -1143,8 +1154,8 @@ const DASH_BOUNDED: Record<string, [string, string]> = {
   bare: [String.raw`([^[:space:]-]|-{1,4}[^[:space:]-])+`, String.raw`[^[:space:]]+`],
   bearer: [String.raw`([^[:space:]-]|-{1,4}[^[:space:]-])+`, String.raw`[^[:space:]]+`],
   scheme: [String.raw`([^[:space:],\"'-]|-{1,4}[^[:space:],\"'-])+`, String.raw`[^[:space:],\"']+`],
-  dq: [String.raw`([^\"\\\\-]|\\\\.|-{1,4}[^\"\\\\-])*`, String.raw`([^\"\\\\]|\\\\.)*`],
-  sq: [String.raw`([^'\\\\-]|\\\\.|-{1,4}[^'\\\\-])*`, String.raw`([^'\\\\]|\\\\.)*`]
+  dq: [String.raw`([^\"\\\\-]|\\\\.|-{1,4}([^\"\\\\-]|\\\\.))*-{0,4}`, String.raw`([^\"\\\\]|\\\\.)*`],
+  sq: [String.raw`([^'\\\\-]|\\\\.|-{1,4}([^'\\\\-]|\\\\.))*-{0,4}`, String.raw`([^'\\\\]|\\\\.)*`]
 };
 
 /**
