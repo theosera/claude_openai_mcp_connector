@@ -295,7 +295,10 @@ describe("the command-line entry point", () => {
       input: '{"a":1}\n[1,2]\n42\n"still a string"\n',
       encoding: "utf8"
     });
-    const lines = run.stdout.trim().split("\n").map((line) => JSON.parse(line));
+    const lines = run.stdout
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
     expect(lines).toHaveLength(4);
     for (const answer of lines.slice(0, 3)) {
       expect(answer).toMatchObject({ status: "omitted", reason: "non_string_input" });
