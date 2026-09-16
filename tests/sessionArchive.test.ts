@@ -611,6 +611,11 @@ const IN_RANGE_RUN = "{12,}";
 const CATCH_ALL_RUN = "{32,}";
 const RUN_SUBSTITUTION = String.raw`s/[A-Za-z0-9+\/=]{12,}/***MASKED***/g`;
 const RANGE_TERMINATOR = "|^~{3,}";
+/** The in-range whole-line short-run rule (2026-09-17): its length class occurs nowhere else. */
+const IN_RANGE_SHORT_LINE = "{1,11}";
+/** The prefixed whole-line catch-all (2026-09-17): the run it substitutes, spelled as only it spells it. */
+const PREFIXED_CATCH_ALL = String.raw`{32,}[[:space:]]*$/s/[A-Za-z0-9+\/=]{32,}`;
+const PREFIXED_CATCH_ALL_OFF = String.raw`{255,}[[:space:]]*$/s/[A-Za-z0-9+\/=]{255,}`;
 
 /** The note as the hook writes it: shipped renderer, then shipped mask over the assembled body. */
 function renderThenMask(renderer: string, maskFn: string, transcript: unknown[]): string {
@@ -661,12 +666,20 @@ describe("session-archive PEM key masking", () => {
       expect(bodyLinesSurviving(runMask(mask, keyBlock(prefix)))).toBe(0);
     });
 
-    it(`leaks that body once the in-range run rule stops firing, so the pass for ${label} means something`, () => {
-      const downgraded = mutate(mask, IN_RANGE_RUN, NEVER_MATCHES, "the in-range run rule");
+    it(`leaks that body only once BOTH rules that see ${label} stop firing, so the pass rests on two defences`, () => {
+      // Two rules now reach a prefixed body: the in-range run rule, and the
+      // prefixed whole-line catch-all added on 2026-09-17. One decision, two
+      // defences -- so one mutation must NOT redden, and the second must. A
+      // control that reddened on the first alone would be proving the wrong
+      // rule load-bearing.
+      const withoutRange = mutate(mask, IN_RANGE_RUN, NEVER_MATCHES, "the in-range run rule");
+      expect(bodyLinesSurviving(runMask(withoutRange, keyBlock(prefix)))).toBe(0);
 
-      // The whole-line rule is still there and still cannot see a prefixed body:
-      // this is the finding, reproduced against the shipped mask.
-      expect(bodyLinesSurviving(runMask(downgraded, keyBlock(prefix)))).toBe(BODY.length);
+      // The bare whole-line rule is still there and still cannot see a prefixed
+      // body: this is the original finding, reproduced against the shipped mask
+      // once both rules that were written for it are silenced.
+      const withoutBoth = mutate(withoutRange, PREFIXED_CATCH_ALL, PREFIXED_CATCH_ALL_OFF, "the prefixed catch-all");
+      expect(bodyLinesSurviving(runMask(withoutBoth, keyBlock(prefix)))).toBe(BODY.length);
     });
   }
 
@@ -760,21 +773,34 @@ describe("session-archive PEM key masking", () => {
     expect(runMask(unbounded, [PEM_OPEN, ...commands].join("\n"))).not.toContain(commands[1]);
   });
 
-  it("takes an in-range run at 12 characters and leaves 11, which is where the residue lives", () => {
-    // The in-range rule takes runs of 12 or more, so a PEM body's short final
-    // line survives -- the cost SKILL.md records as "12 文字未満の連なり". The
-    // scan report describes this residue as reaching 32 characters, but 32 is
-    // the WHOLE-LINE rule's threshold; in range the boundary is 12. Pinning the
-    // number keeps a later edit from moving it silently in either direction,
-    // and keeps the two thresholds from being written up as one.
+  it("takes an in-range run at 12 characters, takes a shorter one only when it is the whole line, and leaves 11 embedded in prose, which is where the residue lives", () => {
+    // The in-range run rule takes runs of 12 or more. Before 2026-09-17 a PEM
+    // body's short final line (`Zg==`) survived as residue -- the cost SKILL.md
+    // recorded as "12 文字未満の連なり". The whole-line short-run rule now takes
+    // that line, prefixed or not, because a line that is NOTHING but a run
+    // under 12 is a key's tail and never prose. The boundary that remains is
+    // deliberate: a short run EMBEDDED in a line stays, since the range also
+    // reaches prose when a marker is planted in an unfenced turn, and masking
+    // the last word of every reached line is the availability failure this
+    // file exists to avoid. Pinning both numbers keeps a later edit from moving
+    // either silently, and keeps the two thresholds from being written up as one.
     const run = (length: number) => "A".repeat(length);
     const withTail = (tail: string) => [PEM_OPEN, ...BODY, tail, PEM_CLOSE].join("\n");
 
-    expect(runMask(mask, withTail(run(11)))).toContain(run(11));
+    expect(runMask(mask, withTail(run(11)))).not.toContain(run(11));
     expect(runMask(mask, withTail(run(12)))).not.toContain(run(12));
+    expect(runMask(mask, withTail(`note ${run(11)}`))).toContain(run(11));
+    expect(runMask(mask, withTail(`note ${run(12)}`))).not.toContain(run(12));
 
-    const downgraded = mutate(mask, IN_RANGE_RUN, NEVER_MATCHES, "the in-range run rule");
-    expect(runMask(downgraded, withTail(run(12)))).toContain(run(12));
+    // Reverse verification, one rule at a time: each boundary reddens only
+    // when the rule written for it is silenced.
+    const noShortLine = mutate(mask, IN_RANGE_SHORT_LINE, NEVER_MATCHES, "the in-range short-line rule");
+    expect(runMask(noShortLine, withTail(run(11)))).toContain(run(11));
+    expect(runMask(noShortLine, withTail(run(12)))).not.toContain(run(12));
+
+    const noRun = mutate(mask, IN_RANGE_RUN, NEVER_MATCHES, "the in-range run rule");
+    expect(runMask(noRun, withTail(`note ${run(12)}`))).toContain(run(12));
+    expect(runMask(noRun, withTail(run(11)))).not.toContain(run(11));
   });
 
   it("confines a planted opening marker to the FENCED block it was planted in", () => {
@@ -837,29 +863,33 @@ describe("session-archive PEM key masking", () => {
     expect(untouched).toContain(`${token} is in the next turn`);
   });
 
-  it("leaks a prefixed body once a planted tilde run closes the range before it", () => {
-    // What the tilde terminator does NOT reach is a BEGIN marker AFTER the
-    // tilde, which reopens the range. It is POSITION that saves the key, not
-    // possession -- plant the tilde BETWEEN a key's own BEGIN line and its
-    // body and the range closes before the body starts, leaving every body
-    // line to the whole-line rule, which behind a prefix does not see it.
-    // That is the row an attacker picks, and it is the only weakness the
-    // shipped comment admits, so it is measured here rather than left to
-    // prose: pinning the number stops a later change from widening or
-    // narrowing it unnoticed.
-    const [, catN] = PREFIXED[0];
-    const prefixedBody = BODY.map((line, index) => catN(line, index + 1));
-    const planted = [PEM_OPEN, "~~~~~~", ...prefixedBody, PEM_CLOSE].join("\n");
+  for (const [label, prefix] of PREFIXED) {
+    it(`no longer leaks a body behind ${label} once a planted tilde run closes the range before it`, () => {
+      // Plant the tilde BETWEEN a key's own BEGIN line and its body and the
+      // range closes before the body starts, leaving every body line to the
+      // whole-line rules. Until 2026-09-17 the bare whole-line rule could not
+      // see a prefixed body, and this test pinned the leak at BODY.length --
+      // the row an attacker picks. The prefixed catch-all now takes those
+      // lines outside any range, so the construction is measured closed here,
+      // and the mutation below shows it is THAT rule doing the closing.
+      const prefixedBody = BODY.map((line, index) => prefix(line, index + 1));
+      const planted = [PEM_OPEN, "~~~~~~", ...prefixedBody, PEM_CLOSE].join("\n");
 
-    expect(bodyLinesSurviving(runMask(mask, planted))).toBe(BODY.length);
+      expect(bodyLinesSurviving(runMask(mask, planted))).toBe(0);
 
-    // Reverse verification: the identical fixture with the tilde line REMOVED.
-    // The range stays open, the in-range rule reaches every body line, and
-    // nothing survives -- so the leak above is the TILDE's doing, not the
-    // prefix's, and the assertion cannot pass for the wrong reason.
-    const unplanted = [PEM_OPEN, ...prefixedBody, PEM_CLOSE].join("\n");
-    expect(bodyLinesSurviving(runMask(mask, unplanted))).toBe(0);
-  });
+      // Reverse verification 1: silence the prefixed catch-all and the old leak
+      // returns in full, behind this prefix, with the tilde still planted.
+      const withoutCatchAll = mutate(mask, PREFIXED_CATCH_ALL, PREFIXED_CATCH_ALL_OFF, "the prefixed catch-all");
+      expect(bodyLinesSurviving(runMask(withoutCatchAll, planted))).toBe(BODY.length);
+
+      // Reverse verification 2: the identical fixture with the tilde line
+      // REMOVED, against the silenced mask. The range stays open, the in-range
+      // rule reaches every body line, and nothing survives -- so the leak above
+      // is the TILDE's doing, not the prefix's.
+      const unplanted = [PEM_OPEN, ...prefixedBody, PEM_CLOSE].join("\n");
+      expect(bodyLinesSurviving(runMask(withoutCatchAll, unplanted))).toBe(0);
+    });
+  }
 
   it("masks an encrypted key body across the blank line its headers end with", () => {
     // RFC 1421 puts `Proc-Type:` / `DEK-Info:` headers, then a BLANK LINE, and
@@ -878,7 +908,17 @@ describe("session-archive PEM key masking", () => {
 
     expect(bodyLinesSurviving(runMask(mask, encrypted))).toBe(0);
 
-    const blankBound = mutate(mask, RANGE_TERMINATOR, "|^[[:space:]]*$", "the tilde-run range terminator");
+    // Since 2026-09-17 the prefixed catch-all would take these `> ` body lines
+    // even with the range closed at the blank line, so it is silenced too: the
+    // mutation is about the RANGE's bound, and must not pass for another rule's
+    // reason. (Two defences, two mutations -- the catch-all alone is pinned in
+    // the tilde tests above.)
+    const blankBound = mutate(
+      mutate(mask, RANGE_TERMINATOR, "|^[[:space:]]*$", "the tilde-run range terminator"),
+      PREFIXED_CATCH_ALL,
+      PREFIXED_CATCH_ALL_OFF,
+      "the prefixed catch-all"
+    );
     expect(bodyLinesSurviving(runMask(blankBound, encrypted))).toBe(BODY.length);
   });
 
@@ -1687,6 +1727,26 @@ async function hookWithoutPinCheck(fixture: Fixture): Promise<string> {
   return downgraded;
 }
 
+/**
+ * The pin-file reader with ONE of its two named states collapsed into "absent":
+ * the refusal then falls back to the generic "no vault pin" line, which is what
+ * the operator saw before those states were told apart. Used to show the two
+ * refusals above observe the branch they name.
+ */
+async function hookWithoutPinFileState(fixture: Fixture, state: "empty" | "unreadable"): Promise<string> {
+  const script = await fs.readFile(hookPath, "utf8");
+  const marker = `pin_file_state=${state}`;
+  if (!script.includes(marker)) {
+    throw new Error(
+      `${marker} is no longer set in the shipped hook — either the anchor moved, or the reader has ` +
+        "regressed to reporting every missing pin the same way, which the assertion above exists to catch."
+    );
+  }
+  const downgraded = path.join(fixture.root, `archive-session.no-${state}-state.sh`);
+  await fs.writeFile(downgraded, script.replace(marker, "pin_file_state=absent"));
+  return downgraded;
+}
+
 describe("session-archive vault authorization", () => {
   beforeAll(() => {
     for (const tool of ["jq", "git"]) {
@@ -1719,6 +1779,85 @@ describe("session-archive vault authorization", () => {
     // Fail closed, and still never block the turn.
     expect(status).toBe(0);
   });
+
+  it("tells the operator when the pin file exists but holds no non-comment line", async () => {
+    const fixture = await makeFixture();
+    const planted = await markedClone(fixture, "collaborator-repo");
+    const pinDir = path.join(fixture.home, ".config", "session-archive");
+    await fs.mkdir(pinDir, { recursive: true });
+    await fs.writeFile(path.join(pinDir, "vault-origin"), "# the vault this machine archives to\n\n   \n");
+
+    const { status, stderr } = runHook(fixture, hookEnv(fixture));
+
+    // Pins the `pin_file_state=empty` branch: the refusal names the file the
+    // operator already wrote, instead of telling them to create it.
+    expect(stderr).toContain("holds no non-comment line");
+    expect(stderr).not.toContain("no vault pin");
+    expect(notesPushedTo(planted.remote, fixture)).toEqual([]);
+    expect(status).toBe(0);
+  });
+
+  it("falls back to the generic refusal once the empty-file branch is gone, so the line above means something", async () => {
+    const fixture = await makeFixture();
+    await markedClone(fixture, "collaborator-repo");
+    const pinDir = path.join(fixture.home, ".config", "session-archive");
+    await fs.mkdir(pinDir, { recursive: true });
+    await fs.writeFile(path.join(pinDir, "vault-origin"), "# nothing but this comment\n");
+    const downgraded = await hookWithoutPinFileState(fixture, "empty");
+
+    const { stderr } = runHook(fixture, hookEnv(fixture), downgraded);
+
+    expect(stderr).not.toContain("holds no non-comment line");
+    expect(stderr).toContain("no vault pin");
+  });
+
+  // `chmod 000` denies nothing to UID 0, so under a root-run suite (common in
+  // containers) the fixture cannot reach the state this branch reads. Skip with
+  // the reason on record rather than assert something root cannot make true.
+  const asRoot = process.getuid?.() === 0;
+  it.skipIf(asRoot)("tells the operator when the pin file exists but cannot be read", async () => {
+    const fixture = await makeFixture();
+    const planted = await markedClone(fixture, "collaborator-repo");
+    const pinDir = path.join(fixture.home, ".config", "session-archive");
+    await fs.mkdir(pinDir, { recursive: true });
+    const pinFile = path.join(pinDir, "vault-origin");
+    await fs.writeFile(pinFile, `${planted.remote}\n`);
+    await fs.chmod(pinFile, 0o000);
+    // Confirm the fixture reached the state the branch reads, or the assertion
+    // below would hold for the wrong reason (root, or a filesystem ignoring mode).
+    await expect(fs.readFile(pinFile)).rejects.toThrow();
+
+    const { status, stderr } = runHook(fixture, hookEnv(fixture));
+
+    // Pins the `pin_file_state=unreadable` branch: an unreadable pin is not an
+    // absent pin, and the line the operator sees must say which one it is.
+    expect(stderr).toContain("could not be read");
+    expect(stderr).not.toContain("no vault pin");
+    expect(notesPushedTo(planted.remote, fixture)).toEqual([]);
+    expect(status).toBe(0);
+    await fs.chmod(pinFile, 0o600);
+  });
+
+  it.skipIf(asRoot)(
+    "falls back to the generic refusal once the unreadable-file branch is gone, so the line above means something",
+    async () => {
+      const fixture = await makeFixture();
+      const planted = await markedClone(fixture, "collaborator-repo");
+      const pinDir = path.join(fixture.home, ".config", "session-archive");
+      await fs.mkdir(pinDir, { recursive: true });
+      const pinFile = path.join(pinDir, "vault-origin");
+      await fs.writeFile(pinFile, `${planted.remote}\n`);
+      await fs.chmod(pinFile, 0o000);
+      await expect(fs.readFile(pinFile)).rejects.toThrow();
+      const downgraded = await hookWithoutPinFileState(fixture, "unreadable");
+
+      const { stderr } = runHook(fixture, hookEnv(fixture), downgraded);
+
+      expect(stderr).not.toContain("could not be read");
+      expect(stderr).toContain("no vault pin");
+      await fs.chmod(pinFile, 0o600);
+    }
+  );
 
   it("archives to the clone whose origin the operator pinned", async () => {
     const fixture = await makeFixture();

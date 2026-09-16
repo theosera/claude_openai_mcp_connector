@@ -224,6 +224,22 @@ mask() {
   # rule accepts, that retained whitespace is the ONLY residue, and no key
   # material survives on either path. The distinction is drawn here rather
   # than left for a reader to trip over.
+  #
+  # Two rules were added on 2026-09-17 for the two residues measured behind a
+  # PREFIX (a `cat -n` number and TAB, a `> ` quote, a `grep -n` file:12:):
+  #   * in range, a line that is NOTHING but an optional prefix and a run of 1-11
+  #     characters is masked whole. That is a key body's short final line
+  #     (`Zg==`), which the 12+ rule leaves as residue. The rule is deliberately
+  #     WHOLE-LINE: a run of 1-11 characters embedded in prose stays, because the
+  #     range also reaches prose when a marker is planted in an unfenced turn,
+  #     and masking the last word of every reached line is the availability
+  #     failure this file spent its history avoiding.
+  #   * outside any range, a line that is only a prefix and a 32+ run has the
+  #     run masked -- the prefixed twin of the bare catch-all below it. This is
+  #     what closes the tilde construction above: a `~~~` planted between BEGIN
+  #     and the body closes the range, and the body lines then fall to this rule
+  #     instead of surviving behind their prefix. Its cost is the prefixed
+  #     64-hex line (a `cat -n` over a shasum listing), masked like the bare one.
   sed -E \
     -e 's/gh[pousr]_[A-Za-z0-9]{20,}/***MASKED***/g' \
     -e 's/github_pat_[A-Za-z0-9_]{20,}/***MASKED***/g' \
@@ -236,13 +252,15 @@ mask() {
     -e "s/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+(Basic|Digest|Token|ApiKey|OAuth|SSWS)[[:space:]]+)([^[:space:],\"'-]|-{1,4}[^[:space:],\"'-])+/\1***MASKED***/Ig" \
     -e 's/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+/\1***MASKED***/Ig' \
     -e '/-----BEGIN ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/,/-----END ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----|^~{3,}/s/[A-Za-z0-9+\/=]{12,}/***MASKED***/g' \
+    -e '/-----BEGIN ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/,/-----END ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----|^~{3,}/s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*)?)[A-Za-z0-9+\/=]{1,11}[[:space:]]*$/\1***MASKED***/' \
     -e 's/-----BEGIN ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/***MASKED***/g' \
     -e 's/-----END ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/***MASKED***/g' \
     -e 's/AKIA[0-9A-Z]{16}/***MASKED***/g' \
     -e 's/sk-[A-Za-z0-9_-]{20,}/***MASKED***/g' \
     -e 's/AIza[0-9A-Za-z_-]{35}/***MASKED***/g' \
     -e 's/xox[baprs]-[A-Za-z0-9-]{10,}/***MASKED***/g' \
-    -e '/^[[:space:]]*[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/.*/***MASKED***/'
+    -e '/^[[:space:]]*[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/.*/***MASKED***/' \
+    -e '/^[[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*)[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/[A-Za-z0-9+\/=]{32,}/***MASKED***/'
 }
 # ⭐ 1 行の byte 上限。⛔ 上限が要る理由は可読性ではなく【リポの成長】である:
 #    実測 2026-09-09 — 5,004 行のうち 2,000 B を超えるのは 357 行 (7.1%) だけだが、
