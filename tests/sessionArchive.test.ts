@@ -1064,6 +1064,26 @@ async function hookWithoutPinCheck(fixture: Fixture): Promise<string> {
   return downgraded;
 }
 
+/**
+ * The pin-file reader with ONE of its two named states collapsed into "absent":
+ * the refusal then falls back to the generic "no vault pin" line, which is what
+ * the operator saw before those states were told apart. Used to show the two
+ * refusals above observe the branch they name.
+ */
+async function hookWithoutPinFileState(fixture: Fixture, state: "empty" | "unreadable"): Promise<string> {
+  const script = await fs.readFile(hookPath, "utf8");
+  const marker = `pin_file_state=${state}`;
+  if (!script.includes(marker)) {
+    throw new Error(
+      `${marker} is no longer set in the shipped hook — either the anchor moved, or the reader has ` +
+        "regressed to reporting every missing pin the same way, which the assertion above exists to catch."
+    );
+  }
+  const downgraded = path.join(fixture.root, `archive-session.no-${state}-state.sh`);
+  await fs.writeFile(downgraded, script.replace(marker, "pin_file_state=absent"));
+  return downgraded;
+}
+
 describe("session-archive vault authorization", () => {
   beforeAll(() => {
     for (const tool of ["jq", "git"]) {
@@ -1096,6 +1116,85 @@ describe("session-archive vault authorization", () => {
     // Fail closed, and still never block the turn.
     expect(status).toBe(0);
   });
+
+  it("tells the operator when the pin file exists but holds no non-comment line", async () => {
+    const fixture = await makeFixture();
+    const planted = await markedClone(fixture, "collaborator-repo");
+    const pinDir = path.join(fixture.home, ".config", "session-archive");
+    await fs.mkdir(pinDir, { recursive: true });
+    await fs.writeFile(path.join(pinDir, "vault-origin"), "# the vault this machine archives to\n\n   \n");
+
+    const { status, stderr } = runHook(fixture, hookEnv(fixture));
+
+    // Pins the `pin_file_state=empty` branch: the refusal names the file the
+    // operator already wrote, instead of telling them to create it.
+    expect(stderr).toContain("holds no non-comment line");
+    expect(stderr).not.toContain("no vault pin");
+    expect(notesPushedTo(planted.remote, fixture)).toEqual([]);
+    expect(status).toBe(0);
+  });
+
+  it("falls back to the generic refusal once the empty-file branch is gone, so the line above means something", async () => {
+    const fixture = await makeFixture();
+    await markedClone(fixture, "collaborator-repo");
+    const pinDir = path.join(fixture.home, ".config", "session-archive");
+    await fs.mkdir(pinDir, { recursive: true });
+    await fs.writeFile(path.join(pinDir, "vault-origin"), "# nothing but this comment\n");
+    const downgraded = await hookWithoutPinFileState(fixture, "empty");
+
+    const { stderr } = runHook(fixture, hookEnv(fixture), downgraded);
+
+    expect(stderr).not.toContain("holds no non-comment line");
+    expect(stderr).toContain("no vault pin");
+  });
+
+  // `chmod 000` denies nothing to UID 0, so under a root-run suite (common in
+  // containers) the fixture cannot reach the state this branch reads. Skip with
+  // the reason on record rather than assert something root cannot make true.
+  const asRoot = process.getuid?.() === 0;
+  it.skipIf(asRoot)("tells the operator when the pin file exists but cannot be read", async () => {
+    const fixture = await makeFixture();
+    const planted = await markedClone(fixture, "collaborator-repo");
+    const pinDir = path.join(fixture.home, ".config", "session-archive");
+    await fs.mkdir(pinDir, { recursive: true });
+    const pinFile = path.join(pinDir, "vault-origin");
+    await fs.writeFile(pinFile, `${planted.remote}\n`);
+    await fs.chmod(pinFile, 0o000);
+    // Confirm the fixture reached the state the branch reads, or the assertion
+    // below would hold for the wrong reason (root, or a filesystem ignoring mode).
+    await expect(fs.readFile(pinFile)).rejects.toThrow();
+
+    const { status, stderr } = runHook(fixture, hookEnv(fixture));
+
+    // Pins the `pin_file_state=unreadable` branch: an unreadable pin is not an
+    // absent pin, and the line the operator sees must say which one it is.
+    expect(stderr).toContain("could not be read");
+    expect(stderr).not.toContain("no vault pin");
+    expect(notesPushedTo(planted.remote, fixture)).toEqual([]);
+    expect(status).toBe(0);
+    await fs.chmod(pinFile, 0o600);
+  });
+
+  it.skipIf(asRoot)(
+    "falls back to the generic refusal once the unreadable-file branch is gone, so the line above means something",
+    async () => {
+      const fixture = await makeFixture();
+      const planted = await markedClone(fixture, "collaborator-repo");
+      const pinDir = path.join(fixture.home, ".config", "session-archive");
+      await fs.mkdir(pinDir, { recursive: true });
+      const pinFile = path.join(pinDir, "vault-origin");
+      await fs.writeFile(pinFile, `${planted.remote}\n`);
+      await fs.chmod(pinFile, 0o000);
+      await expect(fs.readFile(pinFile)).rejects.toThrow();
+      const downgraded = await hookWithoutPinFileState(fixture, "unreadable");
+
+      const { stderr } = runHook(fixture, hookEnv(fixture), downgraded);
+
+      expect(stderr).not.toContain("could not be read");
+      expect(stderr).toContain("no vault pin");
+      await fs.chmod(pinFile, 0o600);
+    }
+  );
 
   it("archives to the clone whose origin the operator pinned", async () => {
     const fixture = await makeFixture();
