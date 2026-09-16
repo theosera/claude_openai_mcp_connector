@@ -2645,11 +2645,53 @@ function liveSetextUnderlines(markdown: string): number {
   ).length;
 }
 
+/**
+ * CommonMark type-6 tag names -- the full list, not a sample. The previous
+ * version of the oracle below carried NINE of them, copied from the guard it
+ * was meant to check, so every payload that defeated the guard also defeated
+ * the check and the assertion went green on the hole. An oracle must model the
+ * SPEC, never the implementation: these names come from the CommonMark HTML
+ * block type-6 start condition.
+ */
+const HTML_BLOCK_NAMES =
+  "address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|" +
+  "dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h1|h2|h3|h4|h5|h6|" +
+  "head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|" +
+  "p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul";
+
+/**
+ * Does this line OPEN a raw HTML block, per CommonMark start conditions 1-7?
+ * Type 7 is the one no tag-name list can ever reach -- a complete tag alone on
+ * the line, any name at all -- and it is the shape ordinary harness traffic
+ * actually carries (`<teammate-message ...>`, `<task-notification>`).
+ *
+ * This deliberately does NOT count a tag later on the same line. That shape
+ * renders as inline raw HTML and is a STATED RESIDUAL of the guard (see the
+ * hook's comment), not something this oracle should report as covered.
+ */
+function opensRawHtmlBlock(line: string): boolean {
+  if (!/^ {0,3}</.test(line)) return false;
+  const body = line.replace(/^ {0,3}/, "");
+  if (/^<(?:script|pre|style|textarea)(?:[ \t>]|$)/i.test(body)) return true; // type 1
+  if (body.startsWith("<!--")) return true; // type 2
+  if (body.startsWith("<?")) return true; // type 3
+  if (body.startsWith("<![CDATA[")) return true; // type 5, before type 4
+  if (/^<![A-Za-z]/.test(body)) return true; // type 4
+  if (new RegExp(`^</?(?:${HTML_BLOCK_NAMES})(?:[ \t/>]|$)`, "i").test(body)) return true; // type 6
+  if (
+    /^<[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z_:][\w.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)*\s*\/?>\s*$/.test(
+      body
+    )
+  ) {
+    return true; // type 7, open tag alone on the line
+  }
+  if (/^<\/[A-Za-z][A-Za-z0-9-]*\s*>\s*$/.test(body)) return true; // type 7, close tag alone
+  return false;
+}
+
 /** Top-level raw HTML block openers: `<h2>` renders as the heading ATX would. */
 function htmlBlockOpeners(markdown: string): number {
-  return topLevelLines(markdown).filter((line) =>
-    /^ {0,3}<\/?(?:h[1-6]|hr|div|p|section|article|header|table|blockquote)\b/i.test(line)
-  ).length;
+  return topLevelLines(markdown).filter(opensRawHtmlBlock).length;
 }
 
 function withoutGuard(program: string, from: string, to: string, what: string): string {
@@ -2679,14 +2721,25 @@ const withoutSetextGuard = (program: string): string =>
  */
 const withoutCrTailDrop = (program: string): string =>
   withoutGuard(program, 'length > 1 and .[-1] == ""', "false", "the CRLF tail drop");
+const SHIPPED_HTML_GUARD = '| if test("^ {0,3}<(?:[!?]|/?[A-Za-z])") then esc_bs else . end';
 
 const withoutHtmlGuard = (program: string): string =>
-  withoutGuard(
-    program,
-    '| if test("^ {0,3}</?(?:[hH][1-6]',
-    '| if false and test("^ {0,3}</?(?:[hH][1-6]',
-    "the raw-HTML guard"
-  );
+  withoutGuard(program, SHIPPED_HTML_GUARD, "| .", "the raw-HTML guard");
+
+/**
+ * The nine-name guard this revision replaced, put back. A new-coverage
+ * assertion that stays green under THIS is testing nothing the change added,
+ * so each one below is paired with a run through it. The pairing is only
+ * trustworthy if the stand-in still catches what the old guard did catch --
+ * a control that reddened for its own reasons would otherwise read as proof --
+ * so one test drives an `<h2>` line through it and expects the escape.
+ */
+const NINE_NAME_GUARD =
+  '| if test("^ {0,3}</?(?:[hH][1-6]|[hH][rR]|[dD][iI][vV]|[pP]|[sS]ection|' +
+  '[aA]rticle|[hH]eader|[tT]able|[bB]lockquote)\\\\b") then esc_bs else . end';
+
+const withNineNameGuard = (program: string): string =>
+  withoutGuard(program, SHIPPED_HTML_GUARD, NINE_NAME_GUARD, "the raw-HTML guard");
 
 /**
  * The ambiguity marker removed: a run only SOME readers end the fence on is scored as
@@ -2828,7 +2881,49 @@ describe("session-archive text-turn defanging", () => {
     expect(htmlBlockOpeners(note)).toBe(1);
   });
 
-  it("leaves an autolink alone: it is not a block opener", () => {
+  // The nine-name guard fired on NONE of the 152,451 non-blank text-turn lines in
+  // the 29 session transcripts on this machine (as of 2026-09-14 11:34 JST -- the
+  // corpus is live and moves by the hour); the line-start condition fires on
+  // 1,970. Classified by `opensRawHtmlBlock` above, which tests each start
+  // condition, and cross-checked against markdown-it-py 4.2.0 (1,970 of 1,970
+  // agree): 1,343 (68.2%) are CommonMark type 7 -- a complete tag alone on the
+  // line, any name -- 85 are types 2 and 6, and 542 are a tag with content after
+  // it on the same line (inline raw HTML, no block). Type 7 is the shape ordinary
+  // traffic actually carries: `<teammate-message ...>` 1,166, `<task-notification>`
+  // and its close 164 -- hence the last payload below.
+  const uncovered: Array<[string, string]> = [
+    ["F6 -- a type-6 name the nine-name list never carried", `<aside><h2>${FORGED_TURN}</h2>`],
+    ["F5 -- an HTML comment opener, which no blank line ends", `<!-- ${FORGED_TURN}`],
+    ["F5 -- a type-1 opener, which no blank line ends either", `<script>${FORGED_TURN}`],
+    ["F5 -- an uppercase name, which folding only the first letter missed", `<SECTION>${FORGED_TURN}</SECTION>`],
+    ["type 7 -- a complete tag no tag-NAME list can reach", `<teammate-message teammate_id="x">`]
+  ];
+
+  for (const [label, payload] of uncovered) {
+    it(`escapes ${label}`, () => {
+      expect(htmlBlockOpeners(render(renderer, transcriptWithTextTurn(`${payload}\n\nI approve.`)))).toBe(0);
+    });
+
+    it(`and the nine-name guard it replaced left that line live: ${label}`, () => {
+      const note = render(withNineNameGuard(renderer), transcriptWithTextTurn(`${payload}\n\nI approve.`));
+
+      expect(htmlBlockOpeners(note)).toBe(1);
+    });
+  }
+
+  it("the nine-name stand-in still catches what the old guard DID catch, so the pairs above are not reddening for their own reasons", () => {
+    const note = render(withNineNameGuard(renderer), transcriptWithTextTurn(`<h2>${FORGED_TURN}</h2>\n\nI approve.`));
+
+    expect(htmlBlockOpeners(note)).toBe(0);
+  });
+
+  it("leaves a four-space-indented tag alone as the first line of a turn: at top level, after a blank line or the turn start, that is an indented code block, not an opener", () => {
+    const note = render(renderer, transcriptWithTextTurn("    <div>indented</div>"));
+
+    expect(topLevelLines(note)).toContain("    <div>indented</div>");
+  });
+
+  it("leaves a MID-LINE autolink alone: the line-start test never sees it (a line-start autolink IS escaped, cosmetically)", () => {
     const note = render(renderer, transcriptWithTextTurn("see <https://example.com> for details"));
 
     expect(topLevelLines(note)).toContain("see <https://example.com> for details");

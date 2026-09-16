@@ -701,8 +701,8 @@ body_jq='
     # prose, and an ATX-only rule let all three through (F5 / F3 of the
     # 2026-09-09 scan):
     #   - a setext underline (=== / ---) makes a HEADING of the line above it;
-    #   - a block-level raw HTML opener (<h2>, <div>, ...), which a reading view
-    #     renders, so <h2> forges exactly the shape ATX does;
+    #   - a raw HTML block opener, which a reading view renders, so <h2> forges
+    #     exactly the shape ATX does -- and so does any other tag, see below;
     #   - a fence run at column 0 that the turn never closes. That flips fence
     #     parity for the REST of the note: the opening fence of the next tool
     #     result closes the one the turn opened, and the result body lands at
@@ -712,7 +712,10 @@ body_jq='
     # 8,024 lines: ATX 694 lines (already escaped before this change); a setext
     # underline preceded by a NON-BLANK line, 1 -- every setext-shaped line
     # would be 16 and would also escape thematic breaks, which forge nothing;
-    # the narrowed HTML opener, 0; a leading fence run, 861 -- but a run in a
+    # the narrowed HTML opener, 0 -- that 0 was the count of the NINE-NAME rule
+    # this file shipped first, and it is why that rule looked free; the rule is
+    # no longer name-based and its count is no longer 0 (see RAW HTML below);
+    # a leading fence run, 861 -- but a run in a
     # turn that LEAVES A FENCE OPEN, 0 (also 0 over 2,885 turns of a third
     # transcript). Escaping all 861 is the "7,336 more lines" this renderer rejected
     # above; escaping only the unbalanced ones costs nothing and fires on
@@ -741,6 +744,123 @@ body_jq='
     # flattening under-escaped 4,224 and over-escaped 0; this one matches on all
     # 28,150. With the setext guard disabled the two are byte-identical, so that
     # guard is the whole delta. $L is also half as long on CRLF-dense text.
+    # RAW HTML -- what the opener rule covers, what it does NOT, and what it cost.
+    #
+    # COVERS. The rule tests the START of a line for the CommonMark start
+    # condition rather than for a list of tag names: after at most 3 spaces, a
+    # "<" followed by "!" or "?", or by an optional "/" and a letter. That is
+    # every HTML block type, 1 through 7, when the block opens at the line start.
+    # Type 7 is the one that matters and the one NO tag-name list can ever
+    # reach, because a type-7 opener is a complete tag and nothing else, with
+    # any name at all. Corpus, as of 2026-09-14 11:34 JST -- live transcripts,
+    # so these counts move by the hour: 29 session transcripts on this machine,
+    # 152,451 non-blank text-turn lines, the unfenced channel. The nine-name
+    # rule that shipped here first fired on 0 lines. This rule fires on 1,970,
+    # in 27 of the 29. Classified by the test file oracle opensRawHtmlBlock,
+    # which tests each start condition, type 7 included, and cross-checked line
+    # by line against markdown-it-py 4.2.0 (1,970 of 1,970 agree): 1,428 (72.5%)
+    # open a raw HTML block on their own -- 1,343 type 7 (<teammate-message ...>
+    # 1,166; <task-notification> and its close, 164), 83 type 6 (summary 82,
+    # ul 1 -- neither was in the nine), 2 type 2 (<!--). The other 542 (27.5%)
+    # are a tag with content after it on the same line (<task-id>...</task-id>,
+    # <output-file>..., <status>completed</status>): they open no block but
+    # render as inline raw HTML, and the rule escapes them too. Ordinary
+    # harness traffic was already putting raw HTML into archived notes and
+    # nothing here caught any of it. A type-7 count is only a type-7 count if
+    # the classifier tests the type-7 condition; one that labels type 7 by
+    # elimination after types 1 to 6 counts "not types 1 to 6" instead.
+    # It is a strict superset, not a trade: over 20,287 generated line shapes
+    # (name x case x leading slash x indent x container prefix x suffix) the
+    # nine-name rule escaped 1,344 and this one 7,824, with "the old rule
+    # escaped AND this one did not" = 0. A control narrowed to drop uppercase
+    # loses 5,184 of them, so that census can in fact detect a narrowing.
+    #
+    # DOES NOT COVER -- residual, stated, not fixed. Any raw tag the line-start
+    # test does not see. The plain form is a block-forging tag LATER on the same
+    # line, e.g.  text <span style=...>...</span>  : not escaped, here or
+    # before, it renders as inline raw HTML, and a browser still turns that into
+    # the block the tag names (a raw <h2> inside <p> renders as a heading). The
+    # same residual in forms that example does not show: a tag preceded by a
+    # non-indentation space (NBSP, U+3000, ZWSP, a BOM) at the line start; a
+    # tag after 4 or more spaces, or a tab, on a line that continues a paragraph
+    # -- inline raw HTML, not indented code, because indented code cannot
+    # interrupt a paragraph (10 such lines in the corpus above, all 10 after a
+    # non-blank line); and, under a list item, a tag on the FOLLOWING line
+    # indented to the item content column plus at most 3 (4 to 5 spaces under
+    # "- ", 4 to 7 under "10. "), which opens a real block at that column. All
+    # of these were live before this change too.
+    # Escaping anywhere on a line needs a pass over the whole line, and the
+    # obvious one is unaffordable: jq gsub costs O(matches x length) on one
+    # string, so one line of N openers costs, for N of 4,000 / 8,000 / 16,000 /
+    # 32,000, about 0.5 / 1.8 / 7.2 / 28.3 s against 0.007 to 0.012 s for the
+    # rule above. That is not cosmetic: this script runs under set -e, so a
+    # killed jq (a hook timeout, say) aborts the hook with the jq status,
+    # nothing is written, and the previous note stands with nothing reported.
+    # (The exit-0 path just below the jq call is for a jq that SUCCEEDS with
+    # an empty body.)
+    # Do NOT read that as "no anywhere-on-the-line pass is affordable". A
+    # split/join reformulation was built here and measured LIKE FOR LIKE, as an
+    # extra step inside this same defang: 0.268 s at 32,000 openers on one line
+    # and 1.375 s at 128,000, and 1.00x to 1.25x of this rule on ordinary shapes
+    # (N lines with one opener, and prose with no tag at all). On cost it is
+    # affordable. It is not shipped because this change was scoped to the line
+    # start, and because only its COST was measured: backslash parity before a
+    # "<", the mid-line backslash it would insert into text that mask() has to
+    # match afterwards, and escape-set monotonicity were NOT checked, and those
+    # are where the two earlier attempts at this actually died.
+    #
+    # ALSO RESIDUAL: a block opens at a container content column too --
+    # "- <span>", "> <span>", "1. <span>" -- so the line start is not the only
+    # place a block can open. Do not restate this rule as covering every opener.
+    # Frequency is no argument here, only structure: 0 such lines in the corpus
+    # above, and 43 lines carrying an h1-h6 tag away from the line start. Read
+    # one by one, all 43 are text that mentions or counts a tag -- notes about
+    # this rule, tallies over a generated file, a line of Python -- not a forged
+    # turn; the shape is live in every one of them all the same.
+    #
+    # mask() INTERACTION: ARGUED, NOT MEASURED. mask() is untouched, and this
+    # rule inserts one backslash at column 0 to 3 immediately before a "<" --
+    # the position the nine-name rule already used, so no new insertion
+    # position exists. None of the mask rules anchors on "<"; the PEM rules
+    # match their -----BEGIN / -----END markers wherever they sit on a line;
+    # and the two line-anchored patterns, the ~~~ terminator of the PEM range
+    # and the whole-line base64 catch-all, cannot match a line whose first
+    # non-space byte is "<" or a backslash. A differential with
+    # credential-shaped fixtures was attempted by three reviewers in this
+    # series (at least five attempts) and the secret guards blocked every one,
+    # so this is an argument from the insertion position and the rule text,
+    # still open. Do not upgrade it to a measurement without running one.
+    #
+    # COST, along these axes and only these. Matches per line: one line of N
+    # openers, N from 4,000 to 32,000 -- 0.007 s to 0.012 s, flat, and equal to
+    # the nine-name rule. Backslash-run length before a non-matching "<": N from
+    # 16,000 to 128,000 -- 0.008 s to 0.019 s, flat, equal. Line count: N lines
+    # of one opener each, N from 4,000 to 32,000, in two shapes (2026-09-14, min
+    # of 5 to 9 interleaved runs). On a line BOTH rules escape (<p>x) this one
+    # is cheaper, 0.83x to 0.95x, because its test is cheaper than the nine-way
+    # alternation; on prose with no tag likewise, 0.79x to 0.91x. On a line only
+    # THIS rule escapes (<aside>x) it pays the sub the nine-name rule skipped:
+    # 1.03x to 1.20x, +0.03 to +0.10 s absolute. Both arms grow about 2.1x to
+    # 3.4x per doubling, which is per-line cost this file already had and this
+    # change does not touch. Output: one byte per escaped LINE, never per match,
+    # so at most one byte per line of input; on four real transcripts of 3 MB
+    # to 78 MB it added 20 to 392 bytes. Peak RSS on those four: 22.9 / 198.9 /
+    # 428.6 / 1174.7 MB against 22.4 / 199.7 / 428.0 / 1284.3 MB -- no increase
+    # measured.
+    # Fidelity, not cost: these per-line rules run on EVERY line of a text
+    # turn, inside a fence or not -- only the fence-run rule below reads
+    # $unbalanced. So a tag line inside a balanced code block the model wrote in
+    # prose (an HTML sample: <html>, <ul>, <li>) gets the backslash as well, and
+    # a reader sees it literally there. The nine-name rule did this for its nine
+    # names; this rule does it for every tag line -- 15 of the 1,970 hits above
+    # sit inside a fence. A line-start autolink (<https://...>, <user@host>) is
+    # escaped too and renders as literal text instead of a link: 0 such lines in
+    # the corpus.
+    # Those are the axes that WERE varied. Two earlier attempts at this line
+    # each shipped a sentence claiming the search for a costly shape was
+    # finished, and both sentences were false, the second one measured over a
+    # corpus in which every line had exactly one match. So: no such sentence
+    # here. If you add a pass, vary an axis this list does not name.
     def fence_m: if test("^ {0,3}(~{3,}|`{3,})") then capture("^ {0,3}(?<run>~{3,}|`{3,})(?<info>.*)$") else null end;
     def esc_bs: sub("^(?<s> {0,3})"; "\(.s)\\");
     # WHICH runs close is reader-dependent, and closing TOGGLES parity, so the
@@ -802,7 +922,7 @@ body_jq='
         | $L[$i]
         | sub("^(?<s> {0,3})(?<h>#{1,6}[ \t])"; "\(.s)\\\(.h)")
         | if ($i > 0) and ($L[$i-1] | test("[^[:space:]]")) and test("^ {0,3}(=+|-+)[[:space:]]*$") then esc_bs else . end
-        | if test("^ {0,3}</?(?:[hH][1-6]|[hH][rR]|[dD][iI][vV]|[pP]|[sS]ection|[aA]rticle|[hH]eader|[tT]able|[bB]lockquote)\\b") then esc_bs else . end
+        | if test("^ {0,3}<(?:[!?]|/?[A-Za-z])") then esc_bs else . end
         | if $unbalanced and ((fence_m) != null) then esc_bs else . end ] as $E
     | reduce range(0; $sizes|length) as $k ({out: [], p: 0};
         {out: (.out + [ ($E[.p : .p + $sizes[$k]] | join("\r")) + $tails[$k] ]), p: (.p + $sizes[$k])})
