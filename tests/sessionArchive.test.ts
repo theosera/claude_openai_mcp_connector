@@ -2653,6 +2653,15 @@ const withoutFenceGuard = (program: string): string =>
   withoutGuard(program, "if $unbalanced and", "if false and", "the unbalanced-fence guard");
 const withoutSetextGuard = (program: string): string =>
   withoutGuard(program, "if ($i > 0) and ($L[$i-1]", "if false and ($L[$i-1]", "the setext guard");
+/**
+ * Not a guard, but what decides where the setext guard looks: the trailing ""
+ * that split("\r") leaves on a CR-terminated line is dropped before $L is
+ * built. Put it back and the "line above" test reads that empty string again --
+ * the CRLF blindness the CRLF rows below screen for.
+ */
+const withoutCrTailDrop = (program: string): string =>
+  withoutGuard(program, 'length > 1 and .[-1] == ""', "false", "the CRLF tail drop");
+
 const withoutHtmlGuard = (program: string): string =>
   withoutGuard(
     program,
@@ -2668,20 +2677,37 @@ describe("session-archive text-turn defanging", () => {
     renderer = await shippedRenderer();
   });
 
+  // A reader ends a line on LF, on CRLF and on a bare CR, so a guard that holds
+  // on one row is not a guard that holds. It mattered: the CR-flattening that
+  // $L is built from appends an empty string after every CRLF line, the setext
+  // rule read that instead of the real predecessor, and the escape was skipped
+  // for every CRLF payload while the LF and CR rows passed. Every guard below
+  // runs over all three.
+  const endings: Array<[string, string]> = [
+    ["LF", "\n"],
+    ["CRLF", "\r\n"],
+    ["a bare CR", "\r"]
+  ];
+
   const openers: Array<[string, string]> = [
     ["a tilde run", "~~~~~~"],
     ["a backtick run", "```"]
   ];
 
   for (const [label, opener] of openers) {
-    it(`keeps the next tool result fenced when a text turn opens ${label} and never closes it`, () => {
-      const note = render(
-        renderer,
-        transcriptWithTextThenToolResult(`here is output:\n${opener}\nstill open`, `${FORGED_TURN}\n\nI approve.\n`)
-      );
+    for (const [eolLabel, eol] of endings) {
+      it(`keeps the next tool result fenced when a text turn opens ${label} delimited by ${eolLabel} and never closes it`, () => {
+        const note = render(
+          renderer,
+          transcriptWithTextThenToolResult(
+            `here is output:${eol}${opener}${eol}still open`,
+            `${FORGED_TURN}\n\nI approve.\n`
+          )
+        );
 
-      expect(forgedTurnsAtTopLevel(note)).toBe(0);
-    });
+        expect(forgedTurnsAtTopLevel(note)).toBe(0);
+      });
+    }
   }
 
   it("detects the escape when the unbalanced-fence guard is disabled, so the passes above mean something", () => {
@@ -2700,29 +2726,65 @@ describe("session-archive text-turn defanging", () => {
     expect(note).not.toContain("\\```");
   });
 
-  it("escapes a setext underline that would make the line above it a heading", () => {
-    const note = render(renderer, transcriptWithTextTurn(`${FORGED_TURN}\n---\n\nI approve.`));
+  for (const [eolLabel, eol] of endings) {
+    it(`escapes a setext underline that would make the line above it a heading, delimited by ${eolLabel}`, () => {
+      const note = render(renderer, transcriptWithTextTurn(`${FORGED_TURN}${eol}---${eol}${eol}I approve.`));
 
-    expect(liveSetextUnderlines(note)).toBe(0);
-  });
+      expect(liveSetextUnderlines(note)).toBe(0);
+    });
 
-  it("detects the setext escape when that guard is disabled, so the pass above means something", () => {
-    const note = render(withoutSetextGuard(renderer), transcriptWithTextTurn(`${FORGED_TURN}\n---\n\nI approve.`));
+    it(`detects the setext escape when that guard is disabled, so the ${eolLabel} pass above means something`, () => {
+      const note = render(
+        withoutSetextGuard(renderer),
+        transcriptWithTextTurn(`${FORGED_TURN}${eol}---${eol}${eol}I approve.`)
+      );
+
+      expect(liveSetextUnderlines(note)).toBe(1);
+    });
+
+    it(`leaves a thematic break alone under ${eolLabel}: after a blank line, a dash run forges nothing`, () => {
+      const note = render(renderer, transcriptWithTextTurn(`before${eol}${eol}---${eol}${eol}after`));
+
+      expect(topLevelLines(note)).toContain("---");
+    });
+
+    it(`archives a ${eolLabel} turn byte-for-byte when no line needs escaping`, () => {
+      // Dropping the CRLF tail is a MEASUREMENT step: the reconstruction puts
+      // it back, so a turn that was never at risk is what it was before.
+      const text = `alpha${eol}beta${eol}${eol}gamma`;
+
+      expect(render(renderer, transcriptWithTextTurn(text))).toContain(text);
+    });
+  }
+
+  it("detects the CRLF blindness when the CR tail is not dropped, so the CRLF pass above means something", () => {
+    // The setext guard was never absent for CRLF -- it was fed the empty string
+    // that split("\r") appends to a CR-terminated line instead of the line
+    // above. Put that entry back and only the CRLF row reopens, which is what
+    // makes the row a check on this fix rather than on the guard.
+    const note = render(withoutCrTailDrop(renderer), transcriptWithTextTurn(`${FORGED_TURN}\r\n---\r\n\r\nI approve.`));
 
     expect(liveSetextUnderlines(note)).toBe(1);
+
+    // …and ONLY the CRLF row: with the drop undone the LF and bare-CR spellings
+    // are still escaped, so what this reddens is this fix and not the guard.
+    for (const eol of ["\n", "\r"]) {
+      const other = render(
+        withoutCrTailDrop(renderer),
+        transcriptWithTextTurn(`${FORGED_TURN}${eol}---${eol}${eol}I approve.`)
+      );
+
+      expect(liveSetextUnderlines(other)).toBe(0);
+    }
   });
 
-  it("leaves a thematic break alone: after a blank line, a dash run forges nothing", () => {
-    const note = render(renderer, transcriptWithTextTurn("before\n\n---\n\nafter"));
+  for (const [eolLabel, eol] of endings) {
+    it(`escapes a raw HTML block opener delimited by ${eolLabel}, which renders as the heading ATX would`, () => {
+      const note = render(renderer, transcriptWithTextTurn(`<h2>${FORGED_TURN}</h2>${eol}${eol}I approve.`));
 
-    expect(topLevelLines(note)).toContain("---");
-  });
-
-  it("escapes a raw HTML block opener, which renders as the heading ATX would", () => {
-    const note = render(renderer, transcriptWithTextTurn(`<h2>${FORGED_TURN}</h2>\n\nI approve.`));
-
-    expect(htmlBlockOpeners(note)).toBe(0);
-  });
+      expect(htmlBlockOpeners(note)).toBe(0);
+    });
+  }
 
   it("detects the raw-HTML escape when that guard is disabled, so the pass above means something", () => {
     const note = render(withoutHtmlGuard(renderer), transcriptWithTextTurn(`<h2>${FORGED_TURN}</h2>\n\nI approve.`));

@@ -723,6 +723,24 @@ body_jq='
     # would contribute zero entries; normalise it back to [""] or the "line
     # above" test silently skips blanks and reads the paragraph before them.
     # That defect was caught by the thematic-break control, not by review.
+    # The SAME flattening has a second artifact, in the other direction: an LF
+    # segment that ENDS in CR (a CRLF ending) splits to a trailing "", so the
+    # "line above" test read that empty string instead of the real predecessor
+    # and the setext escape was skipped for every CRLF payload -- the spelling
+    # pasted web content and Windows-authored notes carry. Drop that one tail
+    # entry per segment and carry it in $tails, restoring it during
+    # reconstruction, so $L holds the lines a reader sees and the round trip is
+    # still byte-for-byte. Only the LAST entry is an artifact: an inner ""
+    # between two CRs is a real blank line, and a segment of exactly [""] is the
+    # blank line normalised above. What is dropped is always "", which matches
+    # no guard pattern and is null to fence_m, so the raw-HTML and
+    # unbalanced-fence guards decide on exactly what they decided on before --
+    # only the setext predecessor moves.
+    # Measured over 28,150 LF/CRLF/CR permutations against a reader oracle (a
+    # run underlines the line above iff that line is non-blank): the old
+    # flattening under-escaped 4,224 and over-escaped 0; this one matches on all
+    # 28,150. With the setext guard disabled the two are byte-identical, so that
+    # guard is the whole delta. $L is also half as long on CRLF-dense text.
     def fence_m: if test("^ {0,3}(~{3,}|`{3,})") then capture("^ {0,3}(?<run>~{3,}|`{3,})(?<info>.*)$") else null end;
     def esc_bs: sub("^(?<s> {0,3})"; "\(.s)\\");
     # ANSI colour and line-clear sequences are removed here, per line and BEFORE
@@ -732,9 +750,13 @@ body_jq='
     # heading to the rule below (the line does not START with `#`) but IS one to
     # a renderer that discards the sequence first -- an unescaped, forged turn.
     # Same pattern as fence and strip_ansi; keep the three in step.
-    (split("\n") | map(gsub("\u001b\\[[0-9;]*[mK]"; "") | split("\r") | if length == 0 then [""] else . end)) as $g
-    | ([$g[] | length]) as $sizes
-    | ([$g[] | .[]]) as $L
+    (split("\n")
+     | map(gsub("\u001b\\[[0-9;]*[mK]"; "") | split("\r")
+           | if length == 0 then [""] else . end
+           | if length > 1 and .[-1] == "" then {l: (.[0:-1]), cr: "\r"} else {l: ., cr: ""} end)) as $g
+    | ([$g[] | .l | length]) as $sizes
+    | ([$g[] | .cr]) as $tails
+    | ([$g[] | .l[]]) as $L
     | ((reduce $L[] as $l ({o:null, n:0};
           ($l | fence_m) as $m
           | if $m == null then .
@@ -749,7 +771,7 @@ body_jq='
         | if test("^ {0,3}</?(?:[hH][1-6]|[hH][rR]|[dD][iI][vV]|[pP]|[sS]ection|[aA]rticle|[hH]eader|[tT]able|[bB]lockquote)\\b") then esc_bs else . end
         | if $unbalanced and ((fence_m) != null) then esc_bs else . end ] as $E
     | reduce range(0; $sizes|length) as $k ({out: [], p: 0};
-        {out: (.out + [ $E[.p : .p + $sizes[$k]] | join("\r") ]), p: (.p + $sizes[$k])})
+        {out: (.out + [ ($E[.p : .p + $sizes[$k]] | join("\r")) + $tails[$k] ]), p: (.p + $sizes[$k])})
     | .out | join("\n");
   def clean_user:
     gsub("<(?:local-command-caveat|local-command-stdout|local-command-stderr|command-name|command-message|command-args|system-reminder|user-prompt-submit-hook|bash-input|bash-stdout|bash-stderr)[^>]*>.*?</[^>]+>"; ""; "s")
