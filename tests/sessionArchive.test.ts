@@ -616,6 +616,16 @@ const IN_RANGE_SHORT_LINE = "{1,11}";
 /** The prefixed whole-line catch-all (2026-09-17): the run it substitutes, spelled as only it spells it. */
 const PREFIXED_CATCH_ALL = String.raw`{32,}[[:space:]]*$/s/[A-Za-z0-9+\/=]{32,}`;
 const PREFIXED_CATCH_ALL_OFF = String.raw`{255,}[[:space:]]*$/s/[A-Za-z0-9+\/=]{255,}`;
+/**
+ * A prefixed body is reached by TWO rules since 2026-09-17: whichever rule a test is
+ * mutating, and the prefixed whole-line catch-all. A mutation that expects a prefixed
+ * body to come back must silence the catch-all as well, or it passes for the wrong
+ * reason -- and the address-only half is asserted alongside, so both defences are
+ * seen to hold on their own.
+ */
+function withoutPrefixedCatchAll(maskFn: string): string {
+  return mutate(maskFn, PREFIXED_CATCH_ALL, PREFIXED_CATCH_ALL_OFF, "the prefixed catch-all");
+}
 
 /** The note as the hook writes it: shipped renderer, then shipped mask over the assembled body. */
 function renderThenMask(renderer: string, maskFn: string, transcript: unknown[]): string {
@@ -1199,9 +1209,12 @@ describe("session-archive auth-scheme masking", () => {
       // strip that one address and every body line comes back. The previous shape
       // undid an ordering AND an address together and counted two guards from one
       // red -- see withoutDashBoundaryOn for why that reads as more than it shows.
-      expect(
-        bodyLinesSurviving(runMask(withoutDashBoundaryOn(mask, AUTH_SCHEMES, "scheme", "the auth-scheme rule"), block))
-      ).toBe(BODY.length);
+      // Since 2026-09-17 a second, independent rule (the prefixed catch-all) also
+      // reaches these body lines, so the address-only mutation is shown to hold
+      // through it, and the body comes back only once that rule is silenced too.
+      const plain = withoutDashBoundaryOn(mask, AUTH_SCHEMES, "scheme", "the auth-scheme rule");
+      expect(bodyLinesSurviving(runMask(plain, block))).toBe(0);
+      expect(bodyLinesSurviving(runMask(withoutPrefixedCatchAll(plain), block))).toBe(BODY.length);
     });
   }
 
@@ -1222,10 +1235,12 @@ describe("session-archive auth-scheme masking", () => {
       expect(bodyLinesSurviving(runMask(mask, block))).toBe(0);
 
       // Reverse verification, one rule at a time: strip the address from the rule
-      // this opener actually reaches and the body comes back.
-      expect(
-        bodyLinesSurviving(runMask(withoutDashBoundaryOn(mask, ruleMarker, which, `the ${label} rule`), block))
-      ).toBe(BODY.length);
+      // this opener actually reaches and the range never opens -- the prefixed
+      // catch-all still holds the body, and only with that silenced too does
+      // the body come back.
+      const plain = withoutDashBoundaryOn(mask, ruleMarker, which, `the ${label} rule`);
+      expect(bodyLinesSurviving(runMask(plain, block))).toBe(0);
+      expect(bodyLinesSurviving(runMask(withoutPrefixedCatchAll(plain), block))).toBe(BODY.length);
     });
   }
 
@@ -1262,7 +1277,7 @@ describe("session-archive auth-scheme masking", () => {
 
     // Reverse verification, single-stage: swap the boundary back on the one rule
     // this opener reaches.
-    const plain = withoutDashBoundaryOn(mask, AUTH_SCHEMES, "scheme", "the auth-scheme rule");
+    const plain = withoutPrefixedCatchAll(withoutDashBoundaryOn(mask, AUTH_SCHEMES, "scheme", "the auth-scheme rule"));
     expect(bodyLinesSurviving(runMask(plain, glued))).toBe(BODY.length);
 
     // And the leading-dash ban really is not enough: measured on the same input,
@@ -1444,14 +1459,22 @@ describe("session-archive auth-scheme masking", () => {
     // redaction emits -- so a wrongly opened range reads as successful masking
     // and nobody looks. Measured: a planted `-----BEGIN X-----` under a widened
     // start address wiped 5 of 5 commit shas and paths.
+    // The observable is the prose AFTER the block: a run of 12+ in it survives
+    // only if the range never opened. The body lines themselves are no longer a
+    // usable signal -- since 2026-09-17 the prefixed catch-all takes a prefixed
+    // base64-only line whatever armor it sits in, as the bare catch-all always
+    // took the unprefixed one (a public body is masked; public prose is not).
     const prefix = PREFIXED[0][1];
+    const sentinel = "AFTERWARDS-abcdefghijklmnop";
     for (const label of ["CERTIFICATE", "RSA PUBLIC KEY", "PGP PUBLIC KEY BLOCK", "PGP SIGNATURE", "X509 CRL"]) {
       const block = [
         prefix(`${DASHES}BEGIN ${label}${DASHES}`, 1),
         ...BODY.map((line, index) => prefix(line, index + 2)),
-        prefix(`${DASHES}END ${label}${DASHES}`, BODY.length + 2)
+        prefix(`${DASHES}END ${label}${DASHES}`, BODY.length + 2),
+        `prose ${sentinel} continues`
       ].join("\n");
-      expect(bodyLinesSurviving(runMask(mask, block)), label).toBe(BODY.length);
+      expect(runMask(mask, block), label).toContain(sentinel);
+      expect(bodyLinesSurviving(runMask(withoutPrefixedCatchAll(mask), block)), label).toBe(BODY.length);
     }
   });
 
@@ -1471,7 +1494,12 @@ describe("session-archive auth-scheme masking", () => {
       prefix(`${DASHES}END ${label}${DASHES}`, BODY.length + 2)
     ].join("\n");
 
-    expect(bodyLinesSurviving(runMask(mask, block))).toBe(BODY.length);
+    // The defect is that the RANGE does not open on this label. Since 2026-09-17
+    // the prefixed catch-all takes the whole-line body anyway, so the defect is
+    // observed with that rule silenced -- and it is still a defect, because a
+    // body line embedded in prose is reached by the range alone.
+    expect(bodyLinesSurviving(runMask(withoutPrefixedCatchAll(mask), block))).toBe(BODY.length);
+    expect(bodyLinesSurviving(runMask(mask, block))).toBe(0);
     // And the marker line comes out PARTLY masked, which is the worst shape: the
     // body leaks while the line reads as a successful redaction.
     expect(runMask(mask, block).split("\n")[0]).toContain(MASKED);
