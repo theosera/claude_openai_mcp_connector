@@ -1148,7 +1148,11 @@ describe("session-archive vault authorization", () => {
     expect(stderr).toContain("no vault pin");
   });
 
-  it("tells the operator when the pin file exists but cannot be read", async () => {
+  // `chmod 000` denies nothing to UID 0, so under a root-run suite (common in
+  // containers) the fixture cannot reach the state this branch reads. Skip with
+  // the reason on record rather than assert something root cannot make true.
+  const asRoot = process.getuid?.() === 0;
+  it.skipIf(asRoot)("tells the operator when the pin file exists but cannot be read", async () => {
     const fixture = await makeFixture();
     const planted = await markedClone(fixture, "collaborator-repo");
     const pinDir = path.join(fixture.home, ".config", "session-archive");
@@ -1171,23 +1175,26 @@ describe("session-archive vault authorization", () => {
     await fs.chmod(pinFile, 0o600);
   });
 
-  it("falls back to the generic refusal once the unreadable-file branch is gone, so the line above means something", async () => {
-    const fixture = await makeFixture();
-    const planted = await markedClone(fixture, "collaborator-repo");
-    const pinDir = path.join(fixture.home, ".config", "session-archive");
-    await fs.mkdir(pinDir, { recursive: true });
-    const pinFile = path.join(pinDir, "vault-origin");
-    await fs.writeFile(pinFile, `${planted.remote}\n`);
-    await fs.chmod(pinFile, 0o000);
-    await expect(fs.readFile(pinFile)).rejects.toThrow();
-    const downgraded = await hookWithoutPinFileState(fixture, "unreadable");
+  it.skipIf(asRoot)(
+    "falls back to the generic refusal once the unreadable-file branch is gone, so the line above means something",
+    async () => {
+      const fixture = await makeFixture();
+      const planted = await markedClone(fixture, "collaborator-repo");
+      const pinDir = path.join(fixture.home, ".config", "session-archive");
+      await fs.mkdir(pinDir, { recursive: true });
+      const pinFile = path.join(pinDir, "vault-origin");
+      await fs.writeFile(pinFile, `${planted.remote}\n`);
+      await fs.chmod(pinFile, 0o000);
+      await expect(fs.readFile(pinFile)).rejects.toThrow();
+      const downgraded = await hookWithoutPinFileState(fixture, "unreadable");
 
-    const { stderr } = runHook(fixture, hookEnv(fixture), downgraded);
+      const { stderr } = runHook(fixture, hookEnv(fixture), downgraded);
 
-    expect(stderr).not.toContain("could not be read");
-    expect(stderr).toContain("no vault pin");
-    await fs.chmod(pinFile, 0o600);
-  });
+      expect(stderr).not.toContain("could not be read");
+      expect(stderr).toContain("no vault pin");
+      await fs.chmod(pinFile, 0o600);
+    }
+  );
 
   it("archives to the clone whose origin the operator pinned", async () => {
     const fixture = await makeFixture();
