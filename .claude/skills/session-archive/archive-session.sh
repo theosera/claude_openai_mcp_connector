@@ -586,7 +586,8 @@ body_jq='
   # legitimately carries (Windows-authored files, curl progress redraws)
   # survives it intact. $t is not the text as it ARRIVED, though: it is bound
   # from $text with `ESC[...m` and `ESC[...K` already removed, and that is the
-  # ONLY removal the body gets: the assembled note no longer passes through
+  # removal the fenced body gets (text turns get the same removal in defang,
+  # below): the assembled note no longer passes through
   # strip_ansi, which now covers the frontmatter and title alone. A second pass
   # ran AFTER this measurement and could collapse a nested sequence into a bare
   # closing fence, so it was moved off the body. Terminal control sequences outside them are untouched
@@ -632,8 +633,15 @@ body_jq='
     # gsub("\r\n?"; "\n") is the quadratic pass rejected at the top of this
     # renderer. split/join is linear and restores every byte it did not escape.
     def esc: sub("^(?<s> {0,3})(?<h>#{1,6}[ \t])"; "\(.s)\\\(.h)");
+    # ANSI colour and line-clear sequences are removed here, per line and BEFORE
+    # esc, for the same reason fence removes them: the assembled note no longer
+    # passes through strip_ansi, and a text turn is the one body path that did
+    # not go through fence. Left in, `ESC[0m## User` is not an ATX heading to
+    # esc (the line does not START with `#`) but IS one to a renderer that
+    # discards the sequence first -- an unescaped, forged turn. Same pattern as
+    # fence and strip_ansi; keep the three in step.
     split("\n")
-    | map(split("\r") | map(esc) | join("\r"))
+    | map(gsub("\u001b\\[[0-9;]*[mK]"; "") | split("\r") | map(esc) | join("\r"))
     | join("\n");
   def clean_user:
     gsub("<(?:local-command-caveat|local-command-stdout|local-command-stderr|command-name|command-message|command-args|system-reminder|user-prompt-submit-hook|bash-input|bash-stdout|bash-stderr)[^>]*>.*?</[^>]+>"; ""; "s")
