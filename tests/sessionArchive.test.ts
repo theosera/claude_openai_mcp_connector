@@ -1084,6 +1084,21 @@ async function hookReadingFirstPushUrlOnly(fixture: Fixture): Promise<string> {
   return downgraded;
 }
 
+/**
+ * A second bare repository seeded with the vault clone's history, to stand as an
+ * extra push URL on `origin`. It shares history on purpose: a push to it
+ * fast-forwards, so whether the transcript lands there is decided by the pin
+ * check alone. Two independent marked clones would only share a root commit
+ * when created in the same second, which made the delivery observable in one
+ * run and not the next.
+ */
+function secondPushTarget(fixture: Fixture, vault: { dir: string }, name: string): string {
+  const remote = path.join(fixture.root, "remotes", `${name}.git`);
+  git(["init", "--bare", "-q", remote], fixture);
+  git(["-C", vault.dir, "push", "-q", remote, "HEAD:main"], fixture);
+  return remote;
+}
+
 /** The git_url_id() function as it ships, extracted from the hook script. */
 async function shippedUrlId(): Promise<(url: string) => string> {
   const script = await fs.readFile(hookPath, "utf8");
@@ -1215,11 +1230,11 @@ describe("session-archive vault authorization", () => {
   it("refuses a clone whose origin carries a second push URL that is not the pinned vault", async () => {
     const fixture = await makeFixture();
     const vault = await markedClone(fixture, "vault-clone");
-    const planted = await markedClone(fixture, "collaborator-repo");
+    const second = secondPushTarget(fixture, vault, "second-target");
     // One remote, two push URLs. `git push` sends to both; `get-url --push`
     // without `--all` prints only the first, which is the pinned vault.
     git(["-C", vault.dir, "remote", "set-url", "--push", "origin", vault.remote], fixture);
-    git(["-C", vault.dir, "remote", "set-url", "--add", "--push", "origin", planted.remote], fixture);
+    git(["-C", vault.dir, "remote", "set-url", "--add", "--push", "origin", second], fixture);
     expect(git(["-C", vault.dir, "remote", "get-url", "--push", "origin"], fixture).trim()).toBe(vault.remote);
     expect(
       git(["-C", vault.dir, "remote", "get-url", "--push", "--all", "origin"], fixture).trim().split("\n")
@@ -1227,7 +1242,7 @@ describe("session-archive vault authorization", () => {
 
     const { status, stderr } = runHook(fixture, hookEnv(fixture, { SESSION_VAULT_ORIGIN: vault.remote }));
 
-    expect(notesPushedTo(planted.remote, fixture)).toEqual([]);
+    expect(notesPushedTo(second, fixture)).toEqual([]);
     expect(notesPushedTo(vault.remote, fixture)).toEqual([]);
     expect(stderr).toContain("Not archiving");
     expect(status).toBe(0);
@@ -1236,18 +1251,18 @@ describe("session-archive vault authorization", () => {
   it("delivers the session to the second push URL once the check reads only the first one", async () => {
     const fixture = await makeFixture();
     const vault = await markedClone(fixture, "vault-clone");
-    const planted = await markedClone(fixture, "collaborator-repo");
+    const second = secondPushTarget(fixture, vault, "second-target");
     git(["-C", vault.dir, "remote", "set-url", "--push", "origin", vault.remote], fixture);
-    git(["-C", vault.dir, "remote", "set-url", "--add", "--push", "origin", planted.remote], fixture);
+    git(["-C", vault.dir, "remote", "set-url", "--add", "--push", "origin", second], fixture);
     const downgraded = await hookReadingFirstPushUrlOnly(fixture);
 
     runHook(fixture, hookEnv(fixture, { SESSION_VAULT_ORIGIN: vault.remote }), downgraded);
 
     // With `--all` gone the first push URL is the pinned vault, the check passes,
     // and the push that follows delivers the transcript to the second one as well.
-    const notes = notesPushedTo(planted.remote, fixture);
+    const notes = notesPushedTo(second, fixture);
     expect(notes).toHaveLength(1);
-    expect(git(["-C", planted.remote, "show", `refs/heads/main:${notes[0]}`], fixture)).toContain(TRANSCRIPT_CANARY);
+    expect(git(["-C", second, "show", `refs/heads/main:${notes[0]}`], fixture)).toContain(TRANSCRIPT_CANARY);
   });
 
   it("refuses a pin whose path differs from the origin only by case", async () => {
