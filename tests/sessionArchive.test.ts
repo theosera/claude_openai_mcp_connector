@@ -1064,6 +1064,43 @@ async function hookWithoutPinCheck(fixture: Fixture): Promise<string> {
   return downgraded;
 }
 
+const ALL_PUSH_URLS = "remote get-url --push --all origin";
+
+/**
+ * The pin check as it stood before #187: it read `get-url --push` without
+ * `--all`, so only the first push URL of a remote was ever compared. Used to
+ * show the refusal above observes the delivery it screens for.
+ */
+async function hookReadingFirstPushUrlOnly(fixture: Fixture): Promise<string> {
+  const script = await fs.readFile(hookPath, "utf8");
+  if (!script.includes(ALL_PUSH_URLS)) {
+    throw new Error(
+      "origin_is_pinned_vault no longer lists every push URL — either the anchor moved, or the check has " +
+        "regressed to reading the first push URL only, which is the failure the refusal above exists to catch."
+    );
+  }
+  const downgraded = path.join(fixture.root, "archive-session.first-push-url.sh");
+  await fs.writeFile(downgraded, script.replace(ALL_PUSH_URLS, "remote get-url --push origin"));
+  return downgraded;
+}
+
+/** The git_url_id() function as it ships, extracted from the hook script. */
+async function shippedUrlId(): Promise<(url: string) => string> {
+  const script = await fs.readFile(hookPath, "utf8");
+  const lines = script.split("\n");
+  const start = lines.indexOf("git_url_id() {");
+  if (start === -1) {
+    throw new Error(`git_url_id() { not found in ${hookPath} — the extraction anchor moved.`);
+  }
+  const end = lines.findIndex((line, index) => index > start && line === "}");
+  if (end === -1) {
+    throw new Error(`unterminated git_url_id() in ${hookPath} — the extraction anchor moved.`);
+  }
+  const fn = lines.slice(start, end + 1).join("\n");
+  return (url: string) =>
+    execFileSync("bash", ["-c", `${fn}\ngit_url_id "$1"`, "_", url], { encoding: "utf8", stdio: "pipe" });
+}
+
 describe("session-archive vault authorization", () => {
   beforeAll(() => {
     for (const tool of ["jq", "git"]) {
@@ -1175,6 +1212,58 @@ describe("session-archive vault authorization", () => {
     expect(stderr).toContain("Not archiving");
   });
 
+  it("refuses a clone whose origin carries a second push URL that is not the pinned vault", async () => {
+    const fixture = await makeFixture();
+    const vault = await markedClone(fixture, "vault-clone");
+    const planted = await markedClone(fixture, "collaborator-repo");
+    // One remote, two push URLs. `git push` sends to both; `get-url --push`
+    // without `--all` prints only the first, which is the pinned vault.
+    git(["-C", vault.dir, "remote", "set-url", "--push", "origin", vault.remote], fixture);
+    git(["-C", vault.dir, "remote", "set-url", "--add", "--push", "origin", planted.remote], fixture);
+    expect(git(["-C", vault.dir, "remote", "get-url", "--push", "origin"], fixture).trim()).toBe(vault.remote);
+    expect(
+      git(["-C", vault.dir, "remote", "get-url", "--push", "--all", "origin"], fixture).trim().split("\n")
+    ).toHaveLength(2);
+
+    const { status, stderr } = runHook(fixture, hookEnv(fixture, { SESSION_VAULT_ORIGIN: vault.remote }));
+
+    expect(notesPushedTo(planted.remote, fixture)).toEqual([]);
+    expect(notesPushedTo(vault.remote, fixture)).toEqual([]);
+    expect(stderr).toContain("Not archiving");
+    expect(status).toBe(0);
+  });
+
+  it("delivers the session to the second push URL once the check reads only the first one", async () => {
+    const fixture = await makeFixture();
+    const vault = await markedClone(fixture, "vault-clone");
+    const planted = await markedClone(fixture, "collaborator-repo");
+    git(["-C", vault.dir, "remote", "set-url", "--push", "origin", vault.remote], fixture);
+    git(["-C", vault.dir, "remote", "set-url", "--add", "--push", "origin", planted.remote], fixture);
+    const downgraded = await hookReadingFirstPushUrlOnly(fixture);
+
+    runHook(fixture, hookEnv(fixture, { SESSION_VAULT_ORIGIN: vault.remote }), downgraded);
+
+    // With `--all` gone the first push URL is the pinned vault, the check passes,
+    // and the push that follows delivers the transcript to the second one as well.
+    const notes = notesPushedTo(planted.remote, fixture);
+    expect(notes).toHaveLength(1);
+    expect(git(["-C", planted.remote, "show", `refs/heads/main:${notes[0]}`], fixture)).toContain(TRANSCRIPT_CANARY);
+  });
+
+  it("refuses a pin whose path differs from the origin only by case", async () => {
+    const fixture = await makeFixture();
+    const vault = await markedClone(fixture, "vault-clone");
+    const otherCase = vault.remote.replace(/vault-clone\.git$/, "Vault-Clone.git");
+    expect(otherCase).not.toBe(vault.remote);
+
+    const { stderr } = runHook(fixture, hookEnv(fixture, { SESSION_VAULT_ORIGIN: otherCase }));
+
+    // A case-sensitive server serves these as two repositories; the pin names
+    // the one the operator wrote, and the clone's origin is the other.
+    expect(notesPushedTo(vault.remote, fixture)).toEqual([]);
+    expect(stderr).toContain("pinned origin");
+  });
+
   it("delivers the whole session to the planted clone once the pin check is removed", async () => {
     const fixture = await makeFixture();
     const planted = await markedClone(fixture, "collaborator-repo");
@@ -1187,5 +1276,63 @@ describe("session-archive vault authorization", () => {
     const notes = notesPushedTo(planted.remote, fixture);
     expect(notes).toHaveLength(1);
     expect(git(["-C", planted.remote, "show", `refs/heads/main:${notes[0]}`], fixture)).toContain(TRANSCRIPT_CANARY);
+  });
+});
+
+/**
+ * git_url_id() reduces a remote URL to a repository identity so the pin can be
+ * written once in any spelling. #188 found it reduced too far: the whole path
+ * was case-folded, and an SSH port was read as the first path segment, so two
+ * different remotes compared equal. These tests drive the function EXTRACTED
+ * FROM THE HOOK and name, for each pair, which reduction they pin.
+ */
+describe("session-archive remote identity", () => {
+  const VAULT = "github.com/theosera/vault";
+
+  it("reduces the spellings of one repository to one identity", async () => {
+    const id = await shippedUrlId();
+    for (const spelling of [
+      "git@github.com:theosera/vault.git",
+      "https://github.com/theosera/vault",
+      "ssh://git@github.com:22/theosera/vault.git",
+      "https://u:p@github.com/theosera/vault.git",
+      "HTTPS://GITHUB.COM/theosera/vault/",
+      "  git@github.com:theosera/vault.git  "
+    ]) {
+      expect(id(spelling), spelling).toBe(VAULT);
+    }
+  });
+
+  it("keeps a port out of the path: `ssh://host:22/` is a port, scp-style `host:22/` is a path", async () => {
+    const id = await shippedUrlId();
+    // Pins the port rule: before #188 both reduced to `github.com/22/theosera/vault`.
+    expect(id("ssh://git@github.com:22/theosera/vault.git")).toBe(VAULT);
+    expect(id("git@github.com:22/theosera/vault.git")).toBe("github.com/22/theosera/vault");
+  });
+
+  it("keeps a non-default port in the identity, so two endpoints do not compare equal", async () => {
+    const id = await shippedUrlId();
+    expect(id("ssh://git@host.example:2222/owner/vault")).toBe("host.example:2222/owner/vault");
+    expect(id("ssh://git@host.example:2222/owner/vault")).not.toBe(id("ssh://git@host.example/owner/vault"));
+  });
+
+  it("folds case on the host only, so a case-sensitive server's two repositories stay two", async () => {
+    const id = await shippedUrlId();
+    // Pins the case rule: before #188 both reduced to `host.example/owner/vault`.
+    expect(id("https://host.example/Owner/Vault.git")).toBe("host.example/Owner/Vault");
+    expect(id("https://host.example/Owner/Vault.git")).not.toBe(id("https://host.example/owner/vault"));
+    expect(id("HTTPS://HOST.EXAMPLE/owner/vault")).toBe("host.example/owner/vault");
+  });
+
+  it("still tells different repositories apart, so the identities above are not a constant", async () => {
+    const id = await shippedUrlId();
+    expect(id("git@github.com:theosera/vault-evil.git")).not.toBe(VAULT);
+    expect(id("")).toBe("");
+  });
+
+  it("reduces a local path and its file:// form alike, which is how the fixtures above pin", async () => {
+    const id = await shippedUrlId();
+    expect(id("file:///tmp/remotes/vault-clone.git")).toBe("/tmp/remotes/vault-clone");
+    expect(id("/tmp/remotes/vault-clone.git")).toBe("/tmp/remotes/vault-clone");
   });
 });
