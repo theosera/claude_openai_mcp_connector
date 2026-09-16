@@ -2152,6 +2152,12 @@ describe("session-archive note frontmatter", () => {
     expect(note.frontmatter.tags).toEqual([]);
   });
 
+  // The two tests below each drive four serial archiveFrom() runs -- four git
+  // repositories, four full archive/push flows -- and were reported red at
+  // 5.18 s and ~6 s against Vitest's 5 s default on a reviewer's machine
+  // (2.0 s here). The explicit timeout is for machine variance, not for a
+  // slower assertion; the 60 s figure elsewhere in this file is for a
+  // deliberately large fixture and is not the right number here.
   it("gives the read path the literal name where YAML used to auto-type it", async () => {
     const named = await archiveFrom("null");
     expect(named.frontmatter.project).toBe("null");
@@ -2172,7 +2178,7 @@ describe("session-archive note frontmatter", () => {
     const bareDated = await archiveFrom("2026-01-01", "bare");
     expect(bareDated.frontmatter.project).not.toBe("2026-01-01");
     expect(String(bareDated.frontmatter.project)).toContain("GMT");
-  });
+  }, 30_000);
 
   it("adds no empty member for a name with edge or doubled spaces", async () => {
     // `repos`/`tags` are split on the space that separates two checkouts, so a
@@ -2200,5 +2206,5 @@ describe("session-archive note frontmatter", () => {
     // The bare null nothing under src/ ever reads, and the reason `tags` above
     // matches: the filter took it back out on the way to the read path.
     expect(bareDoubled.frontmatter.repos).toEqual(["a", null, "b"]);
-  });
+  }, 30_000);
 });
