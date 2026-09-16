@@ -743,6 +743,39 @@ body_jq='
     # guard is the whole delta. $L is also half as long on CRLF-dense text.
     def fence_m: if test("^ {0,3}(~{3,}|`{3,})") then capture("^ {0,3}(?<run>~{3,}|`{3,})(?<info>.*)$") else null end;
     def esc_bs: sub("^(?<s> {0,3})"; "\(.s)\\");
+    # WHICH runs close is reader-dependent, and closing TOGGLES parity, so the
+    # question cannot be settled on the rule of any one reader. CommonMark ends a
+    # fence on spaces and tabs after the closing run and nothing else, while the
+    # readers Markdown tooling is written with simply trim the rest of the line --
+    # and those are not even ordered against each other (measured 2026-09-13):
+    # jq [[:space:]] HERE, like Python str.isspace, is Unicode White_Space and ends
+    # a fence on NEL, which ECMA-262 trim() does not; trim(), which the test oracle
+    # for this renderer uses, ends one on U+FEFF, which jq does not. They disagree
+    # in BOTH directions.
+    # Scoring such a run CLOSED leaves a turn the strict reader still has OPEN: the
+    # opening run of the next tool result closes it and that untrusted body lands at
+    # top level. But scoring it OPEN is not the fix either, because closing toggles
+    # parity -- three runs whose middle one carries a form feed then end BALANCED
+    # for the strict reader, nothing is escaped, and the LENIENT reader is the one
+    # left open. Narrowing this rule is not monotone. The sizer above is -- counting
+    # more runs only makes a fence LONGER -- which is why the same leniency is safe
+    # there and settles nothing here.
+    # So close only on what EVERY reader closes on, and when a run is one that only
+    # SOME reader closes on, stop tracking parity instead of guessing: leave the
+    # fence open under a marker no run can match (fence_m yields only ~ or `), so it
+    # stays open to the end of the turn and every run in the turn is escaped. With
+    # no such run all readers agree run for run, so this parity is theirs; with one,
+    # the escaped turn carries no fence at all, which is balanced for all of them.
+    # Either way this escapes a SUPERSET of what the single [[:space:]] rule escaped,
+    # so no turn it contained can leak now.
+    # Measured over 27 transcripts -- 14,219 text turns, 142,777 lines, 18,587 of
+    # them a fence run: 0 carry such a trailer. This widens the escaping on the
+    # attack shape and on nothing else.
+    def ends_fence: test("^[ \t]*$");
+    # [[:space:]] plus U+FEFF (trim drops it, jq does not) and U+180E (White_Space
+    # until Unicode 6.3, so an older reader drops it): a superset of every set above,
+    # which is what makes no-ambiguous-run mean every reader agrees.
+    def may_end_fence: test("^[[:space:]\u180e\ufeff]*$");
     # ANSI colour and line-clear sequences are removed here, per line and BEFORE
     # every escape below, for the same reason fence removes them: the assembled
     # note no longer passes through strip_ansi, and a text turn is the one body
@@ -762,7 +795,8 @@ body_jq='
           | if $m == null then .
             elif .o == null then
               (if ($m.run[0:1]) == "`" and ($m.info | test("`")) then . else {o:($m.run[0:1]), n:($m.run|length)} end)
-            elif ($m.run[0:1]) == .o and (($m.run|length) >= .n) and ($m.info | test("^[[:space:]]*$")) then {o:null, n:0}
+            elif ($m.run[0:1]) == .o and (($m.run|length) >= .n) and ($m.info | may_end_fence) then
+              (if ($m.info | ends_fence) then {o:null, n:0} else {o:"?", n:0} end)
             else . end)) | .o != null) as $unbalanced
     | [ range(0; $L|length) as $i
         | $L[$i]
