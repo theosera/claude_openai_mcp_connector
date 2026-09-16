@@ -352,51 +352,54 @@ mask() {
   # a fence line somewhere other than the END marker, and invert the parity of
   # everything after it.
   #
-  # The range ends at the END marker or at the next `~~~` run. BOTH halves
-  # of that bound are weaker than they look, so neither is claimed here as more
-  # than it is:
+  # The range ends at the END marker, or 100 lines after the BEGIN marker,
+  # whichever comes first (2026-09-17; before that it also ended at the next
+  # column-0 `~~~` run). The cap is the whole of the bound, and it is worth
+  # saying what each half of the old bound did and why it went:
   #
-  #   - Confinement holds for FENCED blocks ONLY. The session-archive renderer
-  #     fences tool results, thinking, and tool inputs, so a marker planted in
-  #     one of those cannot reach past its own block. It does NOT fence
-  #     assistant or user TEXT turns: a marker planted in one of those runs on
-  #     through every following turn until the next block's opening fence, or to
-  #     the END OF THE NOTE when no fenced block follows, substituting every 12+
-  #     character run on the way. That run class is NOT base64: it is every
-  #     alphanumeric plus `+ / = \`, and `/` is a member, so a run does not stop
-  #     at a path separator. It therefore consumes ordinary twelve-letter words,
-  #     whole hashes, and a whole absolute path as a SINGLE run
-  #     (`/home/runner/work/repo/checkout`). What replaces them is
-  #     `***MASKED***`, the same token a genuine redaction produces, so content
-  #     destroyed this way reads as routine hygiene rather than as damage and
-  #     prompts no one to look at it. Measured on a note of 30 synthetic
-  #     `git log` lines and 3 repeated absolute paths: clean, 0 tokens masked
-  #     and 30/30 SHAs and 3/3 paths kept; with ONE 31-byte marker planted, 91
-  #     masked and 0/30 and 0/3 kept. That is the cost, and it is taken
-  #     deliberately -- this range is what masks a prefixed key body at all. It
-  #     cannot cost structure, because a substitution never deletes a line. A
-  #     test pins that reach, so this paragraph cannot quietly stop being true.
-  #   - A `~~~` line is not only the renderer's. Content is fenced but emitted
-  #     VERBATIM, so a column-0 tilde run in a tool result's OWN body ends this
-  #     range early, and the body lines after it are left to the whole-line rule
-  #     -- which, behind a prefix, does not see them. That is a leak an attacker
-  #     can reach for.
-  #     Nor is that terminator a fence. The address is `^~{3,}`, unanchored at
-  #     its right end, so a column-0 `~~~ label` closes this range (measured:
-  #     all six prefixed body lines after it leak) even though the
-  #     session-archive renderer scores that exact shape as closing nothing and
-  #     deliberately does not widen a fence for it. The renderer's own comment
-  #     says as much about that construction, so whichever of the two a
-  #     reader meets first: "it cannot close a fence" is NOT a reason to think
-  #     it cannot close this range.
-  #     What it does not reach: a BEGIN marker that appears AFTER the tilde
-  #     run reopens the range, so key material introduced past that point is
-  #     masked again. It is POSITION that saves it, not possession -- a
-  #     tilde planted between a key's own BEGIN line and its body closes the
-  #     range before the body starts, and every body line is then left to
-  #     the whole-line rule, which behind a prefix does not see them: 6 of 6
-  #     leaking behind a `cat -n` prefix. That is the construction an
-  #     attacker picks, so do not read this bullet as a bound on the leak.
+  #   - The cap is a line count, not a fence. The renderer fences tool
+  #     results, thinking and tool inputs, and writes assistant and user TEXT
+  #     turns at top level; a marker planted in EITHER kind of turn now runs
+  #     on through whatever follows -- the next fenced block included -- for
+  #     up to 100 lines, substituting every 12+ character run on the way. That
+  #     run class is NOT base64: it is every alphanumeric plus `+ / = \`, and
+  #     `/` is a member, so a run does not stop at a path separator. It
+  #     consumes ordinary twelve-letter words, whole hashes, and a whole
+  #     absolute path as a SINGLE run (`/home/runner/work/repo/checkout`).
+  #     What replaces them is `***MASKED***`, the same token a genuine
+  #     redaction produces, so content destroyed this way reads as routine
+  #     hygiene rather than as damage and prompts no one to look at it.
+  #     Measured on a note of 30 synthetic `git log` lines and 3 repeated
+  #     absolute paths: clean, 0 tokens masked and 30/30 SHAs and 3/3 paths
+  #     kept; with ONE 31-byte marker planted, 91 masked and 0/30 and 0/3
+  #     kept. That is the cost, taken deliberately -- this range is what masks
+  #     a prefixed key body at all -- and the cap is what bounds it: a planted
+  #     marker can spoil at most the 100 lines after it, not the rest of the
+  #     note. It cannot cost structure, because a substitution never deletes a
+  #     line. Tests pin both the reach and the cap.
+  #   - The `~~~` terminator is gone because it was content-controlled. Content
+  #     is fenced but emitted VERBATIM, so a column-0 tilde run in a tool
+  #     result's OWN body closed the range early, and the address was `^~{3,}`,
+  #     unanchored at its right end, so even a `~~~ label` the renderer scores
+  #     as closing nothing closed it. Plant one between a key's own BEGIN line
+  #     and its body and the range closed before the body started: 6 of 6 body
+  #     lines leaked behind a `cat -n` prefix -- the construction an attacker
+  #     picks, and a Critical review finding on the branch that shipped it.
+  #     Removing it fails closed: a key's body is masked whatever the content
+  #     around it says, and the prefixed catch-all below takes prefixed body
+  #     lines outside any range besides. What was traded for that is the
+  #     availability failure the terminator had bounded, and the cap bounds it
+  #     instead -- at 100 lines rather than at a line the attacker chooses.
+  #   - Why 100: an RSA-4096 key body is about 50 lines and an ed25519 key
+  #     under 10, prefix or not, so a real key sits inside the cap with room.
+  #     Armor that runs longer (a PGP MESSAGE carrying a file) is base64-only
+  #     line by line, and the two whole-line catch-alls below take those lines
+  #     with no range at all, so the cap costs it nothing. The cap is nested:
+  #     `/BEGIN/,+100{ /BEGIN/,/END/ {...} }` -- the outer range counts, the
+  #     inner one still stops at END, so the 100 lines are a ceiling on the
+  #     reach, not a floor. Both `,+N` addressing and nested blocks are in
+  #     GNU and BSD sed alike; the CI runner is GNU, the operator's shell is
+  #     BSD, and both run the tests.
   #
   # Read the two copies separately here, because this rule replaces something
   # different in each. `archive-session.sh` gains it outright: no input it
@@ -405,17 +408,16 @@ mask() {
   # at once. It masks LESS inside a block: base64 runs shorter than 12
   # characters -- a final body line of 4 or 8, where roughly one key size in
   # eight lands, at most 6 bytes of the trailing DER field -- plus non-base64
-  # header text such as `Proc-Type:`, plus anything after a column-0 tilde
-  # planted in the body. At the construction above, a tilde before any body
-  # line, the archive copy is merely EQUAL to its base rather than better,
-  # and this copy goes from fully masked to fully leaked. It also masks MORE,
+  # header text such as `Proc-Type:` (the whole-line short-run rule below
+  # takes the final line since 2026-09-17, so that residue is now runs UNDER
+  # 12 that share a line with other text). It also masks MORE,
   # in two ways that are not small: it gains the whole-line base64 catch-all
   # it never had, and it removes an UNBOUNDED failure. The old range had no
   # terminator but the END marker, so under POSIX sed an unterminated marker
   # anywhere in a multi-line command blanked every REMAINING line of the
   # logged command -- a `grep` for the marker text destroyed all 501 lines of
   # a command carrying no key material at all. A run substitution cannot do
-  # that, and the tilde gives the range a second way to close. That failure
+  # that, and the line cap gives the range a second way to close. That failure
   # was this copy's alone; the archive copy never had the mode, which is why
   # it is recorded here and not as a general note.
   #
@@ -463,7 +465,7 @@ mask() {
     -e "s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\-]|\\\\.|-{1,4}([^'\\\\-]|\\\\.))*-{0,4}'/\1***MASKED***'/Ig" \
     -e "s/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+(Basic|Digest|Token|ApiKey|OAuth|SSWS)[[:space:]]+)([^[:space:],\"'-]|-{1,4}[^[:space:],\"'-])+/\1***MASKED***/Ig" \
     -e 's/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+/\1***MASKED***/Ig' \
-    -e '/-----BEGIN ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/,/-----END ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----|^~{3,}/{s/[A-Za-z0-9+\/=]{12,}/***MASKED***/g;s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*)?)[A-Za-z0-9+\/=]{1,11}[[:space:]]*$/\1***MASKED***/;}' \
+    -e '/-----BEGIN ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/,+100{/-----BEGIN ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/,/-----END ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/{s/[A-Za-z0-9+\/=]{12,}/***MASKED***/g;s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*)?)[A-Za-z0-9+\/=]{1,11}[[:space:]]*$/\1***MASKED***/;};}' \
     -e 's/-----BEGIN ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/***MASKED***/g' \
     -e 's/-----END ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/***MASKED***/g' \
     -e 's/AKIA[0-9A-Z]{16}/***MASKED***/g' \

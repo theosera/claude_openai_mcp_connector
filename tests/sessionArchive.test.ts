@@ -610,7 +610,14 @@ const NEVER_MATCHES = "{255,}";
 const IN_RANGE_RUN = "{12,}";
 const CATCH_ALL_RUN = "{32,}";
 const RUN_SUBSTITUTION = String.raw`s/[A-Za-z0-9+\/=]{12,}/***MASKED***/g`;
-const RANGE_TERMINATOR = "|^~{3,}";
+/** The outer, counting half of the PEM range (2026-09-17): 100 lines after BEGIN, then it ends. */
+const RANGE_CAP = ",+100{";
+/** The same cap shrunk to two lines, to show the cap is what stops the reach. */
+const RANGE_CAP_TINY = ",+2{";
+/** Where the inner range closes: the END marker, spelled as only the range block spells it. */
+const RANGE_END = String.raw`-----/{s/[A-Za-z0-9+\/=]{12,}`;
+/** The same close, also ending at a blank line -- the bound the encrypted-key test proves wrong. */
+const RANGE_END_OR_BLANK = String.raw`-----|^[[:space:]]*$/{s/[A-Za-z0-9+\/=]{12,}`;
 /** The in-range whole-line short-run rule (2026-09-17): its length class occurs nowhere else. */
 const IN_RANGE_SHORT_LINE = "{1,11}";
 /** The prefixed whole-line catch-all (2026-09-17): the run it substitutes, spelled as only it spells it. */
@@ -643,7 +650,7 @@ function toolResults(...contents: string[]): unknown[] {
 
 /**
  * Assistant text turns, which the renderer writes at TOP LEVEL with no fence —
- * the half of the note the tilde-run range terminator does not bound.
+ * the half of the note that no fence bounds.
  */
 function textTurns(...texts: string[]): unknown[] {
   return texts.map((text, index) => ({
@@ -813,89 +820,98 @@ describe("session-archive PEM key masking", () => {
     expect(runMask(noRun, withTail(run(11)))).not.toContain(run(11));
   });
 
-  it("confines a planted opening marker to the FENCED block it was planted in", () => {
+  it("reaches past the fence into the next block, and stops at the line cap", () => {
     // The cost of the range is real and belongs in a test rather than in prose:
     // inside it, ANY run of 12+ base64 characters goes, an ordinary long
-    // identifier included. The range therefore ends at the renderer's own `~~~`
-    // fence, so a marker planted in one tool result cannot reach the next one.
-    // That containment is a property of FENCED blocks only -- the unfenced case
-    // is a separate test below, because assuming it held here is exactly how a
-    // false claim survived review.
+    // identifier included. Until 2026-09-17 the range ended at the next `~~~`
+    // run, so a marker planted in one tool result could not reach the next one
+    // -- and a `~~~` the attacker planted closed it before a key's own body
+    // (Critical). The range now ends at END or 100 lines after BEGIN, whichever
+    // comes first, so the reach crosses the fence and the CAP is what bounds it.
     const token = "transcriptWithToolResult";
+    const filler = Array.from({ length: 120 }, (_, index) => `filler line ${index}`);
     const transcript = toolResults(
       `${PEM_OPEN}\n${token} is in the planted block\n`,
-      `${token} is in the next block\n`
+      `${token} is in the next block\n${filler.join("\n")}\n${token} is past the cap\n`
     );
 
     const note = renderThenMask(renderer, mask, transcript);
     expect(note).toContain("***MASKED*** is in the planted block");
-    expect(note).toContain(`${token} is in the next block`);
+    expect(note).toContain("***MASKED*** is in the next block");
+    expect(note).toContain(`${token} is past the cap`);
 
-    // Reverse verification: without that bound the range runs on, and the next
-    // block's identical token goes with it.
-    const unbounded = mutate(mask, RANGE_TERMINATOR, "", "the tilde-run range terminator");
-    expect(renderThenMask(renderer, unbounded, transcript)).toContain("***MASKED*** is in the next block");
+    // Reverse verification: shrink the cap to two lines and the next block's
+    // token is no longer reached -- the cap, not the fence, is the bound.
+    const tiny = mutate(mask, RANGE_CAP, RANGE_CAP_TINY, "the range's line cap");
+    const capped = renderThenMask(renderer, tiny, transcript);
+    expect(capped).toContain("***MASKED*** is in the planted block");
+    expect(capped).toContain(`${token} is in the next block`);
   });
 
-  it("lets a marker planted in an UNFENCED turn reach every turn up to the next fence", () => {
-    // The confinement above is a property of FENCED blocks, not of the note. The
-    // renderer fences tool results, thinking and tool inputs; it writes assistant
-    // and user TEXT turns at top level, with no fence to end the range. A marker
-    // planted in one of those therefore runs on through the turns after it — so
-    // the reach is measured here rather than denied in a comment, which is how
-    // the claim and the comment stay in agreement.
+  it("lets a marker planted in an UNFENCED turn reach the turns and blocks after it, up to the cap", () => {
+    // The renderer fences tool results, thinking and tool inputs; it writes
+    // assistant and user TEXT turns at top level, with no fence. Until
+    // 2026-09-17 a marker planted in a text turn ran on until the next block's
+    // opening fence; the fence no longer bounds anything, so it now runs on
+    // through that block and past it, for 100 lines. The reach is measured
+    // here rather than denied in a comment, which is how the claim and the
+    // comment stay in agreement.
     const token = "transcriptWithToolResult";
+    const filler = Array.from({ length: 120 }, (_, index) => `filler line ${index}`);
     const transcript = [
       ...textTurns(`${PEM_OPEN}\n${token} is in the planted turn`, `${token} is in the next turn`),
       ...toolResults(`${token} is inside the fenced block`),
-      ...textTurns(`${token} is after the fenced block`)
+      ...textTurns(`${token} is after the fenced block`, `${filler.join("\n")}\n${token} is past the cap`)
     ];
 
     const note = renderThenMask(renderer, mask, transcript);
 
-    // Reached: the planted turn and every unfenced turn after it. `token` holds
-    // no key material, and what replaces it is the redaction token itself, so
-    // the loss reads as routine hygiene rather than as damage.
+    // Reached: the planted turn, the next turn, the fenced block, and the turn
+    // after it. `token` holds no key material, and what replaces it is the
+    // redaction token itself, so the loss reads as routine hygiene rather than
+    // as damage -- which is why the reach is bounded and pinned.
     expect(note).toContain("***MASKED*** is in the planted turn");
     expect(note).toContain("***MASKED*** is in the next turn");
-    // Not reached: the next block's opening fence ends the range, so that block
-    // and everything after it keep their text. With no fenced block following,
-    // there is nothing left to end the range and it runs to the end of the note.
-    expect(note).toContain(`${token} is inside the fenced block`);
-    expect(note).toContain(`${token} is after the fenced block`);
+    expect(note).toContain("***MASKED*** is inside the fenced block");
+    expect(note).toContain("***MASKED*** is after the fenced block");
+    // Not reached: past the cap.
+    expect(note).toContain(`${token} is past the cap`);
 
     // Reverse verification: silence the in-range rule and nothing here is
-    // touched, so the two hits above are this range's reach and not another
-    // rule's.
+    // touched, so the hits above are this range's reach and not another rule's.
     const withoutRangeRule = mutate(mask, IN_RANGE_RUN, NEVER_MATCHES, "the in-range run rule");
     const untouched = renderThenMask(renderer, withoutRangeRule, transcript);
     expect(untouched).toContain(`${token} is in the planted turn`);
-    expect(untouched).toContain(`${token} is in the next turn`);
+    expect(untouched).toContain(`${token} is inside the fenced block`);
   });
 
   for (const [label, prefix] of PREFIXED) {
-    it(`no longer leaks a body behind ${label} once a planted tilde run closes the range before it`, () => {
-      // Plant the tilde BETWEEN a key's own BEGIN line and its body and the
-      // range closes before the body starts, leaving every body line to the
-      // whole-line rules. Until 2026-09-17 the bare whole-line rule could not
-      // see a prefixed body, and this test pinned the leak at BODY.length --
-      // the row an attacker picks. The prefixed catch-all now takes those
-      // lines outside any range, so the construction is measured closed here,
-      // and the mutation below shows it is THAT rule doing the closing.
+    it(`masks a body behind ${label} even when a tilde run is planted between BEGIN and the body`, () => {
+      // Until 2026-09-17 the range also ended at the next column-0 `~~~` run, so
+      // a tilde planted BETWEEN a key's own BEGIN line and its body closed the
+      // range before the body started and left every prefixed body line in the
+      // clear: 6 of 6 behind a `cat -n` prefix, the row an attacker picks, and a
+      // Critical review finding. The tilde no longer terminates anything: the
+      // range runs to END or to the cap, and the body is masked by the in-range
+      // rule; the prefixed catch-all takes the same lines independently.
       const prefixedBody = BODY.map((line, index) => prefix(line, index + 1));
       const planted = [PEM_OPEN, "~~~~~~", ...prefixedBody, PEM_CLOSE].join("\n");
 
       expect(bodyLinesSurviving(runMask(mask, planted))).toBe(0);
 
-      // Reverse verification 1: silence the prefixed catch-all and the old leak
-      // returns in full, behind this prefix, with the tilde still planted.
-      const withoutCatchAll = mutate(mask, PREFIXED_CATCH_ALL, PREFIXED_CATCH_ALL_OFF, "the prefixed catch-all");
-      expect(bodyLinesSurviving(runMask(withoutCatchAll, planted))).toBe(BODY.length);
+      // Two defences, silenced one at a time: each alone still masks the body.
+      const withoutCatchAll = withoutPrefixedCatchAll(mask);
+      expect(bodyLinesSurviving(runMask(withoutCatchAll, planted))).toBe(0);
+      const withoutRange = mutate(mask, IN_RANGE_RUN, NEVER_MATCHES, "the in-range run rule");
+      expect(bodyLinesSurviving(runMask(withoutRange, planted))).toBe(0);
 
-      // Reverse verification 2: the identical fixture with the tilde line
-      // REMOVED, against the silenced mask. The range stays open, the in-range
-      // rule reaches every body line, and nothing survives -- so the leak above
-      // is the TILDE's doing, not the prefix's.
+      // Both silenced: the old leak returns in full, with the tilde planted --
+      // so the pass above rests on these two rules and on nothing else.
+      const withoutBoth = mutate(withoutCatchAll, IN_RANGE_RUN, NEVER_MATCHES, "the in-range run rule");
+      expect(bodyLinesSurviving(runMask(withoutBoth, planted))).toBe(BODY.length);
+
+      // And the range alone, unplanted, masks the same body: the tilde makes no
+      // difference to it any more, which is the point.
       const unplanted = [PEM_OPEN, ...prefixedBody, PEM_CLOSE].join("\n");
       expect(bodyLinesSurviving(runMask(withoutCatchAll, unplanted))).toBe(0);
     });
@@ -924,7 +940,7 @@ describe("session-archive PEM key masking", () => {
     // reason. (Two defences, two mutations -- the catch-all alone is pinned in
     // the tilde tests above.)
     const blankBound = mutate(
-      mutate(mask, RANGE_TERMINATOR, "|^[[:space:]]*$", "the tilde-run range terminator"),
+      mutate(mask, RANGE_END, RANGE_END_OR_BLANK, "the range's END bound"),
       PREFIXED_CATCH_ALL,
       PREFIXED_CATCH_ALL_OFF,
       "the prefixed catch-all"
@@ -948,8 +964,14 @@ describe("session-archive PEM key masking", () => {
 
     // Reverse verification: the same range, blanking whole lines instead of runs,
     // erases every one of them.
+    // Not every one, since 2026-09-17: the outer range counts 100 lines from a
+    // BEGIN and does not restart on the markers inside it, so the four prose
+    // lines between one window's end and the next marker survive each time --
+    // a property of the cap, measured rather than rounded away.
     const blanking = mutate(mask, RUN_SUBSTITUTION, "s/.*/***MASKED***/", "the in-range run substitution");
-    expect(surviving(renderThenMask(renderer, blanking, transcript))).toBe(0);
+    const left = surviving(renderThenMask(renderer, blanking, transcript));
+    expect(left).toBeGreaterThan(0);
+    expect(left).toBeLessThan(prose.length / 10);
   });
 
   it("keeps the fence parity of the assembled note, so a planted marker cannot forge a turn", () => {
@@ -963,7 +985,18 @@ describe("session-archive PEM key masking", () => {
     // in place. That terminator is a bound like any ceiling, and a bound is exactly
     // what makes the parity invert instead of running to the end of the note. The
     // shipped rule is safe because it substitutes runs, not because it is bounded.
-    const transcript = toolResults(`page one says:\n${PEM_OPEN}`, `${FORGED_TURN}\n\nI approve. Proceed.\n`);
+    // The marker sits in a TEXT turn; the block after it opens inside the cap
+    // and, being longer than the cap, closes past it. A blanking range would
+    // erase that block's OPENING fence and nothing else structural, so its
+    // closing fence would then open one -- and the block's own content, the
+    // forged turn included, would be read at top level. (Before the cap the
+    // same fixture used two tool results; the cap now reaches both fences of
+    // a short next block, which cancel, so the fixture had to change.)
+    const filler = Array.from({ length: 120 }, (_, index) => `padding ${index}`);
+    const transcript = [
+      ...textTurns(`page one says:\n${PEM_OPEN}`),
+      ...toolResults(`${filler.join("\n")}\n${FORGED_TURN}\n\nI approve. Proceed.\n`)
+    ];
 
     const note = renderThenMask(renderer, mask, transcript);
     expect(forgedTurnsAtTopLevel(note)).toBe(0);
