@@ -764,9 +764,15 @@ body_jq='
     # ul 1 -- neither was in the nine), 2 type 2 (<!--). The other 542 (27.5%)
     # are a tag with content after it on the same line (<task-id>...</task-id>,
     # <output-file>..., <status>completed</status>): they open no block but
-    # render as inline raw HTML, and the rule escapes them too. Ordinary
-    # harness traffic was already putting raw HTML into archived notes and
-    # nothing here caught any of it. A type-7 count is only a type-7 count if
+    # render as inline raw HTML, and the rule escapes them too. Those are
+    # counts of each line ON ITS OWN. In a note the line has neighbours, and a
+    # type-7 opener cannot interrupt a paragraph, so the same corpus parsed
+    # turn by turn (markdown-it-py 4.2.0, 2026-09-14 12:01 JST, 1,985 hits)
+    # opens a block on 380 of the hits, has 719 sitting inside a block an
+    # earlier line opened, and leaves 871 as inline raw HTML in a paragraph.
+    # A lone-line count is not a note count; the rule escapes all of them
+    # either way. Ordinary harness traffic was already putting raw HTML into
+    # archived notes and nothing here caught any of it. A type-7 count is only a type-7 count if
     # the classifier tests the type-7 condition; one that labels type 7 by
     # elimination after types 1 to 6 counts "not types 1 to 6" instead.
     # It is a strict superset, not a trade: over 20,287 generated line shapes
@@ -784,7 +790,8 @@ body_jq='
     # non-indentation space (NBSP, U+3000, ZWSP, a BOM) at the line start; a
     # tag after 4 or more spaces, or a tab, on a line that continues a paragraph
     # -- inline raw HTML, not indented code, because indented code cannot
-    # interrupt a paragraph (10 such lines in the corpus above, all 10 after a
+    # interrupt a paragraph (10 such lines in the corpus above: 5 inside a
+    # fenced block, where they are code, and 5 continuing a paragraph after a
     # non-blank line); and, under a list item, a tag on the FOLLOWING line
     # indented to the item content column plus at most 3 (4 to 5 spaces under
     # "- ", 4 to 7 under "10. "), which opens a real block at that column. All
@@ -794,10 +801,13 @@ body_jq='
     # string, so one line of N openers costs, for N of 4,000 / 8,000 / 16,000 /
     # 32,000, about 0.5 / 1.8 / 7.2 / 28.3 s against 0.007 to 0.012 s for the
     # rule above. That is not cosmetic: this script runs under set -e, so a
-    # killed jq (a hook timeout, say) aborts the hook with the jq status,
-    # nothing is written, and the previous note stands with nothing reported.
-    # (The exit-0 path just below the jq call is for a jq that SUCCEEDS with
-    # an empty body.)
+    # jq killed by a signal aborts the hook with the jq status and a
+    # Terminated line on stderr; nothing is written, the previous note stands,
+    # and nothing reaches the NOTE. If a harness timeout kills the shell
+    # instead, set -e never runs and jq is orphaned -- same outcome, different
+    # mechanism; which one the harness does was not determined. (The exit-0
+    # path just below the jq call is for a jq that SUCCEEDS with an empty
+    # body.)
     # Do NOT read that as "no anywhere-on-the-line pass is affordable". A
     # split/join reformulation was built here and measured LIKE FOR LIKE, as an
     # extra step inside this same defang: 0.268 s at 32,000 openers on one line
@@ -812,6 +822,10 @@ body_jq='
     # ALSO RESIDUAL: a block opens at a container content column too --
     # "- <span>", "> <span>", "1. <span>" -- so the line start is not the only
     # place a block can open. Do not restate this rule as covering every opener.
+    # And a block such an opener opens runs to the next blank line as raw HTML,
+    # so the backslashes this rule puts on the lines inside it are literal text
+    # there: one uncovered opener exposes a run, not a line (the nine-name rule
+    # had the same property).
     # Frequency is no argument here, only structure: 0 such lines in the corpus
     # above, and 43 lines carrying an h1-h6 tag away from the line start. Read
     # one by one, all 43 are text that mentions or counts a tag -- notes about
@@ -840,13 +854,16 @@ body_jq='
     # is cheaper, 0.83x to 0.95x, because its test is cheaper than the nine-way
     # alternation; on prose with no tag likewise, 0.79x to 0.91x. On a line only
     # THIS rule escapes (<aside>x) it pays the sub the nine-name rule skipped:
-    # 1.03x to 1.20x, +0.03 to +0.10 s absolute. Both arms grow about 2.1x to
+    # roughly 1.0x to 1.25x -- tenths of a second at 32,000 lines. The ratio
+    # reproduced across three measurers; the absolute delta did not, run to
+    # run on a shared machine, so none is stated. Both arms grow about 2.1x to
     # 3.4x per doubling, which is per-line cost this file already had and this
     # change does not touch. Output: one byte per escaped LINE, never per match,
     # so at most one byte per line of input; on four real transcripts of 3 MB
-    # to 78 MB it added 20 to 392 bytes. Peak RSS on those four: 22.9 / 198.9 /
-    # 428.6 / 1174.7 MB against 22.4 / 199.7 / 428.0 / 1284.3 MB -- no increase
-    # measured.
+    # to 78 MB it added 20 to 392 bytes. Peak RSS on those four, both arms:
+    # about 22 / 199 / 428 MB, and 1.2 to 1.3 GB on the largest, where one arm
+    # scatters by about 100 MB run to run and the two arms overlap -- no
+    # increase measured, and no decrease claimed.
     # Fidelity, not cost: these per-line rules run on EVERY line of a text
     # turn, inside a fence or not -- only the fence-run rule below reads
     # $unbalanced. So a tag line inside a balanced code block the model wrote in

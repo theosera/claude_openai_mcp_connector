@@ -2888,8 +2888,11 @@ describe("session-archive text-turn defanging", () => {
   // condition, and cross-checked against markdown-it-py 4.2.0 (1,970 of 1,970
   // agree): 1,343 (68.2%) are CommonMark type 7 -- a complete tag alone on the
   // line, any name -- 85 are types 2 and 6, and 542 are a tag with content after
-  // it on the same line (inline raw HTML, no block). Type 7 is the shape ordinary
-  // traffic actually carries: `<teammate-message ...>` 1,166, `<task-notification>`
+  // it on the same line (inline raw HTML, no block). Those classify each line on
+  // its own; parsed turn by turn (type 7 cannot interrupt a paragraph) 380 of
+  // 1,985 hits open a block, 719 sit inside one an earlier line opened, and 871
+  // are inline (markdown-it-py 4.2.0, 2026-09-14 12:01 JST). Type 7 is the shape
+  // ordinary traffic actually carries: `<teammate-message ...>` 1,166, `<task-notification>`
   // and its close 164 -- hence the last payload below.
   const uncovered: Array<[string, string]> = [
     ["F6 -- a type-6 name the nine-name list never carried", `<aside><h2>${FORGED_TURN}</h2>`],
@@ -2917,13 +2920,13 @@ describe("session-archive text-turn defanging", () => {
     expect(htmlBlockOpeners(note)).toBe(0);
   });
 
-  it("leaves a four-space-indented tag alone as the first line of a turn: at top level, after a blank line or the turn start, that is an indented code block, not an opener", () => {
+  it("leaves a four-space-indented tag alone as the first line of a turn: at top level that is an indented code block, not an opener", () => {
     const note = render(renderer, transcriptWithTextTurn("    <div>indented</div>"));
 
     expect(topLevelLines(note)).toContain("    <div>indented</div>");
   });
 
-  it("leaves a MID-LINE autolink alone: the line-start test never sees it (a line-start autolink IS escaped, cosmetically)", () => {
+  it("leaves a MID-LINE autolink alone: the line-start test never sees it", () => {
     const note = render(renderer, transcriptWithTextTurn("see <https://example.com> for details"));
 
     expect(topLevelLines(note)).toContain("see <https://example.com> for details");
