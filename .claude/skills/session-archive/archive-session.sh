@@ -79,9 +79,11 @@ fi
 # is part of the host, never of the path: in `ssh://host:22/owner/name` the
 # `22` is a port, while in scp-style `host:22/owner/name` everything after the
 # colon is the path -- the old rule read both as `host/22/owner/name` and so
-# judged two different remotes equal. A default port (ssh 22, https 443,
-# http 80, git 9418) names the same endpoint as no port and is dropped; any
-# other port stays in the identity.
+# judged two different remotes equal. An explicit port stays in the identity
+# exactly as written, even a scheme's default one: an unported SSH URL goes to
+# whatever port `~/.ssh/config` assigns the host, while `ssh://host:22/` forces
+# 22, so the two can reach different servers and must not compare equal. A pin
+# is therefore written with the same port the remote carries, or none.
 git_url_id() {
   local url scheme host rest
   url="$(printf '%s' "${1:-}" | sed -E -e 's/^[[:space:]]+//' -e 's/[[:space:]]+$//')"
@@ -93,9 +95,6 @@ git_url_id() {
   if [ -n "$scheme" ]; then
     host="${url%%/*}"
     rest="${url#"$host"}"
-    case "$scheme:${host##*:}" in
-      ssh:22|git+ssh:22|ssh+git:22|https:443|http:80|git:9418) host="${host%:*}" ;;
-    esac
   else
     host="${url%%[:/]*}"
     rest="${url#"$host"}"

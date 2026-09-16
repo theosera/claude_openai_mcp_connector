@@ -1294,7 +1294,6 @@ describe("session-archive remote identity", () => {
     for (const spelling of [
       "git@github.com:theosera/vault.git",
       "https://github.com/theosera/vault",
-      "ssh://git@github.com:22/theosera/vault.git",
       "https://u:p@github.com/theosera/vault.git",
       "HTTPS://GITHUB.COM/theosera/vault/",
       "  git@github.com:theosera/vault.git  "
@@ -1306,8 +1305,17 @@ describe("session-archive remote identity", () => {
   it("keeps a port out of the path: `ssh://host:22/` is a port, scp-style `host:22/` is a path", async () => {
     const id = await shippedUrlId();
     // Pins the port rule: before #188 both reduced to `github.com/22/theosera/vault`.
-    expect(id("ssh://git@github.com:22/theosera/vault.git")).toBe(VAULT);
+    expect(id("ssh://git@github.com:22/theosera/vault.git")).toBe("github.com:22/theosera/vault");
     expect(id("git@github.com:22/theosera/vault.git")).toBe("github.com/22/theosera/vault");
+  });
+
+  it("keeps an explicit default port too, since an unported SSH URL may go elsewhere via ssh_config", async () => {
+    const id = await shippedUrlId();
+    // Pins the review finding on #213: `ssh://host:22/` forces port 22, while
+    // `git@host:` goes to whatever ~/.ssh/config assigns the host — two endpoints.
+    expect(id("ssh://git@github.com:22/theosera/vault.git")).not.toBe(VAULT);
+    expect(id("https://github.com:443/theosera/vault")).toBe("github.com:443/theosera/vault");
+    expect(id("https://github.com:443/theosera/vault")).not.toBe(VAULT);
   });
 
   it("keeps a non-default port in the identity, so two endpoints do not compare equal", async () => {
