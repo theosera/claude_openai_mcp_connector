@@ -72,28 +72,59 @@ fi
 # container -- `https://x-access-token:<token>@host/owner/name.git`. Reduce all
 # of them to `host/owner/name`, so a pin written once keeps matching and the
 # comparison never handles the credential embedded in a URL.
+#
+# Only the HOST is case-folded. The path keeps its case: a case-sensitive git
+# server serves `Owner/Vault` and `owner/vault` as two repositories, and folding
+# the path made the pin accept the one the operator never named (#188). A port
+# is part of the host, never of the path: in `ssh://host:22/owner/name` the
+# `22` is a port, while in scp-style `host:22/owner/name` everything after the
+# colon is the path -- the old rule read both as `host/22/owner/name` and so
+# judged two different remotes equal. An explicit port stays in the identity
+# exactly as written, even a scheme's default one: an unported SSH URL goes to
+# whatever port `~/.ssh/config` assigns the host, while `ssh://host:22/` forces
+# 22, so the two can reach different servers and must not compare equal. A pin
+# is therefore written with the same port the remote carries, or none.
 git_url_id() {
-  printf '%s' "${1:-}" | sed -E \
-    -e 's/^[[:space:]]+//' \
-    -e 's/[[:space:]]+$//' \
-    -e 's#^[A-Za-z][A-Za-z0-9+.-]*://##' \
-    -e 's#^[^/@]*@##' \
-    -e 's#^([^/:]+):#\1/#' \
-    -e 's#/+$##' \
-    -e 's#\.git$##' | tr 'A-Z' 'a-z'
+  local url scheme host rest
+  url="$(printf '%s' "${1:-}" | sed -E -e 's/^[[:space:]]+//' -e 's/[[:space:]]+$//')"
+  scheme=""
+  case "$url" in
+    *://*) scheme="$(printf '%s' "${url%%://*}" | tr 'A-Z' 'a-z')"; url="${url#*://}" ;;
+  esac
+  url="$(printf '%s' "$url" | sed -E 's#^[^/@]*@##')"
+  if [ -n "$scheme" ]; then
+    host="${url%%/*}"
+    rest="${url#"$host"}"
+  else
+    host="${url%%[:/]*}"
+    rest="${url#"$host"}"
+    rest="/${rest#[:/]}"
+  fi
+  rest="$(printf '%s' "$rest" | sed -E -e 's#/+$##' -e 's#\.git$##')"
+  printf '%s%s' "$(printf '%s' "$host" | tr 'A-Z' 'a-z')" "$rest"
 }
 
-# True when $1 is a clone whose `origin` is the pinned vault. Both URLs must
-# match: the push URL is where the transcript would land, and the fetch URL is
-# where the rebase below takes commits from before pushing them on.
+# True when $1 is a clone whose `origin` is the pinned vault. EVERY URL the
+# remote carries must match: `git push` sends to all of a remote's push URLs,
+# and `get-url --push` without `--all` prints only the first, so a second push
+# URL on the same remote was never compared against the pin (#187). The fetch
+# URLs are checked too, because the rebase below takes commits from there
+# before pushing them on. A remote that lists no URL at all is not the vault.
 origin_is_pinned_vault() {
-  local pin_id fetch_url push_url
+  local pin_id url seen
   [ -n "$VAULT_ORIGIN_PIN" ] || return 1
   pin_id="$(git_url_id "$VAULT_ORIGIN_PIN")"
   [ -n "$pin_id" ] || return 1
-  fetch_url="$(git -C "$1" remote get-url origin 2>/dev/null || true)"
-  push_url="$(git -C "$1" remote get-url --push origin 2>/dev/null || true)"
-  [ "$(git_url_id "$fetch_url")" = "$pin_id" ] && [ "$(git_url_id "$push_url")" = "$pin_id" ]
+  seen=0
+  while IFS= read -r url; do
+    [ -n "$url" ] || continue
+    seen=$((seen + 1))
+    [ "$(git_url_id "$url")" = "$pin_id" ] || return 1
+  done <<EOF
+$(git -C "$1" remote get-url --all origin 2>/dev/null || true)
+$(git -C "$1" remote get-url --push --all origin 2>/dev/null || true)
+EOF
+  [ "$seen" -gt 0 ]
 }
 
 # --- locate the vault clone (env first, then marker-file scan) -------------
