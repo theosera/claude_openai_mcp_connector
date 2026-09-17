@@ -52,29 +52,53 @@ HTTP は **opt-in の OAuth 2.1 authorization server** (`src/oauth/`、PKCE S256
 | セッション間・エージェント間でブロック / パッチ / 数値 / レシピをファイルや貼り付けで受け渡す前後 | `handoff-block-integrity` |
 | 「一致」「0 件」「全部緑」「存在しない」「完了」など同一性・悉皆・不在の主張を書く直前、テストの緑を安全の根拠にする前、検査・逆検証・スキャンを設計する前、件数を報告する前 | `measurement-scope` |
 | 複数の Claude セッション (Web/CLI) が同じ文書群・同じリポを分担編集する体制を組む / 参加する前、他セッションの成果物に帰属や評価を書く前、/compact の前後 | `multi-session-collab` |
-| **★ ここだけ「着手前」でなく「commit する前」** — **`fs` に書く経路を新設/変更した** (`src/atomicWrite.ts` / `knowledgeStore` の write・apply / `skillStore` / `auditStore` / `oauth/store` の永続化)、または **write tool・write surface の gate を足した/変えた**変更を commit する前                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | **(a) `/claude-security` の change scan** — 使えなければ **(b) `/security-review`** |
-| **★ これも「commit する前」** — **アーカイブ / ログ出力の escape・fence・マスキング規則を変えた**変更 (`archive-session.sh` の fence 生成、`capture-command.sh` の秘匿マスク、および本リポ側の public-safe copy) を commit する前。⚠️ **別リポ (`terminal-ops-logs`) の shell でも発火する** | **(a) `/claude-security` の change scan** — 使えなければ **(b) `/security-review`** |
+| **★ 「着手前」でなく「ローカル commit 後・push 前」** — **`fs` に書く経路を新設/変更した** (`src/atomicWrite.ts` / `knowledgeStore` の write・apply / `skillStore` / `auditStore` / `oauth/store` の永続化)、または **write tool・write surface の gate を足した/変えた**変更を worktree でローカル commit した後、push する前                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | **(a) `/claude-security` の change scan** — 使えなければ **(b) `/security-review`** |
+| **★ これも「ローカル commit 後・push 前」** — **アーカイブ / ログ出力の escape・fence・マスキング規則を変えた**変更 (`archive-session.sh` の fence 生成、`capture-command.sh` の秘匿マスク、および本リポ側の public-safe copy) をローカル commit した後、push する前。⚠️ **別リポ (`terminal-ops-logs`) の shell でも発火する** | **(a) `/claude-security` の change scan** — 使えなければ **(b) `/security-review`** |
+| **★ これも「ローカル commit 後・push 前」** — **アーカイブ / ログの送り先を決める照合を変えた**変更 (`archive-session.sh` の origin pin = `SESSION_VAULT_ORIGIN` / `vault-origin` file と marker の探索、remote 名の照合、および本リポ側の public-safe copy) をローカル commit した後、push する前。⚠️ **これも別リポ (`terminal-ops-logs`) の shell で発火する** | **(a) `/claude-security` の change scan** — 使えなければ **(b) `/security-review`** |
 
 > ⚠️ **`claim-freshness` の詳細な手順は、下の「状態鮮度の発火表」が正典**。上の行は発火の入口で、
 > skill 本体は携行版である — 矛盾したらそちらが勝つ (`GD-NO-DUPLICATION`: 同じ規則を 2 枚持つと片方が腐る)。
 
-> **発火が「commit する前」なのは、探す対象が設計ではなく実装だから** (着手前に回しても
-> 差分が無い)。**(a) が本命** — 脅威モデルを作り**全指摘を別エージェントが独立検証**する。
-> **(b) はその弱い部分集合** (単一パス) だが、**プラグインの前提を満たさない環境でも必ず走る**
-> ための分岐で、**(b) で足りた回を (a) 不要の根拠にしない**。
+> **発火が「ローカル commit 後・push 前」なのは、探す対象が設計ではなく実装であり、(a) が読むのは
+> commit 済みの差分だけだから** (着手前に回しても差分が無い)。⛔ **旧版は「commit する前」だった** —
+> (a) にはそれが定義上いつも空 diff で、(b) には**空でなく stale** な diff が見えた (#204 の thread に
+> owner の実測: `git diff --numstat <merge-base>..HEAD` = 4 files / 755 行を読み、`git diff --numstat HEAD` =
+> 同じ 4 files / 488 行を落とす)。**worktree でローカル commit すれば
+> 共有作業木は汚れず、push 前なら外へ出る前に止められる。** **(a) が本命** — 脅威モデルを作り
+> **全指摘を別エージェントが独立検証**する。**(b) はその弱い部分集合** (単一パス) だが、
+> **プラグインの前提を満たさない環境でも必ず走る**ための分岐で、**(b) で足りた回を (a) 不要の根拠にしない**。
+>
+> **分岐は器具の現実で書く** (実測 2026-09-17): **(a) は `disable-model-invocation` のため
+> セッション自身からは起動できない** — 人がその席で範囲 (`<base>..<head>`) を指定して打つ。
+> **(b) はセッションの cwd の diff を読む** — 共有作業木を cwd にしたまま回すと、別の枝を
+> 「走査済み」として返した。worktree を cwd にするか、範囲を明示する。
+>
+> **回す前に基点 2 行を印字し、報告に添える**: `git diff --shortstat $(git merge-base origin/main HEAD)..HEAD`
+> (読む分) と `git diff --shortstat HEAD` (落とす分 — 空であること)。
+> **走査の同一性は範囲で、被覆は包含で確かめる**: 走査の報告に書いた範囲 (`<base>..<head>` — (a) は人が指定した範囲、
+> (b) は cwd の枝の `$(git merge-base origin/main HEAD)..HEAD`) が枝の範囲と一致し、かつ走査が挙げたファイル名が
+> **すべて**枝の変更ファイル集合 (`git diff --name-only <base>..<head>`) に含まれること。集合の外のファイルを挙げた
+> 走査は別の枝を読んでいる (不採用)。⚠️ **等号ではなく包含である** — 走査は所見のあるファイルしか挙げないので、
+> 変更ファイルの一部しか名指さないのが正常で、範囲の一致がそれを「意図した枝を読んだ」に変える。
+> 「走査した」という主張を支える取得は、この範囲と一覧である。
+> 実演は #213 のコメント (範囲 `1c97f6e..5b1ab17` = 枝の範囲・読む分 2 files +194 −15・落とす分 空・走査が挙げた
+> ファイル = `archive-session.sh` ⊂ 変更 2 ファイル) — 出典を固定し、実演は繰り返さない。
+>
+> **走査は push の直前の最後の操作にする。** 回数を縛るだけでは「走査 → 編集 → commit → push」が通る。
+> 「diff が変わるたび再走」は上限が無いので採らず、基点 2 行 + ファイル名一覧の as-of つき被覆宣言で足りる。
 >
 > ⚠️ **逆検証の代わりにしない。** 逆検証は**書いたガードが効くか**、レビューは**書かなかった
 > ガード**を見る — 別の失敗モードである。
 >
-> ⚠️ **走らせる前に diff が空でないことを確かめる。** 空 diff をレビューして「指摘なし」に
-> なる事故が実際に起きかけた。
+> ⚠️ **走らせる前に diff が空でないことを確かめる** — 上の基点 2 行がその形である。空 diff を
+> レビューして「指摘なし」になる事故が実際に起きかけた。
 >
 > 実測・両者の詳しい違い・空 diff 事故の経緯は **`mcp-vault-security` skill の
 > 「pre-commit レビューの発火」**節。
 >
 > 全変更に広げない — 発火は「`fs` に書く経路」「write surface の gate」
-> 「**出力の封じ込め (escape / fence / マスク)**」の **3 つ**に限る。
-> 毎回回す規約は守られなくなり、守られない規約は無いのと同じ。
+> 「**出力の封じ込め (escape / fence / マスク)**」「**送り先の認可 (origin pin / marker の照合)**」の
+> **4 つ**に限る。毎回回す規約は守られなくなり、守られない規約は無いのと同じ。
 >
 > ⚠️ **3 つ目を足したのは 2026-08-23 で、足した理由をここに残す** (でないと次の読み手には
 > 際限のない拡大に見え、「広げない」という上の一文が効かなくなる)。**前の 2 つが守るのは
@@ -86,9 +110,18 @@ HTTP は **opt-in の OAuth 2.1 authorization server** (`src/oauth/`、PKCE S256
 > ⚠️ **当たらなかったことは無害の証明ではない** — 射程の穴である。だから発火条件は
 > 「このリポの `src/`」ではなく「**この体制の境界**」で書く。
 >
+> ⚠️ **4 つ目を足したのは 2026-09-17 で、理由は 3 つ目と同じ形である。** 3 行目の字面 (escape / fence /
+> マスク) に無かった `archive-session.sh` の **origin pin** — marker が候補を「見つけ」、pin がそれを
+> 「認可する」ゲート — を変えた変更が、08-23 と同型で表の外に落ちた。**前の 3 つが守るのは
+> 「どこに書くか」「何として読まれるか」、4 つ目が守るのは「どこへ出ていくか」である。**
+> `git push` が transcript をマシンの外へ出す操作なので、pin は directory でなく remote を名指す
+> (script 冒頭のコメントが正典 — ここに写しを置かない)。★ **実測 (2026-09-17)**: #213 (`archive-session.sh`
+> の origin pin を変えた PR) は、旧 3 行のどれにも当たらなかった — 08-23 と同型。4 行目はこの PR に当たる。
+>
 > skill 構成はフラット固定 (`.claude/skills/<name>/SKILL.md`)。中間カテゴリ
 > ディレクトリで機能グループ化しない (Claude Code の nested 検出は既知の不具合で
 > 発火の決定論性を損なうため)。新規 skill を足したら本発火表に 1 行追加する。
+> 共有作業木の規則 (`shared-tree-head`) の発火条件は global 層 `CLAUDE.global.md` が持つ — このリポの表には行を置かない (二重化)。
 
 ## 委譲の発火表 (★調査を渡す前 / モデル階層を選ぶ前)
 
@@ -444,6 +477,9 @@ CAS は読んだ版一致時のみ更新、append/CAS は in-process mutex で�
 ## Branch naming
 
 - `claude/<short-kebab-description>` for Claude-authored branches。
+- 新しい枝は **`git fetch` 直後の `origin/main` から worktree で切る**。古い基点の worktree は古い skill / `CLAUDE.md` を運ぶ (実測: 26 本中 18 本が旧版の skill を持っていた)。古い枝は rebase して生かさず、必要な差分だけ新しい枝に写す。
+- commit message / PR 本文に **session URL・`Claude-Session` trailer を入れない** (squash merge のたびに増える)。
+- **merge 直前に阻害要因を取り直す** (未解決 review thread / `mergeStateStatus` / required checks) — PR 作成時の値は merge 時の値ではない。
 
 ## See also
 
