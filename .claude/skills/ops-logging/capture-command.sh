@@ -251,6 +251,12 @@ mask() {
   #     and the body closes the range, and the body lines then fall to this rule
   #     instead of surviving behind their prefix. Its cost is the prefixed
   #     64-hex line (a `cat -n` over a shasum listing), masked like the bare one.
+  #     The action is ANCHORED to the captured prefix, not `s/<run>/.../`:
+  #     `/` is in the run class, so a `grep -n` path that is itself a 32+
+  #     run of the class (`/home/runner/work/vaultkeys/vaultkeys/id:12:...`)
+  #     would be the leftmost match, and the body after `:12:` would be
+  #     written out in the clear while the line reads as masked (change-scan
+  #     finding on this change, 2026-09-17; pinned with the anchoring taken out).
   sed -E \
     -e 's/gh[pousr]_[A-Za-z0-9]{20,}/***MASKED***/g' \
     -e 's/github_pat_[A-Za-z0-9_]{20,}/***MASKED***/g' \
@@ -270,7 +276,7 @@ mask() {
     -e 's/AIza[0-9A-Za-z_-]{35}/***MASKED***/g' \
     -e 's/xox[baprs]-[A-Za-z0-9-]{10,}/***MASKED***/g' \
     -e '/^[[:space:]]*[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/.*/***MASKED***/' \
-    -e '/^[[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*)[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/[A-Za-z0-9+\/=]{32,}/***MASKED***/'
+    -e '/^[[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*)[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*))[A-Za-z0-9+\/=]{32,}([[:space:]]*)$/\1***MASKED***\3/'
 }
 # ⭐ 1 行の byte 上限。⛔ 上限が要る理由は可読性ではなく【リポの成長】である:
 #    実測 2026-09-09 — 5,004 行のうち 2,000 B を超えるのは 357 行 (7.1%) だけだが、

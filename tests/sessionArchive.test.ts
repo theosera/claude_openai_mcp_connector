@@ -659,8 +659,12 @@ const RANGE_END_OR_BLANK = String.raw`-----|^[[:space:]]*$/{s/[A-Za-z0-9+\/=]{12
 /** The in-range whole-line short-run rule (2026-09-17): its length class occurs nowhere else. */
 const IN_RANGE_SHORT_LINE = "{1,11}";
 /** The prefixed whole-line catch-all (2026-09-17): the run it substitutes, spelled as only it spells it. */
-const PREFIXED_CATCH_ALL = String.raw`{32,}[[:space:]]*$/s/[A-Za-z0-9+\/=]{32,}`;
-const PREFIXED_CATCH_ALL_OFF = String.raw`{255,}[[:space:]]*$/s/[A-Za-z0-9+\/=]{255,}`;
+/** The prefixed catch-all's anchored ACTION (2026-09-17): prefix captured, only the trailing run replaced. */
+const PREFIXED_CATCH_ALL = String.raw`[A-Za-z0-9+\/=]{32,}([[:space:]]*)$/\1***MASKED***\3/`;
+/** The same action silenced: a run no line reaches. */
+const PREFIXED_CATCH_ALL_OFF = String.raw`[A-Za-z0-9+\/=]{255,}([[:space:]]*)$/\1***MASKED***\3/`;
+/** The action as first shipped in this change -- unanchored, so the LEFTMOST 32+ run on the line is what goes. */
+const PREFIXED_CATCH_ALL_UNANCHORED = String.raw`s/[A-Za-z0-9+\/=]{32,}/***MASKED***/`;
 /**
  * A prefixed body is reached by TWO rules since 2026-09-17: whichever rule a test is
  * mutating, and the prefixed whole-line catch-all. A mutation that expects a prefixed
@@ -954,6 +958,40 @@ describe("session-archive PEM key masking", () => {
       expect(bodyLinesSurviving(runMask(withoutCatchAll, unplanted))).toBe(0);
     });
   }
+
+  it("masks the body, not the path, when a `grep -n` path is itself a 32+ run of the base64 class", () => {
+    // `/` is in the run class. Hosted-container paths with no `.`, `_` or `-`
+    // (`/home/runner/work/vaultkeys/vaultkeys/id`) are themselves a 32+ run,
+    // and the first shipped form of the prefixed catch-all substituted the
+    // LEFTMOST such run on the line -- the path -- leaving the 64-character
+    // body after `:12:` in the clear while the line read as masked (change
+    // scan finding F1 on this change). The action is now anchored to the
+    // captured prefix, so only the trailing run goes.
+    const longPath = "/home/runner/work/vaultkeys/vaultkeys/id";
+    expect(longPath).toMatch(/^[A-Za-z0-9+/=]{32,}$/);
+    // No BEGIN marker at all: `grep -rn` over a key directory prints only the
+    // matching lines, so no range is open and the catch-all is the whole of
+    // what stands between the body and the note. (A planted tilde would also
+    // leave the range closed on a mask() that still ends it at a tilde; a
+    // range that stays open takes the path too, as its documented cost.)
+    const prefixedBody = BODY.map((line, index) => `${longPath}:${index + 1}:${line}`);
+    const planted = prefixedBody.join("\n");
+
+    const note = runMask(mask, planted);
+    expect(bodyLinesSurviving(note)).toBe(0);
+    // The path survives: what was masked is the body, not the prefix.
+    expect(note.split("\n").filter((line) => line.startsWith(`${longPath}:`))).toHaveLength(BODY.length);
+
+    // Reverse verification: put the unanchored action back and every body
+    // line survives behind a masked path.
+    const anchored = mask.split("\n").find((line) => line.includes(PREFIXED_CATCH_ALL));
+    expect(anchored, "the anchored catch-all action is gone from the shipped mask()").toBeDefined();
+    const action = anchored!.slice(anchored!.indexOf("/s/") + 1);
+    const unanchored = mutate(mask, action, `${PREFIXED_CATCH_ALL_UNANCHORED}'`, "the anchored catch-all action");
+    const leaked = runMask(unanchored, planted);
+    expect(bodyLinesSurviving(leaked)).toBe(BODY.length);
+    expect(leaked.split("\n").filter((line) => line.startsWith("***MASKED***:"))).toHaveLength(BODY.length);
+  });
 
   it("masks an encrypted key body across the blank line its headers end with", () => {
     // RFC 1421 puts `Proc-Type:` / `DEK-Info:` headers, then a BLANK LINE, and
