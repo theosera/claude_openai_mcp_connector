@@ -84,6 +84,16 @@ fi
 # whatever port `~/.ssh/config` assigns the host, while `ssh://host:22/` forces
 # 22, so the two can reach different servers and must not compare equal. A pin
 # is therefore written with the same port the remote carries, or none.
+#
+# The host is found the way git finds it BEFORE anything is stripped as
+# userinfo. Without a scheme, git reads `[user@]host:path` as an SSH remote
+# only when the first colon comes before any slash, and everything else as a
+# local path; the identity splits at that same colon first. Stripping
+# `^[^/@]*@` from the whole string before that split read
+# `evil.example:x@github.com/owner/vault` as userinfo plus the pinned
+# `github.com/owner/vault`, while git handed `evil.example` to ssh with
+# `x@github.com/owner/vault` as the path -- the pin matched and the transcript
+# went to the other host (#207 change scan, F4/F6).
 git_url_id() {
   local url scheme host rest
   url="$(printf '%s' "${1:-}" | sed -E -e 's/^[[:space:]]+//' -e 's/[[:space:]]+$//')"
@@ -91,14 +101,25 @@ git_url_id() {
   case "$url" in
     *://*) scheme="$(printf '%s' "${url%%://*}" | tr 'A-Z' 'a-z')"; url="${url#*://}" ;;
   esac
-  url="$(printf '%s' "$url" | sed -E 's#^[^/@]*@##')"
   if [ -n "$scheme" ]; then
+    # The authority ends at the first slash, and userinfo can only sit inside it.
+    url="$(printf '%s' "$url" | sed -E 's#^[^/@]*@##')"
     host="${url%%/*}"
     rest="${url#"$host"}"
   else
-    host="${url%%[:/]*}"
-    rest="${url#"$host"}"
-    rest="/${rest#[:/]}"
+    host="${url%%:*}"
+    if [ "$host" = "$url" ] || [ "${host#*/}" != "$host" ]; then
+      # No colon, or a slash before the first one: a local path, no host.
+      host=""
+      rest="$url"
+    else
+      # scp-style. Userinfo is stripped only inside the host segment, at the
+      # last at-sign, which is where ssh itself splits `user@host`.
+      rest="/${url#*:}"
+      host="${host##*@}"
+      # `:path` and `user@:path` name no host, so they get no identity.
+      [ -n "$host" ] || return 0
+    fi
   fi
   rest="$(printf '%s' "$rest" | sed -E -e 's#/+$##' -e 's#\.git$##')"
   printf '%s%s' "$(printf '%s' "$host" | tr 'A-Z' 'a-z')" "$rest"
