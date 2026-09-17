@@ -28,6 +28,17 @@ describe("token estimation buckets", () => {
     expect(counts.cjk).toBe(5); // あいう + 漢字
   });
 
+  it("keeps a labelled or tab-indented tilde run inside the block, as the splitter and CommonMark do", () => {
+    // The fence rule is shared with `findHeadings` (codeFence.ts): `~~~~~~ x`
+    // and a tab before the run are content, so the line after them is still
+    // priced as code. A bare closer of the opener's length ends the block.
+    const inside = countCharacters(["~~~~~~", "~~~~~~ x", "code", "~~~~~~", "prose"].join("\n"));
+    expect(inside.codeAscii).toBe("~~~~~~ x\n".length + "code\n".length);
+    expect(inside.ascii).toBe("prose\n".length);
+    const tabbed = countCharacters(["~~~~~~", "\t~~~~~~", "code", "~~~~~~", "prose"].join("\n"));
+    expect(tabbed.codeAscii).toBe("\t~~~~~~\n".length + "code\n".length);
+  });
+
   it("counts an emoji as one character, not as its surrogate halves", () => {
     // Iterating UTF-16 units would double-count every astral code point, which
     // over-prices exactly the text most likely to be a whole note of it.

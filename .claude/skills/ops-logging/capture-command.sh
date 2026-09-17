@@ -58,8 +58,72 @@ mask() {
   # value still falls through to the keyword rule below and is masked to
   # whitespace there, exactly as it was before these rules existed.
   #
-  # That keyword rule is therefore left BYTE-IDENTICAL to its previous form: it
-  # is the fallback that keeps this change from ever masking less than before.
+  # That keyword rule is the fallback that keeps this change from ever masking
+  # less than before. (It has changed once since this paragraph was first
+  # written: its value class is dash-bounded now, for the marker reason below.
+  # The test pins its SHIPPED spelling, not identity with an older one.)
+  #
+  # `Authorization: <scheme> <credential>` is TWO tokens, and that keyword rule
+  # ends its value at the first whitespace: it eats the SCHEME word and leaves
+  # the credential in the clear one space to the right of a `***MASKED***`
+  # marker, which reads as a successful redaction. `Bearer` was the only shape
+  # that escaped, because the dedicated rule above takes the token AFTER the
+  # scheme -- which is also why `Bearer` is absent from the scheme list below:
+  # that rule fires first, so nothing bearer-shaped ever reaches this one. The
+  # rule takes the CREDENTIAL and leaves the scheme word standing, even though
+  # the keyword rule below then masks that word too and the note ends up
+  # carrying two markers side by side. Consuming the scheme here would read
+  # better and measures WORSE: that rule ends its value at whitespace, so
+  # `***MASKED***"` is a single token to it and the closing quote of a
+  # `curl -H "<header>" <url>` goes with it. The value stops at a quote or a
+  # comma as well as at whitespace, so that command keeps its closing quote and
+  # its URL -- the same bound, and the same reason, as the quoted-run rules
+  # above.
+  #
+  # The scheme is an ALLOWLIST, not `[A-Za-z][A-Za-z0-9-]*`. A general scheme
+  # word turns this into "mask the second word after any keyword", which reaches
+  # this note's own UNQUOTED frontmatter (`project:` / `repos: [...]` /
+  # `tags: [...]`, masked value by value further down) and leaves the note
+  # unparseable for a checkout named after a mask keyword. The list holds the
+  # single-opaque-token schemes; an unlisted scheme is left exactly where the
+  # keyword rule had it.
+  #
+  # What keeps the marker intact for the range is the VALUE CLASS, not an
+  # address: the scheme rule below carries none. sed applies each `-e` in order
+  # to the pattern space AS IT STANDS, so a substitution here can destroy the
+  # text a LATER rule's ADDRESS is matched against -- and the PEM range below
+  # is addressed on the BEGIN marker. A value class that can cross a five-dash
+  # run takes `token: Basic <PEM BEGIN marker>` whole, the range never opens,
+  # and the body lines that follow behind a `cat -n` / `> ` / `grep -n` prefix
+  # are written out VERBATIM (the prefixed catch-all further down now takes
+  # those lines too, which is why the tests silence it when they measure this
+  # rule alone). Measured at 54 of 54 (6 scheme spellings x 3 prefixes x 3
+  # marker placements) with the plain class, and 0 of 54 with the dash-bounded
+  # one. Two things that do NOT fix it: excluding a leading `-` from the value
+  # class closes only that one spelling, since a value of `X<PEM BEGIN marker>`
+  # starts at `X` and swallows the marker anyway; and moving this rule below
+  # the PEM rules disables it outright, because the keyword rule below has
+  # already replaced the scheme word with `***MASKED***` by the time it would
+  # run. A class that cannot cross `-----` is what holds, and it costs nothing:
+  # on such a line the rule still masks the credential up to the dashes.
+  #
+  # The negated marker address survives on exactly TWO rules: the UNBOUNDED
+  # double- and single-quoted halves above, whose value must run to the closing
+  # quote and so cannot be dash-bounded -- they skip marker lines instead, and
+  # their bounded twins cover those lines. (An earlier version of this
+  # paragraph said the address sat on this rule; the tests that count the
+  # addressed rules say two, and they are right.)
+  #
+  # RESIDUE, recorded here rather than left for the next reader to discover: a
+  # PARAMETER-LIST scheme closes only PARTLY. A Digest header carries
+  # `username=`, `realm=` and `response=` parameters with QUOTED values, and the
+  # value class ends at the first `"`, so the `response=` hash stays readable
+  # beside the marker -- the very shape this rule closes for the opaque schemes.
+  # Dropping `,` from the value class does not help; what stops it is the quote.
+  # OAuth 1.0a headers have the same shape. It is unchanged ground rather than
+  # new ground (the keyword rule alone masked the scheme word and stopped in the
+  # same place), and a test pins it so the marker is never read as more than it
+  # is.
   #
   # A PEM key body often arrives with a LINE PREFIX, and the whole-line rule
   # at the bottom sees none of them: `cat -n` writes a line number and a TAB,
@@ -85,51 +149,72 @@ mask() {
   # a fence line somewhere other than the END marker, and invert the parity of
   # everything after it.
   #
-  # The range ends at the END marker or at the next `~~~` run. BOTH halves
-  # of that bound are weaker than they look, so neither is claimed here as more
-  # than it is:
+  # The range ends at the END marker, or 100 lines after the BEGIN marker,
+  # whichever comes first (2026-09-17; before that it also ended at the next
+  # column-0 `~~~` run). The cap is the whole of the bound, and it is worth
+  # saying what each half of the old bound did and why it went:
   #
-  #   - Confinement holds for FENCED blocks ONLY. The session-archive renderer
-  #     fences tool results, thinking, and tool inputs, so a marker planted in
-  #     one of those cannot reach past its own block. It does NOT fence
-  #     assistant or user TEXT turns: a marker planted in one of those runs on
-  #     through every following turn until the next block's opening fence, or to
-  #     the END OF THE NOTE when no fenced block follows, substituting every 12+
-  #     character run on the way. That run class is NOT base64: it is every
-  #     alphanumeric plus `+ / = \`, and `/` is a member, so a run does not stop
-  #     at a path separator. It therefore consumes ordinary twelve-letter words,
-  #     whole hashes, and a whole absolute path as a SINGLE run
-  #     (`/home/runner/work/repo/checkout`). What replaces them is
-  #     `***MASKED***`, the same token a genuine redaction produces, so content
-  #     destroyed this way reads as routine hygiene rather than as damage and
-  #     prompts no one to look at it. Measured on a note of 30 synthetic
-  #     `git log` lines and 3 repeated absolute paths: clean, 0 tokens masked
-  #     and 30/30 SHAs and 3/3 paths kept; with ONE 31-byte marker planted, 91
-  #     masked and 0/30 and 0/3 kept. That is the cost, and it is taken
-  #     deliberately -- this range is what masks a prefixed key body at all. It
-  #     cannot cost structure, because a substitution never deletes a line. A
-  #     test pins that reach, so this paragraph cannot quietly stop being true.
-  #   - A `~~~` line is not only the renderer's. Content is fenced but emitted
-  #     VERBATIM, so a column-0 tilde run in a tool result's OWN body ends this
-  #     range early, and the body lines after it are left to the whole-line rule
-  #     -- which, behind a prefix, does not see them. That is a leak an attacker
-  #     can reach for.
-  #     Nor is that terminator a fence. The address is `^~{3,}`, unanchored at
-  #     its right end, so a column-0 `~~~ label` closes this range (measured:
-  #     all six prefixed body lines after it leak) even though the
-  #     session-archive renderer scores that exact shape as closing nothing and
-  #     deliberately does not widen a fence for it. The renderer's own comment
-  #     says as much about that construction, so whichever of the two a
-  #     reader meets first: "it cannot close a fence" is NOT a reason to think
-  #     it cannot close this range.
-  #     What it does not reach: a BEGIN marker that appears AFTER the tilde
-  #     run reopens the range, so key material introduced past that point is
-  #     masked again. It is POSITION that saves it, not possession -- a
-  #     tilde planted between a key's own BEGIN line and its body closes the
-  #     range before the body starts, and every body line is then left to
-  #     the whole-line rule, which behind a prefix does not see them: 6 of 6
-  #     leaking behind a `cat -n` prefix. That is the construction an
-  #     attacker picks, so do not read this bullet as a bound on the leak.
+  #   - The cap is a line count, not a fence. The renderer fences tool
+  #     results, thinking and tool inputs, and writes assistant and user TEXT
+  #     turns at top level; a marker planted in EITHER kind of turn now runs
+  #     on through whatever follows -- the next fenced block included -- for
+  #     up to 100 lines, substituting every 12+ character run on the way. That
+  #     run class is NOT base64: it is every alphanumeric plus `+ / = \`, and
+  #     `/` is a member, so a run does not stop at a path separator. It
+  #     consumes ordinary twelve-letter words, whole hashes, and a whole
+  #     absolute path as a SINGLE run (`/home/runner/work/repo/checkout`).
+  #     What replaces them is `***MASKED***`, the same token a genuine
+  #     redaction produces, so content destroyed this way reads as routine
+  #     hygiene rather than as damage and prompts no one to look at it.
+  #     Measured on a note of 30 synthetic `git log` lines and 3 repeated
+  #     absolute paths: clean, 0 tokens masked and 30/30 SHAs and 3/3 paths
+  #     kept; with ONE 31-byte marker planted, 91 masked and 0/30 and 0/3
+  #     kept. That is the cost, taken deliberately -- this range is what masks
+  #     a prefixed key body at all -- and the cap is what bounds it: a planted
+  #     marker can spoil at most the 100 lines after it, not the rest of the
+  #     note. It cannot cost structure, because a substitution never deletes a
+  #     line. Tests pin both the reach and the cap.
+  #   - The `~~~` terminator is gone because it was content-controlled. Content
+  #     is fenced but emitted VERBATIM, so a column-0 tilde run in a tool
+  #     result's OWN body closed the range early, and the address was `^~{3,}`,
+  #     unanchored at its right end, so even a `~~~ label` the renderer scores
+  #     as closing nothing closed it. Plant one between a key's own BEGIN line
+  #     and its body and the range closed before the body started: 6 of 6 body
+  #     lines leaked behind a `cat -n` prefix -- the construction an attacker
+  #     picks, and a Critical review finding on the branch that shipped it.
+  #     Removing it fails closed: a key's body is masked whatever the content
+  #     around it says, and the prefixed catch-all below takes prefixed body
+  #     lines outside any range besides. What was traded for that is the
+  #     availability failure the terminator had bounded, and the cap bounds it
+  #     instead -- at 100 lines rather than at a line the attacker chooses.
+  #   - Why 100: an RSA-4096 key body is about 50 lines and an ed25519 key
+  #     under 10, prefix or not, so a real key sits inside the cap with room.
+  #     Armor that runs longer (a PGP MESSAGE carrying a file) is base64-only
+  #     line by line, and the two whole-line catch-alls below take those lines
+  #     with no range at all, so the cap costs it nothing THERE. It does cost
+  #     one shape, and a test measures it rather than rounding it away: a
+  #     single body longer than the cap behind a prefix the catch-alls do not
+  #     admit (a diff `-`, an RSA-8192 body of about 107 lines) keeps its tail.
+  #   - How the cap counts, and why it is not a sed range. The first spelling
+  #     was nested, `/BEGIN/,+100{ /BEGIN/,/END/ {...} }`, and sed does not
+  #     re-check a range's first address while the range is open: a BEGIN
+  #     that fell inside a window already open -- the second of two keys in
+  #     one `git diff`, or a real key after a bare marker the model quoted --
+  #     did not restart the count, the window closed in the middle of that
+  #     body, and its remaining `-`-prefixed lines were written out in the
+  #     clear (change-scan F1 / F5 on this change, 2026-09-17). So the window
+  #     is a COUNTER in the hold space instead: a BEGIN line sets it to `o`,
+  #     unconditionally; while it reads `o` plus at most 100 `x`, the line is
+  #     masked and one `x` is appended; an END line empties it. Every BEGIN
+  #     restarts the 100 lines, and END still closes early, so the cap stays
+  #     a ceiling on the reach and not a floor. The `x` command swaps pattern
+  #     and hold space, which is why the rule below reads as a dance of
+  #     swaps: the counter has to be in the pattern space to be tested, and
+  #     the line has to be back there to be masked. Only POSIX sed is used --
+  #     hold space, `{}` blocks and interval expressions -- and the CI runner
+  #     (GNU) and the operator's shell (BSD) both run the tests, including a
+  #     mutation that makes the reset conditional on a closed counter and
+  #     watches the planted shape leak exactly the ten lines the scan named.
   #
   # Read the two copies separately here, because this rule replaces something
   # different in each. `archive-session.sh` gains it outright: no input it
@@ -138,17 +223,16 @@ mask() {
   # at once. It masks LESS inside a block: base64 runs shorter than 12
   # characters -- a final body line of 4 or 8, where roughly one key size in
   # eight lands, at most 6 bytes of the trailing DER field -- plus non-base64
-  # header text such as `Proc-Type:`, plus anything after a column-0 tilde
-  # planted in the body. At the construction above, a tilde before any body
-  # line, the archive copy is merely EQUAL to its base rather than better,
-  # and this copy goes from fully masked to fully leaked. It also masks MORE,
+  # header text such as `Proc-Type:` (the whole-line short-run rule below
+  # takes the final line since 2026-09-17, so that residue is now runs UNDER
+  # 12 that share a line with other text). It also masks MORE,
   # in two ways that are not small: it gains the whole-line base64 catch-all
   # it never had, and it removes an UNBOUNDED failure. The old range had no
   # terminator but the END marker, so under POSIX sed an unterminated marker
   # anywhere in a multi-line command blanked every REMAINING line of the
   # logged command -- a `grep` for the marker text destroyed all 501 lines of
   # a command carrying no key material at all. A run substitution cannot do
-  # that, and the tilde gives the range a second way to close. That failure
+  # that, and the line cap gives the range a second way to close. That failure
   # was this copy's alone; the archive copy never had the mode, which is why
   # it is recorded here and not as a general note.
   #
@@ -195,18 +279,21 @@ mask() {
     -e 's/gh[pousr]_[A-Za-z0-9]{20,}/***MASKED***/g' \
     -e 's/github_pat_[A-Za-z0-9_]{20,}/***MASKED***/g' \
     -e 's#(://[^/:@[:space:]]+):[^/@[:space:]]+@#\1:***MASKED***@#g' \
-    -e 's/([Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+)[^[:space:]]+/\1***MASKED***/g' \
-    -e "s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+\")([^\"\\\\]|\\\\.)*\"/\1***MASKED***\"/Ig" \
-    -e "s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\]|\\\\.)*'/\1***MASKED***'/Ig" \
-    -e 's/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)[^[:space:]]+/\1***MASKED***/Ig' \
+    -e 's/([Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+/\1***MASKED***/g' \
+    -e "/-----(BEGIN|END) ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/!s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+\")([^\"\\\\]|\\\\.)*\"/\1***MASKED***\"/Ig" \
+    -e "s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+\")([^\"\\\\-]|\\\\.|-{1,4}([^\"\\\\-]|\\\\.))*-{0,4}\"/\1***MASKED***\"/Ig" \
+    -e "/-----(BEGIN|END) ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/!s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\]|\\\\.)*'/\1***MASKED***'/Ig" \
+    -e "s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\-]|\\\\.|-{1,4}([^'\\\\-]|\\\\.))*-{0,4}'/\1***MASKED***'/Ig" \
+    -e "s/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+(Basic|Digest|Token|ApiKey|OAuth|SSWS)[[:space:]]+)([^[:space:],\"'-]|-{1,4}[^[:space:],\"'-])+/\1***MASKED***/Ig" \
+    -e 's/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+/\1***MASKED***/Ig' \
+    -e '/-----BEGIN ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/{x;s/.*/o/;x;}' \
+    -e 'x;/^ox{0,100}$/{s/$/x/;x;s/[A-Za-z0-9+\/=]{12,}/***MASKED***/g;s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*)?)[A-Za-z0-9+\/=]{1,11}[[:space:]]*$/\1***MASKED***/;/-----END ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/{x;s/.*//;x;};x;};x' \
+    -e 's/-----BEGIN ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/***MASKED***/g' \
+    -e 's/-----END ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/***MASKED***/g' \
     -e 's/AKIA[0-9A-Z]{16}/***MASKED***/g' \
     -e 's/sk-[A-Za-z0-9_-]{20,}/***MASKED***/g' \
     -e 's/AIza[0-9A-Za-z_-]{35}/***MASKED***/g' \
     -e 's/xox[baprs]-[A-Za-z0-9-]{10,}/***MASKED***/g' \
-    -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----|^~{3,}/s/[A-Za-z0-9+\/=]{12,}/***MASKED***/g' \
-    -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----|^~{3,}/s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*)?)[A-Za-z0-9+\/=]{1,11}[[:space:]]*$/\1***MASKED***/' \
-    -e 's/-----BEGIN [A-Z ]*PRIVATE KEY-----/***MASKED***/g' \
-    -e 's/-----END [A-Z ]*PRIVATE KEY-----/***MASKED***/g' \
     -e '/^[[:space:]]*[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/.*/***MASKED***/' \
     -e '/^[[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*)[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*))[A-Za-z0-9+\/=]{32,}([[:space:]]*)$/\1***MASKED***\3/'
 }
