@@ -52,7 +52,6 @@ HTTP は **opt-in の OAuth 2.1 authorization server** (`src/oauth/`、PKCE S256
 | セッション間・エージェント間でブロック / パッチ / 数値 / レシピをファイルや貼り付けで受け渡す前後 | `handoff-block-integrity` |
 | 「一致」「0 件」「全部緑」「存在しない」「完了」など同一性・悉皆・不在の主張を書く直前、テストの緑を安全の根拠にする前、検査・逆検証・スキャンを設計する前、件数を報告する前 | `measurement-scope` |
 | 複数の Claude セッション (Web/CLI) が同じ文書群・同じリポを分担編集する体制を組む / 参加する前、他セッションの成果物に帰属や評価を書く前、/compact の前後 | `multi-session-collab` |
-| 複数セッションが**共有する作業木**で **HEAD を動かす**前 (`git switch` / `checkout` / `worktree` / `branch -D`)、他席へファイルの**「現物」を報告する**前、枝が main に**入ったかを判断する**前、**走査・レビューを回す**前、**owner の指示が共有作業木を動かす形**のとき | `shared-tree-head` |
 | **★ 「着手前」でなく「ローカル commit 後・push 前」** — **`fs` に書く経路を新設/変更した** (`src/atomicWrite.ts` / `knowledgeStore` の write・apply / `skillStore` / `auditStore` / `oauth/store` の永続化)、または **write tool・write surface の gate を足した/変えた**変更を worktree でローカル commit した後、push する前                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | **(a) `/claude-security` の change scan** — 使えなければ **(b) `/security-review`** |
 | **★ これも「ローカル commit 後・push 前」** — **アーカイブ / ログ出力の escape・fence・マスキング規則を変えた**変更 (`archive-session.sh` の fence 生成、`capture-command.sh` の秘匿マスク、および本リポ側の public-safe copy) をローカル commit した後、push する前。⚠️ **別リポ (`terminal-ops-logs`) の shell でも発火する** | **(a) `/claude-security` の change scan** — 使えなければ **(b) `/security-review`** |
 | **★ これも「ローカル commit 後・push 前」** — **アーカイブ / ログの送り先を決める照合を変えた**変更 (`archive-session.sh` の origin pin = `SESSION_VAULT_ORIGIN` / `vault-origin` file と marker の探索、remote 名の照合、および本リポ側の public-safe copy) をローカル commit した後、push する前。⚠️ **これも別リポ (`terminal-ops-logs`) の shell で発火する** | **(a) `/claude-security` の change scan** — 使えなければ **(b) `/security-review`** |
@@ -119,9 +118,7 @@ HTTP は **opt-in の OAuth 2.1 authorization server** (`src/oauth/`、PKCE S256
 > skill 構成はフラット固定 (`.claude/skills/<name>/SKILL.md`)。中間カテゴリ
 > ディレクトリで機能グループ化しない (Claude Code の nested 検出は既知の不具合で
 > 発火の決定論性を損なうため)。新規 skill を足したら本発火表に 1 行追加する。
-> ⚠️ **例外 1 行**: `shared-tree-head` は user scope (`~/.claude/skills/shared-tree-head/`) に在り、
-> このリポには同梱していない。無い環境ではその行は発火しない — 共有作業木の体制自体がこのマシン固有なので、
-> それでよい。同梱しない理由: worktree は古い skill の写しを運び、byte-identical の維持先が増える。
+> 共有作業木の規則 (`shared-tree-head`) の発火条件は global 層 `CLAUDE.global.md` が持つ — このリポの表には行を置かない (二重化)。
 
 ## 委譲の発火表 (★調査を渡す前 / モデル階層を選ぶ前)
 
