@@ -586,9 +586,11 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
 
 ## pre-commit レビューの発火 (CLAUDE.md 発火表の詳細)
 
-`CLAUDE.md` は「`fs` write 経路 / write surface の gate を触ったら commit 前に
-**(a) `/claude-security` の change scan、無ければ (b) `/security-review`**」とだけ言う。
-その根拠と、両者の違いはここが持つ。
+`CLAUDE.md` は「`fs` write 経路 / write surface の gate / 出力の封じ込め / 送り先の認可を触ったら
+**ローカル commit 後・push 前**に **(a) `/claude-security` の change scan、無ければ (b) `/security-review`**」
+とだけ言う。その根拠と、両者の違いはここが持つ。⚠️ **発火点は 2026-09-17 に「commit 前」から動いた** —
+(a) は commit 済みの差分しか読まないので「commit 前」は定義上いつも空 diff だった。節名の pre-commit は
+残す (名前であって規則ではない — ポインタを持つ `CLAUDE.md` 側と対で変えるまで動かさない)。
 
 **(a) と (b) は同じものの強弱ではなく、層が違う** (公式 docs も別レイヤとして並べている):
 
@@ -596,8 +598,8 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
 | ---------- | ------------------------------------------------------------------- | ---------------------- |
 | 走り方     | 多エージェント。構成把握 → 脅威モデル → 探索                        | **単一パス**           |
 | 指摘の扱い | **別エージェントが全件を独立検証**し、通ったものだけ残す            | そのまま出る           |
-| 対象       | リポ全体 / branch / PR / 単一コミットを選べる                       | 現ブランチの diff      |
-| 前提       | Claude Code v2.1.154+ / 有料プラン / `python3` 3.9.6+ / plugin 導入 | 組込み                 |
+| 対象       | リポ全体 / branch / PR / 単一コミット (**commit 済みの差分**) を選べる                       | **セッションの cwd** の diff (範囲指定可) |
+| 前提       | Claude Code v2.1.154+ / 有料プラン / `python3` 3.9.6+ / plugin 導入・**`disable-model-invocation` = 人が打つ** | 組込み                 |
 
 → **(b) を残す理由は前提未達の環境が実在するからで、同等だからではない。**
 
