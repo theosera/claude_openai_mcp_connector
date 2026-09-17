@@ -877,8 +877,13 @@ describe("session-archive PEM key masking", () => {
     // captured prefix, so only the trailing run goes.
     const longPath = "/home/runner/work/vaultkeys/vaultkeys/id";
     expect(longPath).toMatch(/^[A-Za-z0-9+/=]{32,}$/);
+    // No BEGIN marker at all: `grep -rn` over a key directory prints only the
+    // matching lines, so no range is open and the catch-all is the whole of
+    // what stands between the body and the note. (A planted tilde would also
+    // leave the range closed on a mask() that still ends it at a tilde; a
+    // range that stays open takes the path too, as its documented cost.)
     const prefixedBody = BODY.map((line, index) => `${longPath}:${index + 1}:${line}`);
-    const planted = [PEM_OPEN, "~~~~~~", ...prefixedBody, PEM_CLOSE].join("\n");
+    const planted = prefixedBody.join("\n");
 
     const note = runMask(mask, planted);
     expect(bodyLinesSurviving(note)).toBe(0);
