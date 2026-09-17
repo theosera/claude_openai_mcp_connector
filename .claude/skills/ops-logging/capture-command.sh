@@ -191,12 +191,30 @@ mask() {
   #     under 10, prefix or not, so a real key sits inside the cap with room.
   #     Armor that runs longer (a PGP MESSAGE carrying a file) is base64-only
   #     line by line, and the two whole-line catch-alls below take those lines
-  #     with no range at all, so the cap costs it nothing. The cap is nested:
-  #     `/BEGIN/,+100{ /BEGIN/,/END/ {...} }` -- the outer range counts, the
-  #     inner one still stops at END, so the 100 lines are a ceiling on the
-  #     reach, not a floor. Both `,+N` addressing and nested blocks are in
-  #     GNU and BSD sed alike; the CI runner is GNU, the operator's shell is
-  #     BSD, and both run the tests.
+  #     with no range at all, so the cap costs it nothing THERE. It does cost
+  #     one shape, and a test measures it rather than rounding it away: a
+  #     single body longer than the cap behind a prefix the catch-alls do not
+  #     admit (a diff `-`, an RSA-8192 body of about 107 lines) keeps its tail.
+  #   - How the cap counts, and why it is not a sed range. The first spelling
+  #     was nested, `/BEGIN/,+100{ /BEGIN/,/END/ {...} }`, and sed does not
+  #     re-check a range's first address while the range is open: a BEGIN
+  #     that fell inside a window already open -- the second of two keys in
+  #     one `git diff`, or a real key after a bare marker the model quoted --
+  #     did not restart the count, the window closed in the middle of that
+  #     body, and its remaining `-`-prefixed lines were written out in the
+  #     clear (change-scan F1 / F5 on this change, 2026-09-17). So the window
+  #     is a COUNTER in the hold space instead: a BEGIN line sets it to `o`,
+  #     unconditionally; while it reads `o` plus at most 100 `x`, the line is
+  #     masked and one `x` is appended; an END line empties it. Every BEGIN
+  #     restarts the 100 lines, and END still closes early, so the cap stays
+  #     a ceiling on the reach and not a floor. The `x` command swaps pattern
+  #     and hold space, which is why the rule below reads as a dance of
+  #     swaps: the counter has to be in the pattern space to be tested, and
+  #     the line has to be back there to be masked. Only POSIX sed is used --
+  #     hold space, `{}` blocks and interval expressions -- and the CI runner
+  #     (GNU) and the operator's shell (BSD) both run the tests, including a
+  #     mutation that makes the reset conditional on a closed counter and
+  #     watches the planted shape leak exactly the ten lines the scan named.
   #
   # Read the two copies separately here, because this rule replaces something
   # different in each. `archive-session.sh` gains it outright: no input it
@@ -268,7 +286,8 @@ mask() {
     -e "s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\-]|\\\\.|-{1,4}([^'\\\\-]|\\\\.))*-{0,4}'/\1***MASKED***'/Ig" \
     -e "s/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+(Basic|Digest|Token|ApiKey|OAuth|SSWS)[[:space:]]+)([^[:space:],\"'-]|-{1,4}[^[:space:],\"'-])+/\1***MASKED***/Ig" \
     -e 's/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+/\1***MASKED***/Ig' \
-    -e '/-----BEGIN ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/,+100{/-----BEGIN ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/,/-----END ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/{s/[A-Za-z0-9+\/=]{12,}/***MASKED***/g;s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*)?)[A-Za-z0-9+\/=]{1,11}[[:space:]]*$/\1***MASKED***/;};}' \
+    -e '/-----BEGIN ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/{x;s/.*/o/;x;}' \
+    -e 'x;/^ox{0,100}$/{s/$/x/;x;s/[A-Za-z0-9+\/=]{12,}/***MASKED***/g;s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*)?)[A-Za-z0-9+\/=]{1,11}[[:space:]]*$/\1***MASKED***/;/-----END ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/{x;s/.*//;x;};x;};x' \
     -e 's/-----BEGIN ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/***MASKED***/g' \
     -e 's/-----END ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/***MASKED***/g' \
     -e 's/AKIA[0-9A-Z]{16}/***MASKED***/g' \

@@ -648,14 +648,22 @@ const NEVER_MATCHES = "{255,}";
 const IN_RANGE_RUN = "{12,}";
 const CATCH_ALL_RUN = "{32,}";
 const RUN_SUBSTITUTION = String.raw`s/[A-Za-z0-9+\/=]{12,}/***MASKED***/g`;
-/** The outer, counting half of the PEM range (2026-09-17): 100 lines after BEGIN, then it ends. */
-const RANGE_CAP = ",+100{";
+/**
+ * The PEM range is a line counter in sed's hold space since 2026-09-18: `o` while
+ * a window is open, plus one `x` per line consumed. The cap is the counter's
+ * ceiling -- 100 lines after BEGIN -- and the open test is spelled only there.
+ */
+const RANGE_CAP = "ox{0,100}$";
 /** The same cap shrunk to two lines, to show the cap is what stops the reach. */
-const RANGE_CAP_TINY = ",+2{";
-/** Where the inner range closes: the END marker, spelled as only the range block spells it. */
-const RANGE_END = String.raw`-----/{s/[A-Za-z0-9+\/=]{12,}`;
+const RANGE_CAP_TINY = "ox{0,2}$";
+/** The reset on a BEGIN line: unconditional, so a BEGIN inside an open window restarts the count. */
+const RANGE_OPEN = "{x;s/.*/o/;x;}";
+/** The same reset made conditional on a CLOSED counter -- the shape `addr1,+N` had, which the scan named. */
+const RANGE_OPEN_ONLY_WHEN_CLOSED = "{x;s/^$/o/;x;}";
+/** Where the window closes early: the END marker's action, spelled as only that rule spells it. */
+const RANGE_END = "-----/{x;s/.*//;x;}";
 /** The same close, also ending at a blank line -- the bound the encrypted-key test proves wrong. */
-const RANGE_END_OR_BLANK = String.raw`-----|^[[:space:]]*$/{s/[A-Za-z0-9+\/=]{12,}`;
+const RANGE_END_OR_BLANK = "-----|^[[:space:]]*$/{x;s/.*//;x;}";
 /** The in-range whole-line short-run rule (2026-09-17): its length class occurs nowhere else. */
 const IN_RANGE_SHORT_LINE = "{1,11}";
 /** The prefixed whole-line catch-all (2026-09-17): the run it substitutes, spelled as only it spells it. */
@@ -896,6 +904,82 @@ describe("session-archive PEM key masking", () => {
     expect(capped).toContain(`${token} is in the next block`);
   });
 
+  it("restarts the cap on every BEGIN, so a body that starts inside an open window is masked to its end", () => {
+    // Change-scan F1 / F5 on this branch (2026-09-17): the cap was an outer
+    // `/BEGIN/,+100{...}` range, and sed does not re-check a range's first
+    // address while the range is open. A block whose BEGIN fell inside a window
+    // that was already open did not restart the count; the window closed in
+    // the middle of its body, and the body lines after that carried a prefix
+    // neither whole-line catch-all admits -- a diff `-` -- so they were written
+    // out in the clear. The counter now restarts on EVERY BEGIN line.
+    //
+    // Two shapes, because the counter closes on END and the old range did not:
+    // two blocks removed by one `git diff` (the ordinary case, no attacker) is
+    // covered by the window REOPENING after the first END, while a bare BEGIN
+    // planted ahead of a block -- fetched content, or a marker the model quoted --
+    // has no END and is covered only by the unconditional reset. The reverse
+    // verification below reaches the second shape and not the first, and says so.
+    const later = syntheticBody(50);
+    const earlier = syntheticBody(50).map((line) => line.toLowerCase());
+    const gap = Array.from({ length: 8 }, (_, index) => `context line ${index}`);
+    const minus = (line: string) => `-${line}`;
+    const surviving = (masked: string) => later.filter((line) => masked.includes(line));
+
+    // Lines: BEGIN 1, earlier 2-51, END 52, gap 53-60, BEGIN 61, later 62-111, END 112.
+    const pair = [PEM_OPEN, ...earlier, PEM_CLOSE, ...gap, PEM_OPEN, ...later, PEM_CLOSE].map(minus).join("\n");
+    const masked = runMask(mask, pair);
+    expect(surviving(masked)).toEqual([]);
+    expect(earlier.filter((line) => masked.includes(line))).toEqual([]);
+    expect(gap.every((line) => masked.includes(`-${line}`))).toBe(true);
+
+    // Lines: planted BEGIN 1, filler 2-60, BEGIN 61, later 62-111, END 112.
+    const filler = Array.from({ length: 59 }, (_, index) => `fetched line ${index}`);
+    const planted = [PEM_OPEN, ...filler, ...[PEM_OPEN, ...later, PEM_CLOSE].map(minus)].join("\n");
+    expect(surviving(runMask(mask, planted))).toEqual([]);
+
+    // Reverse verification: reset the counter only when it is CLOSED and the
+    // planted shape leaks the body past line 101 -- lines 102-111, the ten the
+    // scan named -- while the two-block shape stays covered by the reopen.
+    const stale = mutate(mask, RANGE_OPEN, RANGE_OPEN_ONLY_WHEN_CLOSED, "the per-BEGIN counter reset");
+    expect(surviving(runMask(stale, planted))).toEqual(later.slice(40));
+    expect(surviving(runMask(stale, pair))).toEqual([]);
+  });
+
+  it("still stops at the cap inside ONE key, and what that costs is measured rather than rounded away", () => {
+    // The cap is a ceiling on the reach of a planted marker, and a ceiling has
+    // a cost: a single body longer than 100 lines is masked only that far by
+    // the range. Bare lines and the three prefixes the prefixed catch-all
+    // admits are taken by the catch-alls with no range at all, so the cost
+    // lands only on a prefix outside that list -- here a diff `-`, where the
+    // tail of a 110-line body (an RSA-8192 key, about 107 lines) survives.
+    // Pinned so the comment above the rule cannot claim the cap costs nothing.
+    const body = syntheticBody(110);
+    const block = (prefix: (line: string, lineNumber: number) => string) =>
+      [PEM_OPEN, ...body, PEM_CLOSE].map((line, index) => prefix(line, index + 1)).join("\n");
+    const surviving = (masked: string) => body.filter((line) => masked.includes(line));
+
+    // Lines: BEGIN 1, body 2-111; the window covers 1-101, so body[100..] is line 102 on.
+    expect(
+      surviving(
+        runMask(
+          mask,
+          block((line) => `-${line}`)
+        )
+      )
+    ).toEqual(body.slice(100));
+    expect(
+      surviving(
+        runMask(
+          mask,
+          block((line) => line)
+        )
+      )
+    ).toEqual([]);
+    for (const [name, prefix] of PREFIXED) {
+      expect(surviving(runMask(mask, block(prefix))), name).toEqual([]);
+    }
+  });
+
   it("lets a marker planted in an UNFENCED turn reach the turns and blocks after it, up to the cap", () => {
     // The renderer fences tool results, thinking and tool inputs; it writes
     // assistant and user TEXT turns at top level, with no fence. Until
@@ -1045,15 +1129,14 @@ describe("session-archive PEM key masking", () => {
     expect(surviving(renderThenMask(renderer, mask, transcript))).toBe(prose.length);
 
     // Reverse verification: the same range, blanking whole lines instead of runs,
-    // erases every one of them.
-    // Not every one, since 2026-09-17: the outer range counts 100 lines from a
-    // BEGIN and does not restart on the markers inside it, so the four prose
-    // lines between one window's end and the next marker survive each time --
-    // a property of the cap, measured rather than rounded away.
+    // erases every one of them. (For one day in 2026-09 the cap was an outer
+    // `,+100` range that did not restart on the markers inside it, and four
+    // prose lines survived between each window's end and the next marker; the
+    // counter restarts on every BEGIN now, so a marker every five lines keeps
+    // the whole note inside a window -- which is the scan's F1, seen from the
+    // availability side.)
     const blanking = mutate(mask, RUN_SUBSTITUTION, "s/.*/***MASKED***/", "the in-range run substitution");
-    const left = surviving(renderThenMask(renderer, blanking, transcript));
-    expect(left).toBeGreaterThan(0);
-    expect(left).toBeLessThan(prose.length / 10);
+    expect(surviving(renderThenMask(renderer, blanking, transcript))).toBe(0);
   });
 
   it("keeps the fence parity of the assembled note, so a planted marker cannot forge a turn", () => {
@@ -1165,8 +1248,9 @@ const MASKED = "***MASKED***";
 const BARE_KEYWORD_VALUE = String.raw`[=:[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+`;
 
 /**
- * Moves the three PEM rules AHEAD of every keyword rule -- the ordering that
- * 46c61f7 shipped and that F-C came from. With the PEM rules first, the in-range
+ * Moves the four PEM rules (the window's open and its body, then the two marker
+ * replacements) AHEAD of every keyword rule -- the ordering that 46c61f7 shipped
+ * and that F-C came from. With the PEM rules first, the in-range
  * run replacement eats `authorization` (13 characters, the only anchor word that
  * reaches {12,}) before any keyword rule can anchor on it, and the value survives
  * one token to the right of a marker that reads as a successful redaction.
@@ -1177,7 +1261,7 @@ function pemRulesFirst(maskFn: string): string {
   lines.forEach((line, index) => {
     if (line.trim().startsWith("-e") && line.includes("PRIVATE KEY") && !line.includes("!s/")) pem.push(index);
   });
-  expect(pem).toHaveLength(3);
+  expect(pem).toHaveLength(4);
   const block = pem.map((index) => lines[index]);
   const rest = lines.filter((_, index) => !pem.includes(index));
   const at = rest.findIndex((line) => line.trim().startsWith("-e") && line.includes("token|key|secret"));
@@ -1489,10 +1573,17 @@ describe("session-archive auth-scheme masking", () => {
     // and this pin stayed GREEN with the PEM rules moved behind `xox` -- where a
     // glued `sk-` leaks 3/3 body lines. Asserting the count is what turns that
     // from a silent pass into a loud one.
+    // The range is two rules since 2026-09-18 -- the BEGIN line resets the
+    // counter, and the next rule masks while it is open -- so the pin is on the
+    // LATER of the two: the reset must see the marker before a dash-carrying
+    // class can eat it, and the body rule must run on the same pass.
     const rules = mask.split("\n").filter((line) => line.trim().startsWith("-e"));
-    const rangeRules = rules.filter((line) => line.includes("/,/"));
-    expect(rangeRules).toHaveLength(1);
-    const rangeAt = rules.indexOf(rangeRules[0]);
+    const opens = rules.filter((line) => line.includes(RANGE_OPEN));
+    const bodies = rules.filter((line) => line.includes(RUN_SUBSTITUTION));
+    expect(opens).toHaveLength(1);
+    expect(bodies).toHaveLength(1);
+    expect(rules.indexOf(opens[0])).toBeLessThan(rules.indexOf(bodies[0]));
+    const rangeAt = rules.indexOf(bodies[0]);
 
     // Only the shapes whose value class contains `-`: `gh[pousr]_` and `AKIA` end
     // on classes without one, so they cannot take a marker and their position
@@ -1522,14 +1613,18 @@ describe("session-archive auth-scheme masking", () => {
     // So derive the shape from the shipped range rule instead of restating it; a
     // spelled-out copy is exactly what went stale earlier in this suite.
     const rules = mask.split("\n").filter((line) => line.trim().startsWith("-e"));
-    const range = rules.filter((line) => line.includes("/,/"));
+    const range = rules.filter((line) => line.includes(RANGE_OPEN));
     expect(range).toHaveLength(1);
 
-    // Pull the whole variable part out of the range's START address -- everything
+    // Pull the whole variable part out of the window's OPENING address -- everything
     // between `BEGIN ` and the closing dashes. Matching a bare character class
     // stopped working the moment the marker grew alternation for PGP.
     const variable = range[0].match(/-{5}BEGIN (.*?)-{5}\//)?.[1];
     expect(variable, "the range rule no longer spells its marker the expected way").toBeTruthy();
+    // And the window's CLOSING address, on the body rule, admits the same part.
+    const body = rules.filter((line) => line.includes(RUN_SUBSTITUTION));
+    expect(body).toHaveLength(1);
+    expect(body[0].match(/-{5}END (.*?)-{5}\//)?.[1]).toBe(variable);
 
     const addressed = rules.filter((line) => line.includes(pemMarkerAddress(mask)));
     expect(addressed).toHaveLength(2);
