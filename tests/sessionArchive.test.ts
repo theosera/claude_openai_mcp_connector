@@ -848,6 +848,12 @@ describe("session-archive PEM key masking", () => {
 
     expect(runMask(mask, withTail(run(11)))).not.toContain(run(11));
     expect(runMask(mask, withTail(run(12)))).not.toContain(run(12));
+    // Behind every prefix the catch-all knows, the short last line goes too --
+    // the `grep -n` file:N: shape was missing from this rule's prefix list at
+    // first (review finding on #217), so it is pinned per prefix here.
+    for (const [label, prefix] of PREFIXED) {
+      expect(runMask(mask, withTail(prefix(run(4), 3))), label).not.toContain(run(4));
+    }
     expect(runMask(mask, withTail(`note ${run(11)}`))).toContain(run(11));
     expect(runMask(mask, withTail(`note ${run(12)}`))).not.toContain(run(12));
 
