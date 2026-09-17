@@ -20,6 +20,7 @@
  * keeps every cut this module makes explicable as "a heading was here".
  */
 
+import { fenceCloses, fenceOpening, type OpenFence } from "./codeFence.js";
 import { estimateTokens } from "./tokenEstimate.js";
 
 /**
@@ -86,19 +87,27 @@ function closeHashes(title: string): string {
 
 function findHeadings(lines: readonly string[]): HeadingLine[] {
   const headings: HeadingLine[] = [];
-  let fence: string | undefined;
+  let fence: OpenFence | undefined;
 
   lines.forEach((line, lineIndex) => {
-    const marker = /^\s{0,3}(`{3,}|~{3,})/.exec(line)?.[1];
-    if (marker) {
-      if (fence === undefined) {
-        fence = marker;
-      } else if (marker[0] === fence[0] && marker.length >= fence.length) {
+    // Fences are decided by `codeFence.ts`, the same way the session-archive
+    // renderer sizes them: 0–3 real spaces before the run, and a run closes a
+    // block only when nothing but whitespace follows it. This parser used to
+    // accept `\s{0,3}` and close on any long-enough run, so `~~~~~~ x`, a tab
+    // or a no-break space before six tildes closed a block here that stayed
+    // open for CommonMark and for the reading view -- and a forged
+    // `## 👤 User — …` planted after such a line was a heading on the MCP side
+    // only. A change-scan finding on the branch that narrowed the separator
+    // class below while leaving this rule one line above it.
+    if (fence !== undefined) {
+      if (fenceCloses(line, fence)) {
         fence = undefined;
       }
       return;
     }
-    if (fence !== undefined) {
+    const opened = fenceOpening(line);
+    if (opened) {
+      fence = opened;
       return;
     }
     // `[ \t]` and not `\s`: CommonMark requires a space or tab after the hashes,

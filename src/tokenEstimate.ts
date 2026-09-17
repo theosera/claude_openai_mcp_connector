@@ -21,6 +21,8 @@
  * against a test that states what it expects, not an edit hidden in a formula.
  */
 
+import { fenceCloses, fenceOpening, type OpenFence } from "./codeFence.js";
+
 /** Characters per token for plain ASCII prose. */
 export const ASCII_CHARS_PER_TOKEN = 4.0;
 /**
@@ -87,28 +89,32 @@ export interface CharacterCounts {
 /**
  * Count characters by cost bucket, tracking fenced code blocks as it goes.
  *
- * A fence is a line whose first non-space characters are three or more
- * backticks or tildes; the same marker closes it. Anything still open at the
+ * A fence opens on 0–3 spaces and a run of three or more backticks or tildes,
+ * and closes on a run of the same character at least as long with nothing but
+ * whitespace after it (`codeFence.ts`, shared with the splitter). Anything still open at the
  * end of the text stays open — an unterminated fence in a note should not make
  * the rest of that note look like prose, and mis-pricing it as code only ever
  * over-counts, which is the direction this module errs in on purpose.
  */
 export function countCharacters(text: string): CharacterCounts {
   const counts: CharacterCounts = { ascii: 0, codeAscii: 0, cjk: 0, other: 0 };
-  let fence: string | undefined;
+  let fence: OpenFence | undefined;
 
   for (const line of text.split("\n")) {
-    const marker = /^\s{0,3}(`{3,}|~{3,})/.exec(line)?.[1];
-    if (marker) {
-      // Closing needs a marker of the same character, at least as long as the
-      // one that opened — the CommonMark rule, and the reason a ```js line
-      // inside a ~~~ block does not close it.
-      if (fence === undefined) {
-        fence = marker;
+    // The fence rule lives in `codeFence.ts`, shared with `findHeadings`, so a
+    // block starts and ends at the same lines for pricing and for splitting:
+    // 0–3 real spaces, a closer of the same character at least as long as the
+    // opener, and nothing but whitespace after a closer -- the CommonMark rule,
+    // and the reason a ```js line inside a ~~~ block does not close it.
+    if (fence !== undefined) {
+      if (fenceCloses(line, fence)) {
+        fence = undefined;
         continue;
       }
-      if (marker[0] === fence[0] && marker.length >= fence.length) {
-        fence = undefined;
+    } else {
+      const opened = fenceOpening(line);
+      if (opened) {
+        fence = opened;
         continue;
       }
     }
