@@ -6,6 +6,8 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-09-19
+
 ### Added
 
 - **Refresh-token rotation gained a bounded replay-grace window** (incident
@@ -2629,7 +2631,8 @@ First tagged release. MCP server exposing a private Markdown vault
   frontmatter allowlist, two-step stale-safe writes, HTTP auth + read-only
   surface, and the full OAuth flow.
 
-[Unreleased]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/theosera/claude_openai_mcp_connector/compare/v0.6.0...v0.7.0
