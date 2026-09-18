@@ -1965,7 +1965,26 @@ async function hookWithoutPinCheck(fixture: Fixture): Promise<string> {
   return downgraded;
 }
 
+const ALL_FETCH_URLS = "remote get-url --all origin";
 const ALL_PUSH_URLS = "remote get-url --push --all origin";
+
+/**
+ * A downgraded pin check that reads only the first fetch URL. The shipped hook
+ * must reject every URL carried by the remote, even when its sole push URL is
+ * pinned, because a later rebase can read commits from the fetch side.
+ */
+async function hookReadingFirstFetchUrlOnly(fixture: Fixture): Promise<string> {
+  const script = await fs.readFile(hookPath, "utf8");
+  if (!script.includes(ALL_FETCH_URLS)) {
+    throw new Error(
+      "origin_is_pinned_vault no longer lists every fetch URL — either the anchor moved, or the check has " +
+        "regressed to reading the first fetch URL only, which is the failure the refusal above exists to catch."
+    );
+  }
+  const downgraded = path.join(fixture.root, "archive-session.first-fetch-url.sh");
+  await fs.writeFile(downgraded, script.replace(ALL_FETCH_URLS, "remote get-url origin"));
+  return downgraded;
+}
 
 /**
  * The pin check as it stood before #187: it read `get-url --push` without
@@ -2447,6 +2466,21 @@ describe("session-archive vault authorization", () => {
     expect(notesPushedTo(vault.remote, fixture)).toEqual([]);
     expect(stderr).toContain("Not archiving");
     expect(status).toBe(0);
+  });
+
+  it("archives once a downgraded check reads only the first of two fetch URLs", async () => {
+    const fixture = await makeFixture();
+    const vault = await markedClone(fixture, "vault-clone");
+    const second = seededRemote(fixture, vault, "second-fetch-target");
+    git(["-C", vault.dir, "remote", "set-url", "--add", "origin", second], fixture);
+    git(["-C", vault.dir, "remote", "set-url", "--push", "origin", vault.remote], fixture);
+    const downgraded = await hookReadingFirstFetchUrlOnly(fixture);
+
+    runHook(fixture, hookEnv(fixture, { SESSION_VAULT_ORIGIN: vault.remote }), downgraded);
+
+    const notes = notesPushedTo(vault.remote, fixture);
+    expect(notes).toHaveLength(1);
+    expect(git(["-C", vault.remote, "show", `refs/heads/main:${notes[0]}`], fixture)).toContain(TRANSCRIPT_CANARY);
   });
 
   it("accepts multiple fetch and push URL spellings when every one identifies the pinned vault", async () => {
