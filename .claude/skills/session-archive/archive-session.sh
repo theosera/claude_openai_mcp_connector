@@ -715,6 +715,13 @@ body_jq='
     # 8,024 lines: ATX 694 lines (already escaped before this change); a setext
     # underline preceded by a NON-BLANK line, 1 -- every setext-shaped line
     # would be 16 and would also escape thematic breaks, which forge nothing;
+    # "non-blank" is the word CommonMark uses: a line of spaces and tabs only. It is NOT
+    # the jq [[:space:]] class, which is Unicode White_Space here (see the fence rules
+    # below), so a predecessor holding only U+3000, U+00A0 or a form feed read as
+    # blank to this rule and as a paragraph to every reader, and `---` under it
+    # made that paragraph a heading unescaped (change-scan finding on this change,
+    # 2026-09-18, 3/3 verifiers). The test is spelled [^ \t] for that reason; the
+    # shape occurs 0 times in the 5,387-turn corpus above.
     # the narrowed HTML opener, 0 -- that 0 was the count of the NINE-NAME rule
     # this file shipped first, and it is why that rule looked free; the rule is
     # no longer name-based and its count is no longer 0 (see RAW HTML below);
@@ -725,6 +732,23 @@ body_jq='
     # exactly the attack. Old-vs-new over those 729 turns differs by 1 line.
     # The fence state is computed over the whole turn BEFORE any line is
     # escaped, so the escaping cannot change the decision that drives it.
+    # The state has NO CONTAINER MODEL, and one container matters: a fence opened
+    # INSIDE a list item (`- x` / `  ```` / ```` ``` ````) is closed by CommonMark
+    # when the item ends -- and the item ends at the first non-blank line indented
+    # below its content column, a fence never being a lazy continuation -- so the
+    # column-0 run is not a closer for the item but a NEW opener at document level.
+    # Line for line this turn is balanced to a state machine that cannot see the
+    # item, and open for every reader; the ``` line of the next tool result closes it
+    # and that body lands at top level (change-scan finding on this change,
+    # 2026-09-18, 3/3 verifiers). Rather than model list items -- content columns,
+    # nesting, lazy continuation, the very parsing this renderer refuses to do --
+    # an opener carrying ANY leading indent (1-3 spaces; 4 is an indented code
+    # block and matches nothing here) is scored as the same absorbing marker an
+    # ambiguous close gets, so every run in the turn is escaped. Fail toward
+    # escaping where the container is unknown: the same direction as the marker.
+    # Cost, measured over the three largest local transcripts (5,387 text turns,
+    # 81,422 lines): a 1-3 space indented fence run occurs in 3 turns, 6 lines;
+    # a column-0 run in 1,608 turns, none of which this widens.
     # split("\r") on an empty string returns [] in jq, not [""], so a blank line
     # would contribute zero entries; normalise it back to [""] or the "line
     # above" test silently skips blanks and reads the paragraph before them.
@@ -881,7 +905,7 @@ body_jq='
     # finished, and both sentences were false, the second one measured over a
     # corpus in which every line had exactly one match. So: no such sentence
     # here. If you add a pass, vary an axis this list does not name.
-    def fence_m: if test("^ {0,3}(~{3,}|`{3,})") then capture("^ {0,3}(?<run>~{3,}|`{3,})(?<info>.*)$") else null end;
+    def fence_m: if test("^ {0,3}(~{3,}|`{3,})") then capture("^(?<pad> {0,3})(?<run>~{3,}|`{3,})(?<info>.*)$") else null end;
     def esc_bs: sub("^(?<s> {0,3})"; "\(.s)\\");
     # WHICH runs close is reader-dependent, and closing TOGGLES parity, so the
     # question cannot be settled on the rule of any one reader. CommonMark ends a
@@ -934,14 +958,16 @@ body_jq='
           ($l | fence_m) as $m
           | if $m == null then .
             elif .o == null then
-              (if ($m.run[0:1]) == "`" and ($m.info | test("`")) then . else {o:($m.run[0:1]), n:($m.run|length)} end)
+              (if ($m.run[0:1]) == "`" and ($m.info | test("`")) then .
+               elif ($m.pad | length) > 0 then {o:"?", n:0}
+               else {o:($m.run[0:1]), n:($m.run|length)} end)
             elif ($m.run[0:1]) == .o and (($m.run|length) >= .n) and ($m.info | may_end_fence) then
               (if ($m.info | ends_fence) then {o:null, n:0} else {o:"?", n:0} end)
             else . end)) | .o != null) as $unbalanced
     | [ range(0; $L|length) as $i
         | $L[$i]
         | sub("^(?<s> {0,3})(?<h>#{1,6}[ \t])"; "\(.s)\\\(.h)")
-        | if ($i > 0) and ($L[$i-1] | test("[^[:space:]]")) and test("^ {0,3}(=+|-+)[[:space:]]*$") then esc_bs else . end
+        | if ($i > 0) and ($L[$i-1] | test("[^ \t]")) and test("^ {0,3}(=+|-+)[[:space:]]*$") then esc_bs else . end
         | if test("^ {0,3}<(?:[!?]|/?[A-Za-z])") then esc_bs else . end
         | if $unbalanced and ((fence_m) != null) then esc_bs else . end ] as $E
     | reduce range(0; $sizes|length) as $k ({out: [], p: 0};
