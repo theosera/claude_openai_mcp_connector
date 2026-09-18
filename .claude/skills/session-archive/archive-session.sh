@@ -749,6 +749,39 @@ body_jq='
     # Cost, measured over the three largest local transcripts (5,387 text turns,
     # 81,422 lines): a 1-3 space indented fence run occurs in 3 turns, 6 lines;
     # a column-0 run in 1,608 turns, none of which this widens.
+    # The same state machine has to agree with the reader this repository ITSELF
+    # serves the note through, and that reader (src/markdownSections.ts with
+    # src/codeFence.ts) splits on "\n" alone and matches fence runs with
+    # patterns whose `.` and `$` stop at a JavaScript line terminator. A run
+    # this machine sees because the LF segment was split on a bare CR, a run
+    # whose LF segment ends in CR (the CRLF spelling pasted Windows text
+    # carries), or an opener whose info string holds U+2028 / U+2029, is a fence
+    # to CommonMark and to this machine and PLAIN TEXT to that reader: the turn
+    # is balanced here and left unescaped, the reader is left inside an open
+    # fence, and the own run of the next tool result -- or a ``` line planted in it
+    # -- closes it there, so a forged `## 👤 User` line in that result becomes
+    # a heading in the outline, the section list and get_context while the
+    # reading view shows fenced code (change-scan findings on this change,
+    # 2026-09-19, four of one family, each 3/3 verifiers). So a run on such a
+    # line takes the absorbing marker, whatever the state was: every run in the
+    # turn is escaped, which is balanced for every reader. The line model of that reader
+    # is a separate change; this rule holds whether or not it lands.
+    # Cost: in the 5,417 text turns of the three largest local transcripts, 0
+    # contain a CR at all, and 0 fence runs carry U+2028 / U+2029.
+    # The reconstruction at the bottom is a foreach with a NUMBER for state,
+    # collected into one array, and that is deliberate: the first form was a
+    # reduce whose state object held the output array and appended to it, and
+    # jq copies an array on append while the state still references it, so the
+    # pass was quadratic in the line count of the turn -- on this box (jq 1.8.2) a
+    # turn of 5,000 / 10,000 / 20,000 / 40,000 newline-only lines rendered in
+    # 0.16 / 0.43 / 1.24 / 4.08 s, tripling per doubling, against 0.11 / 0.23 /
+    # 0.45 / 0.95 s for this form (2.08 s at 80,000 and 4.42 s at 160,000). A
+    # 100,000-line text turn is one steered reply away, and the hook re-renders
+    # every turn of the session on every Stop, so the quadratic form was the
+    # availability failure the sizer above was rewritten to avoid, re-opened on
+    # the text-turn path (change-scan finding, 2026-09-19, 3/3 verifiers; an
+    # earlier panel had rejected the same candidate 0/3). The test pins the
+    # growth at two sizes, as costGrowth does for the sizer.
     # split("\r") on an empty string returns [] in jq, not [""], so a blank line
     # would contribute zero entries; normalise it back to [""] or the "line
     # above" test silently skips blanks and reads the paragraph before them.
@@ -883,9 +916,11 @@ body_jq='
     # THIS rule escapes (<aside>x) it pays the sub the nine-name rule skipped:
     # roughly 1.0x to 1.25x -- tenths of a second at 32,000 lines. The ratio
     # reproduced across three measurers; the absolute delta did not, run to
-    # run on a shared machine, so none is stated. Both arms grow about 2.1x to
-    # 3.4x per doubling, which is per-line cost this file already had and this
-    # change does not touch. Output: one byte per escaped LINE, never per match,
+    # run on a shared machine, so none is stated. Both arms grew about 2.1x to
+    # 3.4x per doubling in that measurement; the upper end of that was the
+    # quadratic reconstruction described below, since replaced, not per-line
+    # cost -- the per-line rules themselves grow about 2.1x per doubling.
+    # Output: one byte per escaped LINE, never per match,
     # so at most one byte per line of input; on four real transcripts of 3 MB
     # to 78 MB it added 20 to 392 bytes. Peak RSS on those four, both arms:
     # about 22 / 199 / 428 MB, and 1.2 to 1.3 GB on the largest, where one arm
@@ -954,9 +989,11 @@ body_jq='
     | ([$g[] | .l | length]) as $sizes
     | ([$g[] | .cr]) as $tails
     | ([$g[] | .l[]]) as $L
-    | ((reduce $L[] as $l ({o:null, n:0};
-          ($l | fence_m) as $m
+    | ([$g[] | ((.cr != "") or ((.l | length) > 1)) as $c | .l[] | $c]) as $crL
+    | ((reduce range(0; $L|length) as $i ({o:null, n:0};
+          ($L[$i] | fence_m) as $m
           | if $m == null then .
+            elif $crL[$i] or ($m.info | test("[\u2028\u2029]")) then {o:"?", n:0}
             elif .o == null then
               (if ($m.run[0:1]) == "`" and ($m.info | test("`")) then .
                elif ($m.pad | length) > 0 then {o:"?", n:0}
@@ -970,9 +1007,9 @@ body_jq='
         | if ($i > 0) and ($L[$i-1] | test("[^ \t]")) and test("^ {0,3}(=+|-+)[[:space:]]*$") then esc_bs else . end
         | if test("^ {0,3}<(?:[!?]|/?[A-Za-z])") then esc_bs else . end
         | if $unbalanced and ((fence_m) != null) then esc_bs else . end ] as $E
-    | reduce range(0; $sizes|length) as $k ({out: [], p: 0};
-        {out: (.out + [ ($E[.p : .p + $sizes[$k]] | join("\r")) + $tails[$k] ]), p: (.p + $sizes[$k])})
-    | .out | join("\n");
+    | [ foreach range(0; $sizes|length) as $k (0; . + $sizes[$k];
+          . as $end | ($E[($end - $sizes[$k]) : $end] | join("\r")) + $tails[$k]) ]
+    | join("\n");
   def clean_user:
     gsub("<(?:local-command-caveat|local-command-stdout|local-command-stderr|command-name|command-message|command-args|system-reminder|user-prompt-submit-hook|bash-input|bash-stdout|bash-stderr)[^>]*>.*?</[^>]+>"; ""; "s")
     | gsub("^[[:space:]]+|[[:space:]]+$"; "");
