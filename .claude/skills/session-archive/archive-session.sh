@@ -107,23 +107,22 @@ git_url_id() {
   url="$(printf '%s' "${1:-}" | sed -E -e 's/^[[:space:]]+//' -e 's/[[:space:]]+$//')"
   scheme=""
   case "$url" in
-    *://*)
-      scheme="$(printf '%s' "${url%%://*}" | tr 'A-Z' 'a-z')"
-      url="${url#*://}"
-      # A URL -- and only a URL, never the scp form -- is percent-decoded the
-      # way git decodes it, before anything else is read from it. A decoded
-      # control character is no remote at all.
-      case "$url" in
-        *%[01][0-9A-Fa-f]*|*%7[Ff]*) return 0 ;;
-      esac
-      url="$(printf '%b' "$(printf '%s' "$url" \
-        | sed -E -e 's/\\/\\\\/g' -e 's/%([0-9A-Fa-f]{2})/\\x\1/g')")"
-      ;;
+    *://*) scheme="$(printf '%s' "${url%%://*}" | tr 'A-Z' 'a-z')"; url="${url#*://}" ;;
   esac
   if [ -n "$scheme" ]; then
-    # The authority ends at the first slash.
+    # The authority ends at the first slash. Only the authority is
+    # percent-decoded -- the way git decodes a URL before it looks for the
+    # host -- and a decoded control character is no remote at all. The path
+    # stays as spelled: the http transport sends it encoded, so
+    # `/owner/vault%2F` and `/owner/vault/` are two resources to the server
+    # and must stay two identities.
     seg="${url%%/*}"
     rest="${url#"$seg"}"
+    case "$seg" in
+      *%[01][0-9A-Fa-f]*|*%7[Ff]*) return 0 ;;
+    esac
+    seg="$(printf '%b' "$(printf '%s' "$seg" \
+      | sed -E -e 's/\\/\\\\/g' -e 's/%([0-9A-Fa-f]{2})/\\x\1/g')")"
   else
     seg="${url%%:*}"
     if [ "$seg" = "$url" ] || [ "${seg#*/}" != "$seg" ]; then
@@ -131,10 +130,15 @@ git_url_id() {
       seg=""
       rest="$url"
     else
-      # scp-style: everything after that first colon is the path, and
-      # `:path` names no host at all.
+      # scp-style: everything after the first colon is the path -- except
+      # that a bracketed IPv6 host keeps its own colons, so for
+      # `[user@][2001:db8::1]:path` the path starts after the `]:`. `:path`
+      # names no host at all.
+      case "$url" in
+        \[*\]:*|*@\[*\]:*) seg="${url%%\]:*}]"; rest="/${url#*\]:}" ;;
+        *) rest="/${url#*:}" ;;
+      esac
       [ -n "$seg" ] || return 0
-      rest="/${url#*:}"
     fi
   fi
   host=""

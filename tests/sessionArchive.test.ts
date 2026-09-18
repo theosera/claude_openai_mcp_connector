@@ -2835,18 +2835,39 @@ describe("session-archive remote identity", () => {
     expect(id("ssh://git@[2001:DB8::A]:2222/Owner/Vault.git")).toBe("[2001:db8::a]:2222/Owner/Vault");
   });
 
-  it("percent-decodes a URL before finding the host, as git does, and never the scp form", async () => {
+  it("percent-decodes a URL's authority before finding the host, as git does, and never its path or the scp form", async () => {
     const id = await shippedUrlId();
     // Scan of this change, F2: git url-decodes a `scheme://` spelling first, so
-    // `evil.example%2Fx@github.com` is the host `evil.example` and a path.
-    expect(id("ssh://evil.example%2Fx@github.com/theosera/vault")).toBe("evil.example/x@github.com/theosera/vault");
-    expect(id("ssh://evil.example%2Fx@github.com/theosera/vault")).not.toBe(VAULT);
+    // `evil.example%2Fx@github.com` is the host `evil.example` and a path. The
+    // decoded authority carries a slash, which no host segment may, so the
+    // spelling gets no identity at all.
+    expect(id("ssh://evil.example%2Fx@github.com/theosera/vault")).toBe("");
     // Decoding does not reopen the bracket rule, and a decoded control
     // character is no remote at all.
     expect(id("ssh://%5Bevil.example%5D@github.com/theosera/vault")).toBe("");
     expect(id("ssh://evil.example%00@github.com/theosera/vault")).toBe("");
+    // A decoded host is still the host (git's ssh transport decodes it too).
+    expect(id("ssh://git@github%2Ecom/theosera/vault")).toBe(VAULT);
+    // The path stays as spelled: the http transport sends it encoded, so
+    // `/owner/vault%2F` and `/owner/vault/` are two resources to the server
+    // (review on #218), and must stay two identities.
+    expect(id("https://good.example/owner/vault%2F")).toBe("good.example/owner/vault%2F");
+    expect(id("https://good.example/owner/vault%2F")).not.toBe(id("https://good.example/owner/vault/"));
     // The scp form is not decoded by git, so it is not decoded here either.
     expect(id("git@github.com:theosera/vault%2Fx")).toBe("github.com/theosera/vault%2Fx");
+  });
+
+  it("keeps the colons of a bracketed IPv6 host in an scp-style spelling, splitting after the bracket", async () => {
+    const id = await shippedUrlId();
+    // Review on #218: `git@[2001:db8::1]:owner/vault` is a valid remote whose
+    // path starts after the `]:`; splitting at the first colon left `git@[2001`
+    // and withheld the identity, refusing a clone that matched its own pin.
+    expect(id("git@[2001:db8::1]:owner/vault.git")).toBe("[2001:db8::1]/owner/vault");
+    expect(id("[2001:DB8::1]:owner/vault")).toBe("[2001:db8::1]/owner/vault");
+    // The port rule is unchanged: after the bracket, scp-style `:2222/` is a path.
+    expect(id("git@[2001:db8::1]:2222/owner/vault")).toBe("[2001:db8::1]/2222/owner/vault");
+    // A bracket group that is not an IPv6 literal still gets nothing.
+    expect(id("git@[evil.example]:owner/vault")).toBe("");
   });
 
   it("gives no identity to userinfo carrying `?` or `#`, where libcurl ends the host", async () => {
@@ -2886,21 +2907,25 @@ describe("session-archive remote identity", () => {
 
   it("names the host git hands to ssh, measured against git rather than reasoned from its source", async () => {
     const id = await shippedUrlId();
-    for (const spelling of [
-      "evil.example:x@github.com/theosera/vault",
-      "ssh://evil.example%2Fx@github.com/theosera/vault",
-      "git@github.com:theosera/vault"
-    ]) {
+    for (const spelling of ["evil.example:x@github.com/theosera/vault", "git@github.com:theosera/vault"]) {
       const handed = await hostGitHandsToSsh(spelling);
       // ssh splits `user@host` at the last at-sign; the identity's host is what is left.
       expect(id(spelling).split("/")[0], spelling).toBe(handed.slice(handed.lastIndexOf("@") + 1));
     }
-    // Where git reads a bracket group as the host, the identity is withheld
-    // instead: git goes to `evil.example`, and nothing here can equal a pin.
+    // git strips the brackets of an IPv6 host before handing it to ssh; the
+    // identity keeps them, and the address inside is the same.
+    for (const spelling of ["git@[2001:db8::1]:owner/vault.git", "ssh://git@[2001:db8::1]/owner/vault"]) {
+      const handed = await hostGitHandsToSsh(spelling);
+      expect(id(spelling).split("/")[0], spelling).toBe(`[${handed.slice(handed.lastIndexOf("@") + 1)}]`);
+    }
+    // Where git reads a bracket group as the host, or decodes a slash into the
+    // authority, the identity is withheld instead: git goes to `evil.example`,
+    // and nothing here can equal a pin.
     for (const spelling of [
       "[evil.example]@github.com:theosera/vault",
       "x@[evil.example]@github.com:theosera/vault",
-      "ssh://[evil.example]@github.com/theosera/vault"
+      "ssh://[evil.example]@github.com/theosera/vault",
+      "ssh://evil.example%2Fx@github.com/theosera/vault"
     ]) {
       const handed = await hostGitHandsToSsh(spelling);
       expect(handed.slice(handed.lastIndexOf("@") + 1), spelling).toBe("evil.example");
