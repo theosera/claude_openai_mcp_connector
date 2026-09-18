@@ -84,21 +84,76 @@ fi
 # whatever port `~/.ssh/config` assigns the host, while `ssh://host:22/` forces
 # 22, so the two can reach different servers and must not compare equal. A pin
 # is therefore written with the same port the remote carries, or none.
+#
+# The host is found the way git finds it BEFORE anything is stripped as
+# userinfo. Without a scheme, git reads `[user@]host:path` as an SSH remote
+# only when the first colon comes before any slash, and everything else as a
+# local path; the identity splits at that same colon first. Stripping
+# `^[^/@]*@` from the whole string before that split read
+# `evil.example:x@github.com/owner/vault` as userinfo plus the pinned
+# `github.com/owner/vault`, while git handed `evil.example` to ssh with
+# `x@github.com/owner/vault` as the path -- the pin matched and the transcript
+# went to the other host (#207 change scan, F4/F6).
+#
+# Two more spellings of the same defect, found by the scan of this change:
+# git percent-decodes a URL before it looks for the host, so
+# `ssh://evil.example%2Fx@github.com/owner/vault` is `evil.example` to git;
+# and git reads a leading `[...]` group as the whole host whatever follows the
+# `]`, so `[evil.example]@github.com:owner/vault` is `evil.example` to git
+# while a userinfo rule sees `github.com`. So the identity is derived only
+# from a host segment of one plain shape, and any other spelling gets none.
 git_url_id() {
-  local url scheme host rest
+  local url scheme seg host rest
   url="$(printf '%s' "${1:-}" | sed -E -e 's/^[[:space:]]+//' -e 's/[[:space:]]+$//')"
   scheme=""
   case "$url" in
     *://*) scheme="$(printf '%s' "${url%%://*}" | tr 'A-Z' 'a-z')"; url="${url#*://}" ;;
   esac
-  url="$(printf '%s' "$url" | sed -E 's#^[^/@]*@##')"
   if [ -n "$scheme" ]; then
-    host="${url%%/*}"
-    rest="${url#"$host"}"
+    # The authority ends at the first slash. Only the authority is
+    # percent-decoded -- the way git decodes a URL before it looks for the
+    # host -- and a decoded control character is no remote at all. The path
+    # stays as spelled: the http transport sends it encoded, so
+    # `/owner/vault%2F` and `/owner/vault/` are two resources to the server
+    # and must stay two identities.
+    seg="${url%%/*}"
+    rest="${url#"$seg"}"
+    case "$seg" in
+      *%[01][0-9A-Fa-f]*|*%7[Ff]*) return 0 ;;
+    esac
+    seg="$(printf '%b' "$(printf '%s' "$seg" \
+      | sed -E -e 's/\\/\\\\/g' -e 's/%([0-9A-Fa-f]{2})/\\x\1/g')")"
   else
-    host="${url%%[:/]*}"
-    rest="${url#"$host"}"
-    rest="/${rest#[:/]}"
+    seg="${url%%:*}"
+    if [ "$seg" = "$url" ] || [ "${seg#*/}" != "$seg" ]; then
+      # No colon, or a slash before the first one: a local path, no host.
+      seg=""
+      rest="$url"
+    else
+      # scp-style: everything after the first colon is the path -- except
+      # that a bracketed IPv6 host keeps its own colons, so for
+      # `[user@][2001:db8::1]:path` the path starts after the `]:`. `:path`
+      # names no host at all.
+      case "$url" in
+        \[*\]:*|*@\[*\]:*) seg="${url%%\]:*}]"; rest="/${url#*\]:}" ;;
+        *) rest="/${url#*:}" ;;
+      esac
+      [ -n "$seg" ] || return 0
+    fi
+  fi
+  host=""
+  if [ -n "$seg" ]; then
+    # `[user@]host[:port]`, with a plain host: a name or IPv4 address, or a
+    # bracketed IPv6 literal. Userinfo may carry only the characters RFC 3986
+    # allows there -- in particular not `?` or `#`, where libcurl ends the
+    # host (`https://evil.example?@github.com/` connects to evil.example), and
+    # not `@`, `[`, `]` or `/`. Anything else -- a bracket group that is not
+    # that literal, a second at-sign, `user@:path` with no host -- gets no
+    # identity and so can never equal a pin.
+    printf '%s' "$seg" \
+      | grep -Eq '^([A-Za-z0-9._~%!$&()*+,;=:-]*@)?([A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])(:[0-9]+)?$' \
+      || return 0
+    host="${seg#*@}"
   fi
   rest="$(printf '%s' "$rest" | sed -E -e 's#/+$##' -e 's#\.git$##')"
   printf '%s%s' "$(printf '%s' "$host" | tr 'A-Z' 'a-z')" "$rest"
