@@ -1970,8 +1970,13 @@ const ALL_PUSH_URLS = "remote get-url --push --all origin";
 
 /**
  * A downgraded pin check that reads only the first fetch URL. The shipped hook
- * must reject every URL carried by the remote, even when its sole push URL is
- * pinned, because a later rebase can read commits from the fetch side.
+ * rejects every URL carried by the remote, even when its sole push URL is
+ * pinned; this shows that refusal is what stops the archive — with the check
+ * reading the first fetch URL only, the hook proceeds and delivers. It shows
+ * nothing about the second URL itself: git fetches from the first URL of a
+ * remote only, so `second` is never contacted, and the rule the refusal
+ * enforces is uniformity (every URL the remote lists is the pin), not a
+ * demonstrated read from the second one.
  */
 async function hookReadingFirstFetchUrlOnly(fixture: Fixture): Promise<string> {
   const script = await fs.readFile(hookPath, "utf8");
