@@ -94,32 +94,60 @@ fi
 # `github.com/owner/vault`, while git handed `evil.example` to ssh with
 # `x@github.com/owner/vault` as the path -- the pin matched and the transcript
 # went to the other host (#207 change scan, F4/F6).
+#
+# Two more spellings of the same defect, found by the scan of this change:
+# git percent-decodes a URL before it looks for the host, so
+# `ssh://evil.example%2Fx@github.com/owner/vault` is `evil.example` to git;
+# and git reads a leading `[...]` group as the whole host whatever follows the
+# `]`, so `[evil.example]@github.com:owner/vault` is `evil.example` to git
+# while a userinfo rule sees `github.com`. So the identity is derived only
+# from a host segment of one plain shape, and any other spelling gets none.
 git_url_id() {
-  local url scheme host rest
+  local url scheme seg host rest
   url="$(printf '%s' "${1:-}" | sed -E -e 's/^[[:space:]]+//' -e 's/[[:space:]]+$//')"
   scheme=""
   case "$url" in
-    *://*) scheme="$(printf '%s' "${url%%://*}" | tr 'A-Z' 'a-z')"; url="${url#*://}" ;;
+    *://*)
+      scheme="$(printf '%s' "${url%%://*}" | tr 'A-Z' 'a-z')"
+      url="${url#*://}"
+      # A URL -- and only a URL, never the scp form -- is percent-decoded the
+      # way git decodes it, before anything else is read from it. A decoded
+      # control character is no remote at all.
+      case "$url" in
+        *%[01][0-9A-Fa-f]*|*%7[Ff]*) return 0 ;;
+      esac
+      url="$(printf '%b' "$(printf '%s' "$url" \
+        | sed -E -e 's/\\/\\\\/g' -e 's/%([0-9A-Fa-f]{2})/\\x\1/g')")"
+      ;;
   esac
   if [ -n "$scheme" ]; then
-    # The authority ends at the first slash, and userinfo can only sit inside it.
-    url="$(printf '%s' "$url" | sed -E 's#^[^/@]*@##')"
-    host="${url%%/*}"
-    rest="${url#"$host"}"
+    # The authority ends at the first slash.
+    seg="${url%%/*}"
+    rest="${url#"$seg"}"
   else
-    host="${url%%:*}"
-    if [ "$host" = "$url" ] || [ "${host#*/}" != "$host" ]; then
+    seg="${url%%:*}"
+    if [ "$seg" = "$url" ] || [ "${seg#*/}" != "$seg" ]; then
       # No colon, or a slash before the first one: a local path, no host.
-      host=""
+      seg=""
       rest="$url"
     else
-      # scp-style. Userinfo is stripped only inside the host segment, at the
-      # last at-sign, which is where ssh itself splits `user@host`.
+      # scp-style: everything after that first colon is the path, and
+      # `:path` names no host at all.
+      [ -n "$seg" ] || return 0
       rest="/${url#*:}"
-      host="${host##*@}"
-      # `:path` and `user@:path` name no host, so they get no identity.
-      [ -n "$host" ] || return 0
     fi
+  fi
+  host=""
+  if [ -n "$seg" ]; then
+    # `[user@]host[:port]`, with a plain host: a name or IPv4 address, or a
+    # bracketed IPv6 literal. Userinfo may not carry `@`, `[`, `]` or `/`.
+    # Anything else -- a bracket group that is not that literal, a second
+    # at-sign, `user@:path` with no host -- gets no identity and so can never
+    # equal a pin.
+    printf '%s' "$seg" \
+      | grep -Eq '^([^][@/]*@)?([A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])(:[0-9]+)?$' \
+      || return 0
+    host="${seg#*@}"
   fi
   rest="$(printf '%s' "$rest" | sed -E -e 's#/+$##' -e 's#\.git$##')"
   printf '%s%s' "$(printf '%s' "$host" | tr 'A-Z' 'a-z')" "$rest"

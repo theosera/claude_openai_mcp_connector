@@ -2392,37 +2392,47 @@ describe("session-archive vault authorization", () => {
     expect(stderr).toContain("pinned origin");
   });
 
-  // The refusal below returns in well under a second. The budget is for the
-  // failure mode: with the guard gone the hook accepts the clone and retries
-  // the push for 30 s before giving up, and a regression should show as the
-  // ssh assertion, not as a timeout.
-  it("refuses a clone whose origin spells another SSH host ahead of the pinned one, and never runs ssh", async () => {
-    const fixture = await makeFixture();
-    const planted = await markedClone(fixture, "vault-clone");
-    // The #207 change-scan spelling (F4/F6). git reads everything before the
-    // first colon as the SSH host, so this remote is `evil.example`, and the
-    // pinned host/path after the at-sign is merely the start of its path.
-    const crafted = "evil.example:x@github.com/theosera/vault";
-    git(["-C", planted.dir, "remote", "set-url", "origin", crafted], fixture);
-    const ssh = await recordingSsh(fixture.root);
-    // Positive control for the absence asserted below: the instrument reaches
-    // this clone, and git hands it the host before the colon.
-    spawnSync("git", ["-C", planted.dir, "ls-remote", "origin"], { env: hookEnv(fixture, ssh.env), stdio: "pipe" });
-    expect(await ssh.recorded()).toContain("evil.example");
-    await ssh.forget();
+  // Three spellings that git reads as the SSH host `evil.example` while the
+  // pin comparison used to read them as the pinned vault: the #207 change-scan
+  // shape (everything before the first colon is the host, so the pinned
+  // host/path after the at-sign is merely the start of the path), and the two
+  // the scan of this change added — a leading bracket group, which git takes
+  // as the whole host whatever follows the `]`, and a percent-encoded slash,
+  // which git decodes before it looks for the host.
+  //
+  // Each refusal returns in well under a second. The budget is for the failure
+  // mode: with the guard gone the hook accepts the clone and retries the push
+  // for 30 s before giving up, and a regression should show as the ssh
+  // assertion, not as a timeout.
+  for (const [shape, crafted] of [
+    ["scp-style colon", "evil.example:x@github.com/theosera/vault"],
+    ["bracket group", "[evil.example]@github.com:theosera/vault"],
+    ["percent-encoded slash", "ssh://evil.example%2Fx@github.com/theosera/vault"]
+  ] as const) {
+    it(`refuses a clone whose origin spells another SSH host ahead of the pinned one (${shape}), and never runs ssh`, async () => {
+      const fixture = await makeFixture();
+      const planted = await markedClone(fixture, "vault-clone");
+      git(["-C", planted.dir, "remote", "set-url", "origin", crafted], fixture);
+      const ssh = await recordingSsh(fixture.root);
+      // Positive control for the absence asserted below: the instrument reaches
+      // this clone, and git hands it `evil.example`.
+      spawnSync("git", ["-C", planted.dir, "ls-remote", "origin"], { env: hookEnv(fixture, ssh.env), stdio: "pipe" });
+      expect(await ssh.recorded()).toContain("evil.example");
+      await ssh.forget();
 
-    const { status, stderr } = runHook(
-      fixture,
-      hookEnv(fixture, { SESSION_VAULT_ORIGIN: "git@github.com:theosera/vault.git", ...ssh.env })
-    );
+      const { status, stderr } = runHook(
+        fixture,
+        hookEnv(fixture, { SESSION_VAULT_ORIGIN: "git@github.com:theosera/vault.git", ...ssh.env })
+      );
 
-    // Before the fix that spelling reduced to the pinned identity, the check
-    // passed, and `git push` handed the transcript to `evil.example`.
-    expect(await ssh.recorded()).toBeNull();
-    expect(stderr).toContain("none with the pinned origin");
-    expect(await fs.readdir(planted.dir)).not.toContain(SUBDIR);
-    expect(status).toBe(0);
-  }, 60_000);
+      // Before the fix that spelling reduced to the pinned identity, the check
+      // passed, and `git push` handed the transcript to `evil.example`.
+      expect(await ssh.recorded()).toBeNull();
+      expect(stderr).toContain("none with the pinned origin");
+      expect(await fs.readdir(planted.dir)).not.toContain(SUBDIR);
+      expect(status).toBe(0);
+    }, 60_000);
+  }
 
   it("delivers the whole session to the planted clone once the pin check is removed", async () => {
     const fixture = await makeFixture();
@@ -2692,12 +2702,59 @@ describe("session-archive remote identity", () => {
     expect(id("git@:theosera/vault")).toBe("");
   });
 
+  it("gives no identity to a bracket group that is not an IPv6 literal, which git reads as the whole host", async () => {
+    const id = await shippedUrlId();
+    // Scan of this change, F1: git takes a leading `[...]` as the host whatever
+    // follows the `]`, so `[evil.example]@github.com` is `evil.example` to git
+    // while a userinfo rule saw `github.com`. Such a segment gets no identity.
+    for (const spelling of [
+      "[evil.example]@github.com:theosera/vault",
+      "x@[evil.example]@github.com:theosera/vault",
+      "ssh://[evil.example]@github.com/theosera/vault"
+    ]) {
+      expect(id(spelling), spelling).toBe("");
+    }
+    // The literal itself, with a port, still reduces (pinned above as well),
+    // and so does an ordinary userinfo carrying a colon (the `u:p` spelling in
+    // the first test of this suite).
+    expect(id("ssh://git@[2001:DB8::A]:2222/Owner/Vault.git")).toBe("[2001:db8::a]:2222/Owner/Vault");
+  });
+
+  it("percent-decodes a URL before finding the host, as git does, and never the scp form", async () => {
+    const id = await shippedUrlId();
+    // Scan of this change, F2: git url-decodes a `scheme://` spelling first, so
+    // `evil.example%2Fx@github.com` is the host `evil.example` and a path.
+    expect(id("ssh://evil.example%2Fx@github.com/theosera/vault")).toBe("evil.example/x@github.com/theosera/vault");
+    expect(id("ssh://evil.example%2Fx@github.com/theosera/vault")).not.toBe(VAULT);
+    // Decoding does not reopen the bracket rule, and a decoded control
+    // character is no remote at all.
+    expect(id("ssh://%5Bevil.example%5D@github.com/theosera/vault")).toBe("");
+    expect(id("ssh://evil.example%00@github.com/theosera/vault")).toBe("");
+    // The scp form is not decoded by git, so it is not decoded here either.
+    expect(id("git@github.com:theosera/vault%2Fx")).toBe("github.com/theosera/vault%2Fx");
+  });
+
   it("names the host git hands to ssh, measured against git rather than reasoned from its source", async () => {
     const id = await shippedUrlId();
-    for (const spelling of ["evil.example:x@github.com/theosera/vault", "git@github.com:theosera/vault"]) {
+    for (const spelling of [
+      "evil.example:x@github.com/theosera/vault",
+      "ssh://evil.example%2Fx@github.com/theosera/vault",
+      "git@github.com:theosera/vault"
+    ]) {
       const handed = await hostGitHandsToSsh(spelling);
       // ssh splits `user@host` at the last at-sign; the identity's host is what is left.
       expect(id(spelling).split("/")[0], spelling).toBe(handed.slice(handed.lastIndexOf("@") + 1));
+    }
+    // Where git reads a bracket group as the host, the identity is withheld
+    // instead: git goes to `evil.example`, and nothing here can equal a pin.
+    for (const spelling of [
+      "[evil.example]@github.com:theosera/vault",
+      "x@[evil.example]@github.com:theosera/vault",
+      "ssh://[evil.example]@github.com/theosera/vault"
+    ]) {
+      const handed = await hostGitHandsToSsh(spelling);
+      expect(handed.slice(handed.lastIndexOf("@") + 1), spelling).toBe("evil.example");
+      expect(id(spelling), spelling).toBe("");
     }
   });
 });
