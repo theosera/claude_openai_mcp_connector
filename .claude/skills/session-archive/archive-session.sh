@@ -735,12 +735,15 @@ body_jq='
   # system reminders, hook output). Actual user words stay verbatim.
   # Text turns are written at TOP LEVEL, unfenced, so a line the model echoed can
   # become real note structure -- a forged User heading with a plausible timestamp,
-  # read back over MCP as what the operator said. Escape only the ATX heading run:
-  # over this conversation it is 3,982 lines of 58,507 (6.8%), while also escaping
-  # tilde and backtick runs would add 7,336 more, nearly all backticks in code the
-  # operator wrote. Tilde-fence lines occurred 0 times in two independent samples.
-  # Setext underlines and blockquotes stay untouched: they cannot forge the
-  # heading-plus-timestamp shape a turn is written as.
+  # read back over MCP as what the operator said. The first rule escaped only the
+  # ATX heading run: over this conversation it is 3,982 lines of 58,507 (6.8%),
+  # while also escaping tilde and backtick runs would add 7,336 more, nearly all
+  # backticks in code the operator wrote. Tilde-fence lines occurred 0 times in
+  # two independent samples. Three more shapes forge a turn and are escaped now,
+  # each only in the narrow form that forges (a setext underline under a non-blank
+  # line, a line-start HTML opener, a fence run the turn leaves open) -- the
+  # counts and the reasons are inside defang. Blockquotes stay untouched: they
+  # cannot forge the heading-plus-timestamp shape a turn is written as.
   # This runs where the turn is assembled and nothing measures a text turn, so no
   # later pass can undo it -- the fence sizer never sees these lines.
   def defang:
@@ -752,16 +755,315 @@ body_jq='
     # top-level prose. Do NOT fold CR into LF to close this: the whole-text
     # gsub("\r\n?"; "\n") is the quadratic pass rejected at the top of this
     # renderer. split/join is linear and restores every byte it did not escape.
-    def esc: sub("^(?<s> {0,3})(?<h>#{1,6}[ \t])"; "\(.s)\\\(.h)");
+    # ATX is not the only shape that forges a turn; three more reach top-level
+    # prose, and an ATX-only rule let all three through (F5 / F3 of the
+    # 2026-09-09 scan):
+    #   - a setext underline (=== / ---) makes a HEADING of the line above it;
+    #   - a raw HTML block opener, which a reading view renders, so <h2> forges
+    #     exactly the shape ATX does -- and so does any other tag, see below;
+    #   - a fence run at column 0 that the turn never closes. That flips fence
+    #     parity for the REST of the note: the opening fence of the next tool
+    #     result closes the one the turn opened, and the result body lands at
+    #     top level as prose. Nothing downstream measures a text turn, so nothing catches it.
+    # Each is escaped only in the shape that actually forges, because the broad
+    # form costs too much. Measured over two transcripts, 729 text turns /
+    # 8,024 lines: ATX 694 lines (already escaped before this change); a setext
+    # underline preceded by a NON-BLANK line, 1 -- every setext-shaped line
+    # would be 16 and would also escape thematic breaks, which forge nothing;
+    # "non-blank" is the word CommonMark uses: a line of spaces and tabs only. It is NOT
+    # the jq [[:space:]] class, which is Unicode White_Space here (see the fence rules
+    # below), so a predecessor holding only U+3000, U+00A0 or a form feed read as
+    # blank to this rule and as a paragraph to every reader, and `---` under it
+    # made that paragraph a heading unescaped (change-scan finding on this change,
+    # 2026-09-18, 3/3 verifiers). The test is spelled [^ \t] for that reason; the
+    # shape occurs 0 times in the 5,387-turn corpus above.
+    # the narrowed HTML opener, 0 -- that 0 was the count of the NINE-NAME rule
+    # this file shipped first, and it is why that rule looked free; the rule is
+    # no longer name-based and its count is no longer 0 (see RAW HTML below);
+    # a leading fence run, 861 -- but a run in a
+    # turn that LEAVES A FENCE OPEN, 0 (also 0 over 2,885 turns of a third
+    # transcript). Escaping all 861 is the "7,336 more lines" this renderer rejected
+    # above; escaping only the unbalanced ones costs nothing and fires on
+    # exactly the attack. Old-vs-new over those 729 turns differs by 1 line.
+    # The fence state is computed over the whole turn BEFORE any line is
+    # escaped, so the escaping cannot change the decision that drives it.
+    # The state has NO CONTAINER MODEL, and one container matters: a fence opened
+    # INSIDE a list item (`- x` / `  ```` / ```` ``` ````) is closed by CommonMark
+    # when the item ends -- and the item ends at the first non-blank line indented
+    # below its content column, a fence never being a lazy continuation -- so the
+    # column-0 run is not a closer for the item but a NEW opener at document level.
+    # Line for line this turn is balanced to a state machine that cannot see the
+    # item, and open for every reader; the ``` line of the next tool result closes it
+    # and that body lands at top level (change-scan finding on this change,
+    # 2026-09-18, 3/3 verifiers). Rather than model list items -- content columns,
+    # nesting, lazy continuation, the very parsing this renderer refuses to do --
+    # an opener carrying ANY leading indent (1-3 spaces; 4 is an indented code
+    # block and matches nothing here) is scored as the same absorbing marker an
+    # ambiguous close gets, so every run in the turn is escaped. Fail toward
+    # escaping where the container is unknown: the same direction as the marker.
+    # Cost, measured over the three largest local transcripts (5,387 text turns,
+    # 81,422 lines): a 1-3 space indented fence run occurs in 3 turns, 6 lines;
+    # a column-0 run in 1,608 turns, none of which this widens.
+    # The same state machine has to agree with the reader this repository ITSELF
+    # serves the note through, and that reader (src/markdownSections.ts with
+    # src/codeFence.ts) splits on "\n" alone and matches fence runs with
+    # patterns whose `.` and `$` stop at a JavaScript line terminator. A run
+    # this machine sees because the LF segment was split on a bare CR, a run
+    # whose LF segment ends in CR (the CRLF spelling pasted Windows text
+    # carries), or an opener whose info string holds U+2028 / U+2029, is a fence
+    # to CommonMark and to this machine and PLAIN TEXT to that reader: the turn
+    # is balanced here and left unescaped, the reader is left inside an open
+    # fence, and the own run of the next tool result -- or a ``` line planted in it
+    # -- closes it there, so a forged `## 👤 User` line in that result becomes
+    # a heading in the outline, the section list and get_context while the
+    # reading view shows fenced code (change-scan findings on this change,
+    # 2026-09-19, four of one family, each 3/3 verifiers). So a run on such a
+    # line takes the absorbing marker, whatever the state was: every run in the
+    # turn is escaped, which is balanced for every reader. The line model of that reader
+    # is a separate change; this rule holds whether or not it lands.
+    # Cost: in the 5,417 text turns of the three largest local transcripts, 0
+    # contain a CR at all, and 0 fence runs carry U+2028 / U+2029.
+    # The reconstruction at the bottom is a foreach with a NUMBER for state,
+    # collected into one array, and that is deliberate: the first form was a
+    # reduce whose state object held the output array and appended to it, and
+    # jq copies an array on append while the state still references it, so the
+    # pass was quadratic in the line count of the turn -- on this box (jq 1.8.2) a
+    # turn of 5,000 / 10,000 / 20,000 / 40,000 newline-only lines rendered in
+    # 0.16 / 0.43 / 1.24 / 4.08 s, tripling per doubling, against 0.11 / 0.23 /
+    # 0.45 / 0.95 s for this form (2.08 s at 80,000 and 4.42 s at 160,000). A
+    # 100,000-line text turn is one steered reply away, and the hook re-renders
+    # every turn of the session on every Stop, so the quadratic form was the
+    # availability failure the sizer above was rewritten to avoid, re-opened on
+    # the text-turn path (change-scan finding, 2026-09-19, 3/3 verifiers; an
+    # earlier panel had rejected the same candidate 0/3). The test pins the
+    # growth at two sizes, as costGrowth does for the sizer.
+    # split("\r") on an empty string returns [] in jq, not [""], so a blank line
+    # would contribute zero entries; normalise it back to [""] or the "line
+    # above" test silently skips blanks and reads the paragraph before them.
+    # That defect was caught by the thematic-break control, not by review.
+    # The SAME flattening has a second artifact, in the other direction: an LF
+    # segment that ENDS in CR (a CRLF ending) splits to a trailing "", so the
+    # "line above" test read that empty string instead of the real predecessor
+    # and the setext escape was skipped for every CRLF payload -- the spelling
+    # pasted web content and Windows-authored notes carry. Drop that one tail
+    # entry per segment and carry it in $tails, restoring it during
+    # reconstruction, so $L holds the lines a reader sees and the round trip is
+    # still byte-for-byte. Only the LAST entry is an artifact: an inner ""
+    # between two CRs is a real blank line, and a segment of exactly [""] is the
+    # blank line normalised above. What is dropped is always "", which matches
+    # no guard pattern and is null to fence_m, so the raw-HTML and
+    # unbalanced-fence guards decide on exactly what they decided on before --
+    # only the setext predecessor moves.
+    # Measured over 28,150 LF/CRLF/CR permutations against a reader oracle (a
+    # run underlines the line above iff that line is non-blank): the old
+    # flattening under-escaped 4,224 and over-escaped 0; this one matches on all
+    # 28,150. With the setext guard disabled the two are byte-identical, so that
+    # guard is the whole delta. $L is also half as long on CRLF-dense text.
+    # RAW HTML -- what the opener rule covers, what it does NOT, and what it cost.
+    #
+    # COVERS. The rule tests the START of a line for the CommonMark start
+    # condition rather than for a list of tag names: after at most 3 spaces, a
+    # "<" followed by "!" or "?", or by an optional "/" and a letter. That is
+    # every HTML block type, 1 through 7, when the block opens at the line start.
+    # Type 7 is the one that matters and the one NO tag-name list can ever
+    # reach, because a type-7 opener is a complete tag and nothing else, with
+    # any name at all. Corpus, as of 2026-09-14 11:34 JST -- live transcripts,
+    # so these counts move by the hour: 29 session transcripts on this machine,
+    # 152,451 non-blank text-turn lines, the unfenced channel. The nine-name
+    # rule that shipped here first fired on 0 lines. This rule fires on 1,970,
+    # in 27 of the 29. Classified by the test file oracle opensRawHtmlBlock,
+    # which tests each start condition, type 7 included, and cross-checked line
+    # by line against markdown-it-py 4.2.0 (1,970 of 1,970 agree): 1,428 (72.5%)
+    # open a raw HTML block on their own -- 1,343 type 7 (<teammate-message ...>
+    # 1,166; <task-notification> and its close, 164), 83 type 6 (summary 82,
+    # ul 1 -- neither was in the nine), 2 type 2 (<!--). The other 542 (27.5%)
+    # are a tag with content after it on the same line (<task-id>...</task-id>,
+    # <output-file>..., <status>completed</status>): they open no block but
+    # render as inline raw HTML, and the rule escapes them too. Those are
+    # counts of each line ON ITS OWN. In a note the line has neighbours, and a
+    # type-7 opener cannot interrupt a paragraph, so the same corpus parsed
+    # turn by turn (markdown-it-py 4.2.0, 2026-09-14 12:01 JST, 1,985 hits)
+    # opens a block on 380 of the hits, has 719 sitting inside a block an
+    # earlier line opened, and leaves 871 as inline raw HTML in a paragraph.
+    # A lone-line count is not a note count; the rule escapes all of them
+    # either way. Ordinary harness traffic was already putting raw HTML into
+    # archived notes and nothing here caught any of it. A type-7 count is only a type-7 count if
+    # the classifier tests the type-7 condition; one that labels type 7 by
+    # elimination after types 1 to 6 counts "not types 1 to 6" instead.
+    # It is a strict superset, not a trade: over 20,287 generated line shapes
+    # (name x case x leading slash x indent x container prefix x suffix) the
+    # nine-name rule escaped 1,344 and this one 7,824, with "the old rule
+    # escaped AND this one did not" = 0. A control narrowed to drop uppercase
+    # loses 5,184 of them, so that census can in fact detect a narrowing.
+    #
+    # DOES NOT COVER -- residual, stated, not fixed. Any raw tag the line-start
+    # test does not see. The plain form is a block-forging tag LATER on the same
+    # line, e.g.  text <span style=...>...</span>  : not escaped, here or
+    # before, it renders as inline raw HTML, and a browser still turns that into
+    # the block the tag names (a raw <h2> inside <p> renders as a heading). The
+    # same residual in forms that example does not show: a tag preceded by a
+    # non-indentation space (NBSP, U+3000, ZWSP, a BOM) at the line start; a
+    # tag after 4 or more spaces, or a tab, on a line that continues a paragraph
+    # -- inline raw HTML, not indented code, because indented code cannot
+    # interrupt a paragraph (10 such lines in the corpus above: 5 inside a
+    # fenced block, where they are code, and 5 continuing a paragraph after a
+    # non-blank line); and, under a list item, a tag on the FOLLOWING line
+    # indented to the item content column plus at most 3 (4 to 5 spaces under
+    # "- ", 4 to 7 under "10. "), which opens a real block at that column. All
+    # of these were live before this change too.
+    # Escaping anywhere on a line needs a pass over the whole line, and the
+    # obvious one is unaffordable: jq gsub costs O(matches x length) on one
+    # string, so one line of N openers costs, for N of 4,000 / 8,000 / 16,000 /
+    # 32,000, about 0.5 / 1.8 / 7.2 / 28.3 s against 0.007 to 0.012 s for the
+    # rule above. That is not cosmetic: this script runs under set -e, so a
+    # jq killed by a signal aborts the hook with the jq status and a
+    # Terminated line on stderr; nothing is written, the previous note stands,
+    # and nothing reaches the NOTE. If a harness timeout kills the shell
+    # instead, set -e never runs and jq is orphaned -- same outcome, different
+    # mechanism; which one the harness does was not determined. (The exit-0
+    # path just below the jq call is for a jq that SUCCEEDS with an empty
+    # body.)
+    # Do NOT read that as "no anywhere-on-the-line pass is affordable". A
+    # split/join reformulation was built here and measured LIKE FOR LIKE, as an
+    # extra step inside this same defang: 0.268 s at 32,000 openers on one line
+    # and 1.375 s at 128,000, and 1.00x to 1.25x of this rule on ordinary shapes
+    # (N lines with one opener, and prose with no tag at all). On cost it is
+    # affordable. It is not shipped because this change was scoped to the line
+    # start, and because only its COST was measured: backslash parity before a
+    # "<", the mid-line backslash it would insert into text that mask() has to
+    # match afterwards, and escape-set monotonicity were NOT checked, and those
+    # are where the two earlier attempts at this actually died.
+    #
+    # ALSO RESIDUAL: a block opens at a container content column too --
+    # "- <span>", "> <span>", "1. <span>" -- so the line start is not the only
+    # place a block can open. Do not restate this rule as covering every opener.
+    # And a block such an opener opens runs to the next blank line as raw HTML,
+    # so the backslashes this rule puts on the lines inside it are literal text
+    # there: one uncovered opener exposes a run, not a line (the nine-name rule
+    # had the same property).
+    # Frequency is no argument here, only structure: 0 such lines in the corpus
+    # above, and 43 lines carrying an h1-h6 tag away from the line start. Read
+    # one by one, all 43 are text that mentions or counts a tag -- notes about
+    # this rule, tallies over a generated file, a line of Python -- not a forged
+    # turn; the shape is live in every one of them all the same.
+    #
+    # mask() INTERACTION: ARGUED, NOT MEASURED. mask() is untouched, and this
+    # rule inserts one backslash at column 0 to 3 immediately before a "<" --
+    # the position the nine-name rule already used, so no new insertion
+    # position exists. None of the mask rules anchors on "<"; the PEM rules
+    # match their -----BEGIN / -----END markers wherever they sit on a line;
+    # and the two line-anchored patterns, the ~~~ terminator of the PEM range
+    # and the whole-line base64 catch-all, cannot match a line whose first
+    # non-space byte is "<" or a backslash. A differential with
+    # credential-shaped fixtures was attempted by three reviewers in this
+    # series (at least five attempts) and the secret guards blocked every one,
+    # so this is an argument from the insertion position and the rule text,
+    # still open. Do not upgrade it to a measurement without running one.
+    #
+    # COST, along these axes and only these. Matches per line: one line of N
+    # openers, N from 4,000 to 32,000 -- 0.007 s to 0.012 s, flat, and equal to
+    # the nine-name rule. Backslash-run length before a non-matching "<": N from
+    # 16,000 to 128,000 -- 0.008 s to 0.019 s, flat, equal. Line count: N lines
+    # of one opener each, N from 4,000 to 32,000, in two shapes (2026-09-14, min
+    # of 5 to 9 interleaved runs). On a line BOTH rules escape (<p>x) this one
+    # is cheaper, 0.83x to 0.95x, because its test is cheaper than the nine-way
+    # alternation; on prose with no tag likewise, 0.79x to 0.91x. On a line only
+    # THIS rule escapes (<aside>x) it pays the sub the nine-name rule skipped:
+    # roughly 1.0x to 1.25x -- tenths of a second at 32,000 lines. The ratio
+    # reproduced across three measurers; the absolute delta did not, run to
+    # run on a shared machine, so none is stated. Both arms grew about 2.1x to
+    # 3.4x per doubling in that measurement; the upper end of that was the
+    # quadratic reconstruction described below, since replaced, not per-line
+    # cost -- the per-line rules themselves grow about 2.1x per doubling.
+    # Output: one byte per escaped LINE, never per match,
+    # so at most one byte per line of input; on four real transcripts of 3 MB
+    # to 78 MB it added 20 to 392 bytes. Peak RSS on those four, both arms:
+    # about 22 / 199 / 428 MB, and 1.2 to 1.3 GB on the largest, where one arm
+    # scatters by about 100 MB run to run and the two arms overlap -- no
+    # increase measured, and no decrease claimed.
+    # Fidelity, not cost: these per-line rules run on EVERY line of a text
+    # turn, inside a fence or not -- only the fence-run rule below reads
+    # $unbalanced. So a tag line inside a balanced code block the model wrote in
+    # prose (an HTML sample: <html>, <ul>, <li>) gets the backslash as well, and
+    # a reader sees it literally there. The nine-name rule did this for its nine
+    # names; this rule does it for every tag line -- 15 of the 1,970 hits above
+    # sit inside a fence. A line-start autolink (<https://...>, <user@host>) is
+    # escaped too and renders as literal text instead of a link: 0 such lines in
+    # the corpus.
+    # Those are the axes that WERE varied. Two earlier attempts at this line
+    # each shipped a sentence claiming the search for a costly shape was
+    # finished, and both sentences were false, the second one measured over a
+    # corpus in which every line had exactly one match. So: no such sentence
+    # here. If you add a pass, vary an axis this list does not name.
+    def fence_m: if test("^ {0,3}(~{3,}|`{3,})") then capture("^(?<pad> {0,3})(?<run>~{3,}|`{3,})(?<info>.*)$") else null end;
+    def esc_bs: sub("^(?<s> {0,3})"; "\(.s)\\");
+    # WHICH runs close is reader-dependent, and closing TOGGLES parity, so the
+    # question cannot be settled on the rule of any one reader. CommonMark ends a
+    # fence on spaces and tabs after the closing run and nothing else, while the
+    # readers Markdown tooling is written with simply trim the rest of the line --
+    # and those are not even ordered against each other (measured 2026-09-13):
+    # jq [[:space:]] HERE, like Python str.isspace, is Unicode White_Space and ends
+    # a fence on NEL, which ECMA-262 trim() does not; trim(), which the test oracle
+    # for this renderer uses, ends one on U+FEFF, which jq does not. They disagree
+    # in BOTH directions.
+    # Scoring such a run CLOSED leaves a turn the strict reader still has OPEN: the
+    # opening run of the next tool result closes it and that untrusted body lands at
+    # top level. But scoring it OPEN is not the fix either, because closing toggles
+    # parity -- three runs whose middle one carries a form feed then end BALANCED
+    # for the strict reader, nothing is escaped, and the LENIENT reader is the one
+    # left open. Narrowing this rule is not monotone. The sizer above is -- counting
+    # more runs only makes a fence LONGER -- which is why the same leniency is safe
+    # there and settles nothing here.
+    # So close only on what EVERY reader closes on, and when a run is one that only
+    # SOME reader closes on, stop tracking parity instead of guessing: leave the
+    # fence open under a marker no run can match (fence_m yields only ~ or `), so it
+    # stays open to the end of the turn and every run in the turn is escaped. With
+    # no such run all readers agree run for run, so this parity is theirs; with one,
+    # the escaped turn carries no fence at all, which is balanced for all of them.
+    # Either way this escapes a SUPERSET of what the single [[:space:]] rule escaped,
+    # so no turn it contained can leak now.
+    # Measured over 27 transcripts -- 14,219 text turns, 142,777 lines, 18,587 of
+    # them a fence run: 0 carry such a trailer. This widens the escaping on the
+    # attack shape and on nothing else.
+    def ends_fence: test("^[ \t]*$");
+    # [[:space:]] plus U+FEFF (trim drops it, jq does not) and U+180E (White_Space
+    # until Unicode 6.3, so an older reader drops it): a superset of every set above,
+    # which is what makes no-ambiguous-run mean every reader agrees.
+    def may_end_fence: test("^[[:space:]\u180e\ufeff]*$");
     # ANSI colour and line-clear sequences are removed here, per line and BEFORE
-    # esc, for the same reason fence removes them: the assembled note no longer
-    # passes through strip_ansi, and a text turn is the one body path that did
-    # not go through fence. Left in, `ESC[0m## User` is not an ATX heading to
-    # esc (the line does not START with `#`) but IS one to a renderer that
-    # discards the sequence first -- an unescaped, forged turn. Same pattern as
-    # fence and strip_ansi; keep the three in step.
-    split("\n")
-    | map(gsub("\u001b\\[[0-9;]*[mK]"; "") | split("\r") | map(esc) | join("\r"))
+    # every escape below, for the same reason fence removes them: the assembled
+    # note no longer passes through strip_ansi, and a text turn is the one body
+    # path that did not go through fence. Left in, `ESC[0m## User` is not an ATX
+    # heading to the rule below (the line does not START with `#`) but IS one to
+    # a renderer that discards the sequence first -- an unescaped, forged turn.
+    # Same pattern as fence and strip_ansi; keep the three in step.
+    (split("\n")
+     | map(gsub("\u001b\\[[0-9;]*[mK]"; "") | split("\r")
+           | if length == 0 then [""] else . end
+           | if length > 1 and .[-1] == "" then {l: (.[0:-1]), cr: "\r"} else {l: ., cr: ""} end)) as $g
+    | ([$g[] | .l | length]) as $sizes
+    | ([$g[] | .cr]) as $tails
+    | ([$g[] | .l[]]) as $L
+    | ([$g[] | ((.cr != "") or ((.l | length) > 1)) as $c | .l[] | $c]) as $crL
+    | ((reduce range(0; $L|length) as $i ({o:null, n:0};
+          ($L[$i] | fence_m) as $m
+          | if $m == null then .
+            elif $crL[$i] or ($m.info | test("[\u2028\u2029]")) then {o:"?", n:0}
+            elif .o == null then
+              (if ($m.run[0:1]) == "`" and ($m.info | test("`")) then .
+               elif ($m.pad | length) > 0 then {o:"?", n:0}
+               else {o:($m.run[0:1]), n:($m.run|length)} end)
+            elif ($m.run[0:1]) == .o and (($m.run|length) >= .n) and ($m.info | may_end_fence) then
+              (if ($m.info | ends_fence) then {o:null, n:0} else {o:"?", n:0} end)
+            else . end)) | .o != null) as $unbalanced
+    | [ range(0; $L|length) as $i
+        | $L[$i]
+        | sub("^(?<s> {0,3})(?<h>#{1,6}[ \t])"; "\(.s)\\\(.h)")
+        | if ($i > 0) and ($L[$i-1] | test("[^ \t]")) and test("^ {0,3}(=+|-+)[[:space:]]*$") then esc_bs else . end
+        | if test("^ {0,3}<(?:[!?]|/?[A-Za-z])") then esc_bs else . end
+        | if $unbalanced and ((fence_m) != null) then esc_bs else . end ] as $E
+    | [ foreach range(0; $sizes|length) as $k (0; . + $sizes[$k];
+          . as $end | ($E[($end - $sizes[$k]) : $end] | join("\r")) + $tails[$k]) ]
     | join("\n");
   def clean_user:
     gsub("<(?:local-command-caveat|local-command-stdout|local-command-stderr|command-name|command-message|command-args|system-reminder|user-prompt-submit-hook|bash-input|bash-stdout|bash-stderr)[^>]*>.*?</[^>]+>"; ""; "s")
