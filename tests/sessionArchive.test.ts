@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -2018,16 +2018,25 @@ async function shippedUrlId(): Promise<(url: string) => string> {
 }
 
 /**
+ * Where git would have connected, recorded instead of connected. `env` is
+ * what a git call needs to use the recorder; `recorded` is what it saw, or
+ * null when git never reached it; `forget` clears the record; `close`
+ * releases whatever the recorder holds.
+ */
+interface TransportRecorder {
+  env: Record<string, string>;
+  recorded: () => Promise<string[] | null>;
+  forget: () => Promise<void>;
+  close: () => Promise<void>;
+}
+
+/**
  * An `ssh` that records the argv git hands it and then refuses, so nothing
  * connects. Wired in through GIT_SSH_COMMAND, it turns "where would git have
  * pushed" into a file: the host is the argument just before `git-upload-pack`
  * or `git-receive-pack`. No file means git never ran ssh.
  */
-async function recordingSsh(dir: string): Promise<{
-  env: Record<string, string>;
-  recorded: () => Promise<string[] | null>;
-  forget: () => Promise<void>;
-}> {
+async function recordingSsh(dir: string): Promise<TransportRecorder> {
   const script = path.join(dir, "recording-ssh.sh");
   const out = path.join(dir, "ssh-argv.txt");
   await fs.writeFile(script, '#!/bin/sh\nprintf \'%s\\n\' "$@" > "${RECORDING_SSH_OUT:?}"\nexit 255\n', {
@@ -2042,8 +2051,105 @@ async function recordingSsh(dir: string): Promise<{
         return null;
       }
     },
-    forget: () => fs.rm(out, { force: true })
+    forget: () => fs.rm(out, { force: true }),
+    close: async () => {}
   };
+}
+
+/**
+ * A local HTTP proxy that records the request line git's http transport
+ * (libcurl) sends it — `CONNECT host:443 HTTP/1.1` for an https remote — and
+ * drops the connection, so nothing is forwarded and no packet leaves the
+ * machine. git is pointed at it through its config-from-environment, so the
+ * hook's own git calls use it without the fixture's gitconfig changing. Where
+ * libcurl ends the host is the question; this answers it with libcurl.
+ *
+ * It runs in its own node process and records to a file: the tests drive git
+ * with spawnSync, which blocks this process's event loop, and a server living
+ * on that loop would never answer — git waits for the CONNECT reply, the
+ * server waits for the loop, and the test hangs (measured at 300 s).
+ */
+const RECORDING_PROXY = `
+const net = require("node:net");
+const fs = require("node:fs");
+const [portFile, out] = process.argv.slice(1);
+const server = net.createServer((socket) => {
+  let buffer = "";
+  socket.on("data", (chunk) => {
+    buffer += chunk.toString("latin1");
+    const end = buffer.indexOf("\\r\\n");
+    if (end !== -1) {
+      fs.appendFileSync(out, buffer.slice(0, end) + "\\n");
+      socket.destroy();
+    }
+  });
+  socket.on("error", () => {});
+});
+server.listen(0, "127.0.0.1", () => fs.writeFileSync(portFile, String(server.address().port)));
+`;
+
+async function recordingProxy(dir: string): Promise<TransportRecorder> {
+  const portFile = path.join(dir, "proxy.port");
+  const out = path.join(dir, "proxy-lines.txt");
+  const child = spawn(process.execPath, ["-e", RECORDING_PROXY, portFile, out], { stdio: "ignore" });
+  child.unref();
+  let port = "";
+  for (let attempt = 0; attempt < 100 && port === ""; attempt += 1) {
+    try {
+      port = await fs.readFile(portFile, "utf8");
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  if (port === "") {
+    child.kill();
+    throw new Error("the recording proxy did not report a port within 5 s");
+  }
+  return {
+    env: { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.proxy", GIT_CONFIG_VALUE_0: `http://127.0.0.1:${port}` },
+    recorded: async () => {
+      try {
+        return (await fs.readFile(out, "utf8")).split("\n").filter((line) => line !== "");
+      } catch {
+        return null;
+      }
+    },
+    forget: () => fs.rm(out, { force: true }),
+    close: async () => {
+      child.kill();
+    }
+  };
+}
+
+/** The host git's http transport connects to for a remote spelling — libcurl's parse, not a re-implementation of it. */
+async function hostGitHandsToCurl(spelling: string): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "session-archive-curl-"));
+  fixtureRoots.push(dir);
+  const proxy = await recordingProxy(dir);
+  try {
+    spawnSync("git", ["ls-remote", spelling], {
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: dir,
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_CONFIG_SYSTEM: "/dev/null",
+        GIT_TERMINAL_PROMPT: "0",
+        ...proxy.env
+      },
+      stdio: "pipe"
+    });
+    const line = (await proxy.recorded())?.[0];
+    if (line === undefined) {
+      throw new Error(`git did not connect through the proxy for ${spelling} — it was not read as an http remote.`);
+    }
+    const connect = /^CONNECT ([^ :]+|\[[^\]]+\]):\d+ HTTP/.exec(line);
+    if (connect === null) {
+      throw new Error(`unexpected proxy request line for ${spelling}: ${line}`);
+    }
+    return connect[1];
+  } finally {
+    await proxy.close();
+  }
 }
 
 /** The host git itself hands to ssh for a remote spelling — git's parse, not a re-implementation of it. */
@@ -2392,45 +2498,54 @@ describe("session-archive vault authorization", () => {
     expect(stderr).toContain("pinned origin");
   });
 
-  // Three spellings that git reads as the SSH host `evil.example` while the
-  // pin comparison used to read them as the pinned vault: the #207 change-scan
-  // shape (everything before the first colon is the host, so the pinned
-  // host/path after the at-sign is merely the start of the path), and the two
-  // the scan of this change added — a leading bracket group, which git takes
-  // as the whole host whatever follows the `]`, and a percent-encoded slash,
-  // which git decodes before it looks for the host.
+  // Four spellings that git's transport reads as the host `evil.example`
+  // while the pin comparison used to read them as the pinned vault: the #207
+  // change-scan shape (everything before the first colon is the SSH host, so
+  // the pinned host/path after the at-sign is merely the start of the path),
+  // and the three the scans of this change added — a leading bracket group,
+  // which git takes as the whole host whatever follows the `]`; a
+  // percent-encoded slash, which git decodes before it looks for the host;
+  // and a `?` in the userinfo, where libcurl ends the host.
   //
   // Each refusal returns in well under a second. The budget is for the failure
   // mode: with the guard gone the hook accepts the clone and retries the push
-  // for 30 s before giving up, and a regression should show as the ssh
+  // for 30 s before giving up, and a regression should show as the recorder
   // assertion, not as a timeout.
-  for (const [shape, crafted] of [
-    ["scp-style colon", "evil.example:x@github.com/theosera/vault"],
-    ["bracket group", "[evil.example]@github.com:theosera/vault"],
-    ["percent-encoded slash", "ssh://evil.example%2Fx@github.com/theosera/vault"]
+  for (const [shape, crafted, transport] of [
+    ["scp-style colon", "evil.example:x@github.com/theosera/vault", "ssh"],
+    ["bracket group", "[evil.example]@github.com:theosera/vault", "ssh"],
+    ["percent-encoded slash", "ssh://evil.example%2Fx@github.com/theosera/vault", "ssh"],
+    ["query mark in userinfo", "https://evil.example?@github.com/theosera/vault", "https"]
   ] as const) {
-    it(`refuses a clone whose origin spells another SSH host ahead of the pinned one (${shape}), and never runs ssh`, async () => {
+    it(`refuses a clone whose origin spells another host ahead of the pinned one (${shape}), and never connects`, async () => {
       const fixture = await makeFixture();
       const planted = await markedClone(fixture, "vault-clone");
       git(["-C", planted.dir, "remote", "set-url", "origin", crafted], fixture);
-      const ssh = await recordingSsh(fixture.root);
-      // Positive control for the absence asserted below: the instrument reaches
-      // this clone, and git hands it `evil.example`.
-      spawnSync("git", ["-C", planted.dir, "ls-remote", "origin"], { env: hookEnv(fixture, ssh.env), stdio: "pipe" });
-      expect(await ssh.recorded()).toContain("evil.example");
-      await ssh.forget();
+      const recorder = transport === "ssh" ? await recordingSsh(fixture.root) : await recordingProxy(fixture.root);
+      try {
+        // Positive control for the absence asserted below: the instrument
+        // reaches this clone, and git's transport names `evil.example`.
+        spawnSync("git", ["-C", planted.dir, "ls-remote", "origin"], {
+          env: hookEnv(fixture, recorder.env),
+          stdio: "pipe"
+        });
+        expect((await recorder.recorded())?.join("\n")).toContain("evil.example");
+        await recorder.forget();
 
-      const { status, stderr } = runHook(
-        fixture,
-        hookEnv(fixture, { SESSION_VAULT_ORIGIN: "git@github.com:theosera/vault.git", ...ssh.env })
-      );
+        const { status, stderr } = runHook(
+          fixture,
+          hookEnv(fixture, { SESSION_VAULT_ORIGIN: "git@github.com:theosera/vault.git", ...recorder.env })
+        );
 
-      // Before the fix that spelling reduced to the pinned identity, the check
-      // passed, and `git push` handed the transcript to `evil.example`.
-      expect(await ssh.recorded()).toBeNull();
-      expect(stderr).toContain("none with the pinned origin");
-      expect(await fs.readdir(planted.dir)).not.toContain(SUBDIR);
-      expect(status).toBe(0);
+        // Before the fix that spelling reduced to the pinned identity, the
+        // check passed, and `git push` handed the transcript to `evil.example`.
+        expect(await recorder.recorded()).toBeNull();
+        expect(stderr).toContain("none with the pinned origin");
+        expect(await fs.readdir(planted.dir)).not.toContain(SUBDIR);
+        expect(status).toBe(0);
+      } finally {
+        await recorder.close();
+      }
     }, 60_000);
   }
 
@@ -2732,6 +2847,41 @@ describe("session-archive remote identity", () => {
     expect(id("ssh://evil.example%00@github.com/theosera/vault")).toBe("");
     // The scp form is not decoded by git, so it is not decoded here either.
     expect(id("git@github.com:theosera/vault%2Fx")).toBe("github.com/theosera/vault%2Fx");
+  });
+
+  it("gives no identity to userinfo carrying `?` or `#`, where libcurl ends the host", async () => {
+    const id = await shippedUrlId();
+    // Second scan of this change, F1: libcurl ends the authority at the first
+    // `/`, `?` or `#`, so `https://evil.example?@github.com/…` connects to
+    // evil.example while a userinfo rule saw `github.com`. Userinfo may carry
+    // only the characters RFC 3986 allows there.
+    for (const spelling of [
+      "https://evil.example?@github.com/theosera/vault",
+      "https://evil.example#@github.com/theosera/vault",
+      "https://evil.example%3F@github.com/theosera/vault"
+    ]) {
+      expect(id(spelling), spelling).toBe("");
+    }
+    // An ordinary userinfo still reduces (the `u:p` spelling in the first test).
+    expect(id("https://u:p@github.com/theosera/vault.git")).toBe(VAULT);
+  });
+
+  it("names the host git's http transport connects to, measured against libcurl through a local proxy", async () => {
+    const id = await shippedUrlId();
+    // The instrument sees the ordinary spelling reach github.com, and the
+    // identity's host is the same host.
+    const ordinary = "https://u:p@github.com/theosera/vault";
+    expect(await hostGitHandsToCurl(ordinary)).toBe("github.com");
+    expect(id(ordinary).split("/")[0]).toBe("github.com");
+    // Where libcurl ends the host at `?` or `#`, the identity is withheld:
+    // libcurl goes to `evil.example`, and nothing here can equal a pin.
+    for (const spelling of [
+      "https://evil.example?@github.com/theosera/vault",
+      "https://evil.example#@github.com/theosera/vault"
+    ]) {
+      expect(await hostGitHandsToCurl(spelling), spelling).toBe("evil.example");
+      expect(id(spelling), spelling).toBe("");
+    }
   });
 
   it("names the host git hands to ssh, measured against git rather than reasoned from its source", async () => {

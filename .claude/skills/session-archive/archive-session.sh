@@ -140,12 +140,14 @@ git_url_id() {
   host=""
   if [ -n "$seg" ]; then
     # `[user@]host[:port]`, with a plain host: a name or IPv4 address, or a
-    # bracketed IPv6 literal. Userinfo may not carry `@`, `[`, `]` or `/`.
-    # Anything else -- a bracket group that is not that literal, a second
-    # at-sign, `user@:path` with no host -- gets no identity and so can never
-    # equal a pin.
+    # bracketed IPv6 literal. Userinfo may carry only the characters RFC 3986
+    # allows there -- in particular not `?` or `#`, where libcurl ends the
+    # host (`https://evil.example?@github.com/` connects to evil.example), and
+    # not `@`, `[`, `]` or `/`. Anything else -- a bracket group that is not
+    # that literal, a second at-sign, `user@:path` with no host -- gets no
+    # identity and so can never equal a pin.
     printf '%s' "$seg" \
-      | grep -Eq '^([^][@/]*@)?([A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])(:[0-9]+)?$' \
+      | grep -Eq '^([A-Za-z0-9._~%!$&()*+,;=:-]*@)?([A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])(:[0-9]+)?$' \
       || return 0
     host="${seg#*@}"
   fi
