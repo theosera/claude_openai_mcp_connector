@@ -680,12 +680,15 @@ body_jq='
   # system reminders, hook output). Actual user words stay verbatim.
   # Text turns are written at TOP LEVEL, unfenced, so a line the model echoed can
   # become real note structure -- a forged User heading with a plausible timestamp,
-  # read back over MCP as what the operator said. Escape only the ATX heading run:
-  # over this conversation it is 3,982 lines of 58,507 (6.8%), while also escaping
-  # tilde and backtick runs would add 7,336 more, nearly all backticks in code the
-  # operator wrote. Tilde-fence lines occurred 0 times in two independent samples.
-  # Setext underlines and blockquotes stay untouched: they cannot forge the
-  # heading-plus-timestamp shape a turn is written as.
+  # read back over MCP as what the operator said. The first rule escaped only the
+  # ATX heading run: over this conversation it is 3,982 lines of 58,507 (6.8%),
+  # while also escaping tilde and backtick runs would add 7,336 more, nearly all
+  # backticks in code the operator wrote. Tilde-fence lines occurred 0 times in
+  # two independent samples. Three more shapes forge a turn and are escaped now,
+  # each only in the narrow form that forges (a setext underline under a non-blank
+  # line, a line-start HTML opener, a fence run the turn leaves open) -- the
+  # counts and the reasons are inside defang. Blockquotes stay untouched: they
+  # cannot forge the heading-plus-timestamp shape a turn is written as.
   # This runs where the turn is assembled and nothing measures a text turn, so no
   # later pass can undo it -- the fence sizer never sees these lines.
   def defang:
