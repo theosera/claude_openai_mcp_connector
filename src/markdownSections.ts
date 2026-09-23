@@ -80,9 +80,27 @@ export interface OutlineEntry {
  *
  * The run must be preceded by whitespace or be the entire content, which is
  * what keeps `## C#` a heading called `C#`.
+ *
+ * ⚠️ Scanned by hand rather than with `/(?:^|\s+)#+$/`: that regex retries the
+ * unanchored `\s+` from every position of an interior whitespace run that is not
+ * followed by hashes, so `## a` + W spaces + `b` cost O(W²) — measured 63 ms at
+ * 10k spaces, 972 ms at 40k — and the heading comes from an untrusted note read
+ * whole, so one line could hold the event loop for minutes. This walk is linear
+ * and returns the same title: the regex's leftmost match starts at the
+ * whitespace run touching the final hash run, and `trim()` removes the rest.
  */
 function closeHashes(title: string): string {
-  return title.replace(/(?:^|\s+)#+$/, "").trim();
+  let end = title.length;
+  while (end > 0 && title[end - 1] === "#") {
+    end -= 1;
+  }
+  if (end === title.length) {
+    return title.trim();
+  }
+  if (end > 0 && !/\s/.test(title[end - 1])) {
+    return title.trim();
+  }
+  return title.slice(0, end).trim();
 }
 
 function findHeadings(lines: readonly string[]): HeadingLine[] {
