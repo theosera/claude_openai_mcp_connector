@@ -2,7 +2,8 @@
 # ops-logging PostToolUse hook.
 # Append "command + intent" of a git / shell / GitHub(MCP) action to the
 # terminal-ops-logs repo. Records COMMAND + INTENT ONLY — stdout is never read,
-# and token/credential patterns in the command string are fully masked.
+# and token/credential patterns in the command string are masked by mask()
+# below (see its comments for the shapes it names and the ones it does not).
 # Never blocks the originating tool: always exits 0.
 set -euo pipefail
 
@@ -275,27 +276,97 @@ mask() {
   #     would be the leftmost match, and the body after `:12:` would be
   #     written out in the clear while the line reads as masked (change-scan
   #     finding on this change, 2026-09-17; pinned with the anchoring taken out).
+  #
+  # Four shapes were added on 2026-09-24, each one a residue a scan or an issue
+  # named against this function (A-47 = the 2026-09-18 change-scan F2 / F3,
+  # A-57 = #186, and the 2026-09-19 whole-repo scan's F6):
+  #   * A CHECK-THEN-APPEND line -- `grep -q "token: " f || echo "token: V" >> f`
+  #     -- offers the grep argument's CLOSING quote to the quoted-run rule as an
+  #     opening one. That rule then leaves `"***MASKED***"token: V`, and the
+  #     keyword fallback reads `"***MASKED***"token:` as ONE value (no
+  #     whitespace in it) and never reaches V. The fix is a pass directly above
+  #     the fallback whose value also stops at a quote, so the second keyword is
+  #     found before the fallback swallows it. The fallback itself is unchanged
+  #     (it is the no-less-masked floor), and on any single keyword the new pass
+  #     masks a prefix of what the fallback masks right after it, so it only
+  #     ever adds a marker, never moves where a value ends.
+  #   * A YAML single-quoted scalar escapes an apostrophe by DOUBLING it
+  #     (`'pre''fix'`), which the single-quoted class read as the closing quote:
+  #     the rest of the scalar was written out beside a marker. Both halves of
+  #     the single-quoted pair now take `''` as part of the value (#186).
+  #   * `PGP PRIVATE KEY BLOCK` and the RFC 4716 armor
+  #     (`---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----`, four dashes and spaces)
+  #     never opened the range. The first is broken by the keyword rules before
+  #     the range's address sees it -- `KEY BLOCK` reads as keyword, separator,
+  #     value -- and the second is not five-dash armor at all. Widening the
+  #     shared marker regex is NOT the fix: that regex is also the line-skip
+  #     address on the unbounded quoted halves, and widening it makes them skip
+  #     a one-line JSON value that carries the PGP armor, which they mask whole
+  #     today. So these two armors get their own pair of rules instead: the
+  #     FIRST rule of all opens the window on the untouched line, before any
+  #     keyword rule can reach the marker, and a rule right after the in-range
+  #     body rule closes it on the END line, in the spelling the keyword rules
+  #     leave behind as well as the original. The shared regex, and so the
+  #     address, are unchanged.
+  #   * A diff `-` joins the prefixes the prefixed catch-all admits, so a
+  #     `-`-prefixed 32+ body line is masked outside any range too. That is the
+  #     prefix the scan named, and it is also what the line cap used to cost: a
+  #     single body longer than 100 lines behind a `-` kept its tail.
+  #   * Credentials in an ARGUMENT position, which no keyword precedes: a
+  #     `-u` / `--user` value that joins a name and a secret with a colon, a
+  #     MySQL-family client's `-p` with the password attached, and
+  #     `redis-cli`'s `-a` / `--pass`. Each is anchored on its flag (the `-p`
+  #     and `-a` rules on the client's name too, because `-p` alone is
+  #     `mkdir -p`, `cp -pR` and `ssh -p2222`), and each value class is the
+  #     dash-bounded one, so none of them can take a marker. `passwd` and
+  #     `passphrase` join the keyword alternation (`--passphrase V`,
+  #     `--passphrase=V`). `auth` and `credential` do NOT: they are subcommands
+  #     (`gh auth status`, `git credential fill`) and the keyword rule would
+  #     mask the word after them in every such command. Logs written before
+  #     this change can still hold argument-position credentials in the clear.
+  #     Other argument spellings (`openssl -passin pass:V`, `sshpass -p V`) are
+  #     still unnamed.
+  # What the series costs, measured 2026-09-24 by passing every tracked text file
+  # here (101 files / 40,479 lines) and the live ops-log clone (70 files /
+  # 27,487 lines), one whole-file stream each, through the old and new mask():
+  # no line anywhere is masked LESS. What is masked MORE, beyond the shapes
+  # above: the word after `passwd` / `passphrase` in prose (`a passwd entry`,
+  # `a strong passphrase you choose`) -- the same cost `password` has always
+  # had -- and, where a comment QUOTES one of the two new armors, the window's
+  # usual reach: 12+ runs and short whole lines for up to 100 lines after it,
+  # the planted-marker cost the range already carries for the shared marker.
+  # Two over-reaches the measurement caught were fixed rather than accepted:
+  # the quote-bounded pass took one `=` of `key === "x"` as a value, so its
+  # first character excludes `=` and `:`; and the `-u` rule read
+  # `date -u '+%Y-%m-%dT%H:%M'` as a name and a secret, so its name class
+  # excludes `%` and `+`.
   sed -E \
+    -e '/-----BEGIN PGP PRIVATE KEY BLOCK-----|---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----/{x;s/.*/o/;x;}' \
     -e 's/gh[pousr]_[A-Za-z0-9]{20,}/***MASKED***/g' \
     -e 's/github_pat_[A-Za-z0-9_]{20,}/***MASKED***/g' \
     -e 's#(://[^/:@[:space:]]+):[^/@[:space:]]+@#\1:***MASKED***@#g' \
     -e 's/([Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+/\1***MASKED***/g' \
-    -e "/-----(BEGIN|END) ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/!s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+\")([^\"\\\\]|\\\\.)*\"/\1***MASKED***\"/Ig" \
-    -e "s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+\")([^\"\\\\-]|\\\\.|-{1,4}([^\"\\\\-]|\\\\.))*-{0,4}\"/\1***MASKED***\"/Ig" \
-    -e "/-----(BEGIN|END) ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/!s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\]|\\\\.)*'/\1***MASKED***'/Ig" \
-    -e "s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\-]|\\\\.|-{1,4}([^'\\\\-]|\\\\.))*-{0,4}'/\1***MASKED***'/Ig" \
-    -e "s/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+(Basic|Digest|Token|ApiKey|OAuth|SSWS)[[:space:]]+)([^[:space:],\"'-]|-{1,4}[^[:space:],\"'-])+/\1***MASKED***/Ig" \
-    -e 's/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+/\1***MASKED***/Ig' \
+    -e "/-----(BEGIN|END) ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/!s/((token|key|secret|password|passwd|passphrase|pat|authorization|bearer)['\"]?[=:[:space:]]+\")([^\"\\\\]|\\\\.)*\"/\1***MASKED***\"/Ig" \
+    -e "s/((token|key|secret|password|passwd|passphrase|pat|authorization|bearer)['\"]?[=:[:space:]]+\")([^\"\\\\-]|\\\\.|-{1,4}([^\"\\\\-]|\\\\.))*-{0,4}\"/\1***MASKED***\"/Ig" \
+    -e "/-----(BEGIN|END) ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/!s/((token|key|secret|password|passwd|passphrase|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\]|\\\\.|'')*'/\1***MASKED***'/Ig" \
+    -e "s/((token|key|secret|password|passwd|passphrase|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\-]|\\\\.|''|-{1,4}([^'\\\\-]|\\\\.|''))*-{0,4}'/\1***MASKED***'/Ig" \
+    -e "s/((token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[=:[:space:]]+(Basic|Digest|Token|ApiKey|OAuth|SSWS)[[:space:]]+)([^[:space:],\"'-]|-{1,4}[^[:space:],\"'-])+/\1***MASKED***/Ig" \
+    -e "s/((token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]\"'=:-]|-{1,4}[^[:space:]\"'-])([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])*/\1***MASKED***/Ig" \
+    -e 's/((token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+/\1***MASKED***/Ig' \
     -e '/-----BEGIN ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/{x;s/.*/o/;x;}' \
     -e 'x;/^ox{0,100}$/{s/$/x/;x;s/[A-Za-z0-9+\/=]{12,}/***MASKED***/g;s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*)?)[A-Za-z0-9+\/=]{1,11}[[:space:]]*$/\1***MASKED***/;/-----END ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/{x;s/.*//;x;};x;};x' \
+    -e '/-----END PGP PRIVATE KEY (BLOCK|\*\*\*MASKED\*\*\*)-----|---- END SSH2 ENCRYPTED PRIVATE KEY ----/{x;s/.*//;x;}' \
     -e 's/-----BEGIN ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/***MASKED***/g' \
     -e 's/-----END ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/***MASKED***/g' \
     -e 's/AKIA[0-9A-Z]{16}/***MASKED***/g' \
     -e 's/sk-[A-Za-z0-9_-]{20,}/***MASKED***/g' \
     -e 's/AIza[0-9A-Za-z_-]{35}/***MASKED***/g' \
     -e 's/xox[baprs]-[A-Za-z0-9-]{10,}/***MASKED***/g' \
+    -e "s/((^|[[:space:]])(-u|--user)(=|[[:space:]]+)[\"']?[^[:space:]:\"'/%+]+:)([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])+/\1***MASKED***/g" \
+    -e "s/((mysql|mysqldump|mysqladmin|mariadb|mariadb-dump)([[:space:]]+[^[:space:]|;&]+)*[[:space:]]+-p[\"']?)([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])+/\1***MASKED***/g" \
+    -e "s/(redis-cli([[:space:]]+[^[:space:]|;&]+)*[[:space:]]+(-a|--pass)[[:space:]]+[\"']?)([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])+/\1***MASKED***/g" \
     -e '/^[[:space:]]*[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/.*/***MASKED***/' \
-    -e '/^[[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*)[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*))[A-Za-z0-9+\/=]{32,}([[:space:]]*)$/\1***MASKED***\3/'
+    -e '/^[[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-)[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-))[A-Za-z0-9+\/=]{32,}([[:space:]]*)$/\1***MASKED***\3/'
 }
 # ⭐ 1 行の byte 上限。⛔ 上限が要る理由は可読性ではなく【リポの成長】である:
 #    実測 2026-09-09 — 5,004 行のうち 2,000 B を超えるのは 357 行 (7.1%) だけだが、

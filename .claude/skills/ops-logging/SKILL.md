@@ -254,6 +254,19 @@ terminal-ops-logs/
   上限の証明ではない。
 - AWS `AKIA…` / OpenAI 系 `sk-…` (ハイフン付き `sk-proj-…` / `sk-ant-…` も対象)
 - Google API key `AIza…` / Slack `xox[baprs]-…`
+- **引数位置の資格情報** (2026-09-24 追加・S-1 F6): `-u` / `--user` の `name:secret`、MySQL 系
+  client の `-p<値>` (client 名に anchor — `-p` 単独は `mkdir -p` / `cp -pR` / `ssh -p2222`)、
+  `redis-cli` の `-a` / `--pass`。keyword に `passwd` / `passphrase` を追加 (`--passphrase V`)。
+  ⛔ `auth` / `credential` は足さない — `gh auth status` / `git credential fill` の副コマンドが消える。
+  ⚠️ 未対応: `openssl -passin pass:V` / `sshpass -p V`。⚠️ **この変更より前の log には引数位置の
+  資格情報が平文で残りうる** (既存 log の該当調査は 2026-09-20 に D 分類 0 件・射程の閉じ方は別決定)。
+- **check-then-append** (2026-09-24 追加・A-47 F2): `grep -q "token: " f || echo "token: V" >> f` —
+  引用値規則が grep 引数の**閉じ**引用符を開きと読み、fallback が `"***MASKED***"token:` を 1 つの値として
+  呑んで 2 つ目の値に届かなかった。fallback の**直上**に「引用符でも値を切る」pass を置いた
+  (fallback は byte 単位で不変)。値の先頭文字から `=` `:` を外してある — 外さないと `key === "x"` の
+  `=` を 1 文字の値として食う (追跡ファイルの差分で検出)。
+- **YAML の二重アポストロフィ** (2026-09-24 追加・#186 / A-57): `'pre''fix'` の `''` を単引用値の
+  一部として読む (address 付き / 境界付きの両半分)。
 - **PEM 秘密鍵**: BEGIN / END の marker 行を置換し、その範囲 (BEGIN 〜 END、または
   **BEGIN から 100 行**まで・先に来たほう。2026-09-17 までは「次の column 0 の `~~~` 行」も
   終端だった) の中で **base64 文字の 12 文字以上の連なりを置換**する。
@@ -346,6 +359,18 @@ terminal-ops-logs/
   `CERTIFICATE` でも同じ)。⇒ ⭐ 置換 token は `***MASKED***` なので、**破壊が通常のマスク処理に見える**。
   ⚠️ **「bare 規則に marker address を付ける」も却下** — ⛔ 値が marker と同じ行にある形で
   平文が残る (Finding 1 の再演。address は行全体をスキップするが PEM 規則は marker の span しか覆わない)。
+  ⭕ **【2026-09-24 解消 — 上の 3 つの却下はそのまま有効】** (A-47 = 2026-09-18 change scan F3):
+  共有の marker regex には**触らず**、`PGP PRIVATE KEY BLOCK` と **RFC 4716**
+  (`---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----` = 4 ダッシュ + 空白。上の「SSH2 は数字を許して直った」は
+  **5 ダッシュ綴りの話で、ssh-keygen が実際に書く形は範囲を開いていなかった**) に**専用の 2 本**を足した:
+  ① **mask() の最初の規則**が元の行で窓を開く (keyword 規則が marker を壊す前) ② in-range 本体規則の**直後**の
+  規則が END 行で窓を閉じる (keyword 規則が書き換えた `KEY ***MASKED***` 綴りと元の綴りの両方を名指す)。
+  ⇒ ⭕ address は広がらないので、引用値の address 付き半分は JSON 1 行形を従来どおり丸ごと消す。
+  ⇒ ⚠️ 代償: この 2 形を**引用した**散文・コメントでも窓が開き、最大 100 行の 12+ 連なりと短い行が消える
+  (共有 marker が既に持つ「植えられた marker」の代償と同じ種類。実測: 本リポ追跡ファイルでは
+  `tests/logRedactor.test.ts` のコメント 1 か所)。
+  ⇒ ⭕ **diff の `-` を prefix 付き catch-all の prefix に足した** (同じ F3 の後半) — 窓の外の `-` 付き 32+ 行も消え、
+  上限 100 行の代償 (`-` 付きの 1 本 100 行超の本体の尾が残る) もこれで無くなった。
 - **base64 だけの行** (32 文字以上) は marker 無しで貼られた本体の catch-all として
   行ごとマスクする (今回の変更で除外は 1 つも増えていない)。
   この catch-all は本 hook では**新規追加**である (session-archive 側には
