@@ -292,8 +292,16 @@ mask() {
   #     ever adds a marker, never moves where a value ends.
   #   * A YAML single-quoted scalar escapes an apostrophe by DOUBLING it
   #     (`'pre''fix'`), which the single-quoted class read as the closing quote:
-  #     the rest of the scalar was written out beside a marker. Both halves of
-  #     the single-quoted pair now take `''` as part of the value (#186).
+  #     the rest of the scalar was written out beside a marker (#186). The class
+  #     is NOT widened to take `''`: under leftmost-longest matching a value
+  #     whose closing quote meets a stray `'` then runs on to the NEXT keyword's
+  #     opening quote, swallows its `kw: '`, and all but the first word of that
+  #     second value is written out (the change scan on this change, F2). A
+  #     continuation rule right after the single-quoted pair reads `''` only
+  #     where it follows a value already masked, and masks on to the closing
+  #     quote. The second value in the typo shape has been masked whole by then.
+  #     It is dash-bounded, since it runs before the range rule: a five-dash run
+  #     after `''` is left in the clear, as it was before anything read `''`.
   #   * `PGP PRIVATE KEY BLOCK` and the RFC 4716 armor
   #     (`---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----`, four dashes and spaces)
   #     never opened the range. The first is broken by the keyword rules before
@@ -318,7 +326,11 @@ mask() {
   #     `redis-cli`'s `-a` / `--pass`. Each is anchored on its flag (the `-p`
   #     and `-a` rules on the client's name too, because `-p` alone is
   #     `mkdir -p`, `cp -pR` and `ssh -p2222`), and each value class is the
-  #     dash-bounded one, so none of them can take a marker. `passwd` and
+  #     dash-bounded one, so none of them can take a marker. The words allowed
+  #     between the client's name and its flag are capped at twelve: an
+  #     unbounded word run let every start on a line of repeated client names
+  #     scan to the end before failing, quadratic under glibc's regex (the
+  #     change scan's F1; BSD sed stays linear either way). `passwd` and
   #     `passphrase` join the keyword alternation (`--passphrase V`,
   #     `--passphrase=V`). `auth` and `credential` do NOT: they are subcommands
   #     (`gh auth status`, `git credential fill`) and the keyword rule would
@@ -348,8 +360,9 @@ mask() {
     -e 's/([Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+/\1***MASKED***/g' \
     -e "/-----(BEGIN|END) ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/!s/((token|key|secret|password|passwd|passphrase|pat|authorization|bearer)['\"]?[=:[:space:]]+\")([^\"\\\\]|\\\\.)*\"/\1***MASKED***\"/Ig" \
     -e "s/((token|key|secret|password|passwd|passphrase|pat|authorization|bearer)['\"]?[=:[:space:]]+\")([^\"\\\\-]|\\\\.|-{1,4}([^\"\\\\-]|\\\\.))*-{0,4}\"/\1***MASKED***\"/Ig" \
-    -e "/-----(BEGIN|END) ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/!s/((token|key|secret|password|passwd|passphrase|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\]|\\\\.|'')*'/\1***MASKED***'/Ig" \
-    -e "s/((token|key|secret|password|passwd|passphrase|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\-]|\\\\.|''|-{1,4}([^'\\\\-]|\\\\.|''))*-{0,4}'/\1***MASKED***'/Ig" \
+    -e "/-----(BEGIN|END) ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/!s/((token|key|secret|password|passwd|passphrase|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\]|\\\\.)*'/\1***MASKED***'/Ig" \
+    -e "s/((token|key|secret|password|passwd|passphrase|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\-]|\\\\.|-{1,4}([^'\\\\-]|\\\\.))*-{0,4}'/\1***MASKED***'/Ig" \
+    -e "s/\\*\\*\\*MASKED\\*\\*\\*''([^'\\\\-]|\\\\.|''|-{1,4}([^'\\\\-]|\\\\.|''))*-{0,4}'/***MASKED***'/g" \
     -e "s/((token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[=:[:space:]]+(Basic|Digest|Token|ApiKey|OAuth|SSWS)[[:space:]]+)([^[:space:],\"'-]|-{1,4}[^[:space:],\"'-])+/\1***MASKED***/Ig" \
     -e "s/((token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]\"'=:-]|-{1,4}[^[:space:]\"'-])([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])*/\1***MASKED***/Ig" \
     -e 's/((token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+/\1***MASKED***/Ig' \
@@ -363,8 +376,8 @@ mask() {
     -e 's/AIza[0-9A-Za-z_-]{35}/***MASKED***/g' \
     -e 's/xox[baprs]-[A-Za-z0-9-]{10,}/***MASKED***/g' \
     -e "s/((^|[[:space:]])(-u|--user)(=|[[:space:]]+)[\"']?[^[:space:]:\"'/%+]+:)([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])+/\1***MASKED***/g" \
-    -e "s/((mysql|mysqldump|mysqladmin|mariadb|mariadb-dump)([[:space:]]+[^[:space:]|;&]+)*[[:space:]]+-p[\"']?)([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])+/\1***MASKED***/g" \
-    -e "s/(redis-cli([[:space:]]+[^[:space:]|;&]+)*[[:space:]]+(-a|--pass)[[:space:]]+[\"']?)([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])+/\1***MASKED***/g" \
+    -e "s/((mysql|mysqldump|mysqladmin|mariadb|mariadb-dump)([[:space:]]+[^[:space:]|;&]+){0,12}[[:space:]]+-p[\"']?)([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])+/\1***MASKED***/g" \
+    -e "s/(redis-cli([[:space:]]+[^[:space:]|;&]+){0,12}[[:space:]]+(-a|--pass)[[:space:]]+[\"']?)([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])+/\1***MASKED***/g" \
     -e '/^[[:space:]]*[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/.*/***MASKED***/' \
     -e '/^[[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-)[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-))[A-Za-z0-9+\/=]{32,}([[:space:]]*)$/\1***MASKED***\3/'
 }

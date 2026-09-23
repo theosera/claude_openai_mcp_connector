@@ -1414,7 +1414,7 @@ const DASH_BOUNDED: Record<string, [string, string]> = {
   bearer: [String.raw`([^[:space:]-]|-{1,4}[^[:space:]-])+`, String.raw`[^[:space:]]+`],
   scheme: [String.raw`([^[:space:],\"'-]|-{1,4}[^[:space:],\"'-])+`, String.raw`[^[:space:],\"']+`],
   dq: [String.raw`([^\"\\\\-]|\\\\.|-{1,4}([^\"\\\\-]|\\\\.))*-{0,4}`, String.raw`([^\"\\\\]|\\\\.)*`],
-  sq: [String.raw`([^'\\\\-]|\\\\.|''|-{1,4}([^'\\\\-]|\\\\.|''))*-{0,4}`, String.raw`([^'\\\\]|\\\\.|'')*`]
+  sq: [String.raw`([^'\\\\-]|\\\\.|-{1,4}([^'\\\\-]|\\\\.))*-{0,4}`, String.raw`([^'\\\\]|\\\\.)*`]
 };
 
 /**
@@ -2434,23 +2434,21 @@ function quoteBoundedPass(maskFn: string): string {
   return found[0];
 }
 
-/** The single-quoted half of the quoted pair, addressed or bounded. */
-function singleQuotedHalf(maskFn: string, which: "addressed" | "bounded"): string {
+/**
+ * The doubled-apostrophe continuation (#186 / A-57): the ONE rule that reads a
+ * YAML `''` after a value the single-quoted halves have already masked.
+ */
+function doubledApostropheContinuation(maskFn: string): string {
   const found = maskFn
     .split("\n")
-    .filter((line) => line.trim().startsWith("-e") && line.includes(QUOTED_RULES) && line.includes("[=:[:space:]]+')"))
-    .filter((line) => line.includes(pemMarkerAddress(maskFn)) === (which === "addressed"));
+    .filter((line) => line.trim().startsWith("-e") && line.includes("MASKED\\\\*\\\\*\\\\*''"));
   expect(found).toHaveLength(1);
   return found[0];
 }
 
-/** Removes the doubled-apostrophe alternative from ONE single-quoted half. */
-function withoutDoubledApostrophe(maskFn: string, which: "addressed" | "bounded"): string {
-  const line = singleQuotedHalf(maskFn, which);
-  const stripped = line.split("|''").join("");
-  expect(stripped).not.toBe(line);
-  return maskFn.split(line).join(stripped);
-}
+/** The unbounded single-quoted class, and the same class reading `''` -- the first spelling of #186's fix. */
+const SQ_UNBOUNDED = String.raw`([^'\\\\]|\\\\.)*'`;
+const SQ_UNBOUNDED_DOUBLED = String.raw`([^'\\\\]|\\\\.|'')*'`;
 
 describe("session-archive masking: the 2026-09-24 series", () => {
   let mask: string;
@@ -2501,18 +2499,37 @@ describe("session-archive masking: the 2026-09-24 series", () => {
   it("masks a YAML single-quoted scalar past its doubled apostrophe (A-57 / #186)", () => {
     const plain = `{'password': 'prefix''SUFFIX${PLACEHOLDER}'}`;
     expect(runMask(mask, plain)).toBe(`{'password': '${MASKED}'}`);
+    const twice = `password: 'a''b''SUFFIX${PLACEHOLDER}'`;
+    expect(runMask(mask, twice)).not.toContain(PLACEHOLDER);
 
-    // Each half carries the alternative, and each is shown on the line only it
-    // reaches. A five-dash run inside the value defeats the bounded half, so the
-    // addressed half alone covers it:
-    const fiveDash = `{'password': 'a''b${DASHES}${PLACEHOLDER}'}`;
-    expect(runMask(mask, fiveDash)).not.toContain(PLACEHOLDER);
-    expect(runMask(withoutDoubledApostrophe(mask, "addressed"), fiveDash)).toContain(PLACEHOLDER);
-    // ...and a marker on the line makes the addressed half skip it, so the
-    // bounded half alone covers that one:
-    const markerLine = `{'password': 'a''${PLACEHOLDER}', 'k': '${PEM_OPEN}'}`;
-    expect(runMask(mask, markerLine)).not.toContain(PLACEHOLDER);
-    expect(runMask(withoutDoubledApostrophe(mask, "bounded"), markerLine)).toContain(PLACEHOLDER);
+    // Reverse verification: drop the continuation and the tail after `''` is
+    // written out beside a marker -- #186 exactly.
+    const withoutContinuation = mask.split(`${doubledApostropheContinuation(mask)}\n`).join("");
+    expect(runMask(withoutContinuation, plain)).toContain(PLACEHOLDER);
+  });
+
+  it("reads `''` only AFTER a masked value, so a quoting typo cannot carry one value into the next", () => {
+    // Change-scan F2 on this branch (2026-09-24): the first spelling put `''` in
+    // the single-quoted value class itself. Under leftmost-longest matching a
+    // value whose closing quote is followed by a stray `'` then ran on to the
+    // NEXT keyword's opening quote, swallowing its `kw: '` prefix, and every
+    // word of that second value but the first reached the log.
+    const typo = `token: 'abc'' ; password: 'correct${PLACEHOLDER} horse${PLACEHOLDER} battery'`;
+    expect(runMask(mask, typo)).not.toContain(PLACEHOLDER);
+
+    // Reverse verification ADDS the rejected spelling back: `''` in the class.
+    const inClass = mutate(mask, SQ_UNBOUNDED, SQ_UNBOUNDED_DOUBLED, "the unbounded single-quoted class");
+    expect(runMask(inClass, typo)).toContain(`horse${PLACEHOLDER}`);
+  });
+
+  it("leaves a five-dash run after `''` in the clear, a residue the base never covered either", () => {
+    // The continuation is dash-bounded (it runs before the PEM range rule, so it
+    // must not be able to eat a marker the range opens on). A value
+    // with a five-dash run after its `''` is therefore left from that point on --
+    // as it was before this change, when nothing read `''` at all.
+    const residue = `password: 'a''b${DASHES}${PLACEHOLDER}'`;
+    expect(runMask(mask, residue)).toContain(PLACEHOLDER);
+    expect(doubledApostropheContinuation(mask)).toContain("-{1,4}");
   });
 
   const argumentPosition: Array<[string, string, string]> = [
@@ -2546,6 +2563,33 @@ describe("session-archive masking: the 2026-09-24 series", () => {
     const narrowed = mutate(mask, "|passwd|passphrase", "", "the added keywords");
     for (const line of lines) expect(runMask(narrowed, line), line).toContain(PLACEHOLDER);
   });
+
+  it("caps the word run between a client name and its flag, so a failing start cannot scan the line", () => {
+    // Change-scan F1 on this branch (2026-09-24): `([[:space:]]+[^[:space:]|;&]+)*`
+    // between `mysql` / `redis-cli` and the flag let every start position on a
+    // line of repeated client names scan to the segment's end before failing --
+    // quadratic under glibc's per-start search (GNU sed: Linux, containers, CI).
+    // The run is capped at twelve words. Structural, because the local BSD sed
+    // is linear either way and cannot show the red; the timing below holds on
+    // both and is what CI's GNU runner measures.
+    const rules = mask.split("\n").filter((line) => line.trim().startsWith("-e"));
+    expect(rules.filter((line) => line.includes("[^[:space:]|;&]+)*"))).toEqual([]);
+    expect(rules.filter((line) => line.includes("[^[:space:]|;&]+){0,12}"))).toHaveLength(2);
+
+    const seconds = (tokens: number) => {
+      const line = `${"mysql ".repeat(tokens)};mysql -p${PLACEHOLDER}`;
+      let best = Number.POSITIVE_INFINITY;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const started = performance.now();
+        expect(runMask(mask, line)).not.toContain(PLACEHOLDER);
+        best = Math.min(best, (performance.now() - started) / 1000);
+      }
+      return best;
+    };
+    const small = seconds(1000);
+    const large = seconds(8000);
+    expect(large, `1000 tokens: ${small}s, 8000 tokens: ${large}s`).toBeLessThanOrEqual(Math.max(0.5, small * 8));
+  }, 60_000);
 
   it("keeps the commands the argument rules must not touch readable", () => {
     // `-p` and `-a` are anchored on the client's name because `-p` alone is
