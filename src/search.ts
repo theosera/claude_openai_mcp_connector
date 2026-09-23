@@ -232,15 +232,37 @@ export function tokenize(query: string): QueryTerm[] {
     terms.push({ text: token, whole: true });
 
     for (const piece of segmentQueryToken(token)) {
+      if (terms.length >= MAX_QUERY_TERMS) {
+        break;
+      }
       if (!seen.has(piece)) {
         seen.add(piece);
         terms.push({ text: piece, whole: false });
       }
     }
+    if (terms.length >= MAX_QUERY_TERMS) {
+      break;
+    }
   }
 
   return terms;
 }
+
+/**
+ * Every term costs one `indexOf` sweep of every candidate body in
+ * `scoreDocument`, so the work of one query is terms x corpus. The term bound
+ * lives here rather than only at the tool schemas because the context packer
+ * calls `tokenize` too: a module that relies on the transport edge for its own
+ * cost is bounded only for as long as every caller remembers to be. The schemas
+ * in `server.ts` import MAX_QUERY_LENGTH, so there is one number and not two.
+ *
+ * Before these, a 4 MiB request body carried ~450,000 distinct terms (F2 of the
+ * 2026-09-19 scan). 64 terms covers a long natural-language query together with
+ * its CJK segments; 2,048 characters is far past any query a person or an agent
+ * types, and bounds the folding of the query string itself.
+ */
+export const MAX_QUERY_TERMS = 64;
+export const MAX_QUERY_LENGTH = 2048;
 
 /**
  * `updated_at` first: filesystem mtime is rewritten by `git clone` / checkout,

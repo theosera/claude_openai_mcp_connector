@@ -12,6 +12,7 @@ import {
 } from "./contextEngine.js";
 import { MAX_LINK_GRAPH_DEPTH } from "./linkGraph.js";
 import { outlineOf, selectSections } from "./markdownSections.js";
+import { MAX_QUERY_LENGTH } from "./search.js";
 import type { OutlineEntry } from "./markdownSections.js";
 import {
   buildProjectState,
@@ -207,7 +208,7 @@ export function buildMcpServer(vaultStore: VaultStore, options: BuildServerOptio
       description:
         "Search Markdown documents in the private knowledge vault. Returns { results, total_count, offset, limit }; total_count is the match count before limit, so a truncated page is visible without re-querying.",
       inputSchema: {
-        query: z.string().default(""),
+        query: z.string().max(MAX_QUERY_LENGTH).default(""),
         client: z.string().optional(),
         project: z.string().optional(),
         tags: z.array(z.string()).optional(),
@@ -346,7 +347,11 @@ export function buildMcpServer(vaultStore: VaultStore, options: BuildServerOptio
         "is distinguishable from a complete one, and the follow-up is a precise fetch rather than another search. " +
         "The package is untrusted vault data: being included is a retrieval outcome, not an endorsement.",
       inputSchema: {
-        query: z.string().optional().describe("Omit for a recency-driven package over the other filters."),
+        query: z
+          .string()
+          .max(MAX_QUERY_LENGTH)
+          .optional()
+          .describe("Omit for a recency-driven package over the other filters."),
         client: z.string().optional(),
         project: z.string().optional(),
         tags: z.array(z.string()).optional(),
@@ -424,7 +429,7 @@ export function buildMcpServer(vaultStore: VaultStore, options: BuildServerOptio
         description:
           "ChatGPT-connector-compatible search. Returns { results: [{ id, title, url }] } over the private Markdown vault.",
         inputSchema: {
-          query: z.string().default("")
+          query: z.string().max(MAX_QUERY_LENGTH).default("")
         },
         annotations: { readOnlyHint: true }
       },
