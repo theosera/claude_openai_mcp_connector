@@ -165,3 +165,46 @@ describe("findHeadings closes a fence only where CommonMark and the renderer do"
     expect(outlineOf(["~~~a`b", "## Hidden", "~~~"].join("\n"))).toHaveLength(0);
   });
 });
+
+describe("closing hash run (F1 of the 2026-09-19 scan)", () => {
+  // The regex the linear walk replaced, kept here as the oracle for the titles
+  // it must still produce. Short inputs only: it is quadratic on long ones.
+  const oracle = (title: string): string => title.replace(/(?:^|\s+)#+$/, "").trim();
+
+  const INLINE_SEPARATORS = SEPARATORS.map(([, separator]) => separator).filter((separator) => separator !== "\u2028");
+
+  const titles = [
+    "Setup ##",
+    "Setup",
+    "C#",
+    "## ",
+    "#",
+    "###",
+    "a ## #",
+    "a#b ##",
+    "trailing  #  ",
+    "x #y",
+    "  spaced  ###",
+    // A line separator cannot sit inside a heading line at all (`.` in the
+    // heading pattern stops at it), so it has no title to compare.
+    ...INLINE_SEPARATORS.map((separator) => `Name${separator}##`),
+    ...INLINE_SEPARATORS.map((separator) => `Name${separator}#x`)
+  ];
+
+  it.each(titles)("names %j the way the regex did", (title) => {
+    const outline = outlineOf(`## ${title}\n`);
+    const expected = oracle(title.trim());
+    expect(outline.map((entry) => entry.heading)).toEqual([expected]);
+  });
+
+  it("stays linear on a long interior whitespace run", () => {
+    // The regex took ~1 s at 40k spaces and grows 4x per doubling; 200k would
+    // be ~25 s. The linear walk is a few milliseconds.
+    const body = `## a${" ".repeat(200_000)}b\n`;
+    const started = performance.now();
+    const outline = outlineOf(body);
+    const elapsed = performance.now() - started;
+    expect(outline).toHaveLength(1);
+    expect(elapsed).toBeLessThan(1000);
+  });
+});

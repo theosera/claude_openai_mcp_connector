@@ -6,6 +6,19 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- **A heading's closing-hash run is found by a linear scan, not a regex**
+  (2026-09-19 whole-repository scan, F1). `closeHashes` ran
+  `/(?:^|\s+)#+$/` over every ATX heading's text; the unanchored `\s+`
+  retries from each position of an interior whitespace run that is not
+  followed by hashes, so one heading line in an untrusted note (`## a`, then
+  W spaces, then `b`) cost O(W²) and held the single-threaded server for every
+  client — measured 26 s at 200k spaces through `outlineOf`. The walk returns
+  the same title as the regex on every shape the new test compares against it
+  (the regex is kept there as the oracle), and the 200k-space case finishes
+  inside the test's 1 s bound.
+
 ## [0.10.0] — 2026-09-19
 
 ### Added
