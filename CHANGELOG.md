@@ -6,6 +6,19 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- **Search queries are bounded in length and in term count** (2026-09-19
+  whole-repository scan, F2). A query's cost is terms × corpus and neither
+  factor had a bound: a 4 MiB request carried ~450,000 distinct terms, each an
+  `indexOf` sweep of every candidate body. The `query` of `search_documents`,
+  `get_context` and the ChatGPT-compatible `search` is now refused past
+  **2,048 characters** (a new rejection a client can see), and `tokenize`
+  keeps at most **64 terms**, so the context packer, which calls it too, is
+  bounded without relying on the tool schema. The term cap truncates rather
+  than refuses; an ordinary query is far from it (a 73-character Japanese
+  sentence tokenizes to 27 terms).
+
 ## [0.10.0] — 2026-09-19
 
 ### Added
