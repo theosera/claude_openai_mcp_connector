@@ -2439,18 +2439,6 @@ function quoteBoundedPass(maskFn: string): string {
   return found[0];
 }
 
-/**
- * The doubled-apostrophe continuation (#186 / A-57): the ONE rule that reads a
- * YAML `''` after a value the single-quoted halves have already masked.
- */
-function doubledApostropheContinuation(maskFn: string): string {
-  const found = maskFn
-    .split("\n")
-    .filter((line) => line.trim().startsWith("-e") && line.includes("MASKED\\\\*\\\\*\\\\*''"));
-  expect(found).toHaveLength(1);
-  return found[0];
-}
-
 /** The unbounded single-quoted class, and the same class reading `''` -- the first spelling of #186's fix. */
 const SQ_UNBOUNDED = String.raw`([^'\\\\]|\\\\.)*'`;
 const SQ_UNBOUNDED_DOUBLED = String.raw`([^'\\\\]|\\\\.|'')*'`;
@@ -2517,16 +2505,20 @@ describe("session-archive masking: the 2026-09-24 series", () => {
     }
   });
 
-  it("masks a YAML single-quoted scalar past its doubled apostrophe (A-57 / #186)", () => {
-    const plain = `{'password': 'prefix''SUFFIX${PLACEHOLDER}'}`;
-    expect(runMask(mask, plain)).toBe(`{'password': '${MASKED}'}`);
-    const twice = `password: 'a''b''SUFFIX${PLACEHOLDER}'`;
-    expect(runMask(mask, twice)).not.toContain(PLACEHOLDER);
-
-    // Reverse verification: drop the continuation and the tail after `''` is
-    // written out beside a marker -- #186 exactly.
-    const withoutContinuation = mask.split(`${doubledApostropheContinuation(mask)}\n`).join("");
-    expect(runMask(withoutContinuation, plain)).toContain(PLACEHOLDER);
+  it("leaves #186 as it was, and masks the shapes both tried fixes leaked (taken out under (c))", () => {
+    // #186 is NOT handled by this change. Two spellings were tried and each
+    // reached a credential the old rules masked (see the comment above the
+    // rules); owner decision (b') -> (c) took them out. What is pinned: the
+    // #186 tail stays as the base left it, and the inputs that exposed each
+    // tried spelling are masked as the base masked them.
+    expect(runMask(mask, `{'password': 'prefix''SUFFIX${PLACEHOLDER}'}`)).toContain(PLACEHOLDER);
+    for (const line of [
+      `{'token': 'a''b'' ; password: 'hunter2${PLACEHOLDER}`,
+      `{password: 'it''s\\ me',token: ${PLACEHOLDER}}`,
+      `{password: 'a''b\\${DASHES}c',token: ${PLACEHOLDER}}`
+    ]) {
+      expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
+    }
   });
 
   it("reads `''` only AFTER a masked value, so a quoting typo cannot carry one value into the next", () => {
@@ -2541,16 +2533,6 @@ describe("session-archive masking: the 2026-09-24 series", () => {
     // Reverse verification ADDS the rejected spelling back: `''` in the class.
     const inClass = mutate(mask, SQ_UNBOUNDED, SQ_UNBOUNDED_DOUBLED, "the unbounded single-quoted class");
     expect(runMask(inClass, typo)).toContain(`horse${PLACEHOLDER}`);
-  });
-
-  it("leaves a five-dash run after `''` in the clear, a residue the base never covered either", () => {
-    // The continuation is dash-bounded (it runs before the PEM range rule, so it
-    // must not be able to eat a marker the range opens on). A value
-    // with a five-dash run after its `''` is therefore left from that point on --
-    // as it was before this change, when nothing read `''` at all.
-    const residue = `password: 'a''b${DASHES}${PLACEHOLDER}'`;
-    expect(runMask(mask, residue)).toContain(PLACEHOLDER);
-    expect(doubledApostropheContinuation(mask)).toContain("-{1,4}");
   });
 
   const argumentPosition: Array<[string, string, string]> = [
@@ -2580,12 +2562,10 @@ describe("session-archive masking: the 2026-09-24 series", () => {
     const lines = [
       `gpg --batch --passphrase ${PLACEHOLDER} -d f.gpg`,
       `tool --passphrase=${PLACEHOLDER} run`,
-      `passwd=${PLACEHOLDER}`,
-      `gpg --passphrase "two ${PLACEHOLDER} words" -d f.gpg`,
-      `gpg --passphrase 'two ${PLACEHOLDER} words' -d f.gpg`
+      `passwd=${PLACEHOLDER}`
     ];
     for (const line of lines) expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
-    expect(passphraseRules(mask)).toHaveLength(3);
+    expect(passphraseRules(mask)).toHaveLength(1);
     // Reverse verification: drop the pass and every shape leaks.
     const without = passphraseRules(mask).reduce((fn, rule) => fn.split(`${rule}\n`).join(""), mask);
     for (const line of lines) expect(runMask(without, line), line).toContain(PLACEHOLDER);
@@ -2641,7 +2621,7 @@ describe("session-archive masking: the 2026-09-24 series", () => {
     ];
     // The OLDER rules still act on such a line exactly as they always did; what
     // is pinned is that the series rules add nothing to it.
-    expect(seriesRules(mask)).toHaveLength(8);
+    expect(seriesRules(mask)).toHaveLength(5);
     const withoutSeries = seriesRules(mask).reduce((fn, rule) => fn.split(`${rule}\n`).join(""), mask);
     for (const line of lines) expect(runMask(mask, line), line).toBe(runMask(withoutSeries, line));
     expect(runMask(mask, lines[0])).toBe(lines[0]);
@@ -2659,31 +2639,10 @@ describe("session-archive masking: the 2026-09-24 series", () => {
     // classes take both again.
     for (const line of [
       `mysql -h db -p'Xk9~mQ2#${PLACEHOLDER}'`,
-      `gpg --passphrase 'abc~def${PLACEHOLDER}'`,
       `curl -u svc:ab\`c${PLACEHOLDER} https://example.test/x`
     ]) {
       expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
     }
-  });
-
-  it("stops the doubled-apostrophe continuation at whitespace, `:` and `=` (change-scan r3 F3)", () => {
-    // The continuation runs before the keyword fallback. Able to cross
-    // whitespace, it ran from `'a''b''` on to the next lone quote and took
-    // ` ; password: '` with it, so the fallback never saw `password`. A value
-    // that cannot cross any of the keyword separators cannot swallow a keyword.
-    const typo = `{'token': 'a''b'' ; password: 'hunter2${PLACEHOLDER}`;
-    expect(runMask(mask, typo)).not.toContain(PLACEHOLDER);
-    const widened = mutate(
-      mask,
-      String.raw`[^'\\\\[:space:]:=-]`,
-      String.raw`[^'\\\\-]`,
-      "the continuation's separator exclusion"
-    );
-    expect(runMask(widened, typo)).toContain(PLACEHOLDER);
-
-    // The residue that bound leaves, pinned: a doubled apostrophe followed by a
-    // space keeps what comes after the space, as it did before anything read `''`.
-    expect(runMask(mask, `password: 'it''s a te${PLACEHOLDER}'`)).toContain(PLACEHOLDER);
   });
 
   it("caps the word run between a client name and its flag, so a failing start cannot scan the line", () => {

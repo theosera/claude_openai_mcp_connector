@@ -295,23 +295,15 @@ mask() {
   #     both (a review finding on this change). Anchored, what it masks is a
   #     prefix of what the fallback would mask from the same keyword, so it can
   #     add a marker but can never erase a label the fallback would have read.
-  #   * A YAML single-quoted scalar escapes an apostrophe by DOUBLING it
-  #     (`'pre''fix'`), which the single-quoted class read as the closing quote:
-  #     the rest of the scalar was written out beside a marker (#186). The class
-  #     is NOT widened to take `''`: under leftmost-longest matching a value
-  #     whose closing quote meets a stray `'` then runs on to the NEXT keyword's
-  #     opening quote, swallows its `kw: '`, and all but the first word of that
-  #     second value is written out (the change scan on this change, F2). A
-  #     continuation rule right after the single-quoted pair reads `''` only
-  #     where it follows a value already masked, and masks on to the closing
-  #     quote. The second value in the typo shape has been masked whole by then.
-  #     It is dash-bounded, since it runs before the range rule: a five-dash run
-  #     after `''` is left in the clear, as it was before anything read `''`.
-  #     It also stops at whitespace, `:` and `=`: it runs before the keyword
-  #     fallback, and a continuation able to cross a keyword's separator took
-  #     `' ; password: '` with it on a quoting typo, so the fallback never saw
-  #     the keyword (the third change scan's F3). So `'it''s a test'` keeps
-  #     ` a test` -- again as before anything read `''`.
+  #   * NOT here: YAML's doubled apostrophe (`'pre''fix'`, #186). Two
+  #     spellings were tried on this change and both reached a credential the
+  #     old rules masked: `''` in the single-quoted class (a stray `'` after a
+  #     closing quote ran on to the next keyword's value), and a continuation
+  #     rule after a masked value (its escape alternative deleted a
+  #     backslash-escaped space or dash, and the keyword fallback then ran past
+  #     the next keyword). Every rule that runs BEFORE the fallback can move
+  #     where the fallback's value ends; that is the shape both hit. #186 stays
+  #     open for a change of its own.
   #   * `PGP PRIVATE KEY BLOCK` and the RFC 4716 armor
   #     (`---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----`, four dashes and spaces)
   #     never opened the range. The first is broken by the keyword rules before
@@ -341,8 +333,9 @@ mask() {
   #     unbounded word run let every start on a line of repeated client names
   #     scan to the end before failing, quadratic under glibc's regex (the
   #     change scan's F1; BSD sed stays linear either way). `passwd` and
-  #     `passphrase` (`--passphrase V`, `--passphrase=V`, a quoted phrase) get
-  #     a pass of their OWN, right after the keyword fallback, and are NOT in
+  #     `passphrase` (`--passphrase V`, `--passphrase=V`; a QUOTED phrase is not
+  #     handled here -- its rules were taken out of this change with #186's)
+  #     get a rule of their OWN, right after the keyword fallback, and are NOT in
   #     the shared alternation: there, a leftmost match starting on them took
   #     the real keyword after them as their value -- `--passphrase --key S`,
   #     or a prompt's closing quote before `PASSWORD="a b c"` -- and the secret
@@ -395,12 +388,9 @@ mask() {
     -e "s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+\")([^\"\\\\-]|\\\\.|-{1,4}([^\"\\\\-]|\\\\.))*-{0,4}\"/\1***MASKED***\"/Ig" \
     -e "/-----(BEGIN|END) ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/!s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\]|\\\\.)*'/\1***MASKED***'/Ig" \
     -e "s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\-]|\\\\.|-{1,4}([^'\\\\-]|\\\\.))*-{0,4}'/\1***MASKED***'/Ig" \
-    -e "/\`\`\`|~~~/!s/\\*\\*\\*MASKED\\*\\*\\*''([^'\\\\[:space:]:=-]|\\\\.|''|-{1,4}([^'\\\\[:space:]:=-]|\\\\.|''))*-{0,4}'/***MASKED***'/g" \
     -e "s/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+(Basic|Digest|Token|ApiKey|OAuth|SSWS)[[:space:]]+)([^[:space:],\"'-]|-{1,4}[^[:space:],\"'-])+/\1***MASKED***/Ig" \
     -e "/\`\`\`|~~~/!s/([\"'])((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]\"'=:-]|-{1,4}[^[:space:]\"'-])([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])*/\1\2***MASKED***/Ig" \
     -e 's/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+/\1***MASKED***/Ig' \
-    -e "/\`\`\`|~~~/!s/((passwd|passphrase)['\"]?[=:[:space:]]+\")([^\"\\\\-]|\\\\.|-{1,4}([^\"\\\\-]|\\\\.))*-{0,4}\"/\1***MASKED***\"/Ig" \
-    -e "/\`\`\`|~~~/!s/((passwd|passphrase)['\"]?[=:[:space:]]+')([^'\\\\-]|\\\\.|-{1,4}([^'\\\\-]|\\\\.))*-{0,4}'/\1***MASKED***'/Ig" \
     -e "/\`\`\`|~~~/!s/((passwd|passphrase)[=:[:space:]]+)([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])+/\1***MASKED***/Ig" \
     -e '/-----BEGIN ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/{x;s/.*/o/;x;}' \
     -e 'x;/^ox{0,100}$/{s/$/x/;x;s/[A-Za-z0-9+\/=]{12,}/***MASKED***/g;s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*)?)[A-Za-z0-9+\/=]{1,11}[[:space:]]*$/\1***MASKED***/;/-----END ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/{x;s/.*//;x;};x;};x' \
