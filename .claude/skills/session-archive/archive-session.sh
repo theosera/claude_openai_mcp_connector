@@ -752,6 +752,30 @@ fi
 # fence below) so embedded ``` / ~~~ cannot break out of a block.
 body_jq='
   def ts: (.timestamp // "") | sub("T"; " ") | .[0:19];
+  # Remove `ESC[...m` / `ESC[...K` -- the same sequences strip_ansi removes, and
+  # the same non-rescanning result as gsub("\u001b\\[[0-9;]*[mK]"; ""): a
+  # sequence cannot contain ESC, so every match starts a fragment of
+  # split("\u001b") and each fragment is decided alone. Do NOT use gsub here.
+  # It rebuilds the string once per match, O(matches x length), and splitting
+  # on LF first bounds that only by the LONGEST line: one SGR-dense line in one
+  # tool result measured 16 / 64 / 128 KB -> 0.19 / 2.87 / 11.0 s, on the fenced
+  # path and the text-turn path alike (2026-09-24, jq 1.8.2). No hook sets a
+  # timeout, so that is a renderer killed before its single write -- the record
+  # of its own arrival erased. \A is the start of the fragment; a fragment can
+  # hold LF, and jq ^ measured the same (it does not match after an LF), so the
+  # anchor states the intent rather than guarding a difference.
+  def strip_sgr:
+    split("\u001b")
+    | .[0] + ([ .[1:][]
+                | if test("\\A\\[[0-9;]*[mK]")
+                  then .[(match("\\A\\[[0-9;]*[mK]").length):]
+                  else "\u001b" + . end ] | join(""));
+  # Whether a closing-fence trailer ends the fence for SOME reader: [[:space:]]
+  # plus U+FEFF (trim drops it, jq does not) and U+180E (White_Space until
+  # Unicode 6.3, so an older reader drops it) -- a superset of every reader rule
+  # measured in defang below. Both the fence sizer and the parity machine in
+  # defang read THIS definition, so they cannot disagree about which runs close.
+  def may_end_fence: test("^[[:space:]\u180e\ufeff]*$");
   # A tilde run inside the content CLOSES a fixed-length fence (CommonMark: a
   # closing fence is the same character, at least as many, indented <= 3), so
   # the untrusted text escapes the block and becomes top-level Markdown -- a
@@ -766,7 +790,10 @@ body_jq='
   # covered by the same change.
   #
   # Only runs that could ACTUALLY close count: at a line start, indented at most
-  # three, and followed by nothing but whitespace. A run mid-line, or one trailed
+  # three, and followed by nothing that some reader does not trim (may_end_fence,
+  # above -- the sizer once tested [[:space:]] alone while defang had widened its
+  # own rule, so a U+FEFF trailer closed the fence for a trim() reader and scored
+  # 0 here). A run mid-line, or one trailed
   # by text (`~~~~~~ label`), closes nothing, so widening for it would rewrite
   # notes that were never at risk -- ordinary prose still renders at six.
   #
@@ -813,16 +840,14 @@ body_jq='
     # 採寸の【前】に正規化する。採寸後に文字を削除しうるフィルタは、封じ込めの
     # 問いを開け直す（F2）。パターンは strip_ansi と同一に保つこと — あちらで
     # 剥がれてこちらで剥がれない列が 1 つでもあると、穴がそのまま戻る。
-    # Strip PER LINE, not over the whole text. A whole-text gsub materialises the
-    # match array and rebuilds the string once per match, so it costs O(matches x
-    # length) -- the same quadratic the CR fold was rejected for two paragraphs
-    # above. Splitting first bounds each pass by its own line.
-    (($text // "") | split("\n") | map(gsub("\u001b\\[[0-9;]*[mK]"; "")) | join("\n")) as $t
+    # strip_sgr, not gsub: see its definition at the top of this program.
+    (($text // "") | strip_sgr) as $t
     | ([ $t
          | split("\n")[] | split("\r")[]
          | select(startswith("~") or startswith(" "))
          | capture("^ {0,3}(?<run>~*)(?<rest>.*)$")
-         | if (.rest | test("^[[:space:]]*$")) then (.run | length) else 0 end ] | max // 0) as $longest
+         | (.rest | may_end_fence) as $closes
+         | if $closes then (.run | length) else 0 end ] | max // 0) as $longest
     | (if $longest >= 6 then $longest + 1 else 6 end) as $n
     | ("~" * $n) as $f
     | $f + $lang + "\n" + $t + "\n" + $f;
@@ -1121,19 +1146,18 @@ body_jq='
     # them a fence run: 0 carry such a trailer. This widens the escaping on the
     # attack shape and on nothing else.
     def ends_fence: test("^[ \t]*$");
-    # [[:space:]] plus U+FEFF (trim drops it, jq does not) and U+180E (White_Space
-    # until Unicode 6.3, so an older reader drops it): a superset of every set above,
+    # may_end_fence is defined at the top of this program, shared with the fence
+    # sizer: [[:space:]] plus U+FEFF and U+180E, a superset of every set above,
     # which is what makes no-ambiguous-run mean every reader agrees.
-    def may_end_fence: test("^[[:space:]\u180e\ufeff]*$");
     # ANSI colour and line-clear sequences are removed here, per line and BEFORE
     # every escape below, for the same reason fence removes them: the assembled
     # note no longer passes through strip_ansi, and a text turn is the one body
     # path that did not go through fence. Left in, `ESC[0m## User` is not an ATX
     # heading to the rule below (the line does not START with `#`) but IS one to
     # a renderer that discards the sequence first -- an unescaped, forged turn.
-    # Same pattern as fence and strip_ansi; keep the three in step.
+    # Same sequences as fence and strip_ansi (strip_sgr); keep them in step.
     (split("\n")
-     | map(gsub("\u001b\\[[0-9;]*[mK]"; "") | split("\r")
+     | map(strip_sgr | split("\r")
            | if length == 0 then [""] else . end
            | if length > 1 and .[-1] == "" then {l: (.[0:-1]), cr: "\r"} else {l: ., cr: ""} end)) as $g
     | ([$g[] | .l | length]) as $sizes
@@ -1193,7 +1217,7 @@ body_jq='
             elif .type == "thinking" then "#### 💭 Thinking\n\n" + fence(""; (.thinking // ""))
             elif .type == "tool_use" then
               (if .name == "Bash" then
-                 "#### 🔧 Bash — " + ((.input.description // "") | gsub("[[:space:]]+"; " ")) + "\n\n" + fence("bash"; (.input.command // ""))
+                 "#### 🔧 Bash — " + ((.input.description // "") | strip_sgr | gsub("[[:space:]]+"; " ")) + "\n\n" + fence("bash"; (.input.command // ""))
                else
                  "#### 🔧 Tool use: " + (.name // "unknown") + "\n\n" + fence("json"; ((.input // {}) | tojson))
                end)

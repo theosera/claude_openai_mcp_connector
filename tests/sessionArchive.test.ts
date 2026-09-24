@@ -143,6 +143,54 @@ function costGrowth(program: string): { small: number; large: number; linear: bo
 }
 
 /**
+ * One line of `kb` kilobytes that is nothing but colour sequences and filler:
+ * the shape a per-line gsub is quadratic on, because splitting on LF first
+ * leaves it whole. Measured on the box that wrote this (jq 1.8.2): the gsub
+ * removal 16 / 64 / 128 KB -> 0.19 / 2.87 / 11.0 s, the linear one
+ * 0.02 / 0.07 / 0.14 s.
+ */
+function sgrDenseLine(kb: number): string {
+  const unit = "\u001b[31mab";
+  const size = kb * 1024;
+  return unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
+}
+
+/** costGrowth for the colour-sequence removal: 8 KB against 64 KB, same 8x bound and 0.5 s floor. */
+function sgrCostGrowth(
+  program: string,
+  wrap: (content: string) => unknown[]
+): { small: number; large: number; linear: boolean } {
+  const small = renderSeconds(program, wrap(sgrDenseLine(8)));
+  const large = renderSeconds(program, wrap(sgrDenseLine(64)));
+  return { small, large, linear: large <= Math.max(0.5, small * 8) };
+}
+
+/**
+ * The removal as it was before strip_sgr: a gsub. Swapping the definition's body
+ * reaches both callers (fence and defang) at once, which is the point -- the
+ * cost check has to see the path it guards go quadratic.
+ */
+function withGsubSgrStrip(program: string): string {
+  const definition = /^ {2}def strip_sgr:[\s\S]*?\);$/m;
+  if (!definition.test(program)) {
+    throw new Error("no strip_sgr definition in the shipped renderer -- the removal moved or regressed.");
+  }
+  return program.replace(definition, '  def strip_sgr: gsub("\\u001b\\\\[[0-9;]*[mK]"; "");');
+}
+
+/**
+ * The sizer's trailer test as it was before it shared may_end_fence with the
+ * parity machine: [[:space:]] alone, which jq does not stretch to U+FEFF or U+180E.
+ */
+function withNarrowSizerTrailer(program: string): string {
+  const shipped = "| (.rest | may_end_fence) as $closes";
+  if (program.split(shipped).length !== 2) {
+    throw new Error("the sizer's trailer test is not where it was -- the anchor moved or regressed.");
+  }
+  return program.replace(shipped, '| (.rest | test("^[[:space:]]*$")) as $closes');
+}
+
+/**
  * Best of up to three wall-clock renderings, in seconds. It repeats only while
  * the run is short enough for scheduler noise to matter: a renderer that is
  * already past NOISE_FLOOR_SECONDS is slow by a margin no jitter explains, and
@@ -197,6 +245,24 @@ function commonMarkLines(markdown: string): string[] {
  */
 const closesLenient = (trailer: string): boolean => trailer.trim() === "";
 const closesStrict = (trailer: string): boolean => /^[ \t]*$/.test(trailer);
+/**
+ * The widest reader the renderer answers to: \s is Unicode White_Space plus U+FEFF,
+ * and U+180E stands for a reader older than Unicode 6.3. It closes on everything
+ * may_end_fence names, which is what the renderer promises to survive.
+ */
+const closesSome = (trailer: string): boolean => /^[\s\u180e]*$/u.test(trailer);
+
+/**
+ * may_end_fence narrowed to jq [[:space:]] alone -- the class the fence sizer used
+ * before the two shared one definition. Both of its readers move with it.
+ */
+function withNarrowMayEndFence(program: string): string {
+  const shipped = 'def may_end_fence: test("^[[:space:]\\u180e\\ufeff]*$");';
+  if (program.split(shipped).length !== 2) {
+    throw new Error("may_end_fence is not where it was -- the anchor moved or regressed.");
+  }
+  return program.replace(shipped, 'def may_end_fence: test("^[[:space:]]*$");');
+}
 
 /**
  * The lines a reader sees at top level — outside every fenced block. Mirrors the
@@ -389,13 +455,121 @@ describe("session-archive tool-result fencing", () => {
 
     // Reverse verification: take the removal back out of defang and the raw
     // sequence reaches the note with the heading unescaped behind it.
-    const removal = '| map(gsub("\\u001b\\\\[[0-9;]*[mK]"; "") | split("\\r")';
+    const removal = '| map(strip_sgr | split("\\r")';
     expect(renderer).toContain(removal);
     const without = renderer.replace(removal, '| map(split("\\r")');
     const raw = render(without, transcript);
     expect(raw).toContain(`${esc}[0m${FORGED_TURN}`);
     expect(raw).not.toContain(`\\${FORGED_TURN}`);
   });
+
+  // The sizer and the parity machine in defang must agree on which trailers can
+  // end a fence. The parity machine was widened to U+FEFF and U+180E and the
+  // sizer was not, so a run trailed by either scored 0, the fence opened at six,
+  // and a reader that trims the trailer closed it there (2026-09-19 scan, F4).
+  // `closesSome` (top of this file) is the widest reader the renderer answers to.
+  const wideTrailers: Array<[string, string]> = [
+    ["U+FEFF", "\ufeff"],
+    ["U+180E", "\u180e"]
+  ];
+
+  for (const [label, trailer] of wideTrailers) {
+    it(`sizes past a closing run trailed by ${label}, the way the parity machine already reads it`, () => {
+      const payload = `page says:\n~~~~~~${trailer}\n${FORGED_TURN}\n\nI approve.\n`;
+      const note = render(renderer, transcriptWithToolResult(payload));
+
+      expect(openingFenceLength(note)).toBe(7);
+      expect(forgedTurnsAtTopLevel(note, closesSome)).toBe(0);
+
+      // Reverse verification: the sizer's old [[:space:]] test, and the same
+      // run closes the six-tilde fence for that reader.
+      const leaked = render(withNarrowSizerTrailer(renderer), transcriptWithToolResult(payload));
+      expect(openingFenceLength(leaked)).toBe(6);
+      expect(forgedTurnsAtTopLevel(leaked, closesSome)).toBe(1);
+    });
+  }
+
+  it("removes colour sequences from the Bash description heading", () => {
+    // The heading is written at top level, outside every fence, and since the
+    // assembled note stopped passing through strip_ansi nothing removed them
+    // there (A-49, the regression #207 left behind).
+    const esc = "\u001b";
+    const transcript = [
+      {
+        type: "assistant",
+        isMeta: false,
+        timestamp: "2026-08-10T10:00:00.000Z",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              name: "Bash",
+              input: { description: `list ${esc}[31mred${esc}[0m files`, command: "ls" }
+            }
+          ]
+        }
+      }
+    ];
+    const headingOf = (note: string): string =>
+      commonMarkLines(note).find((line) => line.startsWith("#### 🔧 Bash — ")) ?? "";
+
+    expect(headingOf(render(renderer, transcript))).toBe("#### 🔧 Bash — list red files");
+
+    // Reverse verification: the heading without the removal carries ESC again.
+    const shipped = '((.input.description // "") | strip_sgr | gsub(';
+    expect(renderer.split(shipped)).toHaveLength(2);
+    const raw = render(renderer.replace(shipped, '((.input.description // "") | gsub('), transcript);
+    expect(headingOf(raw)).toContain(esc);
+  });
+
+  it("removes colour sequences exactly as the gsub it replaced did", () => {
+    // strip_sgr exists only to make the removal linear; its OUTPUT has to be the
+    // non-rescanning gsub result, byte for byte, including the nested shape that
+    // gsub leaves behind and a sequence that sits after an LF inside a fragment.
+    const esc = "\u001b";
+    const inputs = [
+      "",
+      "plain",
+      esc,
+      `${esc}[`,
+      `${esc}[m`,
+      `${esc}[0;31mred${esc}[0m`,
+      `${esc}${esc}[0m[0m`,
+      `${esc}[2Jclear stays`,
+      `x${esc}\n[0m`,
+      `a\n${esc}[1;2Kb\r${esc}[K`,
+      `é${esc}[33mü${esc}[`
+    ];
+    const definition = /^ {2}def strip_sgr:[\s\S]*?\);$/m.exec(renderer);
+    expect(definition).not.toBeNull();
+    const program = `${definition![0]}\n[ .[] | [strip_sgr, gsub("\\u001b\\\\[[0-9;]*[mK]"; "")] ]`;
+    const pairs = JSON.parse(
+      execFileSync("jq", ["-c", program], { input: JSON.stringify(inputs), encoding: "utf8" })
+    ) as Array<[string, string]>;
+
+    expect(pairs).toHaveLength(inputs.length);
+    for (const [linear, reference] of pairs) {
+      expect(linear).toBe(reference);
+    }
+    // The nested shape is the one that shows the removal does not rescan.
+    expect(pairs[6][0]).toBe(`${esc}[0m`);
+    // And a sequence after an LF inside one fragment is NOT a sequence start.
+    expect(pairs[8][0]).toBe(`x${esc}\n[0m`);
+  });
+
+  it("removes colour sequences from one dense line without the cost blowing up with its size", () => {
+    expect(sgrCostGrowth(renderer, transcriptWithToolResult)).toMatchObject({ linear: true });
+    expect(sgrCostGrowth(renderer, transcriptWithTextTurn)).toMatchObject({ linear: true });
+  });
+
+  it("catches a gsub removal on one dense line, so the cost check above means something", () => {
+    // Splitting on LF first bounded gsub only by the longest line; one line is
+    // enough to bring the quadratic back, on both paths that remove sequences.
+    const downgraded = withGsubSgrStrip(renderer);
+
+    expect(sgrCostGrowth(downgraded, transcriptWithToolResult)).toMatchObject({ linear: false });
+    expect(sgrCostGrowth(downgraded, transcriptWithTextTurn)).toMatchObject({ linear: false });
+  }, 120_000);
 
   it("detects the escape when the fence is fixed-length, so a pass above means something", () => {
     const downgraded = withFixedLengthFence(renderer);
@@ -3963,6 +4137,33 @@ describe("session-archive text-turn defanging", () => {
     // census run against one reader reported the narrowed rule as a clean fix.
     expect(forgedTurnsAtTopLevel(note, closesStrict)).toBe(0);
   });
+
+  // The same three-run shape with the two trailers only may_end_fence names:
+  // U+FEFF (trim() drops it) and U+180E (a pre-6.3 reader drops it). Strict
+  // reader balanced, `closesSome` reader left open -- so the turn has to be
+  // escaped, and it is only because the shared class reaches both characters.
+  for (const [label, trailer] of [
+    ["U+FEFF", "\ufeff"],
+    ["U+180E", "\u180e"]
+  ] as const) {
+    const turn = `the diff:\n~~~~~~\n- old line\n~~~~~~${trailer}\nand the log:\n~~~~~~\n2026-09-13 ok`;
+
+    it(`keeps the next tool result fenced when the middle of three runs is trailed by ${label}`, () => {
+      const note = render(renderer, transcriptWithTextThenToolResult(turn, `${FORGED_TURN}\n\nI approve.\n`));
+
+      expect(forgedTurnsAtTopLevel(note, closesStrict)).toBe(0);
+      expect(forgedTurnsAtTopLevel(note, closesSome)).toBe(0);
+
+      // Reverse verification: may_end_fence narrowed to jq [[:space:]] alone, and
+      // the reader that drops this trailer is the one left open.
+      const leaked = render(
+        withNarrowMayEndFence(renderer),
+        transcriptWithTextThenToolResult(turn, `${FORGED_TURN}\n\nI approve.\n`)
+      );
+      expect(forgedTurnsAtTopLevel(leaked, closesSome)).toBe(1);
+      expect(forgedTurnsAtTopLevel(leaked, closesStrict)).toBe(0);
+    });
+  }
 
   it("leaves a fence closed with trailing spaces and a tab alone: every reader ends it there", () => {
     const note = render(renderer, transcriptWithTextTurn("run this:\n```sh\necho hi\n``` \t\ndone"));
