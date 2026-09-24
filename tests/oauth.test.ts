@@ -219,6 +219,47 @@ describe("PKCE S256", () => {
     expect(own(129)).toBe(false);
     expect(own(4096)).toBe(false);
   });
+
+  // The test at the top of this block checks each refusal against a FOREIGN
+  // challenge, so the digest compare refuses them all and the guards in front
+  // of it are never what decides. Each case here is built so exactly one guard
+  // stands between the input and a wrong answer: the verifier is checked
+  // against its own challenge, the challenge is non-empty but the wrong length,
+  // and the null inputs reach the guard that exists for them.
+  //
+  // Reverse-verified (2026-09-25, one mutation per guard, each reddening only
+  // this test unless noted; the two tests above stayed green under the first
+  // four):
+  //   - charset check disabled (`if (false)`) → own-challenge "!" verifier accepted
+  //   - timingSafeEqual replaced by Buffer#equals → timingSafeEqual spy 0 calls
+  //   - length compare disabled → timingSafeEqual throws RangeError on "abc"
+  //   - empty/null guard disabled → null.length throws TypeError
+  //   - compare replaced by `return true` → this test, the first test above and
+  //     the flow's wrong-verifier test redden
+  it("refuses each malformed input at its own guard and compares in constant time (INV-7 item 1)", () => {
+    const withBadChar = "!" + "a".repeat(42);
+    expect(verifyPkceS256(withBadChar, computeS256Challenge(withBadChar))).toBe(false);
+
+    const { verifier, challenge } = pkcePair();
+    expect(verifyPkceS256(verifier, "abc")).toBe(false);
+    expect(verifyPkceS256(null, challenge)).toBe(false);
+    expect(verifyPkceS256(undefined, challenge)).toBe(false);
+    expect(verifyPkceS256(verifier, null)).toBe(false);
+    expect(verifyPkceS256(verifier, undefined)).toBe(false);
+
+    const compare = vi.spyOn(crypto, "timingSafeEqual");
+    try {
+      // A same-length wrong challenge passes every guard, so only the compare
+      // can refuse it — and it must be the constant-time one.
+      const other = pkcePair().challenge;
+      expect(other.length).toBe(challenge.length);
+      expect(verifyPkceS256(verifier, other)).toBe(false);
+      expect(verifyPkceS256(verifier, challenge)).toBe(true);
+      expect(compare).toHaveBeenCalledTimes(2);
+    } finally {
+      compare.mockRestore();
+    }
+  });
 });
 
 describe("redirect_uri policy", () => {
@@ -357,6 +398,33 @@ describe("OAuthStore", () => {
     expect(seen.size).toBe(issued.length);
   });
 
+  // The tests around this one step a second or more past a TTL, so none of
+  // them can tell `<=` from `<`: a token must already be dead at the instant it
+  // expires. Each token is paired with a twin used one millisecond earlier as a
+  // control, so a clock the store did not read would show up as a false pass.
+  //
+  // Reverse-verified (2026-09-25, each reddening only this test):
+  //   - validateAccessToken `record.expiresAt <= this.now()` → `<` → the
+  //     at-TTL access token is accepted
+  //   - rotateRefreshToken `record.expiresAt <= t` → `<` → the at-TTL refresh
+  //     token is rotated
+  it("refuses access and refresh tokens at exactly their expiry instant (INV-7 item 5)", () => {
+    let t = 1000;
+    const store = new OAuthStore({ ...opts, now: () => t });
+    const early = store.issueTokens("c", "vault.read", "r");
+    const atTtl = store.issueTokens("c", "vault.read", "r");
+
+    t = 1000 + opts.accessTokenTtlSec * 1000 - 1;
+    expect(store.validateAccessToken(early.accessToken)?.clientId).toBe("c");
+    t = 1000 + opts.accessTokenTtlSec * 1000;
+    expect(store.validateAccessToken(atTtl.accessToken)).toBeNull();
+
+    t = 1000 + opts.refreshTokenTtlSec * 1000 - 1;
+    expect(store.rotateRefreshToken(early.refreshToken, "c")).not.toBeNull();
+    t = 1000 + opts.refreshTokenTtlSec * 1000;
+    expect(store.rotateRefreshToken(atTtl.refreshToken, "c")).toBeNull();
+  });
+
   it("expires codes and access tokens", () => {
     let t = 1000;
     const store = new OAuthStore({ ...opts, now: () => t });
@@ -375,6 +443,26 @@ describe("OAuthStore", () => {
     expect(store.validateAccessToken(tokens.accessToken)?.clientId).toBe("c");
     t += 61_000;
     expect(store.validateAccessToken(tokens.accessToken)).toBeNull();
+  });
+
+  // The test above jumps a second past the TTL, so it cannot tell `<=` from
+  // `<`: the code must already be dead at the instant it expires, not one tick
+  // later. The first code is consumed one millisecond before that instant as a
+  // control, so a clock the store did not read would show up as a false pass.
+  //
+  // Reverse-verified (2026-09-25): `record.expiresAt <= this.now()` →
+  // `record.expiresAt < this.now()` reddens only this test (the at-TTL code is
+  // accepted); the test above stays green under it.
+  it("refuses an authorization code at exactly its expiry instant (INV-7 item 2)", () => {
+    let t = 1000;
+    const store = new OAuthStore({ ...opts, now: () => t });
+    const params = { clientId: "c", redirectUri: "https://x/cb", codeChallenge: "ch", scope: "", resource: "r" };
+    const early = store.createAuthorizationCode(params);
+    const atTtl = store.createAuthorizationCode(params);
+    t = 1000 + opts.codeTtlSec * 1000 - 1;
+    expect(store.consumeAuthorizationCode(early)?.clientId).toBe("c");
+    t = 1000 + opts.codeTtlSec * 1000;
+    expect(store.consumeAuthorizationCode(atTtl)).toBeUndefined();
   });
 
   it("enforces the token cap even when all tokens are still live", () => {
@@ -1507,6 +1595,92 @@ describe("OAuthStore persistence", () => {
     expect(reloaded.rotateRefreshToken(tokens.refreshToken, "c")).toBeNull();
   });
 
+  // The envelope's `version` and `salt` sit OUTSIDE the MAC, so the tamper
+  // test above (which edits the MAC'd payload) never reaches the checks on
+  // them. Each case keeps the MAC valid for what it presents, so only the field
+  // check can refuse it. The unmodified file and a re-MAC'd envelope with a
+  // well-formed salt are loaded first as controls — they prove the file and the
+  // test's own MAC computation are good, so the refusals are the checks.
+  //
+  // Reverse-verified (2026-09-25, each reddening only this test):
+  //   - `envelope.version !== STATE_VERSION ||` removed → version 2 loads
+  //   - salt-length check disabled (`if (false)`) → an 8-byte salt loads
+  //   - MAC compare replaced by `!presented.equals(expected)` →
+  //     timingSafeEqual spy 0 calls
+  //   - mismatches short-circuited by `!presented.equals(expected)` BEFORE
+  //     timingSafeEqual (kept on the success path only) → spy 1 call, not 2
+  //     (the wrong same-length MAC never reached the constant-time compare)
+  it("fails closed on an unknown version or a malformed salt, and checks the MAC in constant time (INV-7 item 7)", async () => {
+    const file = await stateFilePath();
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    const original = JSON.parse(await fs.readFile(file, "utf8"));
+
+    const loadWith = async (envelope: unknown) => {
+      await fs.writeFile(file, JSON.stringify(envelope));
+      return new OAuthStore({ ...opts, persistPath: file, persistSecret: secret }).validateAccessToken(
+        tokens.accessToken
+      );
+    };
+    const remac = (salt: Buffer) => ({
+      ...original,
+      salt: salt.toString("hex"),
+      mac: crypto
+        .createHmac("sha256", crypto.scryptSync(secret, salt, 32))
+        .update(original.payload as string)
+        .digest("hex")
+    });
+
+    // The spy covers a matching MAC AND a wrong one of the same length: the
+    // mismatch is the attacker-controlled case, so it is the one that must
+    // reach the constant-time compare.
+    const mac = original.mac as string;
+    const wrongMac = mac.slice(0, -1) + (mac.endsWith("0") ? "1" : "0");
+    const compare = vi.spyOn(crypto, "timingSafeEqual");
+    try {
+      expect((await loadWith(original))?.clientId).toBe("c");
+      expect(await loadWith({ ...original, mac: wrongMac })).toBeNull();
+      expect(compare).toHaveBeenCalledTimes(2);
+    } finally {
+      compare.mockRestore();
+    }
+    expect((await loadWith(remac(crypto.randomBytes(16))))?.clientId).toBe("c");
+
+    expect(await loadWith({ ...original, version: 2 })).toBeNull();
+    expect(await loadWith(remac(crypto.randomBytes(8)))).toBeNull();
+  });
+
+  // The loader drops expired tokens, and then sweeps clients left holding
+  // none. The sweep only sees the maps, and does not look at expiry itself —
+  // so it is the drop that makes a client whose tokens all expired an orphan.
+  // The test above ("drops expired tokens…") checks the drop through
+  // validateAccessToken, which refuses an expired record on its own and so
+  // cannot tell dropped from kept. The client registry can.
+  //
+  // Reverse-verified (2026-09-25): removing `record.expiresAt > t` from the
+  // load filter reddens only this test (the orphaned client survives the
+  // reload); the test above stays green under it.
+  it("drops a client at load once every token it held has expired (INV-7 item 7)", async () => {
+    const file = await stateFilePath();
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t });
+    const client = store.registerClient(["https://chatgpt.com/cb"]);
+    store.issueTokens(client.clientId, "vault.read", "r");
+
+    // Control: inside the refresh TTL the client is kept.
+    t += 500_000;
+    expect(
+      new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t }).getClient(client.clientId)
+    ).toBeDefined();
+
+    // Past both the refresh TTL and the orphan grace (1 h): nothing it held is
+    // live, so it must not survive the load.
+    t = 1_000_000 + 2 * 60 * 60 * 1000;
+    expect(
+      new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t }).getClient(client.clientId)
+    ).toBeUndefined();
+  });
+
   it("fails closed on a corrupt state file instead of throwing", async () => {
     const file = await stateFilePath();
     await fs.writeFile(file, "not json {{{", "utf8");
@@ -1530,13 +1704,24 @@ describe("OAuthStore persistence", () => {
     expect(reloaded.rotateRefreshToken(tokens.refreshToken, "c")).not.toBeNull();
   });
 
+  // Pins the umask to 022 for the same reason as the directory test below:
+  // under a restrictive umask (077) a write WITHOUT the mode also comes out
+  // 0600, and this test would be vacuous on that host.
+  //
+  // Reverse-verified (2026-09-25): dropping `{ mode: 0o600 }` from the
+  // writeFileSync in save() reddens only this test (0644 under umask 022).
   it("writes the state file with owner-only permissions", async () => {
     if (process.platform === "win32") {
       return;
     }
     const file = await stateFilePath();
-    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
-    store.issueTokens("c", "vault.read", "r");
+    const previous = process.umask(0o022);
+    try {
+      const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+      store.issueTokens("c", "vault.read", "r");
+    } finally {
+      process.umask(previous);
+    }
     const stat = await fs.stat(file);
     expect(stat.mode & 0o777).toBe(0o600);
   });
@@ -1699,6 +1884,12 @@ describe("OAuthProvider flow", () => {
     const pr = JSON.parse(provider.protectedResourceMetadata().body);
     expect(pr.resource).toBe(`${config.issuer}/mcp`);
     expect(pr.authorization_servers).toEqual([config.issuer]);
+    // Writes are off here, so neither document may advertise vault.write. The
+    // resource side was already asserted elsewhere; the AS side was not.
+    // Reverse-verified (2026-09-25): hard-coding the AS `scopes_supported` to
+    // [SCOPE_READ, SCOPE_WRITE] reddens only this test.
+    expect(as.scopes_supported).toEqual(["vault.read"]);
+    expect(pr.scopes_supported).toEqual(["vault.read"]);
   });
 
   // Pins the registration MECHANISM, and only that: while this key is absent, a
@@ -1743,6 +1934,46 @@ describe("OAuthProvider flow", () => {
     const plain = authorizeParams(clientId, challenge);
     plain.set("code_challenge_method", "plain");
     expect(provider.authorizeGet(plain).status).toBe(400);
+  });
+
+  // Every other authorize test sends the one redirect_uri the client registered,
+  // so the exact-match check was never what decided an outcome. Each variant
+  // here would pass the scheme policy on its own (https, concrete host), so only
+  // the membership test can refuse it — and a refusal must never be a redirect,
+  // or it would hand the code to the unregistered target. The registered value
+  // is sent through the same path as a control.
+  //
+  // Reverse-verified (2026-09-25): `!redirectUri ||
+  // !client.redirectUris.includes(redirectUri)` → `!redirectUri` reddens only
+  // this test (the first unregistered target is served the login page, 200 for
+  // 400); every other test in this file and in httpServer.test.ts stays green.
+  it("refuses a redirect_uri the client did not register, without redirecting (INV-7 item 3)", () => {
+    const { provider, clientId } = setup(); // registered: https://chatgpt.com/cb
+    const { challenge } = pkcePair();
+
+    const control = authorizeParams(clientId, challenge);
+    control.set("password", "hunter2");
+    expect(provider.authorizePost(control).status).toBe(302);
+
+    for (const unregistered of [
+      "https://evil.example/cb",
+      "https://chatgpt.com/cb/extra",
+      "https://chatgpt.com/cb/",
+      "https://chatgpt.com/cb?x=1",
+      "https://chatgpt.com:8443/cb",
+      "https://CHATGPT.com/cb"
+    ]) {
+      const params = authorizeParams(clientId, challenge);
+      params.set("redirect_uri", unregistered);
+      const page = provider.authorizeGet(params);
+      expect(page.status, unregistered).toBe(400);
+      expect(page.body).toContain("redirect_uri does not match a registered value.");
+
+      params.set("password", "hunter2");
+      const post = provider.authorizePost(params);
+      expect(post.status, unregistered).toBe(400);
+      expect(post.headers.location).toBeUndefined();
+    }
   });
 
   it("requires the login password and then issues a code", () => {
@@ -1872,10 +2103,15 @@ describe("OAuthProvider flow", () => {
     });
   });
 
-  function exchange(provider: OAuthProvider, clientId: string, requestedScope: string) {
+  // `null` omits the `scope` parameter entirely; `""` sends it empty.
+  function exchange(provider: OAuthProvider, clientId: string, requestedScope: string | null) {
     const { verifier, challenge } = pkcePair();
     const form = authorizeParams(clientId, challenge);
-    form.set("scope", requestedScope);
+    if (requestedScope === null) {
+      form.delete("scope");
+    } else {
+      form.set("scope", requestedScope);
+    }
     form.set("password", "hunter2");
     const code = new URL(provider.authorizePost(form).headers.location).searchParams.get("code")!;
     const token = provider.token(
@@ -1914,6 +2150,30 @@ describe("OAuthProvider flow", () => {
     expect(payload.scope.split(" ")).toContain("vault.write");
   });
 
+  // The omitted-scope default is asserted above only on a read-only server,
+  // where "read" and "everything grantable" are the same set — so a default of
+  // the full grantable set would pass there. On a write-enabled server they
+  // differ, and a client that asked for nothing must still get read only.
+  // Both shapes of "asked for nothing" are sent: the parameter left out, and
+  // the parameter present but empty. They take the same path today; checking
+  // each keeps a later change that tells them apart from slipping through on
+  // the one this test did not send.
+  //
+  // Reverse-verified (2026-09-25, each reddening only this test; the read-only
+  // test above stays green under both):
+  //   - grantScope's empty-request default → `this.grantableScopes.join(" ")`
+  //     → "vault.read vault.write" granted (both cases)
+  //   - `params.get("scope") ?? ""` → `?? "vault.read vault.write"` (only an
+  //     ABSENT parameter now gets write) → the omitted case is granted write
+  it("defaults an omitted scope to read even when the server allows writes (INV-7 item 5)", () => {
+    const provider = new OAuthProvider({ ...config, allowWrite: true });
+    const clientId = JSON.parse(provider.register({ redirect_uris: ["https://chatgpt.com/cb"] }).body).client_id;
+    expect(exchange(provider, clientId, null).scope).toBe("vault.read");
+    expect(exchange(provider, clientId, "").scope).toBe("vault.read");
+    // Control: the same server does grant write when it is asked for.
+    expect(exchange(provider, clientId, "vault.read vault.write").scope).toBe("vault.read vault.write");
+  });
+
   it("binds issued tokens to the canonical resource (audience)", () => {
     const { provider, clientId } = setup();
     const payload = exchange(provider, clientId, "vault.read");
@@ -1935,13 +2195,60 @@ describe("OAuthProvider flow", () => {
     expect(provider.register({ redirect_uris: ["https://x/cb"], client_name: "n".repeat(300) }).status).toBe(400);
   });
 
+  // The test above overshoots each cap (6 URIs, ~3000 characters, 300
+  // characters), so a cap loosened by a little still refuses its input. These
+  // sit exactly on and one past each limit.
+  //
+  // Reverse-verified (2026-09-25, each reddening only this test):
+  //   - MAX_REDIRECT_URI_LENGTH 2048 → 2049 → a 2049-character URI registers
+  //   - MAX_CLIENT_NAME_LENGTH 256 → 257 → a 257-character name registers
+  // (MAX_REDIRECT_URIS 5 → 6 is already caught by the test above.)
+  it("caps dynamic client registration inputs exactly at their limits (INV-7 item 6)", () => {
+    const provider = new OAuthProvider(config);
+    const uriOfLength = (n: number) => "https://x/" + "a".repeat(n - "https://x/".length);
+    expect(provider.register({ redirect_uris: Array(5).fill("https://x/cb") }).status).toBe(201);
+    expect(provider.register({ redirect_uris: [uriOfLength(2048)] }).status).toBe(201);
+    expect(provider.register({ redirect_uris: [uriOfLength(2049)] }).status).toBe(400);
+    expect(provider.register({ redirect_uris: ["https://x/cb"], client_name: "n".repeat(256) }).status).toBe(201);
+    expect(provider.register({ redirect_uris: ["https://x/cb"], client_name: "n".repeat(257) }).status).toBe(400);
+  });
+
+  // Reverse-verified (2026-09-25): the first three asserts were already pinned;
+  // the rest were not, and each of these reddens only this test —
+  //   - `default-src 'none'` → `default-src *`
+  //   - `; base-uri 'none'` removed
+  //   - the page's `cache-control: no-store` removed
+  //   - the token response's `cache-control` / `pragma` removed
   it("sets clickjacking/leakage headers on the consent page", () => {
     const { provider, clientId } = setup();
-    const { challenge } = pkcePair();
+    const { verifier, challenge } = pkcePair();
     const res = provider.authorizeGet(authorizeParams(clientId, challenge));
     expect(res.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
     expect(res.headers["x-frame-options"]).toBe("DENY");
     expect(res.headers["referrer-policy"]).toBe("no-referrer");
+    const csp = res.headers["content-security-policy"] as string;
+    expect(csp.startsWith("default-src 'none';")).toBe(true);
+    expect(csp).toContain("base-uri 'none'");
+    // The login form carries the authorize parameters; a cached copy must not
+    // be replayable from history.
+    expect(res.headers["cache-control"]).toBe("no-store");
+
+    // The token response carries bearer credentials (RFC 6749 §5.1).
+    const form = authorizeParams(clientId, challenge);
+    form.set("password", "hunter2");
+    const code = new URL(provider.authorizePost(form).headers.location).searchParams.get("code")!;
+    const token = provider.token(
+      new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        client_id: clientId,
+        redirect_uri: "https://chatgpt.com/cb",
+        code_verifier: verifier
+      })
+    );
+    expect(token.status).toBe(200);
+    expect(token.headers["cache-control"]).toBe("no-store");
+    expect(token.headers.pragma).toBe("no-cache");
   });
 
   it("allows the client's redirect origin in form-action so the OAuth redirect is not blocked", () => {
@@ -2779,6 +3086,76 @@ describe("OAuth end-to-end over HTTP", () => {
     // A read-scoped token against the SAME endpoint is served, so the 403 is the
     // scope gate and not the endpoint being broken.
     expect(await listToolNamesOverHttp(issuer, await oauthObtainToken(issuer, "vault.read"))).toContain("search");
+  });
+
+  // Every token a single server can mint is bound to that server's own
+  // resource, so within one process the audience compare at /mcp never sees a
+  // mismatch. A mismatch arrives across a restart: the state file keeps tokens
+  // issued under the old issuer (a tunnel URL that changed, say), and a server
+  // that loads them must not accept them for its new resource. The same file is
+  // first loaded under the SAME issuer, where the token is served — so the 401
+  // afterwards is the audience check, not a token that failed to persist.
+  //
+  // Reverse-verified (2026-09-25): `record && record.resource ===
+  // oauth.canonicalResource` → `record` reddens only this test (the moved
+  // server serves the old token); every other test in this file and in
+  // httpServer.test.ts stays green under it.
+  it("refuses a persisted token whose audience is a different issuer (INV-7 item 5)", async () => {
+    const store = await makeStore();
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-oauth-audience-"));
+    const stateFile = path.join(stateDir, "oauth-state.json");
+    const start = async (issuer: string) => {
+      const port = await freePort();
+      const config: HttpConfig = {
+        host: "127.0.0.1",
+        port,
+        authToken: "static-bearer-unused-here",
+        authTokenScopes: [SCOPE_READ, SCOPE_WRITE],
+        allowWrite: false,
+        allowSkillWrite: false,
+        allowAuditWrite: false,
+        allowLegacyCreateDocument: false,
+        allowedHosts: [`127.0.0.1:${port}`, `localhost:${port}`],
+        allowedOrigins: [],
+        oauth: {
+          issuer: issuer || `http://127.0.0.1:${port}`,
+          loginPassword: "hunter2",
+          accessTokenTtlSec: 3600,
+          refreshTokenTtlSec: 86_400,
+          codeTtlSec: 60,
+          allowWrite: false,
+          stateFile
+        }
+      };
+      server = await startHttpServer(store, config);
+      return { base: `http://127.0.0.1:${port}`, issuer: config.oauth!.issuer };
+    };
+    const stop = async () => {
+      await new Promise<void>((resolve) => server!.close(() => resolve()));
+      server = undefined;
+    };
+
+    const first = await start("");
+    const token = await oauthObtainToken(first.base, "vault.read");
+    await stop();
+
+    // Control: same issuer, reloaded from the file — served.
+    const same = await start(first.issuer);
+    expect(await listToolNamesOverHttp(same.base, token)).toContain("search");
+    await stop();
+
+    const moved = await start("https://moved.example");
+    const res = await fetch(`${moved.base}/mcp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} })
+    });
+    expect(res.status).toBe(401);
+    expect(res.headers.get("www-authenticate") ?? "").toContain("resource_metadata=");
   });
 
   it("gates write tools by token scope on the 2026-07-28 era too (no session to bind to)", async () => {
