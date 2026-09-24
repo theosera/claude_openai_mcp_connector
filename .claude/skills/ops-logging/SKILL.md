@@ -254,6 +254,38 @@ terminal-ops-logs/
   上限の証明ではない。
 - AWS `AKIA…` / OpenAI 系 `sk-…` (ハイフン付き `sk-proj-…` / `sk-ant-…` も対象)
 - Google API key `AIza…` / Slack `xox[baprs]-…`
+- **引数位置の資格情報** (2026-09-24 追加・S-1 F6): `-u` / `--user` の `name:secret`、MySQL 系
+  client の `-p<値>` (client 名に anchor — `-p` 単独は `mkdir -p` / `cp -pR` / `ssh -p2222`)、
+  `redis-cli` の `-a` / `--pass`。`passwd` / `passphrase` は**共有の keyword 群に入れず**、fallback の**直後**の
+  専用の 1 本 (bare) で消す (`--passphrase V` / `--passphrase=V`)。⚠️ **引用された複数語の passphrase は
+  この変更では扱わない** (二重引用・単引用の 2 本は #186 と一緒にこの変更から外した・(c))。⛔ 共有群に入れると
+  最長一致で後続の本物の keyword を値として呑み (`--passphrase --key S` / `"Enter passphrase: " … PASSWORD="a b"`)、
+  その値が平文で出た (2 回目の change scan F2 / F3・実測で再現)。
+  ⛔ この系列が足した規則 4 本は**すべて address `/```|~~~/!` を持つ** — フェンスの連なりを含む行では動かない。
+  mask() は各ターンのフェンス判定の**後**に走るので、"```mysql -p`x`" (info string にバッククォート = フェンスではない)
+  からバッククォートを消すとフェンスの開始行ができる (2 回目の scan F1)。⛔ **文字クラスから外す**方式は、
+  エスケープの選択肢 `\\.` が "\`" を食って足りず (3 回目 F1)、しかも `~` / バッククォートを含む秘密を
+  そこで切って後半を残した (3 回目 F2)。⭕ 他の行では置換が必ず `***MASKED***` を挿入するので、バッククォートの
+  連なりを作れない。⚠️ 代償: フェンスの連なりと同じ行にある資格情報は既存規則任せ (変更前と同じ)。
+  既存の keyword 規則にも同じ根があり、別件 (P-28) で追う。
+  ⛔ `auth` / `credential` は足さない — `gh auth status` / `git credential fill` の副コマンドが消える。
+  ⚠️ 未対応: `openssl -passin pass:V` / `sshpass -p V`。⚠️ **この変更より前の log には引数位置の
+  資格情報が平文で残りうる** (既存 log の該当調査は 2026-09-20 に D 分類 0 件・射程の閉じ方は別決定)。
+- ⛔ **check-then-append (A-47 F2) は この変更では扱わない** (2026-09-25・owner 決裁 (y))。
+  `grep -q "token: " f || echo "token: V" >> f` — 引用値規則が grep 引数の**閉じ**引用符を開きと読み、fallback が
+  `"***MASKED***"token:` を 1 つの値として呑んで V に届かない (元の版からの残り)。fallback の直上に置いた
+  「引用符でも値を切る」pass は 2 回とも退行を出した: ① 当たり先を絞らないと `--key` の中の `key` に当たって後続の
+  `token:` を消した (#231 のレビュー指摘) ② 引用符の直後に絞っても `"secret key: V` の `key:` を値として消した
+  (6 回目の change scan F1〜F3)。⇒ #232 で扱う。
+- ⛔ **YAML の二重アポストロフィ (#186 / A-57) は この変更では扱わない** (2026-09-24・owner 決裁 (b') → (c))。
+  試した 2 形がどちらも、元の規則がマスクしていた値を平文にした: ① 単引用値の文字クラスに `''` を足す —
+  最長一致で「閉じ引用符 + 迷子の `'`」から次の keyword の開き引用符まで走り、2 つ目の値の 2 語目以降が出た
+  (1 回目の change scan F2) ② マスク済みの値の直後だけ `''` を続きとして読む規則 — そのエスケープの選択肢が
+  `\` + 空白 (や `\` + 5 連ダッシュ) を消し、fallback が後ろの keyword を呑んだ (5 回目 F1・実測で再現)。
+  ⇒ ⭐ **fallback より前に走る規則は、fallback の値がどこで終わるかを動かせる** — 2 形ともそれを踏んだ。
+  #186 は別の変更で扱う (受け皿は Issue の条件 (iii))。
+- **client 名と flag の間の語数に上限 12** (同 change scan F1): 上限なしの `( 語)*` は、同じ client 名の
+  繰り返し行で開始位置ごとに行末まで走査して失敗し、glibc (GNU sed) で二乗になる。BSD sed はどちらでも線形。
 - **PEM 秘密鍵**: BEGIN / END の marker 行を置換し、その範囲 (BEGIN 〜 END、または
   **BEGIN から 100 行**まで・先に来たほう。2026-09-17 までは「次の column 0 の `~~~` 行」も
   終端だった) の中で **base64 文字の 12 文字以上の連なりを置換**する。
@@ -346,6 +378,18 @@ terminal-ops-logs/
   `CERTIFICATE` でも同じ)。⇒ ⭐ 置換 token は `***MASKED***` なので、**破壊が通常のマスク処理に見える**。
   ⚠️ **「bare 規則に marker address を付ける」も却下** — ⛔ 値が marker と同じ行にある形で
   平文が残る (Finding 1 の再演。address は行全体をスキップするが PEM 規則は marker の span しか覆わない)。
+  ⭕ **【2026-09-24 解消 — 上の 3 つの却下はそのまま有効】** (A-47 = 2026-09-18 change scan F3):
+  共有の marker regex には**触らず**、`PGP PRIVATE KEY BLOCK` と **RFC 4716**
+  (`---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----` = 4 ダッシュ + 空白。上の「SSH2 は数字を許して直った」は
+  **5 ダッシュ綴りの話で、ssh-keygen が実際に書く形は範囲を開いていなかった**) に**専用の 2 本**を足した:
+  ① **mask() の最初の規則**が元の行で窓を開く (keyword 規則が marker を壊す前) ② in-range 本体規則の**直後**の
+  規則が END 行で窓を閉じる (keyword 規則が書き換えた `KEY ***MASKED***` 綴りと元の綴りの両方を名指す)。
+  ⇒ ⭕ address は広がらないので、引用値の address 付き半分は JSON 1 行形を従来どおり丸ごと消す。
+  ⇒ ⚠️ 代償: この 2 形を**引用した**散文・コメントでも窓が開き、最大 100 行の 12+ 連なりと短い行が消える
+  (共有 marker が既に持つ「植えられた marker」の代償と同じ種類。実測: 本リポ追跡ファイルでは
+  `tests/logRedactor.test.ts` のコメント 1 か所)。
+  ⇒ ⭕ **diff の `-` を prefix 付き catch-all の prefix に足した** (同じ F3 の後半) — 窓の外の `-` 付き 32+ 行も消え、
+  上限 100 行の代償 (`-` 付きの 1 本 100 行超の本体の尾が残る) もこれで無くなった。
 - **base64 だけの行** (32 文字以上) は marker 無しで貼られた本体の catch-all として
   行ごとマスクする (今回の変更で除外は 1 つも増えていない)。
   この catch-all は本 hook では**新規追加**である (session-archive 側には

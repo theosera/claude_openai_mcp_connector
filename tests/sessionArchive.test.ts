@@ -551,7 +551,10 @@ function withoutEscapeAwareness(maskFn: string): string {
   const close = '\\"/\\1';
   let touched = 0;
   const out = maskFn.split("\n").map((line) => {
-    if (!line.trim().startsWith("-e") || !line.includes(QUOTED_RULES)) return line;
+    // The shared keyword pair only: the passwd / passphrase pass (2026-09-24)
+    // carries its own escape-aware double-quoted rule, pinned in its own test.
+    if (!line.trim().startsWith("-e") || !line.includes(QUOTED_RULES) || !line.includes("token|key|secret"))
+      return line;
     const a = line.indexOf(open);
     const b = a < 0 ? -1 : line.indexOf(close, a + open.length);
     if (a < 0 || b < 0) return line;
@@ -760,6 +763,14 @@ const RANGE_OPEN_ONLY_WHEN_CLOSED = "{x;s/^$/o/;x;}";
 const RANGE_END = "-----/{x;s/.*//;x;}";
 /** The same close, also ending at a blank line -- the bound the encrypted-key test proves wrong. */
 const RANGE_END_OR_BLANK = "-----|^[[:space:]]*$/{x;s/.*//;x;}";
+/**
+ * The two armors the shared marker regex cannot name (2026-09-24): PGP's
+ * `PRIVATE KEY BLOCK`, which the keyword rules break before the range's address
+ * sees it, and RFC 4716's four-dash `---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----`.
+ * Their window opens on its own FIRST rule and closes on its own rule after the
+ * in-range body rule; both rules, and no other, carry the RFC 4716 spelling.
+ */
+const EXTRA_ARMOR = "SSH2 ENCRYPTED PRIVATE KEY ----";
 /** The in-range whole-line short-run rule (2026-09-17): its length class occurs nowhere else. */
 const IN_RANGE_SHORT_LINE = "{1,11}";
 /** The prefixed whole-line catch-all (2026-09-17): the run it substitutes, spelled as only it spells it. */
@@ -1036,18 +1047,25 @@ describe("session-archive PEM key masking", () => {
     // Reverse verification: reset the counter only when it is CLOSED and the
     // planted shape leaks the body past line 101 -- lines 102-111, the ten the
     // scan named -- while the two-block shape stays covered by the reopen.
+    // Since 2026-09-24 a diff `-` is one of the prefixes the prefixed catch-all
+    // admits, so those ten lines are ALSO reached outside any window: the reset
+    // is shown to hold on its own with that rule silenced, and the stale reset
+    // is shown to leak only once it is silenced too.
     const stale = mutate(mask, RANGE_OPEN, RANGE_OPEN_ONLY_WHEN_CLOSED, "the per-BEGIN counter reset");
-    expect(surviving(runMask(stale, planted))).toEqual(later.slice(40));
-    expect(surviving(runMask(stale, pair))).toEqual([]);
+    expect(surviving(runMask(stale, planted))).toEqual([]);
+    expect(surviving(runMask(withoutPrefixedCatchAll(mask), planted))).toEqual([]);
+    expect(surviving(runMask(withoutPrefixedCatchAll(stale), planted))).toEqual(later.slice(40));
+    expect(surviving(runMask(withoutPrefixedCatchAll(stale), pair))).toEqual([]);
   });
 
   it("still stops at the cap inside ONE key, and what that costs is measured rather than rounded away", () => {
     // The cap is a ceiling on the reach of a planted marker, and a ceiling has
     // a cost: a single body longer than 100 lines is masked only that far by
-    // the range. Bare lines and the three prefixes the prefixed catch-all
-    // admits are taken by the catch-alls with no range at all, so the cost
-    // lands only on a prefix outside that list -- here a diff `-`, where the
-    // tail of a 110-line body (an RSA-8192 key, about 107 lines) survives.
+    // the range. Bare lines and the prefixes the prefixed catch-all admits are
+    // taken by the catch-alls with no range at all, so the cost lands only on a
+    // prefix outside that list. Until 2026-09-24 that was a diff `-`, where the
+    // tail of a 110-line body (an RSA-8192 key, about 107 lines) survived; a
+    // `-` is on the list now, so the cap is shown by silencing that rule.
     // Pinned so the comment above the rule cannot claim the cap costs nothing.
     const body = syntheticBody(110);
     const block = (prefix: (line: string, lineNumber: number) => string) =>
@@ -1059,6 +1077,14 @@ describe("session-archive PEM key masking", () => {
       surviving(
         runMask(
           mask,
+          block((line) => `-${line}`)
+        )
+      )
+    ).toEqual([]);
+    expect(
+      surviving(
+        runMask(
+          withoutPrefixedCatchAll(mask),
           block((line) => `-${line}`)
         )
       )
@@ -1355,7 +1381,13 @@ function pemRulesFirst(maskFn: string): string {
   const lines = maskFn.split("\n");
   const pem: number[] = [];
   lines.forEach((line, index) => {
-    if (line.trim().startsWith("-e") && line.includes("PRIVATE KEY") && !line.includes("!s/")) pem.push(index);
+    if (
+      line.trim().startsWith("-e") &&
+      line.includes("PRIVATE KEY") &&
+      !line.includes("!s/") &&
+      !line.includes(EXTRA_ARMOR)
+    )
+      pem.push(index);
   });
   expect(pem).toHaveLength(4);
   const block = pem.map((index) => lines[index]);
@@ -1416,7 +1448,10 @@ function withLineSkipAddressOn(maskFn: string, ruleMarker: string, what: string)
   if (at < 0) {
     throw new Error(`${what} is not in the shipped mask() -- that absence is itself the signal.`);
   }
-  lines[at] = lines[at].replace(/(-e ["'])(s\/)/, `$1${pemMarkerAddress(maskFn)}$2`);
+  // A rule added on 2026-09-24 carries a fence-line address already, and sed
+  // takes one address per command: the PEM address REPLACES it (the lines these
+  // probes use hold no fence run, so that address never mattered to them).
+  lines[at] = lines[at].replace(/(-e ["'])(?:\/[^/]*\/!)?(s\/)/, `$1${pemMarkerAddress(maskFn)}$2`);
   return lines.join("\n");
 }
 
@@ -1606,6 +1641,8 @@ describe("session-archive auth-scheme masking", () => {
     // one: the dash boundary is not what covers this shape (the value and the
     // marker are separate tokens, so the rule matches either way). What broke it
     // was the line-skip address, so putting one back is the mutation that reddens.
+    // (The quote-bounded pass added on 2026-09-24 fires only on a keyword that
+    // follows a quote, so it does not reach this value: the fallback alone does.)
     expect(
       runMask(
         withLineSkipAddressOn(mask, BARE_KEYWORD_VALUE, "the bare keyword rule"),
@@ -1674,11 +1711,15 @@ describe("session-archive auth-scheme masking", () => {
     // LATER of the two: the reset must see the marker before a dash-carrying
     // class can eat it, and the body rule must run on the same pass.
     const rules = mask.split("\n").filter((line) => line.trim().startsWith("-e"));
+    // Two resets since 2026-09-24: the shared marker's, and the extra armors',
+    // which is the FIRST rule of all so no keyword rule can reach its marker.
     const opens = rules.filter((line) => line.includes(RANGE_OPEN));
     const bodies = rules.filter((line) => line.includes(RUN_SUBSTITUTION));
-    expect(opens).toHaveLength(1);
+    expect(opens).toHaveLength(2);
     expect(bodies).toHaveLength(1);
-    expect(rules.indexOf(opens[0])).toBeLessThan(rules.indexOf(bodies[0]));
+    expect(rules[0]).toContain(EXTRA_ARMOR);
+    expect(rules[0]).toContain(RANGE_OPEN);
+    for (const open of opens) expect(rules.indexOf(open)).toBeLessThan(rules.indexOf(bodies[0]));
     const rangeAt = rules.indexOf(bodies[0]);
 
     // Only the shapes whose value class contains `-`: `gh[pousr]_` and `AKIA` end
@@ -1709,7 +1750,9 @@ describe("session-archive auth-scheme masking", () => {
     // So derive the shape from the shipped range rule instead of restating it; a
     // spelled-out copy is exactly what went stale earlier in this suite.
     const rules = mask.split("\n").filter((line) => line.trim().startsWith("-e"));
-    const range = rules.filter((line) => line.includes(RANGE_OPEN));
+    // The extra armors' reset is deliberately NOT in step with this address: it
+    // exists because widening the shared marker would widen the address too.
+    const range = rules.filter((line) => line.includes(RANGE_OPEN) && !line.includes(EXTRA_ARMOR));
     expect(range).toHaveLength(1);
 
     // Pull the whole variable part out of the window's OPENING address -- everything
@@ -1784,31 +1827,81 @@ describe("session-archive auth-scheme masking", () => {
     }
   });
 
-  it("leaves PGP PRIVATE KEY BLOCK open, a pre-existing defect held for a later change", () => {
-    // NOT introduced here: measured leaking at 46c61f7 as well. The marker regex
-    // admits the label, but the bare keyword rule reads `KEY BLOCK` as keyword +
-    // separator + value and masks `BLOCK`, breaking the marker before the range's
-    // start address is ever evaluated -- the rule-interaction shape this suite
-    // keeps finding. Closing it means resolving that interaction, which is its own
-    // change. Pinned so the next reader finds it stated, and so a fix turns this
-    // red instead of passing unnoticed.
-    const prefix = PREFIXED[0][1];
-    const label = "PGP PRIVATE KEY BLOCK";
-    const block = [
-      prefix(`${DASHES}BEGIN ${label}${DASHES}`, 1),
-      ...BODY.map((line, index) => prefix(line, index + 2)),
-      prefix(`${DASHES}END ${label}${DASHES}`, BODY.length + 2)
-    ].join("\n");
+  // Until 2026-09-24 the PGP label here was pinned as a pre-existing defect
+  // (measured leaking at 46c61f7 too): the bare keyword rule reads `KEY BLOCK` as
+  // keyword + separator + value and masks `BLOCK`, breaking the marker before the
+  // range's start address is evaluated. The RFC 4716 armor never matched at all:
+  // it is four dashes and spaces, not five-dash armor. Widening the shared marker
+  // regex was measured and rejected -- it is also the address on the unbounded
+  // quoted halves, which would then skip a one-line JSON value carrying the armor.
+  // So these two open a window on their own FIRST rule and close it on their own
+  // rule after the in-range body rule.
+  for (const [label, open, close] of [
+    [
+      "PGP PRIVATE KEY BLOCK",
+      `${DASHES}BEGIN PGP PRIVATE KEY BLOCK${DASHES}`,
+      `${DASHES}END PGP PRIVATE KEY BLOCK${DASHES}`
+    ],
+    ["the RFC 4716 armor", "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----", "---- END SSH2 ENCRYPTED PRIVATE KEY ----"]
+  ] as const) {
+    it(`opens and closes the window on ${label}, which the shared marker regex does not name`, () => {
+      const prefix = PREFIXED[0][1];
+      const sentinel = "AFTERWARDS-abcdefghijklmnop";
+      const block = [
+        prefix(open, 1),
+        ...BODY.map((line, index) => prefix(line, index + 2)),
+        prefix(close, BODY.length + 2),
+        `prose ${sentinel} continues`
+      ].join("\n");
+      const rangeAlone = withoutPrefixedCatchAll(mask);
 
-    // The defect is that the RANGE does not open on this label. Since 2026-09-17
-    // the prefixed catch-all takes the whole-line body anyway, so the defect is
-    // observed with that rule silenced -- and it is still a defect, because a
-    // body line embedded in prose is reached by the range alone.
-    expect(bodyLinesSurviving(runMask(withoutPrefixedCatchAll(mask), block))).toBe(BODY.length);
-    expect(bodyLinesSurviving(runMask(mask, block))).toBe(0);
-    // And the marker line comes out PARTLY masked, which is the worst shape: the
-    // body leaks while the line reads as a successful redaction.
-    expect(runMask(mask, block).split("\n")[0]).toContain(MASKED);
+      // The window opens: the body is masked by the range alone.
+      expect(bodyLinesSurviving(runMask(rangeAlone, block)), label).toBe(0);
+      expect(bodyLinesSurviving(runMask(mask, block)), label).toBe(0);
+      // And it closes on END: prose after the block keeps its 12+ run.
+      expect(runMask(mask, block), label).toContain(sentinel);
+
+      // Reverse verification, one rule at a time. Drop the opener and the body
+      // comes back once the catch-all is silenced too.
+      const rules = mask.split("\n").filter((line) => line.trim().startsWith("-e"));
+      const opener = rules.filter((line) => line.includes(EXTRA_ARMOR) && line.includes(RANGE_OPEN));
+      const closer = rules.filter((line) => line.includes(EXTRA_ARMOR) && !line.includes(RANGE_OPEN));
+      expect(opener).toHaveLength(1);
+      expect(closer).toHaveLength(1);
+      const withoutOpener = rangeAlone
+        .split("\n")
+        .filter((line) => line !== opener[0])
+        .join("\n");
+      expect(bodyLinesSurviving(runMask(withoutOpener, block)), label).toBe(BODY.length);
+      // Drop the closer and the window runs on past END into the prose.
+      const withoutCloser = mask
+        .split("\n")
+        .filter((line) => line !== closer[0])
+        .join("\n");
+      expect(runMask(withoutCloser, block), label).not.toContain(sentinel);
+    });
+  }
+
+  it("closes the PGP window on the END line the keyword rules have already rewritten", () => {
+    // The keyword rules run between the opener and the closer, and they turn
+    // `KEY BLOCK-----` into `KEY ***MASKED***-----` on the END line too. The
+    // closer names both spellings; pin that the rewritten one is what it meets.
+    const endLine = `${DASHES}END PGP PRIVATE KEY BLOCK${DASHES}`;
+    expect(runMask(mask, endLine)).toBe(`${DASHES}END PGP PRIVATE KEY ${MASKED}${DASHES}`);
+  });
+
+  it("masks a `-`-prefixed body line outside any window, the diff prefix the scan named", () => {
+    // A-47 / change-scan F3 (2026-09-18): a diff `-` was outside the prefixes the
+    // prefixed catch-all admits, so a `-`-prefixed body with no window over it
+    // was written out verbatim. `+` never needed it: it is in the base64 alphabet.
+    const lines = BODY.map((line) => `-${line}`).join("\n");
+    expect(bodyLinesSurviving(runMask(mask, lines))).toBe(0);
+    expect(bodyLinesSurviving(runMask(withoutPrefixedCatchAll(mask), lines))).toBe(BODY.length);
+    // And the prefix is only a bare dash: a markdown list item keeps its text,
+    // and a long option is never read as a prefix plus a run.
+    for (const kept of [`- ${BODY[0]} is quoted in a list`, `--${BODY[0].slice(0, 40)}`]) {
+      expect(runMask(mask, kept)).toBe(kept);
+    }
   });
 
   it("splits the quoted rules so each half covers what the other cannot", () => {
@@ -1827,8 +1920,8 @@ describe("session-archive auth-scheme masking", () => {
     expect(runMask(mask, sharedLine)).not.toContain(SHORT_SECRET);
 
     // The ADDRESSED half is what reaches a five-dash run inside the quotes, and a
-    // PGP armor line -- whose body the range does not protect, since the bare
-    // rule breaks that marker before the range's start address is evaluated.
+    // PGP armor line -- the reason the PGP label is NOT added to the shared marker
+    // regex this address is taken from (its window has rules of its own).
     const withoutAddressed = dropQuotedRules(mask, "addressed");
     expect(runMask(withoutAddressed, fiveDash)).toContain("abc");
     expect(runMask(withoutAddressed, pgpArmor)).toContain("PGP PRIVATE KEY");
@@ -2319,6 +2412,232 @@ async function hookWithoutPinFileState(fixture: Fixture, state: "empty" | "unrea
   await fs.writeFile(downgraded, script.replace(marker, "pin_file_state=absent"));
   return downgraded;
 }
+
+/**
+ * The 2026-09-24 series (A-47 = change-scan F2 / F3 of 2026-09-18, A-57 = #186,
+ * and the 2026-09-19 whole-repo scan's F6), one decision per block, each shown
+ * reddening on its own. Every value here is a placeholder with no credential
+ * shape: the assertion is on the placeholder's absence, not on a pattern.
+ */
+const PLACEHOLDER = "VALUEZZ9";
+
+/** The unbounded single-quoted class, and the same class reading `''` -- the first spelling of #186's fix. */
+const SQ_UNBOUNDED = String.raw`([^'\\\\]|\\\\.)*'`;
+const SQ_UNBOUNDED_DOUBLED = String.raw`([^'\\\\]|\\\\.|'')*'`;
+
+describe("session-archive masking: the 2026-09-24 series", () => {
+  let mask: string;
+
+  beforeAll(async () => {
+    mask = await shippedMask(hookPath);
+  });
+
+  it("leaves the check-then-append value as it was, and masks the shapes the tried pass leaked (taken out under (y))", () => {
+    // The 2026-09-18 change scan's F2 is NOT handled by this change: every pass
+    // tried for it ran before the keyword fallback and reached a credential the
+    // old rules masked (see the comment above the rules; #232). What is pinned:
+    // the check-then-append value stays as the base left it, and the inputs that
+    // exposed each tried spelling are masked as the base masked them.
+    expect(runMask(mask, `grep -q "token: " cfg || echo "token: ${PLACEHOLDER}" >> cfg`)).toContain(PLACEHOLDER);
+    for (const line of [
+      `token: "--key token: ${PLACEHOLDER}`,
+      `grep -q "password: " f || echo "secret key: ${PLACEHOLDER}" >> f`,
+      `grep -q "${AUTH_HEADER}: " cfg || echo "${AUTH_HEADER}: Api-Key ${PLACEHOLDER}" >> cfg`,
+      `grep -q "token: " cfg || echo "token: key: ${PLACEHOLDER}" >> cfg`
+    ]) {
+      expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
+    }
+  });
+
+  it("leaves #186 as it was, and masks the shapes both tried fixes leaked (taken out under (c))", () => {
+    // #186 is NOT handled by this change. Two spellings were tried and each
+    // reached a credential the old rules masked (see the comment above the
+    // rules); owner decision (b') -> (c) took them out. What is pinned: the
+    // #186 tail stays as the base left it, and the inputs that exposed each
+    // tried spelling are masked as the base masked them.
+    expect(runMask(mask, `{'password': 'prefix''SUFFIX${PLACEHOLDER}'}`)).toContain(PLACEHOLDER);
+    for (const line of [
+      `{'token': 'a''b'' ; password: 'hunter2${PLACEHOLDER}`,
+      `{password: 'it''s\\ me',token: ${PLACEHOLDER}}`,
+      `{password: 'a''b\\${DASHES}c',token: ${PLACEHOLDER}}`
+    ]) {
+      expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
+    }
+  });
+
+  it("reads `''` only AFTER a masked value, so a quoting typo cannot carry one value into the next", () => {
+    // Change-scan F2 on this branch (2026-09-24): the first spelling put `''` in
+    // the single-quoted value class itself. Under leftmost-longest matching a
+    // value whose closing quote is followed by a stray `'` then ran on to the
+    // NEXT keyword's opening quote, swallowing its `kw: '` prefix, and every
+    // word of that second value but the first reached the log.
+    const typo = `token: 'abc'' ; password: 'correct${PLACEHOLDER} horse${PLACEHOLDER} battery'`;
+    expect(runMask(mask, typo)).not.toContain(PLACEHOLDER);
+
+    // Reverse verification ADDS the rejected spelling back: `''` in the class.
+    const inClass = mutate(mask, SQ_UNBOUNDED, SQ_UNBOUNDED_DOUBLED, "the unbounded single-quoted class");
+    expect(runMask(inClass, typo)).toContain(`horse${PLACEHOLDER}`);
+  });
+
+  const argumentPosition: Array<[string, string, string]> = [
+    ["-u", `curl -u svc:${PLACEHOLDER} https://example.test/x`, "(-u|--user)"],
+    ["--user=", `curl --user=svc:${PLACEHOLDER} https://example.test/x`, "(-u|--user)"],
+    ["quoted -u", `curl -u 'svc:${PLACEHOLDER}' https://example.test/x`, "(-u|--user)"],
+    ["mysql -p", `mysql -h db -u root -p${PLACEHOLDER} appdb`, "mysqldump"],
+    ["redis-cli -a", `redis-cli -h cache -a ${PLACEHOLDER} ping`, "redis-cli"],
+    ["redis-cli --pass", `redis-cli --pass ${PLACEHOLDER} ping`, "redis-cli"]
+  ];
+
+  for (const [label, line, ruleMarker] of argumentPosition) {
+    it(`masks a credential in an argument position: ${label} (F6)`, () => {
+      expect(runMask(mask, line)).not.toContain(PLACEHOLDER);
+      // Reverse verification: drop the one rule this flag reaches.
+      const rules = mask.split("\n").filter((l) => l.trim().startsWith("-e") && l.includes(ruleMarker));
+      expect(rules).toHaveLength(1);
+      expect(runMask(mask.split(`${rules[0]}\n`).join(""), line)).toContain(PLACEHOLDER);
+    });
+  }
+
+  /** The dedicated pass for the two keywords that are NOT in the shared alternation. */
+  const passphraseRules = (maskFn: string) =>
+    maskFn.split("\n").filter((line) => line.trim().startsWith("-e") && line.includes("(passwd|passphrase)"));
+
+  it("masks `--passphrase` and `passwd` values in a pass of their own, after every older keyword (F6)", () => {
+    const lines = [
+      `gpg --batch --passphrase ${PLACEHOLDER} -d f.gpg`,
+      `tool --passphrase=${PLACEHOLDER} run`,
+      `passwd=${PLACEHOLDER}`
+    ];
+    for (const line of lines) expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
+    expect(passphraseRules(mask)).toHaveLength(1);
+    // Reverse verification: drop the pass and every shape leaks.
+    const without = passphraseRules(mask).reduce((fn, rule) => fn.split(`${rule}\n`).join(""), mask);
+    for (const line of lines) expect(runMask(without, line), line).toContain(PLACEHOLDER);
+  });
+
+  it("never lets passwd / passphrase take an older keyword as its value (change-scan r2 F2 / F3)", () => {
+    // The first spelling put the two words in the SHARED alternation, where a
+    // leftmost match starting on them swallowed the real keyword after them --
+    // `--passphrase --key S`, or a prompt's closing quote before `PASSWORD="…"`
+    // -- and the secret after it reached the log. In a pass that runs after
+    // every older keyword rule, the older value is masked before they can reach it.
+    const shapes = [
+      `tool --passphrase --key ${PLACEHOLDER} run`,
+      `passphrase key: ${PLACEHOLDER}`,
+      `passwd token: ${PLACEHOLDER}`,
+      `read -rsp "Enter passphrase: " _; export PASSWORD="correct ${PLACEHOLDER} battery staple"`,
+      `printf 'New passwd: '; PASSWORD='two ${PLACEHOLDER}'`
+    ];
+    for (const line of shapes) expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
+    // Reverse verification ADDS the rejected placement back: the two words in
+    // the shared alternation of every older keyword rule.
+    const shared = mutate(
+      mask,
+      "(token|key|secret|password|pat|authorization|bearer)",
+      "(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)",
+      "the shared keyword alternation"
+    );
+    expect(shapes.filter((line) => runMask(shared, line).includes(PLACEHOLDER)).length).toBeGreaterThanOrEqual(4);
+  });
+
+  /** The address every rule this series added carries: skip any line holding a fence run. */
+  const FENCE_LINE_ADDRESS = "/\\`\\`\\`|~~~/!";
+  const seriesRules = (maskFn: string) =>
+    maskFn.split("\n").filter((line) => line.trim().startsWith("-e") && line.includes(FENCE_LINE_ADDRESS));
+
+  it("leaves every line holding a fence run to the older rules (change-scan r2 F1 / r3 F1)", () => {
+    // mask() runs over the assembled note AFTER each turn's fence balance is
+    // decided, and a backtick fence's info string cannot hold a backtick, so
+    // "```mysql -p`x`" is not a fence -- until a rule deletes the backticks and
+    // leaves "```mysql -p***MASKED***", which is. Keeping the backtick out of the
+    // value classes was not enough: an escape alternative still took "\`" (r3).
+    // So no rule this series added runs on a line that holds a fence run at all,
+    // and a substitution always inserts `***MASKED***`, so it cannot join
+    // backticks into a run on any other line.
+    const lines = [
+      "```mysql -p`x`",
+      "```redis-cli -a `x`",
+      "```curl -u svc:`x`",
+      "```tool --passphrase `x`",
+      '```sh gpg --passphrase "\\`cat k\\`"',
+      '```grep -q "token: " f || echo "token: `x`"',
+      "~~~curl -u svc:~~x"
+    ];
+    // The OLDER rules still act on such a line exactly as they always did; what
+    // is pinned is that the series rules add nothing to it.
+    expect(seriesRules(mask)).toHaveLength(4);
+    const withoutSeries = seriesRules(mask).reduce((fn, rule) => fn.split(`${rule}\n`).join(""), mask);
+    for (const line of lines) expect(runMask(mask, line), line).toBe(runMask(withoutSeries, line));
+    expect(runMask(mask, lines[0])).toBe(lines[0]);
+
+    // Reverse verification: take the address off every series rule and the
+    // first shape turns into a fence opener.
+    const unaddressed = mask.split(FENCE_LINE_ADDRESS).join("");
+    expect(runMask(unaddressed, lines[0])).toBe("```mysql -p***MASKED***");
+  });
+
+  it("masks a value to its end through a tilde or a backtick on any other line (change-scan r3 F2)", () => {
+    // The r2 fix kept both characters out of the value classes, so a secret
+    // holding one was masked only up to it -- the rest written out beside a
+    // marker. With the fence-line address carrying the fence concern, the
+    // classes take both again.
+    for (const line of [
+      `mysql -h db -p'Xk9~mQ2#${PLACEHOLDER}'`,
+      `curl -u svc:ab\`c${PLACEHOLDER} https://example.test/x`
+    ]) {
+      expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
+    }
+  });
+
+  it("caps the word run between a client name and its flag, so a failing start cannot scan the line", () => {
+    // Change-scan F1 on this branch (2026-09-24): `([[:space:]]+[^[:space:]|;&]+)*`
+    // between `mysql` / `redis-cli` and the flag let every start position on a
+    // line of repeated client names scan to the segment's end before failing --
+    // quadratic under glibc's per-start search (GNU sed: Linux, containers, CI).
+    // The run is capped at twelve words. Structural, because the local BSD sed
+    // is linear either way and cannot show the red; the timing below holds on
+    // both and is what CI's GNU runner measures.
+    const rules = mask.split("\n").filter((line) => line.trim().startsWith("-e"));
+    expect(rules.filter((line) => line.includes("[^[:space:]|;&]+)*"))).toEqual([]);
+    expect(rules.filter((line) => line.includes("[^[:space:]|;&]+){0,12}"))).toHaveLength(2);
+
+    const seconds = (tokens: number) => {
+      const line = `${"mysql ".repeat(tokens)};mysql -p${PLACEHOLDER}`;
+      let best = Number.POSITIVE_INFINITY;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const started = performance.now();
+        expect(runMask(mask, line)).not.toContain(PLACEHOLDER);
+        best = Math.min(best, (performance.now() - started) / 1000);
+      }
+      return best;
+    };
+    const small = seconds(1000);
+    const large = seconds(8000);
+    expect(large, `1000 tokens: ${small}s, 8000 tokens: ${large}s`).toBeLessThanOrEqual(Math.max(0.5, small * 8));
+  }, 60_000);
+
+  it("keeps the commands the argument rules must not touch readable", () => {
+    // `-p` and `-a` are anchored on the client's name because `-p` alone is
+    // `mkdir -p`, `cp -pR`, `ssh -p2222`; `-u` needs a colon, so `git push -u`
+    // keeps its remote; `auth` and `credential` are not keywords, so their
+    // subcommands survive.
+    for (const line of [
+      "git push -u origin claude/some-branch",
+      "mkdir -p /tmp/a/b && cp -pR src dst && ssh -p2222 host",
+      "gh auth status && git credential fill",
+      "sort -u names.txt",
+      // The `-u` rule's name class excludes `%` and `+`, so a UTC timestamp
+      // format is not read as a name and a secret (measured on the live log).
+      "date -u '+%Y-%m-%dT%H:%M:%SZ'"
+    ]) {
+      expect(runMask(mask, line)).toBe(line);
+    }
+    // Reverse verification for the one exclusion added after measuring.
+    const dateLine = "date -u '+%Y-%m-%dT%H:%M:%SZ'";
+    const widened = mutate(mask, String.raw`/%+]+:)`, String.raw`/]+:)`, "the -u name-class exclusion");
+    expect(runMask(widened, dateLine)).not.toBe(dateLine);
+  });
+});
 
 describe("session-archive vault authorization", () => {
   beforeAll(() => {
