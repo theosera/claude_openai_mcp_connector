@@ -1,7 +1,7 @@
 /**
  * Reverse-verify every guard in the session-archive hook's `defang` in one command:
- * take each guard out of the REAL hook, run the text-turn suites against it, and
- * print which tests go red.
+ * take each guard out of the REAL hook, run the text-turn suites (and the one row
+ * that pins the SGR removal, see FILTER) against it, and print which tests go red.
  *
  *   pnpm exec tsx tests/tools/defangMutants.ts
  *
@@ -36,7 +36,14 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const hookRelative = path.join(".claude", "skills", "session-archive", "archive-session.sh");
 const SUITE = "tests/sessionArchive.test.ts";
-const FILTER = "text-turn";
+/**
+ * The text-turn suites, plus the one row that pins defang's SGR removal: it lives in
+ * the tool-result fencing suite (next to the other colour-sequence rows), not in a
+ * text-turn one, and no parity row can hold it -- none of the six readers discards
+ * ESC, so with the removal gone they all still see zero. A regex, as `-t` takes one.
+ */
+const SGR_ROW = "strips ANSI colour and line-clear sequences from TEXT turns, before the heading escape sees them";
+const FILTER = `text-turn|${SGR_ROW}`;
 
 /**
  * Each guard, spelled exactly as the shipped hook spells it, and what taking it out
@@ -117,6 +124,12 @@ const MUTATIONS: Array<{ guard: string; from: string; to: string; expectRow: str
       '        {out: (.out + [ ($E[.p : .p + $sizes[$k]] | join("\\r")) + $tails[$k] ]), p: (.p + $sizes[$k])})\n' +
       '    | .out | join("\\n");',
     expectRow: "keeps the cost of a long text turn linear in its line count"
+  },
+  {
+    guard: "the SGR removal",
+    from: '| map(strip_sgr | split("\\r")',
+    to: '| map(split("\\r")',
+    expectRow: SGR_ROW
   }
 ];
 
