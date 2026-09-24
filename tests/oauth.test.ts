@@ -1973,10 +1973,15 @@ describe("OAuthProvider flow", () => {
     });
   });
 
-  function exchange(provider: OAuthProvider, clientId: string, requestedScope: string) {
+  // `null` omits the `scope` parameter entirely; `""` sends it empty.
+  function exchange(provider: OAuthProvider, clientId: string, requestedScope: string | null) {
     const { verifier, challenge } = pkcePair();
     const form = authorizeParams(clientId, challenge);
-    form.set("scope", requestedScope);
+    if (requestedScope === null) {
+      form.delete("scope");
+    } else {
+      form.set("scope", requestedScope);
+    }
     form.set("password", "hunter2");
     const code = new URL(provider.authorizePost(form).headers.location).searchParams.get("code")!;
     const token = provider.token(
@@ -2019,13 +2024,21 @@ describe("OAuthProvider flow", () => {
   // where "read" and "everything grantable" are the same set — so a default of
   // the full grantable set would pass there. On a write-enabled server they
   // differ, and a client that asked for nothing must still get read only.
+  // Both shapes of "asked for nothing" are sent: the parameter left out, and
+  // the parameter present but empty. They take the same path today; checking
+  // each keeps a later change that tells them apart from slipping through on
+  // the one this test did not send.
   //
-  // Reverse-verified (2026-09-25): defaulting to `this.grantableScopes.join(" ")`
-  // reddens only this test ("vault.read vault.write" granted); the read-only
-  // test above stays green under it.
+  // Reverse-verified (2026-09-25, each reddening only this test; the read-only
+  // test above stays green under both):
+  //   - grantScope's empty-request default → `this.grantableScopes.join(" ")`
+  //     → "vault.read vault.write" granted (both cases)
+  //   - `params.get("scope") ?? ""` → `?? "vault.read vault.write"` (only an
+  //     ABSENT parameter now gets write) → the omitted case is granted write
   it("defaults an omitted scope to read even when the server allows writes (INV-7 item 5)", () => {
     const provider = new OAuthProvider({ ...config, allowWrite: true });
     const clientId = JSON.parse(provider.register({ redirect_uris: ["https://chatgpt.com/cb"] }).body).client_id;
+    expect(exchange(provider, clientId, null).scope).toBe("vault.read");
     expect(exchange(provider, clientId, "").scope).toBe("vault.read");
     // Control: the same server does grant write when it is asked for.
     expect(exchange(provider, clientId, "vault.read vault.write").scope).toBe("vault.read vault.write");
