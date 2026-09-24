@@ -398,6 +398,33 @@ describe("OAuthStore", () => {
     expect(seen.size).toBe(issued.length);
   });
 
+  // The tests around this one step a second or more past a TTL, so none of
+  // them can tell `<=` from `<`: a token must already be dead at the instant it
+  // expires. Each token is paired with a twin used one millisecond earlier as a
+  // control, so a clock the store did not read would show up as a false pass.
+  //
+  // Reverse-verified (2026-09-25, each reddening only this test):
+  //   - validateAccessToken `record.expiresAt <= this.now()` → `<` → the
+  //     at-TTL access token is accepted
+  //   - rotateRefreshToken `record.expiresAt <= t` → `<` → the at-TTL refresh
+  //     token is rotated
+  it("refuses access and refresh tokens at exactly their expiry instant (INV-7 item 5)", () => {
+    let t = 1000;
+    const store = new OAuthStore({ ...opts, now: () => t });
+    const early = store.issueTokens("c", "vault.read", "r");
+    const atTtl = store.issueTokens("c", "vault.read", "r");
+
+    t = 1000 + opts.accessTokenTtlSec * 1000 - 1;
+    expect(store.validateAccessToken(early.accessToken)?.clientId).toBe("c");
+    t = 1000 + opts.accessTokenTtlSec * 1000;
+    expect(store.validateAccessToken(atTtl.accessToken)).toBeNull();
+
+    t = 1000 + opts.refreshTokenTtlSec * 1000 - 1;
+    expect(store.rotateRefreshToken(early.refreshToken, "c")).not.toBeNull();
+    t = 1000 + opts.refreshTokenTtlSec * 1000;
+    expect(store.rotateRefreshToken(atTtl.refreshToken, "c")).toBeNull();
+  });
+
   it("expires codes and access tokens", () => {
     let t = 1000;
     const store = new OAuthStore({ ...opts, now: () => t });
@@ -1568,6 +1595,92 @@ describe("OAuthStore persistence", () => {
     expect(reloaded.rotateRefreshToken(tokens.refreshToken, "c")).toBeNull();
   });
 
+  // The envelope's `version` and `salt` sit OUTSIDE the MAC, so the tamper
+  // test above (which edits the MAC'd payload) never reaches the checks on
+  // them. Each case keeps the MAC valid for what it presents, so only the field
+  // check can refuse it. The unmodified file and a re-MAC'd envelope with a
+  // well-formed salt are loaded first as controls — they prove the file and the
+  // test's own MAC computation are good, so the refusals are the checks.
+  //
+  // Reverse-verified (2026-09-25, each reddening only this test):
+  //   - `envelope.version !== STATE_VERSION ||` removed → version 2 loads
+  //   - salt-length check disabled (`if (false)`) → an 8-byte salt loads
+  //   - MAC compare replaced by `!presented.equals(expected)` →
+  //     timingSafeEqual spy 0 calls
+  //   - mismatches short-circuited by `!presented.equals(expected)` BEFORE
+  //     timingSafeEqual (kept on the success path only) → spy 1 call, not 2
+  //     (the wrong same-length MAC never reached the constant-time compare)
+  it("fails closed on an unknown version or a malformed salt, and checks the MAC in constant time (INV-7 item 7)", async () => {
+    const file = await stateFilePath();
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    const tokens = store.issueTokens("c", "vault.read", "r");
+    const original = JSON.parse(await fs.readFile(file, "utf8"));
+
+    const loadWith = async (envelope: unknown) => {
+      await fs.writeFile(file, JSON.stringify(envelope));
+      return new OAuthStore({ ...opts, persistPath: file, persistSecret: secret }).validateAccessToken(
+        tokens.accessToken
+      );
+    };
+    const remac = (salt: Buffer) => ({
+      ...original,
+      salt: salt.toString("hex"),
+      mac: crypto
+        .createHmac("sha256", crypto.scryptSync(secret, salt, 32))
+        .update(original.payload as string)
+        .digest("hex")
+    });
+
+    // The spy covers a matching MAC AND a wrong one of the same length: the
+    // mismatch is the attacker-controlled case, so it is the one that must
+    // reach the constant-time compare.
+    const mac = original.mac as string;
+    const wrongMac = mac.slice(0, -1) + (mac.endsWith("0") ? "1" : "0");
+    const compare = vi.spyOn(crypto, "timingSafeEqual");
+    try {
+      expect((await loadWith(original))?.clientId).toBe("c");
+      expect(await loadWith({ ...original, mac: wrongMac })).toBeNull();
+      expect(compare).toHaveBeenCalledTimes(2);
+    } finally {
+      compare.mockRestore();
+    }
+    expect((await loadWith(remac(crypto.randomBytes(16))))?.clientId).toBe("c");
+
+    expect(await loadWith({ ...original, version: 2 })).toBeNull();
+    expect(await loadWith(remac(crypto.randomBytes(8)))).toBeNull();
+  });
+
+  // The loader drops expired tokens, and then sweeps clients left holding
+  // none. The sweep only sees the maps, and does not look at expiry itself —
+  // so it is the drop that makes a client whose tokens all expired an orphan.
+  // The test above ("drops expired tokens…") checks the drop through
+  // validateAccessToken, which refuses an expired record on its own and so
+  // cannot tell dropped from kept. The client registry can.
+  //
+  // Reverse-verified (2026-09-25): removing `record.expiresAt > t` from the
+  // load filter reddens only this test (the orphaned client survives the
+  // reload); the test above stays green under it.
+  it("drops a client at load once every token it held has expired (INV-7 item 7)", async () => {
+    const file = await stateFilePath();
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t });
+    const client = store.registerClient(["https://chatgpt.com/cb"]);
+    store.issueTokens(client.clientId, "vault.read", "r");
+
+    // Control: inside the refresh TTL the client is kept.
+    t += 500_000;
+    expect(
+      new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t }).getClient(client.clientId)
+    ).toBeDefined();
+
+    // Past both the refresh TTL and the orphan grace (1 h): nothing it held is
+    // live, so it must not survive the load.
+    t = 1_000_000 + 2 * 60 * 60 * 1000;
+    expect(
+      new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t }).getClient(client.clientId)
+    ).toBeUndefined();
+  });
+
   it("fails closed on a corrupt state file instead of throwing", async () => {
     const file = await stateFilePath();
     await fs.writeFile(file, "not json {{{", "utf8");
@@ -1591,13 +1704,24 @@ describe("OAuthStore persistence", () => {
     expect(reloaded.rotateRefreshToken(tokens.refreshToken, "c")).not.toBeNull();
   });
 
+  // Pins the umask to 022 for the same reason as the directory test below:
+  // under a restrictive umask (077) a write WITHOUT the mode also comes out
+  // 0600, and this test would be vacuous on that host.
+  //
+  // Reverse-verified (2026-09-25): dropping `{ mode: 0o600 }` from the
+  // writeFileSync in save() reddens only this test (0644 under umask 022).
   it("writes the state file with owner-only permissions", async () => {
     if (process.platform === "win32") {
       return;
     }
     const file = await stateFilePath();
-    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
-    store.issueTokens("c", "vault.read", "r");
+    const previous = process.umask(0o022);
+    try {
+      const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+      store.issueTokens("c", "vault.read", "r");
+    } finally {
+      process.umask(previous);
+    }
     const stat = await fs.stat(file);
     expect(stat.mode & 0o777).toBe(0o600);
   });
@@ -1760,6 +1884,12 @@ describe("OAuthProvider flow", () => {
     const pr = JSON.parse(provider.protectedResourceMetadata().body);
     expect(pr.resource).toBe(`${config.issuer}/mcp`);
     expect(pr.authorization_servers).toEqual([config.issuer]);
+    // Writes are off here, so neither document may advertise vault.write. The
+    // resource side was already asserted elsewhere; the AS side was not.
+    // Reverse-verified (2026-09-25): hard-coding the AS `scopes_supported` to
+    // [SCOPE_READ, SCOPE_WRITE] reddens only this test.
+    expect(as.scopes_supported).toEqual(["vault.read"]);
+    expect(pr.scopes_supported).toEqual(["vault.read"]);
   });
 
   // Pins the registration MECHANISM, and only that: while this key is absent, a
@@ -2065,13 +2195,60 @@ describe("OAuthProvider flow", () => {
     expect(provider.register({ redirect_uris: ["https://x/cb"], client_name: "n".repeat(300) }).status).toBe(400);
   });
 
+  // The test above overshoots each cap (6 URIs, ~3000 characters, 300
+  // characters), so a cap loosened by a little still refuses its input. These
+  // sit exactly on and one past each limit.
+  //
+  // Reverse-verified (2026-09-25, each reddening only this test):
+  //   - MAX_REDIRECT_URI_LENGTH 2048 → 2049 → a 2049-character URI registers
+  //   - MAX_CLIENT_NAME_LENGTH 256 → 257 → a 257-character name registers
+  // (MAX_REDIRECT_URIS 5 → 6 is already caught by the test above.)
+  it("caps dynamic client registration inputs exactly at their limits (INV-7 item 6)", () => {
+    const provider = new OAuthProvider(config);
+    const uriOfLength = (n: number) => "https://x/" + "a".repeat(n - "https://x/".length);
+    expect(provider.register({ redirect_uris: Array(5).fill("https://x/cb") }).status).toBe(201);
+    expect(provider.register({ redirect_uris: [uriOfLength(2048)] }).status).toBe(201);
+    expect(provider.register({ redirect_uris: [uriOfLength(2049)] }).status).toBe(400);
+    expect(provider.register({ redirect_uris: ["https://x/cb"], client_name: "n".repeat(256) }).status).toBe(201);
+    expect(provider.register({ redirect_uris: ["https://x/cb"], client_name: "n".repeat(257) }).status).toBe(400);
+  });
+
+  // Reverse-verified (2026-09-25): the first three asserts were already pinned;
+  // the rest were not, and each of these reddens only this test —
+  //   - `default-src 'none'` → `default-src *`
+  //   - `; base-uri 'none'` removed
+  //   - the page's `cache-control: no-store` removed
+  //   - the token response's `cache-control` / `pragma` removed
   it("sets clickjacking/leakage headers on the consent page", () => {
     const { provider, clientId } = setup();
-    const { challenge } = pkcePair();
+    const { verifier, challenge } = pkcePair();
     const res = provider.authorizeGet(authorizeParams(clientId, challenge));
     expect(res.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
     expect(res.headers["x-frame-options"]).toBe("DENY");
     expect(res.headers["referrer-policy"]).toBe("no-referrer");
+    const csp = res.headers["content-security-policy"] as string;
+    expect(csp.startsWith("default-src 'none';")).toBe(true);
+    expect(csp).toContain("base-uri 'none'");
+    // The login form carries the authorize parameters; a cached copy must not
+    // be replayable from history.
+    expect(res.headers["cache-control"]).toBe("no-store");
+
+    // The token response carries bearer credentials (RFC 6749 §5.1).
+    const form = authorizeParams(clientId, challenge);
+    form.set("password", "hunter2");
+    const code = new URL(provider.authorizePost(form).headers.location).searchParams.get("code")!;
+    const token = provider.token(
+      new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        client_id: clientId,
+        redirect_uri: "https://chatgpt.com/cb",
+        code_verifier: verifier
+      })
+    );
+    expect(token.status).toBe(200);
+    expect(token.headers["cache-control"]).toBe("no-store");
+    expect(token.headers.pragma).toBe("no-cache");
   });
 
   it("allows the client's redirect origin in form-action so the OAuth redirect is not blocked", () => {
