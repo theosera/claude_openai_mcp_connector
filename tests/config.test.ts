@@ -587,6 +587,33 @@ describe("server state must live outside the knowledge root", () => {
     expect(loadHttpConfig(oauthEnv(root, target)).oauth?.stateFile).toBe(target);
   });
 
+  // The case `isInsideRoot` compares `(dev, ino)` for: a state file under a
+  // case variant of the root's own name. On a case-insensitive filesystem (the
+  // macOS default, this project's primary deployment) `<tmp>/MCP-STATE-VAULT-…`
+  // IS the root, while a byte comparison calls it outside. On a case-sensitive
+  // filesystem (Linux CI) the variant is a different, nonexistent directory, so
+  // there is nothing to test and the case is SKIPPED rather than run vacuously —
+  // the probe below decides which, on the filesystem the test actually uses.
+  //
+  // Reverse-verified (2026-09-25, macOS / APFS case-insensitive): forcing the
+  // spelling fallback (`if (!rootIdentity)` → `if (true)`) reddens only this
+  // test (the state file is accepted). On a case-sensitive host the test is
+  // skipped, so it guards nothing there; that host cannot express the bug.
+  it("rejects a state file under a case variant of the root on a case-insensitive filesystem", async (ctx) => {
+    const variant = path.join(path.dirname(root), path.basename(root).toUpperCase());
+    expect(variant).not.toBe(root);
+    const sameDirectory = await fs
+      .stat(variant)
+      .then(async (stats) => stats.ino === (await fs.stat(root)).ino)
+      .catch(() => false);
+    if (!sameDirectory) {
+      ctx.skip();
+    }
+    const through = path.join(variant, "notes", "oauth-state.json");
+    expect(through.startsWith(root)).toBe(false);
+    expect(() => loadHttpConfig(oauthEnv(root, through))).toThrow(/knowledge root "vault"/);
+  });
+
   // The case a string-prefix comparison misses: the configured path shares no
   // prefix with the root, and only resolving the symlinked parent shows that the
   // file would be written into the vault.
