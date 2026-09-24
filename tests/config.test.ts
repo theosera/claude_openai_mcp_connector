@@ -887,3 +887,69 @@ describe("MCP_AUTH_TOKEN_SCOPES (static bearer scopes)", () => {
     );
   });
 });
+
+// INV-7 item 4: with MCP_OAUTH_ENABLED set, a missing issuer, a non-https
+// issuer, or a missing password must refuse to boot rather than advertise a
+// half-built authorization server. Every other OAuth test builds its config
+// with all three present, so none of them reaches these branches.
+//
+// Each refusal is matched on its own message, not on "throws": with the first
+// guard removed, the undefined issuer still throws — a TypeError from the
+// https check one line down — and a bare `toThrow()` would stay green.
+//
+// Reverse-verified (2026-09-24, one mutation per guard, each reddening only
+// its own test in this block):
+//   - issuer-presence guard removed      → "requires the public issuer" red (TypeError, not our message)
+//   - https/loopback check removed       → "refuses a non-https issuer" red (no throw)
+//   - loopback regex end-anchor dropped  → "refuses a non-https issuer" red (localhost.evil.example accepted)
+//   - password guard removed             → "requires the login password" red (no throw)
+describe("OAuth config fails closed (INV-7 item 4)", () => {
+  const base = {
+    MCP_AUTH_TOKEN: "static-bearer",
+    MCP_OAUTH_ENABLED: "1",
+    MCP_HTTP_PUBLIC_URL: "https://vault.example.com",
+    MCP_OAUTH_PASSWORD: "login-password"
+  } satisfies NodeJS.ProcessEnv;
+
+  it("builds the authorization server when all three are present (the control)", () => {
+    expect(loadHttpConfig({ ...base }).oauth?.issuer).toBe("https://vault.example.com");
+    expect(loadHttpConfig({ ...base, MCP_HTTP_PUBLIC_URL: "http://127.0.0.1:8787" }).oauth?.issuer).toBe(
+      "http://127.0.0.1:8787"
+    );
+    expect(loadHttpConfig({ ...base, MCP_HTTP_PUBLIC_URL: "http://localhost" }).oauth?.issuer).toBe("http://localhost");
+    expect(loadHttpConfig({ ...base, MCP_OAUTH_ENABLED: undefined }).oauth).toBeUndefined();
+  });
+
+  it("requires the public issuer URL", () => {
+    expect(() => loadHttpConfig({ ...base, MCP_HTTP_PUBLIC_URL: undefined })).toThrow(
+      /MCP_OAUTH_ENABLED requires MCP_HTTP_PUBLIC_URL/
+    );
+    expect(() => loadHttpConfig({ ...base, MCP_HTTP_PUBLIC_URL: "   " })).toThrow(
+      /MCP_OAUTH_ENABLED requires MCP_HTTP_PUBLIC_URL/
+    );
+  });
+
+  it("refuses a non-https issuer unless it is loopback http", () => {
+    for (const url of [
+      "http://vault.example.com",
+      // The loopback exemption is anchored: a host that merely starts with a
+      // loopback name is somebody else's host.
+      "http://localhost.evil.example",
+      "http://127.0.0.1.evil.example",
+      "ftp://vault.example.com"
+    ]) {
+      expect(() => loadHttpConfig({ ...base, MCP_HTTP_PUBLIC_URL: url }), url).toThrow(
+        /MCP_HTTP_PUBLIC_URL must be https/
+      );
+    }
+  });
+
+  it("requires the login password", () => {
+    expect(() => loadHttpConfig({ ...base, MCP_OAUTH_PASSWORD: undefined })).toThrow(
+      /MCP_OAUTH_ENABLED requires MCP_OAUTH_PASSWORD/
+    );
+    expect(() => loadHttpConfig({ ...base, MCP_OAUTH_PASSWORD: "  " })).toThrow(
+      /MCP_OAUTH_ENABLED requires MCP_OAUTH_PASSWORD/
+    );
+  });
+});
