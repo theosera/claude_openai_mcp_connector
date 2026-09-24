@@ -1373,7 +1373,7 @@ const BARE_KEYWORD_VALUE = String.raw`[=:[:space:]]+)([^[:space:]-]|-{1,4}[^[:sp
  * either quote, so a check-then-append line's second keyword is reached before
  * the fallback reads `"***MASKED***"token:` as one value and swallows it.
  */
-const QUOTE_BOUNDED_KEYWORD_VALUE = String.raw`[=:[:space:]]+)([^[:space:]\"'=:\`~-]|-{1,4}[^[:space:]\"'\`~-])([^[:space:]\"'\`~-]|-{1,4}[^[:space:]\"'\`~-])*`;
+const QUOTE_BOUNDED_KEYWORD_VALUE = String.raw`[=:[:space:]]+)([^[:space:]\"'=:-]|-{1,4}[^[:space:]\"'-])([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])*`;
 
 /**
  * Moves the four PEM rules (the window's open and its body, then the two marker
@@ -1454,7 +1454,10 @@ function withLineSkipAddressOn(maskFn: string, ruleMarker: string, what: string)
   if (at < 0) {
     throw new Error(`${what} is not in the shipped mask() -- that absence is itself the signal.`);
   }
-  lines[at] = lines[at].replace(/(-e ["'])(s\/)/, `$1${pemMarkerAddress(maskFn)}$2`);
+  // A rule added on 2026-09-24 carries a fence-line address already, and sed
+  // takes one address per command: the PEM address REPLACES it (the lines these
+  // probes use hold no fence run, so that address never mattered to them).
+  lines[at] = lines[at].replace(/(-e ["'])(?:\/[^/]*\/!)?(s\/)/, `$1${pemMarkerAddress(maskFn)}$2`);
   return lines.join("\n");
 }
 
@@ -2598,28 +2601,74 @@ describe("session-archive masking: the 2026-09-24 series", () => {
     expect(shapes.filter((line) => runMask(shared, line).includes(PLACEHOLDER)).length).toBeGreaterThanOrEqual(4);
   });
 
-  it("removes no backtick and no tilde through any rule this series added (change-scan r2 F1)", () => {
-    // mask() runs over the assembled note AFTER defang has decided fence
-    // balance. A backtick fence's info string cannot hold a backtick, so
+  /** The address every rule this series added carries: skip any line holding a fence run. */
+  const FENCE_LINE_ADDRESS = "/\\`\\`\\`|~~~/!";
+  const seriesRules = (maskFn: string) =>
+    maskFn.split("\n").filter((line) => line.trim().startsWith("-e") && line.includes(FENCE_LINE_ADDRESS));
+
+  it("leaves every line holding a fence run to the older rules (change-scan r2 F1 / r3 F1)", () => {
+    // mask() runs over the assembled note AFTER each turn's fence balance is
+    // decided, and a backtick fence's info string cannot hold a backtick, so
     // "```mysql -p`x`" is not a fence -- until a rule deletes the backticks and
-    // leaves "```mysql -p***MASKED***", which is. Keeping both characters out of
-    // every new value class means no new rule can make or unmake a fence line.
+    // leaves "```mysql -p***MASKED***", which is. Keeping the backtick out of the
+    // value classes was not enough: an escape alternative still took "\`" (r3).
+    // So no rule this series added runs on a line that holds a fence run at all,
+    // and a substitution always inserts `***MASKED***`, so it cannot join
+    // backticks into a run on any other line.
     const lines = [
       "```mysql -p`x`",
       "```redis-cli -a `x`",
       "```curl -u svc:`x`",
       "```tool --passphrase `x`",
+      '```sh gpg --passphrase "\\`cat k\\`"',
       '```grep -q "token: " f || echo "token: `x`"',
       "~~~curl -u svc:~~x"
     ];
-    const ticks = (text: string) => (text.match(/[`~]/g) ?? []).length;
-    for (const line of lines) {
-      expect(ticks(runMask(mask, line)), line).toBe(ticks(line));
-    }
-    // Reverse verification: put the backtick back into the classes and the
+    // The OLDER rules still act on such a line exactly as they always did; what
+    // is pinned is that the series rules add nothing to it.
+    expect(seriesRules(mask)).toHaveLength(8);
+    const withoutSeries = seriesRules(mask).reduce((fn, rule) => fn.split(`${rule}\n`).join(""), mask);
+    for (const line of lines) expect(runMask(mask, line), line).toBe(runMask(withoutSeries, line));
+    expect(runMask(mask, lines[0])).toBe(lines[0]);
+
+    // Reverse verification: take the address off every series rule and the
     // first shape turns into a fence opener.
-    const withBacktick = mutate(mask, "\\`~-]", "-]", "the backtick / tilde exclusion");
-    expect(runMask(withBacktick, lines[0])).toBe("```mysql -p***MASKED***");
+    const unaddressed = mask.split(FENCE_LINE_ADDRESS).join("");
+    expect(runMask(unaddressed, lines[0])).toBe("```mysql -p***MASKED***");
+  });
+
+  it("masks a value to its end through a tilde or a backtick on any other line (change-scan r3 F2)", () => {
+    // The r2 fix kept both characters out of the value classes, so a secret
+    // holding one was masked only up to it -- the rest written out beside a
+    // marker. With the fence-line address carrying the fence concern, the
+    // classes take both again.
+    for (const line of [
+      `mysql -h db -p'Xk9~mQ2#${PLACEHOLDER}'`,
+      `gpg --passphrase 'abc~def${PLACEHOLDER}'`,
+      `curl -u svc:ab\`c${PLACEHOLDER} https://example.test/x`
+    ]) {
+      expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
+    }
+  });
+
+  it("stops the doubled-apostrophe continuation at whitespace, `:` and `=` (change-scan r3 F3)", () => {
+    // The continuation runs before the keyword fallback. Able to cross
+    // whitespace, it ran from `'a''b''` on to the next lone quote and took
+    // ` ; password: '` with it, so the fallback never saw `password`. A value
+    // that cannot cross any of the keyword separators cannot swallow a keyword.
+    const typo = `{'token': 'a''b'' ; password: 'hunter2${PLACEHOLDER}`;
+    expect(runMask(mask, typo)).not.toContain(PLACEHOLDER);
+    const widened = mutate(
+      mask,
+      String.raw`[^'\\\\[:space:]:=-]`,
+      String.raw`[^'\\\\-]`,
+      "the continuation's separator exclusion"
+    );
+    expect(runMask(widened, typo)).toContain(PLACEHOLDER);
+
+    // The residue that bound leaves, pinned: a doubled apostrophe followed by a
+    // space keeps what comes after the space, as it did before anything read `''`.
+    expect(runMask(mask, `password: 'it''s a te${PLACEHOLDER}'`)).toContain(PLACEHOLDER);
   });
 
   it("caps the word run between a client name and its flag, so a failing start cannot scan the line", () => {
