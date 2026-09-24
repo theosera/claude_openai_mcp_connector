@@ -1546,6 +1546,9 @@ describe("OAuthStore persistence", () => {
   //   - salt-length check disabled (`if (false)`) → an 8-byte salt loads
   //   - MAC compare replaced by `!presented.equals(expected)` →
   //     timingSafeEqual spy 0 calls
+  //   - mismatches short-circuited by `!presented.equals(expected)` BEFORE
+  //     timingSafeEqual (kept on the success path only) → spy 1 call, not 2
+  //     (the wrong same-length MAC never reached the constant-time compare)
   it("fails closed on an unknown version or a malformed salt, and checks the MAC in constant time (INV-7 item 7)", async () => {
     const file = await stateFilePath();
     const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
@@ -1567,10 +1570,16 @@ describe("OAuthStore persistence", () => {
         .digest("hex")
     });
 
+    // The spy covers a matching MAC AND a wrong one of the same length: the
+    // mismatch is the attacker-controlled case, so it is the one that must
+    // reach the constant-time compare.
+    const mac = original.mac as string;
+    const wrongMac = mac.slice(0, -1) + (mac.endsWith("0") ? "1" : "0");
     const compare = vi.spyOn(crypto, "timingSafeEqual");
     try {
       expect((await loadWith(original))?.clientId).toBe("c");
-      expect(compare).toHaveBeenCalledTimes(1);
+      expect(await loadWith({ ...original, mac: wrongMac })).toBeNull();
+      expect(compare).toHaveBeenCalledTimes(2);
     } finally {
       compare.mockRestore();
     }
