@@ -1368,12 +1368,6 @@ const MASKED = "***MASKED***";
 
 /** The bare keyword rule, as the shell source spells its value class. */
 const BARE_KEYWORD_VALUE = String.raw`[=:[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+`;
-/**
- * The keyword pass above it (2026-09-24, A-47 F2): the same class, also ended at
- * either quote, so a check-then-append line's second keyword is reached before
- * the fallback reads `"***MASKED***"token:` as one value and swallows it.
- */
-const QUOTE_BOUNDED_KEYWORD_VALUE = String.raw`[=:[:space:]]+)([^[:space:]\"'=:-]|-{1,4}[^[:space:]\"'-])([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])*`;
 
 /**
  * Moves the four PEM rules (the window's open and its body, then the two marker
@@ -1667,13 +1661,10 @@ describe("session-archive auth-scheme masking", () => {
     // caller controls, so every one of them must carry the boundary. Counting the
     // three the probes above reach would leave a fourth unguarded, and a fourth is
     // what each of the last two rounds turned up.
-    // Seven since 2026-09-24: the quote-bounded keyword pass (A-47 F2) joined the
-    // six, and it is dash-bounded like the fallback it sits above.
     const keywordRules = rules.filter((line) => line.includes("token|key|secret"));
-    expect(keywordRules).toHaveLength(7);
-    expect(keywordRules.filter((line) => line.includes(QUOTE_BOUNDED_KEYWORD_VALUE))).toHaveLength(1);
+    expect(keywordRules).toHaveLength(6);
 
-    // Five of the seven carry the dash boundary. The other two are the addressed
+    // Four of the six carry the dash boundary. The other two are the addressed
     // halves of the quoted pair: they take a line-skip address INSTEAD, and the
     // bounded halves beside them cover the lines the address skips.
     const addressed = keywordRules.filter((line) => line.includes(pemMarkerAddress(mask)));
@@ -2430,15 +2421,6 @@ async function hookWithoutPinFileState(fixture: Fixture, state: "empty" | "unrea
  */
 const PLACEHOLDER = "VALUEZZ9";
 
-/** The keyword pass that ends its value at a quote, as a whole `-e` line. */
-function quoteBoundedPass(maskFn: string): string {
-  const found = maskFn
-    .split("\n")
-    .filter((line) => line.trim().startsWith("-e") && line.includes(QUOTE_BOUNDED_KEYWORD_VALUE));
-  expect(found).toHaveLength(1);
-  return found[0];
-}
-
 /** The unbounded single-quoted class, and the same class reading `''` -- the first spelling of #186's fix. */
 const SQ_UNBOUNDED = String.raw`([^'\\\\]|\\\\.)*'`;
 const SQ_UNBOUNDED_DOUBLED = String.raw`([^'\\\\]|\\\\.|'')*'`;
@@ -2450,58 +2432,20 @@ describe("session-archive masking: the 2026-09-24 series", () => {
     mask = await shippedMask(hookPath);
   });
 
-  const checkThenAppend = [
-    `grep -q "token: " cfg || echo "token: ${PLACEHOLDER}" >> cfg`,
-    `grep -q 'token: ' cfg || echo 'token: ${PLACEHOLDER}' >> cfg`,
-    `Replace "token: " with "token: ${PLACEHOLDER}"`
-  ];
-
-  it("masks the second keyword of a check-then-append line (A-47 F2)", () => {
-    // The quoted-run rule takes the grep argument's CLOSING quote as an opening
-    // one and leaves `"***MASKED***"token: V`; the fallback then reads
-    // `"***MASKED***"token:` as one value and never reaches V.
-    for (const line of checkThenAppend) {
-      expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
-    }
-    // Reverse verification: drop the quote-bounded pass and every shape leaks.
-    const withoutPass = mask.split(`${quoteBoundedPass(mask)}\n`).join("");
-    for (const line of checkThenAppend) {
-      expect(runMask(withoutPass, line), line).toContain(PLACEHOLDER);
-    }
-  });
-
-  it("fires the quote-bounded pass only on a keyword that follows a quote (review finding on #231)", () => {
-    // Unanchored, the pass fired on the `key` inside `--key`, took the following
-    // `token:` label as that key's value, and the fallback never saw the label,
-    // so the last value was written out. The old rules masked both values.
-    const line = `token: "--key token: ${PLACEHOLDER}`;
-    expect(runMask(mask, line)).not.toContain(PLACEHOLDER);
-    // Reverse verification: make the quote anchor optional and the value leaks.
-    const unanchored = mutate(
-      mask,
-      String.raw`!s/([\"'])((token|`,
-      String.raw`!s/([\"']?)((token|`,
-      "the quote anchor"
-    );
-    expect(runMask(unanchored, line)).toContain(PLACEHOLDER);
-  });
-
-  it("leaves every single-keyword line exactly as the fallback alone would", () => {
-    // The pass sits ABOVE the no-less-masked fallback and masks a prefix of what
-    // the fallback masks right after it, so on one keyword it adds nothing.
-    const withoutPass = mask.split(`${quoteBoundedPass(mask)}\n`).join("");
+  it("leaves the check-then-append value as it was, and masks the shapes the tried pass leaked (taken out under (y))", () => {
+    // The 2026-09-18 change scan's F2 is NOT handled by this change: every pass
+    // tried for it ran before the keyword fallback and reached a credential the
+    // old rules masked (see the comment above the rules; #232). What is pinned:
+    // the check-then-append value stays as the base left it, and the inputs that
+    // exposed each tried spelling are masked as the base masked them.
+    expect(runMask(mask, `grep -q "token: " cfg || echo "token: ${PLACEHOLDER}" >> cfg`)).toContain(PLACEHOLDER);
     for (const line of [
-      "password: hunter2",
-      `password=ab"cd ef`,
-      `token: "abc123`,
-      `curl -H "${AUTH_HEADER}: Basic ${CREDENTIAL}" https://api.example.com/v1/items`,
-      "token=v1 connector-mcp",
-      // The corpus shapes that caught the first spelling eating one `=` of the
-      // operator as a one-character value (measured over the tracked files).
-      `if (key === "title") {`,
-      `const token = "not-a-credential";`
+      `token: "--key token: ${PLACEHOLDER}`,
+      `grep -q "password: " f || echo "secret key: ${PLACEHOLDER}" >> f`,
+      `grep -q "${AUTH_HEADER}: " cfg || echo "${AUTH_HEADER}: Api-Key ${PLACEHOLDER}" >> cfg`,
+      `grep -q "token: " cfg || echo "token: key: ${PLACEHOLDER}" >> cfg`
     ]) {
-      expect(runMask(mask, line), line).toBe(runMask(withoutPass, line));
+      expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
     }
   });
 
@@ -2621,7 +2565,7 @@ describe("session-archive masking: the 2026-09-24 series", () => {
     ];
     // The OLDER rules still act on such a line exactly as they always did; what
     // is pinned is that the series rules add nothing to it.
-    expect(seriesRules(mask)).toHaveLength(5);
+    expect(seriesRules(mask)).toHaveLength(4);
     const withoutSeries = seriesRules(mask).reduce((fn, rule) => fn.split(`${rule}\n`).join(""), mask);
     for (const line of lines) expect(runMask(mask, line), line).toBe(runMask(withoutSeries, line));
     expect(runMask(mask, lines[0])).toBe(lines[0]);

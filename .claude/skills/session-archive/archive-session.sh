@@ -574,33 +574,22 @@ mask() {
   #     written out in the clear while the line reads as masked (change-scan
   #     finding on this change, 2026-09-17; pinned with the anchoring taken out).
   #
-  # Four shapes were added on 2026-09-24, each one a residue a scan or an issue
-  # named against this function (A-47 = the 2026-09-18 change-scan F2 / F3,
-  # A-57 = #186, and the 2026-09-19 whole-repo scan's F6):
-  #   * A CHECK-THEN-APPEND line -- `grep -q "token: " f || echo "token: V" >> f`
-  #     -- offers the grep argument's CLOSING quote to the quoted-run rule as an
-  #     opening one. That rule then leaves `"***MASKED***"token: V`, and the
-  #     keyword fallback reads `"***MASKED***"token:` as ONE value (no
-  #     whitespace in it) and never reaches V. The fix is a pass directly above
-  #     the fallback whose value also stops at a quote, so the second keyword is
-  #     found before the fallback swallows it. The fallback itself is unchanged
-  #     (it is the no-less-masked floor). The pass fires only on a keyword that
-  #     directly FOLLOWS a quote -- the shape the quoted-run rule leaves behind.
-  #     Unanchored, it also fired on the `key` inside `--key`, took a following
-  #     `token:` label as that key's value, and the fallback never saw the label:
-  #     `token: "--key token: V` left V in the clear where the old rules masked
-  #     both (a review finding on this change). Anchored, what it masks is a
-  #     prefix of what the fallback would mask from the same keyword, so it can
-  #     add a marker but can never erase a label the fallback would have read.
-  #   * NOT here: YAML's doubled apostrophe (`'pre''fix'`, #186). Two
-  #     spellings were tried on this change and both reached a credential the
-  #     old rules masked: `''` in the single-quoted class (a stray `'` after a
-  #     closing quote ran on to the next keyword's value), and a continuation
-  #     rule after a masked value (its escape alternative deleted a
-  #     backslash-escaped space or dash, and the keyword fallback then ran past
-  #     the next keyword). Every rule that runs BEFORE the fallback can move
-  #     where the fallback's value ends; that is the shape both hit. #186 stays
-  #     open for a change of its own.
+  # Shapes added on 2026-09-24, each a residue a scan named against this
+  # function (A-47 = the 2026-09-18 change-scan F3, and the 2026-09-19
+  # whole-repo scan's F6), and two that were tried and taken out again:
+  #   * NOT here: the CHECK-THEN-APPEND value (`grep -q "token: " f || echo
+  #     "token: V" >> f`, the 2026-09-18 change scan's F2) and YAML's doubled
+  #     apostrophe (`'pre''fix'`, #186). Every rule tried for either one ran
+  #     BEFORE the keyword fallback, and every one of them reached a credential
+  #     the old rules masked, because a rule that runs before the fallback can
+  #     move where the fallback's value ends or erase a keyword label the
+  #     fallback would have read: a quote-bounded keyword pass (unanchored it
+  #     took the `key` inside `--key` and ate the next `token:`; anchored on a
+  #     quote it still ate `key:` after `"secret `), `''` in the single-quoted
+  #     class (a stray `'` carried a value into the next one), and a
+  #     continuation after a masked value (its escape alternative deleted an
+  #     escaped space). Owner decision on this change took all of them out;
+  #     they are tracked for a change of their own (#232, #186).
   #   * `PGP PRIVATE KEY BLOCK` and the RFC 4716 armor
   #     (`---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----`, four dashes and spaces)
   #     never opened the range. The first is broken by the keyword rules before
@@ -670,11 +659,9 @@ mask() {
   # the older rules, as it was before this change. The older keyword rules
   # share the deletion root and are left as they were here; it is tracked on
   # its own.
-  # Two over-reaches the measurement caught were fixed rather than accepted:
-  # the quote-bounded pass took one `=` of `key === "x"` as a value, so its
-  # first character excludes `=` and `:`; and the `-u` rule read
-  # `date -u '+%Y-%m-%dT%H:%M'` as a name and a secret, so its name class
-  # excludes `%` and `+`.
+  # An over-reach the measurement caught was fixed rather than accepted: the
+  # `-u` rule read `date -u '+%Y-%m-%dT%H:%M'` as a name and a secret, so its
+  # name class excludes `%` and `+`.
   sed -E \
     -e '/-----BEGIN PGP PRIVATE KEY BLOCK-----|---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----/{x;s/.*/o/;x;}' \
     -e 's/gh[pousr]_[A-Za-z0-9]{20,}/***MASKED***/g' \
@@ -686,7 +673,6 @@ mask() {
     -e "/-----(BEGIN|END) ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/!s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\]|\\\\.)*'/\1***MASKED***'/Ig" \
     -e "s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\-]|\\\\.|-{1,4}([^'\\\\-]|\\\\.))*-{0,4}'/\1***MASKED***'/Ig" \
     -e "s/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+(Basic|Digest|Token|ApiKey|OAuth|SSWS)[[:space:]]+)([^[:space:],\"'-]|-{1,4}[^[:space:],\"'-])+/\1***MASKED***/Ig" \
-    -e "/\`\`\`|~~~/!s/([\"'])((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]\"'=:-]|-{1,4}[^[:space:]\"'-])([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])*/\1\2***MASKED***/Ig" \
     -e 's/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+/\1***MASKED***/Ig' \
     -e "/\`\`\`|~~~/!s/((passwd|passphrase)[=:[:space:]]+)([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])+/\1***MASKED***/Ig" \
     -e '/-----BEGIN ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/{x;s/.*/o/;x;}' \
