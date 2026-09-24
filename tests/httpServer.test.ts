@@ -100,11 +100,13 @@ describe("httpAuth", () => {
   // the cost by observing the two calls the invariant names.
   //
   // Reverse-verified (2026-09-24, one mutation per arm, each reddening only
-  // this test; the boolean test above stayed green under all three):
+  // this test; the boolean test above stayed green under all of them):
   //   - body replaced by `return provided === expected` → scryptSync spy 0 calls
   //   - scryptSync replaced by a single sha256 digest → scryptSync spy 0 calls
   //   - timingSafeEqual replaced by Buffer#equals → timingSafeEqual spy 0 calls
-  //   - scrypt cost lowered to { N: 2 } → the cost assert fails
+  //   - scrypt cost lowered to { N: 2 } → the N assert fails
+  //   - block size lowered to { r: 1 } (N left at the default) → the r assert fails
+  //   - the same via the alias { blockSize: 1 } → the r assert fails
   it("verifies the login password through scrypt and a constant-time compare (INV-7 item 4)", () => {
     const scrypt = vi.spyOn(crypto, "scryptSync");
     const compare = vi.spyOn(crypto, "timingSafeEqual");
@@ -117,10 +119,12 @@ describe("httpAuth", () => {
     const passwords = scrypt.mock.calls.map((call) => String(call[0]));
     expect(passwords.sort()).toEqual(["hunter2", "x"]);
     for (const call of scrypt.mock.calls) {
-      // The default cost (N = 16384) is the floor; an explicit option may raise
-      // it but must never lower it.
-      const options = call[3] as { N?: number; cost?: number } | undefined;
+      // The defaults are the floor; an explicit option may raise them but must
+      // never lower them. Work scales with N × r, so both are checked — N at
+      // its default with r = 1 is an eighth of the cost. Each has an alias.
+      const options = call[3] as { N?: number; cost?: number; r?: number; blockSize?: number } | undefined;
       expect(options?.N ?? options?.cost ?? 16_384).toBeGreaterThanOrEqual(16_384);
+      expect(options?.r ?? options?.blockSize ?? 8).toBeGreaterThanOrEqual(8);
     }
 
     expect(compare).toHaveBeenCalledTimes(1);
