@@ -551,7 +551,10 @@ function withoutEscapeAwareness(maskFn: string): string {
   const close = '\\"/\\1';
   let touched = 0;
   const out = maskFn.split("\n").map((line) => {
-    if (!line.trim().startsWith("-e") || !line.includes(QUOTED_RULES)) return line;
+    // The shared keyword pair only: the passwd / passphrase pass (2026-09-24)
+    // carries its own escape-aware double-quoted rule, pinned in its own test.
+    if (!line.trim().startsWith("-e") || !line.includes(QUOTED_RULES) || !line.includes("token|key|secret"))
+      return line;
     const a = line.indexOf(open);
     const b = a < 0 ? -1 : line.indexOf(close, a + open.length);
     if (a < 0 || b < 0) return line;
@@ -569,7 +572,7 @@ const DQ_CLOSE = String.raw`)*\"/`;
 
 /** The keyword fallback rule as SHIPPED (dash-bounded since 569cfe2): the pin is on this spelling, not on identity with an older one. */
 const BARE_KEYWORD_RULE =
-  String.raw`    -e 's/((token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+/\1***MASKED***/Ig' ` +
+  String.raw`    -e 's/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+/\1***MASKED***/Ig' ` +
   "\\"; // trailing line-continuation: String.raw cannot end on a backslash
 
 const ACCESS = "A".repeat(32);
@@ -1370,7 +1373,7 @@ const BARE_KEYWORD_VALUE = String.raw`[=:[:space:]]+)([^[:space:]-]|-{1,4}[^[:sp
  * either quote, so a check-then-append line's second keyword is reached before
  * the fallback reads `"***MASKED***"token:` as one value and swallows it.
  */
-const QUOTE_BOUNDED_KEYWORD_VALUE = String.raw`[=:[:space:]]+)([^[:space:]\"'=:-]|-{1,4}[^[:space:]\"'-])([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])*`;
+const QUOTE_BOUNDED_KEYWORD_VALUE = String.raw`[=:[:space:]]+)([^[:space:]\"'=:\`~-]|-{1,4}[^[:space:]\"'\`~-])([^[:space:]\"'\`~-]|-{1,4}[^[:space:]\"'\`~-])*`;
 
 /**
  * Moves the four PEM rules (the window's open and its body, then the two marker
@@ -2551,17 +2554,72 @@ describe("session-archive masking: the 2026-09-24 series", () => {
     });
   }
 
-  it("masks `--passphrase` and `passwd=` through the keyword alternation (F6)", () => {
+  /** The dedicated pass for the two keywords that are NOT in the shared alternation. */
+  const passphraseRules = (maskFn: string) =>
+    maskFn.split("\n").filter((line) => line.trim().startsWith("-e") && line.includes("(passwd|passphrase)"));
+
+  it("masks `--passphrase` and `passwd` values in a pass of their own, after every older keyword (F6)", () => {
     const lines = [
       `gpg --batch --passphrase ${PLACEHOLDER} -d f.gpg`,
       `tool --passphrase=${PLACEHOLDER} run`,
-      `passwd=${PLACEHOLDER}`
+      `passwd=${PLACEHOLDER}`,
+      `gpg --passphrase "two ${PLACEHOLDER} words" -d f.gpg`,
+      `gpg --passphrase 'two ${PLACEHOLDER} words' -d f.gpg`
     ];
     for (const line of lines) expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
-    // One decision spelled in seven rules: the alternation is shared, so taking
-    // the two words out of it is one mutation, not seven.
-    const narrowed = mutate(mask, "|passwd|passphrase", "", "the added keywords");
-    for (const line of lines) expect(runMask(narrowed, line), line).toContain(PLACEHOLDER);
+    expect(passphraseRules(mask)).toHaveLength(3);
+    // Reverse verification: drop the pass and every shape leaks.
+    const without = passphraseRules(mask).reduce((fn, rule) => fn.split(`${rule}\n`).join(""), mask);
+    for (const line of lines) expect(runMask(without, line), line).toContain(PLACEHOLDER);
+  });
+
+  it("never lets passwd / passphrase take an older keyword as its value (change-scan r2 F2 / F3)", () => {
+    // The first spelling put the two words in the SHARED alternation, where a
+    // leftmost match starting on them swallowed the real keyword after them --
+    // `--passphrase --key S`, or a prompt's closing quote before `PASSWORD="…"`
+    // -- and the secret after it reached the log. In a pass that runs after
+    // every older keyword rule, the older value is masked before they can reach it.
+    const shapes = [
+      `tool --passphrase --key ${PLACEHOLDER} run`,
+      `passphrase key: ${PLACEHOLDER}`,
+      `passwd token: ${PLACEHOLDER}`,
+      `read -rsp "Enter passphrase: " _; export PASSWORD="correct ${PLACEHOLDER} battery staple"`,
+      `printf 'New passwd: '; PASSWORD='two ${PLACEHOLDER}'`
+    ];
+    for (const line of shapes) expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
+    // Reverse verification ADDS the rejected placement back: the two words in
+    // the shared alternation of every older keyword rule.
+    const shared = mutate(
+      mask,
+      "(token|key|secret|password|pat|authorization|bearer)",
+      "(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)",
+      "the shared keyword alternation"
+    );
+    expect(shapes.filter((line) => runMask(shared, line).includes(PLACEHOLDER)).length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("removes no backtick and no tilde through any rule this series added (change-scan r2 F1)", () => {
+    // mask() runs over the assembled note AFTER defang has decided fence
+    // balance. A backtick fence's info string cannot hold a backtick, so
+    // "```mysql -p`x`" is not a fence -- until a rule deletes the backticks and
+    // leaves "```mysql -p***MASKED***", which is. Keeping both characters out of
+    // every new value class means no new rule can make or unmake a fence line.
+    const lines = [
+      "```mysql -p`x`",
+      "```redis-cli -a `x`",
+      "```curl -u svc:`x`",
+      "```tool --passphrase `x`",
+      '```grep -q "token: " f || echo "token: `x`"',
+      "~~~curl -u svc:~~x"
+    ];
+    const ticks = (text: string) => (text.match(/[`~]/g) ?? []).length;
+    for (const line of lines) {
+      expect(ticks(runMask(mask, line)), line).toBe(ticks(line));
+    }
+    // Reverse verification: put the backtick back into the classes and the
+    // first shape turns into a fence opener.
+    const withBacktick = mutate(mask, "\\`~-]", "-]", "the backtick / tilde exclusion");
+    expect(runMask(withBacktick, lines[0])).toBe("```mysql -p***MASKED***");
   });
 
   it("caps the word run between a client name and its flag, so a failing start cannot scan the line", () => {

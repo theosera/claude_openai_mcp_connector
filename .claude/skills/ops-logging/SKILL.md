@@ -256,7 +256,13 @@ terminal-ops-logs/
 - Google API key `AIza…` / Slack `xox[baprs]-…`
 - **引数位置の資格情報** (2026-09-24 追加・S-1 F6): `-u` / `--user` の `name:secret`、MySQL 系
   client の `-p<値>` (client 名に anchor — `-p` 単独は `mkdir -p` / `cp -pR` / `ssh -p2222`)、
-  `redis-cli` の `-a` / `--pass`。keyword に `passwd` / `passphrase` を追加 (`--passphrase V`)。
+  `redis-cli` の `-a` / `--pass`。`passwd` / `passphrase` は**共有の keyword 群に入れず**、fallback の**直後**の
+  専用 pass (二重引用 / 単引用 / bare の 3 本) で消す (`--passphrase V` / 引用された複数語)。⛔ 共有群に入れると
+  最長一致で後続の本物の keyword を値として呑み (`--passphrase --key S` / `"Enter passphrase: " … PASSWORD="a b"`)、
+  その値が平文で出た (2 回目の change scan F2 / F3・実測で再現)。
+  ⛔ この系列が足した値の文字クラスは**バッククォートと `~` を含まない** — mask() は各ターンのフェンス判定の
+  **後**に走るので、"```mysql -p`x`" (info string にバッククォート = フェンスではない) からバッククォートを消すと
+  フェンスの開始行ができる (同 F1)。既存の keyword 規則にも同じ根があり、別件で追う。
   ⛔ `auth` / `credential` は足さない — `gh auth status` / `git credential fill` の副コマンドが消える。
   ⚠️ 未対応: `openssl -passin pass:V` / `sshpass -p V`。⚠️ **この変更より前の log には引数位置の
   資格情報が平文で残りうる** (既存 log の該当調査は 2026-09-20 に D 分類 0 件・射程の閉じ方は別決定)。

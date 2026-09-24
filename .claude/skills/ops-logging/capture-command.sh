@@ -331,8 +331,15 @@ mask() {
   #     unbounded word run let every start on a line of repeated client names
   #     scan to the end before failing, quadratic under glibc's regex (the
   #     change scan's F1; BSD sed stays linear either way). `passwd` and
-  #     `passphrase` join the keyword alternation (`--passphrase V`,
-  #     `--passphrase=V`). `auth` and `credential` do NOT: they are subcommands
+  #     `passphrase` (`--passphrase V`, `--passphrase=V`, a quoted phrase) get
+  #     a pass of their OWN, right after the keyword fallback, and are NOT in
+  #     the shared alternation: there, a leftmost match starting on them took
+  #     the real keyword after them as their value -- `--passphrase --key S`,
+  #     or a prompt's closing quote before `PASSWORD="a b c"` -- and the secret
+  #     after it went to the log (the second change scan on this change, F2 /
+  #     F3). Running after every older keyword rule, they only ever meet a
+  #     value that is already masked. `auth` and `credential` do NOT join at
+  #     all: they are subcommands
   #     (`gh auth status`, `git credential fill`) and the keyword rule would
   #     mask the word after them in every such command. Logs written before
   #     this change can still hold argument-position credentials in the clear.
@@ -347,6 +354,13 @@ mask() {
   # had -- and, where a comment QUOTES one of the two new armors, the window's
   # usual reach: 12+ runs and short whole lines for up to 100 lines after it,
   # the planted-marker cost the range already carries for the shared marker.
+  # No class these additions carry contains a backtick or a tilde. mask()
+  # runs over the assembled note AFTER the fence balance of each turn has been
+  # decided, and a backtick fence's info string cannot hold a backtick, so
+  # "```mysql -p`x`" is not a fence until a rule deletes the backticks and
+  # leaves "```mysql -p***MASKED***", which is (the second change scan's F1).
+  # The older keyword rules share that root and are left as they were here;
+  # it is tracked on its own.
   # Two over-reaches the measurement caught were fixed rather than accepted:
   # the quote-bounded pass took one `=` of `key === "x"` as a value, so its
   # first character excludes `=` and `:`; and the `-u` rule read
@@ -358,14 +372,17 @@ mask() {
     -e 's/github_pat_[A-Za-z0-9_]{20,}/***MASKED***/g' \
     -e 's#(://[^/:@[:space:]]+):[^/@[:space:]]+@#\1:***MASKED***@#g' \
     -e 's/([Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+/\1***MASKED***/g' \
-    -e "/-----(BEGIN|END) ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/!s/((token|key|secret|password|passwd|passphrase|pat|authorization|bearer)['\"]?[=:[:space:]]+\")([^\"\\\\]|\\\\.)*\"/\1***MASKED***\"/Ig" \
-    -e "s/((token|key|secret|password|passwd|passphrase|pat|authorization|bearer)['\"]?[=:[:space:]]+\")([^\"\\\\-]|\\\\.|-{1,4}([^\"\\\\-]|\\\\.))*-{0,4}\"/\1***MASKED***\"/Ig" \
-    -e "/-----(BEGIN|END) ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/!s/((token|key|secret|password|passwd|passphrase|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\]|\\\\.)*'/\1***MASKED***'/Ig" \
-    -e "s/((token|key|secret|password|passwd|passphrase|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\-]|\\\\.|-{1,4}([^'\\\\-]|\\\\.))*-{0,4}'/\1***MASKED***'/Ig" \
-    -e "s/\\*\\*\\*MASKED\\*\\*\\*''([^'\\\\-]|\\\\.|''|-{1,4}([^'\\\\-]|\\\\.|''))*-{0,4}'/***MASKED***'/g" \
-    -e "s/((token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[=:[:space:]]+(Basic|Digest|Token|ApiKey|OAuth|SSWS)[[:space:]]+)([^[:space:],\"'-]|-{1,4}[^[:space:],\"'-])+/\1***MASKED***/Ig" \
-    -e "s/((token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]\"'=:-]|-{1,4}[^[:space:]\"'-])([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])*/\1***MASKED***/Ig" \
-    -e 's/((token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+/\1***MASKED***/Ig' \
+    -e "/-----(BEGIN|END) ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/!s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+\")([^\"\\\\]|\\\\.)*\"/\1***MASKED***\"/Ig" \
+    -e "s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+\")([^\"\\\\-]|\\\\.|-{1,4}([^\"\\\\-]|\\\\.))*-{0,4}\"/\1***MASKED***\"/Ig" \
+    -e "/-----(BEGIN|END) ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/!s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\]|\\\\.)*'/\1***MASKED***'/Ig" \
+    -e "s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\-]|\\\\.|-{1,4}([^'\\\\-]|\\\\.))*-{0,4}'/\1***MASKED***'/Ig" \
+    -e "s/\\*\\*\\*MASKED\\*\\*\\*''([^'\\\\\`~-]|\\\\.|''|-{1,4}([^'\\\\\`~-]|\\\\.|''))*-{0,4}'/***MASKED***'/g" \
+    -e "s/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+(Basic|Digest|Token|ApiKey|OAuth|SSWS)[[:space:]]+)([^[:space:],\"'-]|-{1,4}[^[:space:],\"'-])+/\1***MASKED***/Ig" \
+    -e "s/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]\"'=:\`~-]|-{1,4}[^[:space:]\"'\`~-])([^[:space:]\"'\`~-]|-{1,4}[^[:space:]\"'\`~-])*/\1***MASKED***/Ig" \
+    -e 's/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+/\1***MASKED***/Ig' \
+    -e "s/((passwd|passphrase)['\"]?[=:[:space:]]+\")([^\"\\\\\`~-]|\\\\.|-{1,4}([^\"\\\\\`~-]|\\\\.))*-{0,4}\"/\1***MASKED***\"/Ig" \
+    -e "s/((passwd|passphrase)['\"]?[=:[:space:]]+')([^'\\\\\`~-]|\\\\.|-{1,4}([^'\\\\\`~-]|\\\\.))*-{0,4}'/\1***MASKED***'/Ig" \
+    -e "s/((passwd|passphrase)[=:[:space:]]+)([^[:space:]\"'\`~-]|-{1,4}[^[:space:]\"'\`~-])+/\1***MASKED***/Ig" \
     -e '/-----BEGIN ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/{x;s/.*/o/;x;}' \
     -e 'x;/^ox{0,100}$/{s/$/x/;x;s/[A-Za-z0-9+\/=]{12,}/***MASKED***/g;s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*)?)[A-Za-z0-9+\/=]{1,11}[[:space:]]*$/\1***MASKED***/;/-----END ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/{x;s/.*//;x;};x;};x' \
     -e '/-----END PGP PRIVATE KEY (BLOCK|\*\*\*MASKED\*\*\*)-----|---- END SSH2 ENCRYPTED PRIVATE KEY ----/{x;s/.*//;x;}' \
@@ -375,9 +392,9 @@ mask() {
     -e 's/sk-[A-Za-z0-9_-]{20,}/***MASKED***/g' \
     -e 's/AIza[0-9A-Za-z_-]{35}/***MASKED***/g' \
     -e 's/xox[baprs]-[A-Za-z0-9-]{10,}/***MASKED***/g' \
-    -e "s/((^|[[:space:]])(-u|--user)(=|[[:space:]]+)[\"']?[^[:space:]:\"'/%+]+:)([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])+/\1***MASKED***/g" \
-    -e "s/((mysql|mysqldump|mysqladmin|mariadb|mariadb-dump)([[:space:]]+[^[:space:]|;&]+){0,12}[[:space:]]+-p[\"']?)([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])+/\1***MASKED***/g" \
-    -e "s/(redis-cli([[:space:]]+[^[:space:]|;&]+){0,12}[[:space:]]+(-a|--pass)[[:space:]]+[\"']?)([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])+/\1***MASKED***/g" \
+    -e "s/((^|[[:space:]])(-u|--user)(=|[[:space:]]+)[\"']?[^[:space:]:\"'/%+]+:)([^[:space:]\"'\`~-]|-{1,4}[^[:space:]\"'\`~-])+/\1***MASKED***/g" \
+    -e "s/((mysql|mysqldump|mysqladmin|mariadb|mariadb-dump)([[:space:]]+[^[:space:]|;&]+){0,12}[[:space:]]+-p[\"']?)([^[:space:]\"'\`~-]|-{1,4}[^[:space:]\"'\`~-])+/\1***MASKED***/g" \
+    -e "s/(redis-cli([[:space:]]+[^[:space:]|;&]+){0,12}[[:space:]]+(-a|--pass)[[:space:]]+[\"']?)([^[:space:]\"'\`~-]|-{1,4}[^[:space:]\"'\`~-])+/\1***MASKED***/g" \
     -e '/^[[:space:]]*[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/.*/***MASKED***/' \
     -e '/^[[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-)[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-))[A-Za-z0-9+\/=]{32,}([[:space:]]*)$/\1***MASKED***\3/'
 }

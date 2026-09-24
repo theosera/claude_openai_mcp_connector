@@ -370,7 +370,10 @@ describe("findings from the pre-commit review", () => {
     // every one of these, so the total proves nothing on its own.
     const source = readFileSync(SHIPPED_MASK, "utf8");
     const partial: [string, string][] = [
-      ["vocabulary_no_keywords", source.replace(/\(\(token\|/g, "(<(token|")],
+      // Every keyword group, not only the shared one: since 2026-09-24 the
+      // passwd / passphrase pass carries a group of its own, and breaking the
+      // shared group alone lets the lift fall through to that one.
+      ["vocabulary_no_keywords", source.replace(/\(\((token|passwd)\|/g, "(<($1|")],
       ["vocabulary_scheme_lift_narrowed", source.replace(/\[:space:\]\]\+\(Basic/g, "[:space:]]+X(Basic")],
       ["vocabulary_empty", source.replace(/-e 's\//g, "-e 'S/")]
     ];
