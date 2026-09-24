@@ -1070,6 +1070,12 @@ describe("OAuthStore", () => {
   // ⛔ **未カバーとして申告する**: observe 経路の CPU コスト (revokeFamilyAbove の O(maxTokens)
   //    走査を over-quota で無制限に回せること) は**測っていない**。上の Y/Z が bound したのは
   //    disk write だけで、走査そのものは残る。body の parse より安いという見積もりに留まる。
+  //    ⭐ 実測 (2026-09-25・上の 3 行は消さずに残す): 見積もりは外れていた。rotated record への
+  //    repeat observe (removes 0) を node v24.13.0 / macOS で 3 回ずつ測った値 —
+  //      maps 1+1 = 0.8 µs / 100+100 = 2.2 µs / 1000+1000 = 17 µs / 1999+1999 = 34〜36 µs
+  //    に対し、典型的な /token form の `URLSearchParams` parse + get 2 回は 0.49 µs。⇒ cap
+  //    いっぱいでは parse の約 70 倍で、maps の大きさに線形。⛔ HTTP 1 リクエスト全体との比較は
+  //    していない。対策の要否 (familyId の索引など = src の変更) は、この表の外で判断する。
   // F1 (2026-09-09). `/token` checks the refresh-rotation quota BEFORE
   // `oauth.token(form)` runs, and `rotateRefreshToken` is the only way into
   // replay detection, so a full bucket silences the trigger outright — and the
