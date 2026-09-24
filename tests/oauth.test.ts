@@ -197,6 +197,28 @@ describe("PKCE S256", () => {
     expect(verifyPkceS256("short", challenge)).toBe(false); // < 43 chars
     expect(verifyPkceS256("bad chars!" + "a".repeat(40), challenge)).toBe(false);
   });
+
+  // RFC 7636 §4.1 bounds the verifier at 43..128 on both sides; the test above
+  // only reaches the lower bound. Every verifier here is checked against ITS
+  // OWN challenge, so the length check is the only thing that can refuse it —
+  // against a foreign challenge the digest compare would refuse it anyway and
+  // the bound would never be reached.
+  //
+  // Reverse-verified (2026-09-24): dropping `|| verifier.length >
+  // MAX_VERIFIER_LENGTH` reddens only this test (129 accepted); widening the
+  // bound to 129 reddens it too (the 129 case), and so does narrowing it to
+  // 127 (the 128 case).
+  it("accepts verifiers of exactly 43 and 128 characters and refuses 42 and 129", () => {
+    const own = (length: number) => {
+      const verifier = "a".repeat(length);
+      return verifyPkceS256(verifier, computeS256Challenge(verifier));
+    };
+    expect(own(42)).toBe(false);
+    expect(own(43)).toBe(true);
+    expect(own(128)).toBe(true);
+    expect(own(129)).toBe(false);
+    expect(own(4096)).toBe(false);
+  });
 });
 
 describe("redirect_uri policy", () => {
@@ -278,6 +300,61 @@ describe("OAuthStore", () => {
     });
     expect(store.consumeAuthorizationCode(code)?.clientId).toBe("c");
     expect(store.consumeAuthorizationCode(code)).toBeUndefined(); // already used
+  });
+
+  // INV-7 item 6: pending codes are capped like clients and tokens are. The cap
+  // is on codes still pending — an expired code frees its slot at the next
+  // prune — so it bounds memory without becoming a lifetime quota.
+  //
+  // Reverse-verified (2026-09-24): removing the `codes.size >= DEFAULT_MAX_CODES`
+  // check reddens only this test (the 1001st is issued); so does loosening it
+  // to `>` (same assert). Removing the prune call at the top of
+  // createAuthorizationCode reddens the "frees its slot" assert.
+  it("caps pending authorization codes at 1000 and frees slots as codes expire", () => {
+    let t = 1000;
+    const store = new OAuthStore({ ...opts, now: () => t });
+    const params = { clientId: "c", redirectUri: "https://x/cb", codeChallenge: "ch", scope: "", resource: "r" };
+    for (let i = 0; i < 1000; i++) {
+      store.createAuthorizationCode(params);
+    }
+    expect(() => store.createAuthorizationCode(params)).toThrow(/too_many_pending_authorizations/);
+
+    t += 61_000; // every pending code is now past its 60 s TTL
+    expect(typeof store.createAuthorizationCode(params)).toBe("string");
+  });
+
+  // INV-7 items 2 and 5 say codes and tokens are opaque 256-bit CSPRNG values.
+  // The source of randomness cannot be observed from outside, so this pins the
+  // two things that can: the width (32 bytes → 43 base64url characters, no
+  // padding) and that no value repeats across many issues. A counter or a
+  // fixed value fails the second; a narrower draw fails the first.
+  //
+  // Reverse-verified (2026-09-24): `randomBytes(32)` → `randomBytes(16)` reddens
+  // this test (22 characters). ⚠️ It does NOT catch a swap to a non-CSPRNG
+  // source of the same width (e.g. Math.random-derived bytes) — that remains
+  // unpinned, by construction.
+  it("issues codes, access tokens and refresh tokens as distinct 256-bit base64url values", () => {
+    const store = new OAuthStore(opts);
+    const seen = new Set<string>();
+    const issued: string[] = [];
+    for (let i = 0; i < 64; i++) {
+      const tokens = store.issueTokens("c", "vault.read", "r");
+      issued.push(tokens.accessToken, tokens.refreshToken);
+      issued.push(
+        store.createAuthorizationCode({
+          clientId: "c",
+          redirectUri: "https://x/cb",
+          codeChallenge: "ch",
+          scope: "",
+          resource: "r"
+        })
+      );
+    }
+    for (const value of issued) {
+      expect(value).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      seen.add(value);
+    }
+    expect(seen.size).toBe(issued.length);
   });
 
   it("expires codes and access tokens", () => {
@@ -1464,6 +1541,34 @@ describe("OAuthStore persistence", () => {
     expect(stat.mode & 0o777).toBe(0o600);
   });
 
+  // INV-7 item 7: the directory the store creates for its state file is
+  // owner-only too. mkdir's mode is filtered by the umask, so under a
+  // restrictive umask (077) a mkdir WITHOUT the mode would also come out 0700
+  // and this test would be vacuous. It therefore pins the umask to the common
+  // 022 for its own duration, under which a mode-less mkdir yields 0755.
+  //
+  // Reverse-verified (2026-09-24): dropping `mode: 0o700` from the mkdirSync
+  // in save() reddens only this test (0755 observed under umask 022).
+  it("creates the state directory with owner-only permissions", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    const parent = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-oauth-statedir-"));
+    const dir = path.join(parent, "not-yet-created");
+    const previous = process.umask(0o022);
+    try {
+      const store = new OAuthStore({ ...opts, persistPath: path.join(dir, "oauth-state.json"), persistSecret: secret });
+      store.issueTokens("c", "vault.read", "r");
+    } finally {
+      process.umask(previous);
+    }
+    // The state file landing proves save() ran and created the directory,
+    // rather than the assert below reading a directory made some other way.
+    await expect(fs.stat(path.join(dir, "oauth-state.json"))).resolves.toBeTruthy();
+    const stat = await fs.stat(dir);
+    expect(stat.mode & 0o777).toBe(0o700);
+  });
+
   it("persists an observed revocation, and skips the write when it removes nothing (F1)", async () => {
     const file = await stateFilePath();
     let t = 1_000_000;
@@ -1693,6 +1798,78 @@ describe("OAuthProvider flow", () => {
     );
     expect(wrong.status).toBe(400);
     expect(JSON.parse(wrong.body).error).toBe("invalid_grant");
+  });
+
+  // INV-7 item 2: a code is bound to the client_id and redirect_uri it was
+  // issued for, and /token re-checks both. Every other exchange in this file
+  // presents the same pair it authorized with, so none reaches that branch.
+  // (The many "mismatched client_id" tests elsewhere exercise the REFRESH
+  // rotation path in the store — a different guard.)
+  //
+  // The verifier here is the correct one, so PKCE would pass: a 400 can only
+  // come from the binding check. The two halves of the `||` are separate
+  // defenses and get separate tests, so each mutation names its own arm.
+  //
+  // Reverse-verified (2026-09-24, each mutation reddening only its own test):
+  //   - `record.clientId !== clientId ||` removed    → the client_id test (200 issued)
+  //   - `|| record.redirectUri !== redirectUri` removed → the redirect_uri test (200 issued)
+  function codeFor(provider: OAuthProvider, clientId: string, redirectUri: string, challenge: string): string {
+    const form = authorizeParams(clientId, challenge);
+    form.set("redirect_uri", redirectUri);
+    form.set("password", config.loginPassword);
+    return new URL(provider.authorizePost(form).headers.location).searchParams.get("code")!;
+  }
+
+  it("refuses to exchange a code for a different client_id, and burns the code", () => {
+    const { provider, clientId } = setup();
+    const other = JSON.parse(provider.register({ redirect_uris: ["https://chatgpt.com/cb"] }).body).client_id as string;
+    const { verifier, challenge } = pkcePair();
+    const code = codeFor(provider, clientId, "https://chatgpt.com/cb", challenge);
+
+    const exchange = (asClient: string) =>
+      provider.token(
+        new URLSearchParams({
+          grant_type: "authorization_code",
+          code,
+          client_id: asClient,
+          redirect_uri: "https://chatgpt.com/cb",
+          code_verifier: verifier
+        })
+      );
+    const stolen = exchange(other);
+    expect(stolen.status).toBe(400);
+    expect(JSON.parse(stolen.body)).toMatchObject({
+      error: "invalid_grant",
+      error_description: "client/redirect mismatch"
+    });
+    // Single-use holds on the refusal path too: the rightful client cannot
+    // redeem a code that a mismatched presentation already consumed.
+    expect(exchange(clientId).status).toBe(400);
+  });
+
+  it("refuses to exchange a code at a different registered redirect_uri", () => {
+    const provider = new OAuthProvider(config);
+    const clientId = JSON.parse(
+      provider.register({ redirect_uris: ["https://chatgpt.com/cb", "https://chatgpt.com/other"] }).body
+    ).client_id as string;
+    const { verifier, challenge } = pkcePair();
+    const code = codeFor(provider, clientId, "https://chatgpt.com/cb", challenge);
+
+    const moved = provider.token(
+      new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        client_id: clientId,
+        // Registered for this client, so only the code's binding can refuse it.
+        redirect_uri: "https://chatgpt.com/other",
+        code_verifier: verifier
+      })
+    );
+    expect(moved.status).toBe(400);
+    expect(JSON.parse(moved.body)).toMatchObject({
+      error: "invalid_grant",
+      error_description: "client/redirect mismatch"
+    });
   });
 
   function exchange(provider: OAuthProvider, clientId: string, requestedScope: string) {
