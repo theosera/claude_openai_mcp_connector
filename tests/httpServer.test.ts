@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
@@ -12,7 +13,7 @@ import { createMcpHandler } from "@modelcontextprotocol/server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chatgptFetch, chatgptSearch, documentUrl } from "../src/chatgpt.js";
 import type { HttpConfig } from "../src/config.js";
 import { isAuthorized, isAuthorizedHeader, parseBearer, verifyLoginPassword } from "../src/httpAuth.js";
@@ -90,6 +91,44 @@ describe("httpAuth", () => {
     expect(verifyLoginPassword("", "hunter2")).toBe(false);
     expect(verifyLoginPassword(null, "hunter2")).toBe(false);
     expect(verifyLoginPassword("hunter2", "")).toBe(false);
+  });
+
+  // INV-7 item 4 names a mechanism, not just an outcome: the password is
+  // low-entropy, so the gate must cost a KDF per guess and compare in constant
+  // time. The boolean test above stays green if the body becomes
+  // `provided === expected` — it pins the answer, not the cost. This one pins
+  // the cost by observing the two calls the invariant names.
+  //
+  // Reverse-verified (2026-09-24, one mutation per arm, each reddening only
+  // this test; the boolean test above stayed green under all three):
+  //   - body replaced by `return provided === expected` → scryptSync spy 0 calls
+  //   - scryptSync replaced by a single sha256 digest → scryptSync spy 0 calls
+  //   - timingSafeEqual replaced by Buffer#equals → timingSafeEqual spy 0 calls
+  //   - scrypt cost lowered to { N: 2 } → the cost assert fails
+  it("verifies the login password through scrypt and a constant-time compare (INV-7 item 4)", () => {
+    const scrypt = vi.spyOn(crypto, "scryptSync");
+    const compare = vi.spyOn(crypto, "timingSafeEqual");
+
+    // A wrong guess of a different length is the shape a naive compare would
+    // short-circuit on; it must still pay both KDF runs and reach the compare.
+    expect(verifyLoginPassword("x", "hunter2")).toBe(false);
+
+    expect(scrypt).toHaveBeenCalledTimes(2);
+    const passwords = scrypt.mock.calls.map((call) => String(call[0]));
+    expect(passwords.sort()).toEqual(["hunter2", "x"]);
+    for (const call of scrypt.mock.calls) {
+      // The default cost (N = 16384) is the floor; an explicit option may raise
+      // it but must never lower it.
+      const options = call[3] as { N?: number; cost?: number } | undefined;
+      expect(options?.N ?? options?.cost ?? 16_384).toBeGreaterThanOrEqual(16_384);
+    }
+
+    expect(compare).toHaveBeenCalledTimes(1);
+    const [a, b] = compare.mock.calls[0] as [Buffer, Buffer];
+    // Both sides are fixed-length KDF output, so the compare never sees the
+    // input lengths (and timingSafeEqual never throws on a length mismatch).
+    expect(a.length).toBe(b.length);
+    expect(a.length).toBeGreaterThanOrEqual(32);
   });
 });
 
