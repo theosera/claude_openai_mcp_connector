@@ -1647,14 +1647,13 @@ describe("session-archive auth-scheme masking", () => {
     // one: the dash boundary is not what covers this shape (the value and the
     // marker are separate tokens, so the rule matches either way). What broke it
     // was the line-skip address, so putting one back is the mutation that reddens.
-    // Since 2026-09-24 TWO rules reach this value -- the quote-bounded keyword
-    // pass and the fallback under it -- so the address has to go back on both:
-    // on the fallback alone the pass above it still masks the value.
-    const line = `password=${SHORT_SECRET} ${PEM_CLOSE}`;
-    const fallbackOnly = withLineSkipAddressOn(mask, BARE_KEYWORD_VALUE, "the bare keyword rule");
-    expect(runMask(fallbackOnly, line)).not.toContain(SHORT_SECRET);
+    // (The quote-bounded pass added on 2026-09-24 fires only on a keyword that
+    // follows a quote, so it does not reach this value: the fallback alone does.)
     expect(
-      runMask(withLineSkipAddressOn(fallbackOnly, QUOTE_BOUNDED_KEYWORD_VALUE, "the quote-bounded keyword pass"), line)
+      runMask(
+        withLineSkipAddressOn(mask, BARE_KEYWORD_VALUE, "the bare keyword rule"),
+        `password=${SHORT_SECRET} ${PEM_CLOSE}`
+      )
     ).toContain(SHORT_SECRET);
   });
 
@@ -2481,6 +2480,22 @@ describe("session-archive masking: the 2026-09-24 series", () => {
     for (const line of checkThenAppend) {
       expect(runMask(withoutPass, line), line).toContain(PLACEHOLDER);
     }
+  });
+
+  it("fires the quote-bounded pass only on a keyword that follows a quote (review finding on #231)", () => {
+    // Unanchored, the pass fired on the `key` inside `--key`, took the following
+    // `token:` label as that key's value, and the fallback never saw the label,
+    // so the last value was written out. The old rules masked both values.
+    const line = `token: "--key token: ${PLACEHOLDER}`;
+    expect(runMask(mask, line)).not.toContain(PLACEHOLDER);
+    // Reverse verification: make the quote anchor optional and the value leaks.
+    const unanchored = mutate(
+      mask,
+      String.raw`!s/([\"'])((token|`,
+      String.raw`!s/([\"']?)((token|`,
+      "the quote anchor"
+    );
+    expect(runMask(unanchored, line)).toContain(PLACEHOLDER);
   });
 
   it("leaves every single-keyword line exactly as the fallback alone would", () => {

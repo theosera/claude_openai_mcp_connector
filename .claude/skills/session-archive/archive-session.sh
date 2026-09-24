@@ -584,9 +584,14 @@ mask() {
   #     whitespace in it) and never reaches V. The fix is a pass directly above
   #     the fallback whose value also stops at a quote, so the second keyword is
   #     found before the fallback swallows it. The fallback itself is unchanged
-  #     (it is the no-less-masked floor), and on any single keyword the new pass
-  #     masks a prefix of what the fallback masks right after it, so it only
-  #     ever adds a marker, never moves where a value ends.
+  #     (it is the no-less-masked floor). The pass fires only on a keyword that
+  #     directly FOLLOWS a quote -- the shape the quoted-run rule leaves behind.
+  #     Unanchored, it also fired on the `key` inside `--key`, took a following
+  #     `token:` label as that key's value, and the fallback never saw the label:
+  #     `token: "--key token: V` left V in the clear where the old rules masked
+  #     both (a review finding on this change). Anchored, what it masks is a
+  #     prefix of what the fallback would mask from the same keyword, so it can
+  #     add a marker but can never erase a label the fallback would have read.
   #   * A YAML single-quoted scalar escapes an apostrophe by DOUBLING it
   #     (`'pre''fix'`), which the single-quoted class read as the closing quote:
   #     the rest of the scalar was written out beside a marker (#186). The class
@@ -689,7 +694,7 @@ mask() {
     -e "s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\-]|\\\\.|-{1,4}([^'\\\\-]|\\\\.))*-{0,4}'/\1***MASKED***'/Ig" \
     -e "/\`\`\`|~~~/!s/\\*\\*\\*MASKED\\*\\*\\*''([^'\\\\[:space:]:=-]|\\\\.|''|-{1,4}([^'\\\\[:space:]:=-]|\\\\.|''))*-{0,4}'/***MASKED***'/g" \
     -e "s/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+(Basic|Digest|Token|ApiKey|OAuth|SSWS)[[:space:]]+)([^[:space:],\"'-]|-{1,4}[^[:space:],\"'-])+/\1***MASKED***/Ig" \
-    -e "/\`\`\`|~~~/!s/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]\"'=:-]|-{1,4}[^[:space:]\"'-])([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])*/\1***MASKED***/Ig" \
+    -e "/\`\`\`|~~~/!s/([\"'])((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]\"'=:-]|-{1,4}[^[:space:]\"'-])([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])*/\1\2***MASKED***/Ig" \
     -e 's/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+/\1***MASKED***/Ig' \
     -e "/\`\`\`|~~~/!s/((passwd|passphrase)['\"]?[=:[:space:]]+\")([^\"\\\\-]|\\\\.|-{1,4}([^\"\\\\-]|\\\\.))*-{0,4}\"/\1***MASKED***\"/Ig" \
     -e "/\`\`\`|~~~/!s/((passwd|passphrase)['\"]?[=:[:space:]]+')([^'\\\\-]|\\\\.|-{1,4}([^'\\\\-]|\\\\.))*-{0,4}'/\1***MASKED***'/Ig" \
