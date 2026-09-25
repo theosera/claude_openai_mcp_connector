@@ -2886,6 +2886,79 @@ describe("session-archive masking: the 2026-09-24 series", () => {
   });
 });
 
+describe("session-archive masking: every repeated -p / -a flag (#234)", () => {
+  let mask: string;
+
+  beforeAll(async () => {
+    mask = await shippedMask(hookPath);
+  });
+
+  /** The two looped rules, and the lines that open and close their loops. */
+  const LOOP_LINE = /^\s*-e '(:|t)[mr]' \\$/;
+  const looped = (maskFn: string) =>
+    maskFn.split("\n").filter((l) => l.trim().startsWith("-e") && /(mysqldump|redis-cli\()/.test(l));
+
+  const repeated = [
+    `mysql -p${PLACEHOLDER}1 -p${PLACEHOLDER}2 -p${PLACEHOLDER}3 appdb`,
+    `mysqldump -h db -p${PLACEHOLDER}1 -u root -p${PLACEHOLDER}2 appdb`,
+    `redis-cli -a ${PLACEHOLDER}1 -a ${PLACEHOLDER}2 ping`,
+    `redis-cli --pass ${PLACEHOLDER}1 --pass ${PLACEHOLDER}2 ping`,
+    `mysql -p${PLACEHOLDER}1 -p${PLACEHOLDER}2 && redis-cli -a ${PLACEHOLDER}1 -a ${PLACEHOLDER}2`
+  ];
+
+  it("masks every occurrence of a repeated flag, not only the last", () => {
+    for (const line of repeated) expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
+    // Reverse verification: take the four loop lines out and each rule masks
+    // only the occurrence its greedy word run reaches last -- the first stays.
+    const unlooped = mask
+      .split("\n")
+      .filter((line) => !LOOP_LINE.test(line))
+      .join("\n");
+    expect(unlooped.split("\n").length).toBe(mask.split("\n").length - 4);
+    for (const line of repeated) expect(runMask(unlooped, line), line).toContain(`${PLACEHOLDER}1`);
+  });
+
+  it("ends its loop on its own output, and leaves only a value that begins with ***MASKED*** unmasked", () => {
+    // A value that begins with the twelve characters `***MASKED***` is not a
+    // value to the looped rules; that is what stops a pass from matching what
+    // it just wrote. Any other value that begins with `*` still is one.
+    for (const line of [
+      `mysql -p***${PLACEHOLDER} appdb`,
+      `mysql -p*${PLACEHOLDER}`,
+      `mysql -p*-${PLACEHOLDER}`,
+      `redis-cli -a **${PLACEHOLDER} ping`,
+      `redis-cli -a ***M${PLACEHOLDER} ping`
+    ]) {
+      expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
+    }
+    // The recorded cost, pinned so it is never read as covered.
+    expect(runMask(mask, `mysql -p***MASKED***${PLACEHOLDER} appdb`)).toContain(PLACEHOLDER);
+  });
+
+  it("keeps the looped passes linear in the clients on a line", () => {
+    // Without `g` each pass masks one occurrence and restarts at the start of
+    // the line, so N clients cost N passes of O(N) work. With `g` a pass
+    // handles every client at once.
+    const line = "redis-cli -a x ".repeat(800);
+    const seconds = (fn: string) => {
+      const started = performance.now();
+      expect(runMask(fn, line)).not.toMatch(/-a x( |$)/);
+      return (performance.now() - started) / 1000;
+    };
+    const shipped = seconds(mask);
+    expect(shipped, `800 clients: ${shipped}s`).toBeLessThan(2);
+    // Reverse verification: take `g` off the two looped rules. The line is
+    // still fully masked -- so the slowdown is the missing `g`, not a failed
+    // match -- and it is several times slower.
+    const rules = looped(mask);
+    expect(rules).toHaveLength(2);
+    const ungloballed = rules.reduce((fn, rule) => fn.split(rule).join(rule.replace(/\/g" \\$/, '/" \\')), mask);
+    expect(looped(ungloballed).filter((r) => r.endsWith('/g" \\'))).toHaveLength(0);
+    const slow = seconds(ungloballed);
+    expect(slow, `with g: ${shipped}s, without: ${slow}s`).toBeGreaterThan(shipped * 5);
+  }, 120_000);
+});
+
 describe("session-archive vault authorization", () => {
   beforeAll(() => {
     for (const tool of ["jq", "git"]) {
