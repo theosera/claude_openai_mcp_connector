@@ -21,7 +21,7 @@
  * against a test that states what it expects, not an edit hidden in a formula.
  */
 
-import { fenceCloses, fenceOpening, type OpenFence } from "./codeFence.js";
+import { fenceCloses, fenceOpening, splitLines, type OpenFence } from "./codeFence.js";
 
 /** Characters per token for plain ASCII prose. */
 export const ASCII_CHARS_PER_TOKEN = 4.0;
@@ -100,7 +100,10 @@ export function countCharacters(text: string): CharacterCounts {
   const counts: CharacterCounts = { ascii: 0, codeAscii: 0, cjk: 0, other: 0 };
   let fence: OpenFence | undefined;
 
-  for (const line of text.split("\n")) {
+  // Lines end where the splitter's do (LF, CRLF or a bare CR -- `splitLines`), so
+  // a CR-delimited fence opens and closes at the same line for both.
+  const { lines, endings } = splitLines(text);
+  for (const [index, line] of lines.entries()) {
     // The fence rule lives in `codeFence.ts`, shared with `findHeadings`, so a
     // block starts and ends at the same lines for pricing and for splitting:
     // 0–3 real spaces, a closer of the same character at least as long as the
@@ -119,8 +122,9 @@ export function countCharacters(text: string): CharacterCounts {
       }
     }
 
-    // The newline itself is a character the caller pays for.
-    for (const character of `${line}\n`) {
+    // The line ending itself is a character the caller pays for. The last line has
+    // none and is still charged one, as before: over-counting is this module's side.
+    for (const character of `${line}${endings[index] || "\n"}`) {
       const codePoint = character.codePointAt(0) ?? 0;
       if (codePoint < 128) {
         if (fence === undefined) {

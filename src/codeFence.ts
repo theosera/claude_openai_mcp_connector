@@ -23,8 +23,65 @@ export interface OpenFence {
   length: number;
 }
 
-/** 0–3 spaces (never tabs or other whitespace), the run, then the info string. */
-const OPENER = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+/**
+ * A text cut into lines at the CommonMark line endings, keeping each ending so
+ * any range of lines can be put back byte for byte.
+ */
+export interface SplitLines {
+  lines: string[];
+  /** The ending that followed `lines[i]`: "\n", "\r\n", "\r", or "" after the last line. */
+  endings: string[];
+}
+
+/**
+ * Cut `text` into lines the way CommonMark does: LF, CRLF and a BARE CR each end a
+ * line, and nothing else does (U+2028 / U+2029, form feed and U+0085 do not).
+ *
+ * Every reader here used to split on "\n" alone, while the session-archive
+ * renderer measures and escapes on LF and CR both (A-53). So `text\r## Fake`
+ * was one line to the outline and two to CommonMark, and a fence closed by a
+ * CR-delimited run was still open here: the renderer and the reader disagreed
+ * about which lines were headings in a note that is served back over MCP.
+ * One pass, linear in the text.
+ */
+export function splitLines(text: string): SplitLines {
+  const lines: string[] = [];
+  const endings: string[] = [];
+  const ending = /\r\n|\r|\n/g;
+  let start = 0;
+  for (let match = ending.exec(text); match !== null; match = ending.exec(text)) {
+    lines.push(text.slice(start, match.index));
+    endings.push(match[0]);
+    start = match.index + match[0].length;
+  }
+  lines.push(text.slice(start));
+  endings.push("");
+  return { lines, endings };
+}
+
+/**
+ * Lines `start` (inclusive) to `end` (exclusive), rejoined with the endings they
+ * came with — never with "\n", which would rewrite a CR or CRLF note on the way
+ * out. The ending after the last line of the range is not included.
+ */
+export function joinLines(split: SplitLines, start: number, end: number): string {
+  let text = "";
+  for (let index = start; index < end; index += 1) {
+    text += split.lines[index];
+    if (index < end - 1) {
+      text += split.endings[index];
+    }
+  }
+  return text;
+}
+
+/**
+ * 0–3 spaces (never tabs or other whitespace), the run, then the info string.
+ * `s`: the info string may hold U+2028 / U+2029, which are not line endings to
+ * CommonMark but stop a plain `.`, so without it such a line opened no fence here
+ * and every line after it was read as top-level Markdown.
+ */
+const OPENER = /^ {0,3}(`{3,}|~{3,})(.*)$/s;
 /** 0–3 spaces, a run, and nothing but spaces or tabs after it. */
 const CLOSER = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
 

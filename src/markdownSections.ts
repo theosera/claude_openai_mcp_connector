@@ -20,7 +20,7 @@
  * keeps every cut this module makes explicable as "a heading was here".
  */
 
-import { fenceCloses, fenceOpening, type OpenFence } from "./codeFence.js";
+import { fenceCloses, fenceOpening, joinLines, splitLines, type OpenFence, type SplitLines } from "./codeFence.js";
 import { estimateTokens } from "./tokenEstimate.js";
 
 /**
@@ -146,7 +146,13 @@ function findHeadings(lines: readonly string[]): HeadingLine[] {
     // Narrowing this side rather than widening the renderer's is the choice that
     // does not depend on which branch lands: three branches are rewriting that
     // renderer, and this is the single consumer they all feed.
-    const heading = /^(#{1,6})[ \t]+(.*)$/.exec(line);
+    //
+    // `s`, as on codeFence's OPENER: without it `.` stops at U+2028 / U+2029 (a
+    // line splitLines does not end there), `$` fails, and the engine retries
+    // every split of `[ \t]+` against `.*` -- `#` + W spaces + U+2028 measured
+    // 57 / 222 / 891 ms at W = 10k / 20k / 40k, from one line of an untrusted
+    // note (2026-09-25 change scan, CWE-1333).
+    const heading = /^(#{1,6})[ \t]+(.*)$/s.exec(line);
     if (heading) {
       headings.push({ level: heading[1].length, title: closeHashes(heading[2].trim()), lineIndex });
     }
@@ -178,7 +184,8 @@ function ancestryOf(headings: readonly HeadingLine[], position: number): string[
  * against a budget rather than against a guess.
  */
 export function outlineOf(body: string): OutlineEntry[] {
-  const lines = body.split("\n");
+  const split = splitLines(body);
+  const { lines } = split;
   const headings = findHeadings(lines);
 
   return headings.map((heading, position) => {
@@ -193,7 +200,7 @@ export function outlineOf(body: string): OutlineEntry[] {
         break;
       }
     }
-    const text = lines.slice(heading.lineIndex, end).join("\n");
+    const text = joinLines(split, heading.lineIndex, end);
     return {
       heading: heading.title,
       level: heading.level,
@@ -221,7 +228,8 @@ export function outlineOf(body: string): OutlineEntry[] {
 export function selectSections(body: string, wanted: readonly string[]): { text: string; matched: string[] } {
   const normalize = (value: string): string => value.normalize("NFC").toLocaleLowerCase();
   const requests = wanted.map((request) => ({ raw: request, key: normalize(request) }));
-  const lines = body.split("\n");
+  const split = splitLines(body);
+  const { lines } = split;
   const headings = findHeadings(lines);
   const matched = new Set<string>();
   const ranges: { start: number; end: number }[] = [];
@@ -271,26 +279,26 @@ export function selectSections(body: string, wanted: readonly string[]): { text:
   }
 
   return {
-    text: merged.map((range) => lines.slice(range.start, range.end).join("\n")).join("\n\n"),
+    text: merged.map((range) => joinLines(split, range.start, range.end)).join("\n\n"),
     matched: [...matched]
   };
 }
 
 /** Cut `lines` at the given heading positions, carrying each heading's ancestry. */
-function cutAt(lines: readonly string[], cuts: readonly HeadingLine[], ancestry: readonly string[]): MarkdownSection[] {
+function cutAt(split: SplitLines, cuts: readonly HeadingLine[], ancestry: readonly string[]): MarkdownSection[] {
   const sections: MarkdownSection[] = [];
-  const boundaries = [...cuts.map((cut) => cut.lineIndex), lines.length];
+  const boundaries = [...cuts.map((cut) => cut.lineIndex), split.lines.length];
 
   // Everything before the first cut is the preamble — it belongs to the parent
   // heading, so it keeps the ancestry it was handed and adds nothing.
   if (boundaries[0] > 0) {
-    sections.push({ headingPath: [...ancestry], index: 0, text: lines.slice(0, boundaries[0]).join("\n") });
+    sections.push({ headingPath: [...ancestry], index: 0, text: joinLines(split, 0, boundaries[0]) });
   }
   cuts.forEach((cut, position) => {
     sections.push({
       headingPath: [...ancestry, cut.title],
       index: sections.length,
-      text: lines.slice(boundaries[position], boundaries[position + 1]).join("\n")
+      text: joinLines(split, boundaries[position], boundaries[position + 1])
     });
   });
 
@@ -314,7 +322,8 @@ export function splitIntoSections(body: string, thresholdChars = SECTION_SPLIT_T
     if (text.length <= thresholdChars) {
       return [{ headingPath: [...ancestry], index: 0, text }];
     }
-    const lines = text.split("\n");
+    const cut = splitLines(text);
+    const { lines } = cut;
     const headings = findHeadings(lines).filter((heading) => heading.level >= minLevel);
     if (headings.length === 0) {
       // No heading to cut at. Returning it whole is the honest answer: the
@@ -327,14 +336,14 @@ export function splitIntoSections(body: string, thresholdChars = SECTION_SPLIT_T
     // A single cut at position 0 would recurse on the same text forever: the
     // whole document IS that one section. Descend a level instead.
     if (cuts.length === 1 && cuts[0].lineIndex === 0) {
-      const inner = split(lines.slice(1).join("\n"), [...ancestry, cuts[0].title], level + 1);
+      const inner = split(joinLines(cut, 1, lines.length), [...ancestry, cuts[0].title], level + 1);
       return inner.map((section, index) => ({
         ...section,
         index,
-        text: index === 0 ? `${lines[0]}\n${section.text}` : section.text
+        text: index === 0 ? `${lines[0]}${cut.endings[0]}${section.text}` : section.text
       }));
     }
-    return cutAt(lines, cuts, ancestry).flatMap((section) =>
+    return cutAt(cut, cuts, ancestry).flatMap((section) =>
       split(section.text, section.headingPath, level + 1).map((deeper) => ({
         headingPath: deeper.headingPath,
         index: 0,
