@@ -2738,10 +2738,12 @@ describe("session-archive masking: the 2026-09-24 series", () => {
   for (const [label, line, ruleMarker] of argumentPosition) {
     it(`masks a credential in an argument position: ${label} (F6)`, () => {
       expect(runMask(mask, line)).not.toContain(PLACEHOLDER);
-      // Reverse verification: drop the one rule this flag reaches.
+      // Reverse verification: drop the rules this flag reaches -- one for -u;
+      // for -p and -a, the looped rule and the marker-prefix rule beside it.
       const rules = mask.split("\n").filter((l) => l.trim().startsWith("-e") && l.includes(ruleMarker));
-      expect(rules).toHaveLength(1);
-      expect(runMask(mask.split(`${rules[0]}\n`).join(""), line)).toContain(PLACEHOLDER);
+      expect(rules).toHaveLength(ruleMarker === "(-u|--user)" ? 1 : 2);
+      const dropped = rules.reduce((fn, rule) => fn.split(`${rule}\n`).join(""), mask);
+      expect(runMask(dropped, line)).toContain(PLACEHOLDER);
     });
   }
 
@@ -2812,7 +2814,7 @@ describe("session-archive masking: the 2026-09-24 series", () => {
     ];
     // The OLDER rules still act on such a line exactly as they always did; what
     // is pinned is that the series rules add nothing to it.
-    expect(seriesRules(mask)).toHaveLength(4);
+    expect(seriesRules(mask)).toHaveLength(6);
     const withoutSeries = seriesRules(mask).reduce((fn, rule) => fn.split(`${rule}\n`).join(""), mask);
     for (const line of lines) expect(runMask(mask, line), line).toBe(runMask(withoutSeries, line));
     expect(runMask(mask, lines[0])).toBe(lines[0]);
@@ -2846,7 +2848,7 @@ describe("session-archive masking: the 2026-09-24 series", () => {
     // both and is what CI's GNU runner measures.
     const rules = mask.split("\n").filter((line) => line.trim().startsWith("-e"));
     expect(rules.filter((line) => line.includes("[^[:space:]|;&]+)*"))).toEqual([]);
-    expect(rules.filter((line) => line.includes("[^[:space:]|;&]+){0,12}"))).toHaveLength(2);
+    expect(rules.filter((line) => line.includes("[^[:space:]|;&]+){0,12}"))).toHaveLength(4);
 
     const seconds = (tokens: number) => {
       const line = `${"mysql ".repeat(tokens)};mysql -p${PLACEHOLDER}`;
@@ -2896,7 +2898,12 @@ describe("session-archive masking: every repeated -p / -a flag (#234)", () => {
   /** The two looped rules, and the lines that open and close their loops. */
   const LOOP_LINE = /^\s*-e '(:|t)[mr]' \\$/;
   const looped = (maskFn: string) =>
-    maskFn.split("\n").filter((l) => l.trim().startsWith("-e") && /(mysqldump|redis-cli\()/.test(l));
+    maskFn
+      .split("\n")
+      .filter((l) => l.trim().startsWith("-e") && /(mysqldump|redis-cli\()/.test(l) && !l.includes("\\5/g"));
+  /** The two rules for a value that is only a leading part of the marker (Codex P1 on #243). */
+  const markerPrefixRules = (maskFn: string) =>
+    maskFn.split("\n").filter((l) => l.trim().startsWith("-e") && l.includes("\\1***MASKED***\\5/g"));
 
   const repeated = [
     `mysql -p${PLACEHOLDER}1 -p${PLACEHOLDER}2 -p${PLACEHOLDER}3 appdb`,
@@ -2933,6 +2940,30 @@ describe("session-archive masking: every repeated -p / -a flag (#234)", () => {
     }
     // The recorded cost, pinned so it is never read as covered.
     expect(runMask(mask, `mysql -p***MASKED***${PLACEHOLDER} appdb`)).toContain(PLACEHOLDER);
+  });
+
+  it("masks a value that is only a leading part of the marker, with or without trailing dashes (Codex P1 on #243)", () => {
+    // The complement above needs a character after the leading part, so `*`,
+    // `*-` or `***M-` matched nothing and was written out whole -- where main
+    // masked at least the part before the dashes. A rule of its own takes such
+    // a value when it ends there.
+    const shapes: Array<[string, string]> = [
+      ["mysql -p*", "mysql -p***MASKED***"],
+      ["mysql -p*-", "mysql -p***MASKED***"],
+      ["mysql -p*--", "mysql -p***MASKED***"],
+      ["mysql -p***M- appdb", "mysql -p***MASKED*** appdb"],
+      ["mysql -p***MASKED** appdb", "mysql -p***MASKED*** appdb"],
+      ["redis-cli -a *- ping", "redis-cli -a ***MASKED*** ping"],
+      ["redis-cli -a **---- ping", "redis-cli -a ***MASKED*** ping"],
+      ["mysql -p* -p*- -pab", "mysql -p***MASKED*** -p***MASKED*** -p***MASKED***"]
+    ];
+    for (const [line, expected] of shapes) expect(runMask(mask, line), line).toBe(expected);
+    // Reverse verification: drop the two rules and every shape but the last
+    // leaves its value as it was typed.
+    const rules = markerPrefixRules(mask);
+    expect(rules).toHaveLength(2);
+    const without = rules.reduce((fn, rule) => fn.split(`${rule}\n`).join(""), mask);
+    for (const [line] of shapes.slice(0, -1)) expect(runMask(without, line), line).toBe(line);
   });
 
   it("keeps the looped passes linear in the clients on a line", () => {

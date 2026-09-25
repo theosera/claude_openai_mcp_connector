@@ -379,8 +379,14 @@ mask() {
   # of it, then any other character), so `***abc` and `*abc` still are -- and
   # that is what stops a pass from matching its own output: a masked
   # occurrence is backtracked past and the next pass reaches the one before
-  # it. The cost: a secret that begins with `***MASKED***`, or is a leading
-  # part of it such as `*` alone, is not masked by these two rules (pinned).
+  # it. That complement needs a character after the leading part, so a value
+  # that IS a leading part (`*`, `**`), optionally followed by dashes (`*-`,
+  # `***M-`), matched nothing and was written out whole where main masked it
+  # (Codex P1 on #243); a rule of its own inside each loop takes such a value
+  # when it ends there, and re-emits what ended it. It cannot take the
+  # marker, which is twelve characters and is not followed by a dash. The
+  # cost: a secret that begins with the whole `***MASKED***` is not masked by
+  # these rules (pinned).
   # The word run and the value class are otherwise unchanged -- quoted values
   # with spaces and flag-shaped words inside quoted arguments are left for
   # #232, where a shell-aware reading of both was measured to need escapes, a
@@ -410,9 +416,11 @@ mask() {
     -e "/\`\`\`|~~~/!s/((^|[[:space:]])(-u|--user)(=|[[:space:]]+)[\"']?[^[:space:]:\"'/%+]+:)([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])+/\1***MASKED***/g" \
     -e ':m' \
     -e "/\`\`\`|~~~/!s/((mysql|mysqldump|mysqladmin|mariadb|mariadb-dump)([[:space:]]+[^[:space:]|;&]+){0,12}[[:space:]]+-p[\"']?)([^[:space:]\"'*-]|\\*[^[:space:]\"'*-]|\\*-{1,4}[^[:space:]\"'-]|\\*\\*[^[:space:]\"'*-]|\\*\\*-{1,4}[^[:space:]\"'-]|\\*\\*\\*[^[:space:]\"'M-]|\\*\\*\\*-{1,4}[^[:space:]\"'-]|\\*\\*\\*M[^[:space:]\"'A-]|\\*\\*\\*M-{1,4}[^[:space:]\"'-]|\\*\\*\\*MA[^[:space:]\"'S-]|\\*\\*\\*MA-{1,4}[^[:space:]\"'-]|\\*\\*\\*MAS[^[:space:]\"'K-]|\\*\\*\\*MAS-{1,4}[^[:space:]\"'-]|\\*\\*\\*MASK[^[:space:]\"'E-]|\\*\\*\\*MASK-{1,4}[^[:space:]\"'-]|\\*\\*\\*MASKE[^[:space:]\"'D-]|\\*\\*\\*MASKE-{1,4}[^[:space:]\"'-]|\\*\\*\\*MASKED[^[:space:]\"'*-]|\\*\\*\\*MASKED-{1,4}[^[:space:]\"'-]|\\*\\*\\*MASKED\\*[^[:space:]\"'*-]|\\*\\*\\*MASKED\\*-{1,4}[^[:space:]\"'-]|\\*\\*\\*MASKED\\*\\*[^[:space:]\"'*-]|\\*\\*\\*MASKED\\*\\*-{1,4}[^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])*/\1***MASKED***/g" \
+    -e "/\`\`\`|~~~/!s/((mysql|mysqldump|mysqladmin|mariadb|mariadb-dump)([[:space:]]+[^[:space:]|;&]+){0,12}[[:space:]]+-p[\"']?)(\\*|\\*\\*|\\*\\*\\*|\\*\\*\\*M|\\*\\*\\*MA|\\*\\*\\*MAS|\\*\\*\\*MASK|\\*\\*\\*MASKE|\\*\\*\\*MASKED|\\*\\*\\*MASKED\\*|\\*\\*\\*MASKED\\*\\*)-{0,4}([[:space:]\"'|;&]|$)/\1***MASKED***\5/g" \
     -e 'tm' \
     -e ':r' \
     -e "/\`\`\`|~~~/!s/(redis-cli([[:space:]]+[^[:space:]|;&]+){0,12}[[:space:]]+(-a|--pass)[[:space:]]+[\"']?)([^[:space:]\"'*-]|\\*[^[:space:]\"'*-]|\\*-{1,4}[^[:space:]\"'-]|\\*\\*[^[:space:]\"'*-]|\\*\\*-{1,4}[^[:space:]\"'-]|\\*\\*\\*[^[:space:]\"'M-]|\\*\\*\\*-{1,4}[^[:space:]\"'-]|\\*\\*\\*M[^[:space:]\"'A-]|\\*\\*\\*M-{1,4}[^[:space:]\"'-]|\\*\\*\\*MA[^[:space:]\"'S-]|\\*\\*\\*MA-{1,4}[^[:space:]\"'-]|\\*\\*\\*MAS[^[:space:]\"'K-]|\\*\\*\\*MAS-{1,4}[^[:space:]\"'-]|\\*\\*\\*MASK[^[:space:]\"'E-]|\\*\\*\\*MASK-{1,4}[^[:space:]\"'-]|\\*\\*\\*MASKE[^[:space:]\"'D-]|\\*\\*\\*MASKE-{1,4}[^[:space:]\"'-]|\\*\\*\\*MASKED[^[:space:]\"'*-]|\\*\\*\\*MASKED-{1,4}[^[:space:]\"'-]|\\*\\*\\*MASKED\\*[^[:space:]\"'*-]|\\*\\*\\*MASKED\\*-{1,4}[^[:space:]\"'-]|\\*\\*\\*MASKED\\*\\*[^[:space:]\"'*-]|\\*\\*\\*MASKED\\*\\*-{1,4}[^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])*/\1***MASKED***/g" \
+    -e "/\`\`\`|~~~/!s/(redis-cli([[:space:]]+[^[:space:]|;&]+){0,12}[[:space:]]+(-a|--pass)[[:space:]]+[\"']?)(\\*|\\*\\*|\\*\\*\\*|\\*\\*\\*M|\\*\\*\\*MA|\\*\\*\\*MAS|\\*\\*\\*MASK|\\*\\*\\*MASKE|\\*\\*\\*MASKED|\\*\\*\\*MASKED\\*|\\*\\*\\*MASKED\\*\\*)-{0,4}([[:space:]\"'|;&]|$)/\1***MASKED***\5/g" \
     -e 'tr' \
     -e '/^[[:space:]]*[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/.*/***MASKED***/' \
     -e '/^[[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-)[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-))[A-Za-z0-9+\/=]{32,}([[:space:]]*)$/\1***MASKED***\3/'
