@@ -515,6 +515,11 @@ describe("OAuthStore", () => {
   //    revoke できない孤立 family として読む) は**テストで踏めていない**。
   //    その分岐に入る state file は HMAC を通る必要があり、旧版の writer を
   //    テスト内に再実装しない限り作れない。⇒ 未カバーとして申告する。
+  //    ⭐ 訂正 (2026-09-25・上の 3 行は消さずに残す): 「再実装しない限り作れない」は偽だった。
+  //    MAC の鍵は scrypt(password, salt) で、テストは password を持っている ⇒ payload を
+  //    手で組んで MAC を付け直せば、旧 writer なしで loader が検証を通す file になる
+  //    (`OAuthStore persistence` の `signedEnvelope`)。両 fallback は同 describe の
+  //    "reads unusable lineage conservatively…" で踏み、逆検証した (被覆は下の tombstone 側と 2/2)。
   //
   // 2026-09-02、cap の spare 免除 (rotation は自分が立っている record を自分の
   // mint で evict しない) を足した際の実測。★ 変異を回したのは別セッションで、
@@ -538,6 +543,15 @@ describe("OAuthStore", () => {
   //    size <= max になりループが終わり、max = 0 では根が発行時点で evict されて
   //    rotate が mint に到達しない (⚠️ 後者は陽性対照を組んで空振りしてから分かった)。
   //    ⇒ 未到達として申告する。⛔ これは不到達の証明ではない。
+  //    ⭐ 追記 (2026-09-25): max >= 1 については論証で不到達が言える (探針に依らない)。
+  //      - max >= 1 のとき、ループ条件 size > max ⇒ size >= 2
+  //      - spare に一致するキーは高々 1 つ (Map のキーは互いに異なる)
+  //      - よって spare でないキーが存在し、victim は必ず定まる
+  //    ⚠️ 上の「非 spare キーを 1 つ削った時点で size <= max」は、size が max+1 を超えて
+  //    始まる場合 (load は token の cap を掛けない) に 1 回で終わるとは限らない — この論証は
+  //    各反復で成り立つので、その場合も含む。⛔ 射程の外: max = 0 (上の実測のとおり) と
+  //    max = NaN (`size > NaN` が常に偽で cap 自体が外れる)。どちらも options 経由でしか
+  //    入らず、本番は DEFAULT_MAX_TOKENS = 2000。
   it("lets a rotated refresh token be replayed inside the grace window, revoking the lost pair", () => {
     // The incident this pins (2026-08-30): the response carrying the rotated
     // pair is lost in transit; the client retries with the only token it has —
@@ -752,6 +766,9 @@ describe("OAuthStore", () => {
   //    familyId / generation fallback と同じ理由で**テストで踏めていない** — その分岐に入る
   //    state file は HMAC を通す必要があり、writer をテスト内に再実装しない限り作れない。
   //    ⇒ 未カバーとして申告する。
+  //    ⭐ 訂正 (2026-09-25・上の 3 行は消さずに残す): 上の H1〜H4 側の訂正と同じ理由で偽だった。
+  //    `signedEnvelope` で作った file で "reads unusable lineage conservatively…" が踏み、
+  //    `tombstone.generation >= 0 &&` を外すと当該テストだけが赤になることを実測した。
   // #170. The residual `rotateRefreshToken` states rather than fixes: sparing
   // the presented record lasts exactly one mint, after which it is an ordinary
   // entry again and an interceptor holding the lost response can push it out on
@@ -1053,6 +1070,12 @@ describe("OAuthStore", () => {
   // ⛔ **未カバーとして申告する**: observe 経路の CPU コスト (revokeFamilyAbove の O(maxTokens)
   //    走査を over-quota で無制限に回せること) は**測っていない**。上の Y/Z が bound したのは
   //    disk write だけで、走査そのものは残る。body の parse より安いという見積もりに留まる。
+  //    ⭐ 実測 (2026-09-25・上の 3 行は消さずに残す): 見積もりは外れていた。rotated record への
+  //    repeat observe (removes 0) を node v24.13.0 / macOS で 3 回ずつ測った値 —
+  //      maps 1+1 = 0.8 µs / 100+100 = 2.2 µs / 1000+1000 = 17 µs / 1999+1999 = 34〜36 µs
+  //    に対し、典型的な /token form の `URLSearchParams` parse + get 2 回は 0.49 µs。⇒ cap
+  //    いっぱいでは parse の約 70 倍で、maps の大きさに線形。⛔ HTTP 1 リクエスト全体との比較は
+  //    していない。対策の要否 (familyId の索引など = src の変更) は、この表の外で判断する。
   // F1 (2026-09-09). `/token` checks the refresh-rotation quota BEFORE
   // `oauth.token(form)` runs, and `rotateRefreshToken` is the only way into
   // replay detection, so a full bucket silences the trigger outright — and the
@@ -1476,6 +1499,24 @@ describe("OAuthStore persistence", () => {
     return path.join(dir, "oauth-state.json");
   }
 
+  /**
+   * An envelope carrying `payload`, MAC'd under `salt` with the test's own
+   * password — exactly what the store's writer produces. This is how a test
+   * builds a state file the loader will verify, without re-implementing an old
+   * writer: the MAC key is scrypt(password, salt), and the test holds both.
+   */
+  function signedEnvelope(base: Record<string, unknown>, payload: string, salt: Buffer): Record<string, unknown> {
+    return {
+      ...base,
+      payload,
+      salt: salt.toString("hex"),
+      mac: crypto
+        .createHmac("sha256", crypto.scryptSync(secret, salt, 32))
+        .update(payload)
+        .digest("hex")
+    };
+  }
+
   it("requires persistSecret when persistPath is set", async () => {
     const file = await stateFilePath();
     expect(() => new OAuthStore({ ...opts, persistPath: file })).toThrow(/persistSecret/);
@@ -1622,14 +1663,7 @@ describe("OAuthStore persistence", () => {
         tokens.accessToken
       );
     };
-    const remac = (salt: Buffer) => ({
-      ...original,
-      salt: salt.toString("hex"),
-      mac: crypto
-        .createHmac("sha256", crypto.scryptSync(secret, salt, 32))
-        .update(original.payload as string)
-        .digest("hex")
-    });
+    const remac = (salt: Buffer) => signedEnvelope(original, original.payload as string, salt);
 
     // The spy covers a matching MAC AND a wrong one of the same length: the
     // mismatch is the attacker-controlled case, so it is the one that must
@@ -1648,6 +1682,79 @@ describe("OAuthStore persistence", () => {
 
     expect(await loadWith({ ...original, version: 2 })).toBeNull();
     expect(await loadWith(remac(crypto.randomBytes(8)))).toBeNull();
+  });
+
+  // The loader's conservative readings of damaged lineage, which no test had
+  // reached because a file carrying them must pass the MAC (see the ledger in
+  // the "OAuthStore" block). `signedEnvelope` builds one. Each reading is paired
+  // with a replay that WOULD reach a victim if the reading were not there, and
+  // with a control showing that replay did revoke what it legitimately owns:
+  //   - a record with no usable familyId gets a family of its own, so a replay
+  //     in one damaged lineage cannot revoke another damaged lineage;
+  //   - a record with an unusable generation reads as generation 0, so a replay
+  //     of generation 0 in the same family does not reach it;
+  //   - a tombstone with an unusable generation is dropped, so presenting its
+  //     token revokes nothing.
+  //
+  // Reverse-verified (2026-09-25, each reddening only this test, each on its
+  // own victim's assert):
+  //   - familyId fallback `randomSecret()` → a fixed `"shared"` → pair B revoked
+  //   - generation fallback removed (raw value kept) → pair E (1.5) revoked
+  //   - tombstone `tombstone.generation >= 0 &&` removed → pair F revoked
+  it("reads unusable lineage conservatively and drops a malformed tombstone at load (INV-7 item 7)", async () => {
+    const file = await stateFilePath();
+    const t = 1_000_000;
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t });
+    const [a, b, d, e, f] = [1, 2, 3, 4, 5].map(() => store.issueTokens("c", "vault.read", "r"));
+    const original = JSON.parse(await fs.readFile(file, "utf8"));
+    const payload = JSON.parse(original.payload as string);
+
+    const hash = (token: string) => crypto.createHash("sha256").update(token).digest("hex");
+    type Persisted = { tokenHash: string; familyId?: unknown; generation?: unknown };
+    const recordsOf = (pair: { accessToken: string; refreshToken: string }): Persisted[] => [
+      (payload.accessTokens as Persisted[]).find((r) => r.tokenHash === hash(pair.accessToken))!,
+      (payload.refreshTokens as Persisted[]).find((r) => r.tokenHash === hash(pair.refreshToken))!
+    ];
+    for (const record of [...recordsOf(a), ...recordsOf(b)]) {
+      delete record.familyId;
+    }
+    for (const record of recordsOf(b)) {
+      record.generation = 5;
+    }
+    const familyOfD = recordsOf(d)[0]!.familyId as string;
+    for (const record of recordsOf(e)) {
+      record.familyId = familyOfD;
+      record.generation = 1.5;
+    }
+    payload.rotatedTombstones = [
+      {
+        tokenHash: hash("ghost-refresh-token"),
+        clientId: "c",
+        familyId: recordsOf(f)[0]!.familyId,
+        generation: -1,
+        expiresAt: t + 30_000
+      }
+    ];
+    await fs.writeFile(file, JSON.stringify(signedEnvelope(original, JSON.stringify(payload), crypto.randomBytes(16))));
+
+    const loaded = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t });
+
+    // Damaged lineage A: rotate, then replay inside the grace window.
+    const a1 = loaded.rotateRefreshToken(a.refreshToken, "c");
+    expect(a1).not.toBeNull();
+    expect(loaded.rotateRefreshToken(a.refreshToken, "c")).not.toBeNull();
+    expect(loaded.validateAccessToken(a1!.accessToken)).toBeNull(); // control: the replay revoked A's successor
+    expect(loaded.validateAccessToken(b.accessToken)?.clientId).toBe("c"); // B is not in A's family
+
+    // Intact lineage D, with E's damaged generation filed under it.
+    const d1 = loaded.rotateRefreshToken(d.refreshToken, "c");
+    expect(loaded.rotateRefreshToken(d.refreshToken, "c")).not.toBeNull();
+    expect(loaded.validateAccessToken(d1!.accessToken)).toBeNull(); // control
+    expect(loaded.validateAccessToken(e.accessToken)?.clientId).toBe("c"); // E reads as generation 0
+
+    // The malformed tombstone was dropped, so its token is just a dead token.
+    expect(loaded.rotateRefreshToken("ghost-refresh-token", "c")).toBeNull();
+    expect(loaded.validateAccessToken(f.accessToken)?.clientId).toBe("c");
   });
 
   // The loader drops expired tokens, and then sweeps clients left holding
