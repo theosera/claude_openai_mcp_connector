@@ -2901,9 +2901,13 @@ describe("session-archive masking: every repeated -p / -a flag (#234)", () => {
     maskFn
       .split("\n")
       .filter((l) => l.trim().startsWith("-e") && /(mysqldump|redis-cli\()/.test(l) && !l.includes("\\5/g"));
-  /** The two rules for a value that is only a leading part of the marker (Codex P1 on #243). */
+  /** The two rules for a value that is only a leading part of the sentinel (Codex P1 on #243). */
   const markerPrefixRules = (maskFn: string) =>
-    maskFn.split("\n").filter((l) => l.trim().startsWith("-e") && l.includes("\\1***MASKED***\\5/g"));
+    maskFn.split("\n").filter((l) => l.trim().startsWith("-e") && l.includes("\\1***MASKEDP***\\5/g"));
+  /** The one rule after both loops that turns the sentinel back into the marker. */
+  // Delimited with `#`, not `/`, so the shared redactor's shape lift (which reads
+  // `s/<pattern>/***MASKED***/g` rules) does not take the sentinel for a secret shape.
+  const RESTORE_RULE = String.raw`    -e 's#\*\*\*MASKEDP\*\*\*#***MASKED***#g' ` + "\\";
 
   const repeated = [
     `mysql -p${PLACEHOLDER}1 -p${PLACEHOLDER}2 -p${PLACEHOLDER}3 appdb`,
@@ -2925,10 +2929,11 @@ describe("session-archive masking: every repeated -p / -a flag (#234)", () => {
     for (const line of repeated) expect(runMask(unlooped, line), line).toContain(`${PLACEHOLDER}1`);
   });
 
-  it("ends its loop on its own output, and leaves only a value that begins with ***MASKED*** unmasked", () => {
-    // A value that begins with the twelve characters `***MASKED***` is not a
-    // value to the looped rules; that is what stops a pass from matching what
-    // it just wrote. Any other value that begins with `*` still is one.
+  it("ends its loop on its own output, and leaves only a value that begins with the sentinel unmasked", () => {
+    // Inside the loops a value becomes the sentinel `***MASKEDP***`, and a value
+    // that begins with the sentinel is not a value to the looped rules; that is
+    // what stops a pass from matching what it just wrote. Any other value that
+    // begins with `*` still is one.
     for (const line of [
       `mysql -p***${PLACEHOLDER} appdb`,
       `mysql -p*${PLACEHOLDER}`,
@@ -2939,7 +2944,50 @@ describe("session-archive masking: every repeated -p / -a flag (#234)", () => {
       expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
     }
     // The recorded cost, pinned so it is never read as covered.
-    expect(runMask(mask, `mysql -p***MASKED***${PLACEHOLDER} appdb`)).toContain(PLACEHOLDER);
+    expect(runMask(mask, `mysql -p***MASKEDP***${PLACEHOLDER} appdb`)).toContain(PLACEHOLDER);
+  });
+
+  // Values an earlier rule has partly masked: a token rule or the in-range run
+  // rule leaves `***MASKED***` at the START of the value and the rest after it.
+  // Built from pieces so no line of this file is itself token-shaped.
+  const SK = "s" + "k-";
+  const AK = "AK" + "IA";
+  const OPEN_KEY_MARKER = "-----BEGIN OPEN" + "SSH PRIV" + "ATE KEY-----";
+  const partlyMasked = [
+    `mysql -uapp -p${SK}${"a".repeat(22)}.Tail${PLACEHOLDER}`,
+    `mysql -uapp -p'${AK}${"B".repeat(16)}${PLACEHOLDER}'`,
+    `redis-cli -a ${SK}${"c".repeat(22)}!${PLACEHOLDER}`,
+    `mysql -p${AK}${"D".repeat(16)}${PLACEHOLDER}`,
+    `${OPEN_KEY_MARKER}\nredis-cli -h cache -a abcdefghijklmn_${PLACEHOLDER}`
+  ];
+
+  it("masks the rest of a value an earlier rule partly masked (change scan r4 F1 / F2 on #243)", () => {
+    for (const input of partlyMasked) expect(runMask(mask, input), input).not.toContain(PLACEHOLDER);
+    // Reverse verification: key the exclusion on the marker as well -- as the
+    // first spelling did -- and every shape leaves its tail in the clear.
+    const SENTINEL_CLASS = String.raw`\\*\\*\\*MASKED[^[:space:]\"'P-]`;
+    expect(mask.split(SENTINEL_CLASS).length - 1).toBe(2);
+    const onMarker = mask.split(SENTINEL_CLASS).join(String.raw`\\*\\*\\*MASKED[^[:space:]\"'*P-]`);
+    for (const input of partlyMasked) expect(runMask(onMarker, input), input).toContain(PLACEHOLDER);
+  });
+
+  it("never lets the sentinel leave mask(), and no other rule eats it mid-loop", () => {
+    const inputs = [
+      ...repeated,
+      ...partlyMasked,
+      `mysql -p${SK}${"e".repeat(22)}x -pB ; redis-cli -a ***MASKED** -a ${AK}${"F".repeat(16)}y && mysql -p*-`,
+      "mysql -p***MASKED*** -p***MASKEDP -a x"
+    ];
+    for (const input of inputs) {
+      const out = runMask(mask, input);
+      expect(out, input).not.toContain("MASKEDP");
+      expect(out, input).not.toContain(PLACEHOLDER);
+    }
+    // Reverse verification: drop the rule that turns the sentinel back, and it
+    // is written out.
+    expect(mask.split("\n")).toContain(RESTORE_RULE);
+    const unrestored = mask.split(`${RESTORE_RULE}\n`).join("");
+    expect(runMask(unrestored, repeated[0])).toContain("***MASKEDP***");
   });
 
   it("masks a value that is only a leading part of the marker, with or without trailing dashes (Codex P1 on #243)", () => {
@@ -2958,12 +3006,14 @@ describe("session-archive masking: every repeated -p / -a flag (#234)", () => {
       ["mysql -p* -p*- -pab", "mysql -p***MASKED*** -p***MASKED*** -p***MASKED***"]
     ];
     for (const [line, expected] of shapes) expect(runMask(mask, line), line).toBe(expected);
-    // Reverse verification: drop the two rules and every shape but the last
-    // leaves its value as it was typed.
+    // Reverse verification: drop the two rules and every shape that is a
+    // leading part of the sentinel leaves its value as it was typed.
     const rules = markerPrefixRules(mask);
     expect(rules).toHaveLength(2);
     const without = rules.reduce((fn, rule) => fn.split(`${rule}\n`).join(""), mask);
-    for (const [line] of shapes.slice(0, -1)) expect(runMask(without, line), line).toBe(line);
+    for (const [line] of shapes.filter(([l]) => !l.includes("***MASKED**") && !l.includes("-pab"))) {
+      expect(runMask(without, line), line).toBe(line);
+    }
   });
 
   it("keeps the looped passes linear in the clients on a line", () => {
