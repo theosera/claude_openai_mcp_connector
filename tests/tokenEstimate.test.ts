@@ -85,6 +85,18 @@ describe("token estimation buckets", () => {
   it("charges each chunk for its JSON framing on top of its text", () => {
     expect(estimateChunkTokens("hello")).toBe(estimateTokens("hello") + CHUNK_JSON_OVERHEAD_TOKENS);
   });
+
+  it("prices a fence delimited by CR or CRLF as code, where the splitter and CommonMark put it (A-53)", () => {
+    // Split on "\n" alone, a bare-CR note was one line whose opener never
+    // matched, so its code was priced as prose; a CRLF opener ended in "\r" and
+    // opened nothing either. Same lines as the LF note, same buckets.
+    const lf = countCharacters(["```", "code", "```", "prose"].join("\n"));
+    for (const eol of ["\r", "\r\n"]) {
+      const counts = countCharacters(["```", "code", "```", "prose"].join(eol));
+      expect(counts.codeAscii).toBe(`code${eol}`.length);
+      expect(counts.ascii).toBe(lf.ascii);
+    }
+  });
 });
 
 describe("truncateToTokens", () => {
