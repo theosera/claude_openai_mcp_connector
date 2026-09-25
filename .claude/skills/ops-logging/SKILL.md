@@ -88,7 +88,8 @@ terminal-ops-logs/
       {
         "hooks": [
           { "type": "command",
-            "command": "bash .claude/skills/ops-logging/push-log.sh" }
+            "command": "bash .claude/skills/ops-logging/push-log.sh",
+            "timeout": 30 }
         ]
       }
     ]
@@ -141,6 +142,9 @@ terminal-ops-logs/
   dash 制限 2 本を落とすと同一行が赤 — **片方だけが赤くなる** (テストが pin)。
   ⚠️ **代償**: `-e` 規則が 2 本増え、1.39 MB / 22,550 行で **0.74s → 1.08s (+46%)**。
   ⛔ **hook にタイムアウトは無い**ので、巨大な tool 出力ではここが効く。
+  ↳ **2026-09-26 訂正 (32-R13)**: Stop / SessionEnd の archive-session.sh には 60 秒、PreCompact には 120 秒の
+  timeout を付けた。⇒ 巨大な出力では、ターンが止まる代わりに archive が打ち切られうる。PostToolUse の
+  capture-command.sh には今も timeout が無い。
   ⚠️⚠️ **そして「2 本が互いの穴を埋める」関係は、次に触る人には見えない。**
   ⇒ ⛔ **片方だけ直すと穴が開く。** ⇒ ⭕ だから上の半分ごとの逆検証をテストに置いてある。
   ⚠️ 以下は当初 address を必須と書いた記録である (⛔ **消さない** — 次に同じ案が出たときのため):
