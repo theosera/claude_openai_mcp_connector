@@ -77,3 +77,40 @@ jobs:
       - run: pnpm run typecheck
       - run: pnpm run build
       - run: pnpm test
+
+  # macOS leg. The security boundary leans on filesystem behaviour that differs
+  # by platform — realpath, symlinks, NFC/NFD, and case-insensitive identity —
+  # and macOS is this project's primary deployment, while the job above runs on
+  # Linux only. Some tests exist for macOS alone and skip themselves elsewhere
+  # (e.g. the case-variant state-file test in tests/config.test.ts); this job is
+  # where they run in CI.
+  #
+  # A SEPARATE job, not an `os` axis on the matrix above: the ruleset requires
+  # the checks by name ("build (22.x)", "build (24.13.0)"), and an extra matrix
+  # key renames every leg ("build (22.x, ubuntu-latest)"), after which the
+  # required checks never report and every PR blocks. An `include` entry that
+  # adds `os` to 24.13.0 would instead merge into that existing leg and move it
+  # to macOS. Whether this job becomes a required check is a ruleset decision,
+  # made separately.
+  #
+  # Only the pinned runtime (24.13.0): the engines floor is covered on Linux,
+  # and what this leg adds is the platform, not another Node line. Lint, format
+  # and the audits are platform-independent and already run above.
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413  # v6.1.0
+
+      - name: Use Node.js 24.13.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: 24.13.0
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm run build
+      - run: pnpm test
