@@ -3016,6 +3016,33 @@ describe("session-archive masking: every repeated -p / -a flag (#234)", () => {
     }
   });
 
+  it("masks a leading part of the marker followed by five or more dashes (Codex on the copies of #243)", () => {
+    // The value class cannot cross a run of five dashes, so such a value matched
+    // neither rule and was written out whole, where main masked the part before
+    // the run. The run itself and what follows it stay, as they did on main.
+    const shapes: Array<[string, string]> = [
+      ["mysql -p*-----", "mysql -p***MASKED***-----"],
+      ["mysql -p***MASK-----rest appdb", "mysql -p***MASKED***-----rest appdb"],
+      ["mysql -p'*-----'", "mysql -p'***MASKED***-----'"],
+      [`mysql -p"***M-----"`, `mysql -p"***MASKED***-----"`],
+      ["mysql -uapp -p*------tail", "mysql -uapp -p***MASKED***-----tail"],
+      ["redis-cli -a **----- ping", "redis-cli -a ***MASKED***----- ping"],
+      ["redis-cli --pass '***MASK-----rest'", "redis-cli --pass '***MASKED***-----rest'"],
+      ["mysql -p*----- -p**-----x", "mysql -p***MASKED***----- -p***MASKED***-----x"]
+    ];
+    for (const [line, expected] of shapes) expect(runMask(mask, line), line).toBe(expected);
+    // The loops still end: a leading part of the sentinel before the run is
+    // taken once, and the sentinel itself is not.
+    expect(runMask(mask, "mysql -p***MASKEDP**-----")).toBe("mysql -p***MASKED***-----");
+    // Reverse verification: take the five-dash end out of the two rules and
+    // every shape is written out as it was typed.
+    const rules = markerPrefixRules(mask);
+    expect(rules.filter((r) => r.includes("|-----|$)"))).toHaveLength(2);
+    const without = rules.reduce((fn, rule) => fn.split(rule).join(rule.replace("|-----|$)", "|$)")), mask);
+    expect(markerPrefixRules(without).filter((r) => r.includes("-----"))).toHaveLength(0);
+    for (const [line] of shapes) expect(runMask(without, line), line).toBe(line);
+  });
+
   it("keeps the looped passes linear in the clients on a line", () => {
     // Without `g` each pass masks one occurrence and restarts at the start of
     // the line, so N clients cost N passes of O(N) work. With `g` a pass
