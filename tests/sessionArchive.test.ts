@@ -2738,10 +2738,12 @@ describe("session-archive masking: the 2026-09-24 series", () => {
   for (const [label, line, ruleMarker] of argumentPosition) {
     it(`masks a credential in an argument position: ${label} (F6)`, () => {
       expect(runMask(mask, line)).not.toContain(PLACEHOLDER);
-      // Reverse verification: drop the one rule this flag reaches.
+      // Reverse verification: drop the rules this flag reaches -- one for -u;
+      // for -p and -a, the looped rule and the marker-prefix rule beside it.
       const rules = mask.split("\n").filter((l) => l.trim().startsWith("-e") && l.includes(ruleMarker));
-      expect(rules).toHaveLength(1);
-      expect(runMask(mask.split(`${rules[0]}\n`).join(""), line)).toContain(PLACEHOLDER);
+      expect(rules).toHaveLength(ruleMarker === "(-u|--user)" ? 1 : 2);
+      const dropped = rules.reduce((fn, rule) => fn.split(`${rule}\n`).join(""), mask);
+      expect(runMask(dropped, line)).toContain(PLACEHOLDER);
     });
   }
 
@@ -2812,7 +2814,7 @@ describe("session-archive masking: the 2026-09-24 series", () => {
     ];
     // The OLDER rules still act on such a line exactly as they always did; what
     // is pinned is that the series rules add nothing to it.
-    expect(seriesRules(mask)).toHaveLength(4);
+    expect(seriesRules(mask)).toHaveLength(6);
     const withoutSeries = seriesRules(mask).reduce((fn, rule) => fn.split(`${rule}\n`).join(""), mask);
     for (const line of lines) expect(runMask(mask, line), line).toBe(runMask(withoutSeries, line));
     expect(runMask(mask, lines[0])).toBe(lines[0]);
@@ -2846,7 +2848,7 @@ describe("session-archive masking: the 2026-09-24 series", () => {
     // both and is what CI's GNU runner measures.
     const rules = mask.split("\n").filter((line) => line.trim().startsWith("-e"));
     expect(rules.filter((line) => line.includes("[^[:space:]|;&]+)*"))).toEqual([]);
-    expect(rules.filter((line) => line.includes("[^[:space:]|;&]+){0,12}"))).toHaveLength(2);
+    expect(rules.filter((line) => line.includes("[^[:space:]|;&]+){0,12}"))).toHaveLength(4);
 
     const seconds = (tokens: number) => {
       const line = `${"mysql ".repeat(tokens)};mysql -p${PLACEHOLDER}`;
@@ -2884,6 +2886,158 @@ describe("session-archive masking: the 2026-09-24 series", () => {
     const widened = mutate(mask, String.raw`/%+]+:)`, String.raw`/]+:)`, "the -u name-class exclusion");
     expect(runMask(widened, dateLine)).not.toBe(dateLine);
   });
+});
+
+describe("session-archive masking: every repeated -p / -a flag (#234)", () => {
+  let mask: string;
+
+  beforeAll(async () => {
+    mask = await shippedMask(hookPath);
+  });
+
+  /** The two looped rules, and the lines that open and close their loops. */
+  const LOOP_LINE = /^\s*-e '(:|t)[mr]' \\$/;
+  const looped = (maskFn: string) =>
+    maskFn
+      .split("\n")
+      .filter((l) => l.trim().startsWith("-e") && /(mysqldump|redis-cli\()/.test(l) && !l.includes("\\5/g"));
+  /** The two rules for a value that is only a leading part of the sentinel (Codex P1 on #243). */
+  const markerPrefixRules = (maskFn: string) =>
+    maskFn.split("\n").filter((l) => l.trim().startsWith("-e") && l.includes("\\1***MASKEDP***\\5/g"));
+  /** The one rule after both loops that turns the sentinel back into the marker. */
+  // Delimited with `#`, not `/`, so the shared redactor's shape lift (which reads
+  // `s/<pattern>/***MASKED***/g` rules) does not take the sentinel for a secret shape.
+  const RESTORE_RULE = String.raw`    -e 's#\*\*\*MASKEDP\*\*\*#***MASKED***#g' ` + "\\";
+
+  const repeated = [
+    `mysql -p${PLACEHOLDER}1 -p${PLACEHOLDER}2 -p${PLACEHOLDER}3 appdb`,
+    `mysqldump -h db -p${PLACEHOLDER}1 -u root -p${PLACEHOLDER}2 appdb`,
+    `redis-cli -a ${PLACEHOLDER}1 -a ${PLACEHOLDER}2 ping`,
+    `redis-cli --pass ${PLACEHOLDER}1 --pass ${PLACEHOLDER}2 ping`,
+    `mysql -p${PLACEHOLDER}1 -p${PLACEHOLDER}2 && redis-cli -a ${PLACEHOLDER}1 -a ${PLACEHOLDER}2`
+  ];
+
+  it("masks every occurrence of a repeated flag, not only the last", () => {
+    for (const line of repeated) expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
+    // Reverse verification: take the four loop lines out and each rule masks
+    // only the occurrence its greedy word run reaches last -- the first stays.
+    const unlooped = mask
+      .split("\n")
+      .filter((line) => !LOOP_LINE.test(line))
+      .join("\n");
+    expect(unlooped.split("\n").length).toBe(mask.split("\n").length - 4);
+    for (const line of repeated) expect(runMask(unlooped, line), line).toContain(`${PLACEHOLDER}1`);
+  });
+
+  it("ends its loop on its own output, and leaves only a value that begins with the sentinel unmasked", () => {
+    // Inside the loops a value becomes the sentinel `***MASKEDP***`, and a value
+    // that begins with the sentinel is not a value to the looped rules; that is
+    // what stops a pass from matching what it just wrote. Any other value that
+    // begins with `*` still is one.
+    for (const line of [
+      `mysql -p***${PLACEHOLDER} appdb`,
+      `mysql -p*${PLACEHOLDER}`,
+      `mysql -p*-${PLACEHOLDER}`,
+      `redis-cli -a **${PLACEHOLDER} ping`,
+      `redis-cli -a ***M${PLACEHOLDER} ping`
+    ]) {
+      expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
+    }
+    // The recorded cost, pinned so it is never read as covered.
+    expect(runMask(mask, `mysql -p***MASKEDP***${PLACEHOLDER} appdb`)).toContain(PLACEHOLDER);
+  });
+
+  // Values an earlier rule has partly masked: a token rule or the in-range run
+  // rule leaves `***MASKED***` at the START of the value and the rest after it.
+  // Built from pieces so no line of this file is itself token-shaped.
+  const SK = "s" + "k-";
+  const AK = "AK" + "IA";
+  const OPEN_KEY_MARKER = "-----BEGIN OPEN" + "SSH PRIV" + "ATE KEY-----";
+  const partlyMasked = [
+    `mysql -uapp -p${SK}${"a".repeat(22)}.Tail${PLACEHOLDER}`,
+    `mysql -uapp -p'${AK}${"B".repeat(16)}${PLACEHOLDER}'`,
+    `redis-cli -a ${SK}${"c".repeat(22)}!${PLACEHOLDER}`,
+    `mysql -p${AK}${"D".repeat(16)}${PLACEHOLDER}`,
+    `${OPEN_KEY_MARKER}\nredis-cli -h cache -a abcdefghijklmn_${PLACEHOLDER}`
+  ];
+
+  it("masks the rest of a value an earlier rule partly masked (change scan r4 F1 / F2 on #243)", () => {
+    for (const input of partlyMasked) expect(runMask(mask, input), input).not.toContain(PLACEHOLDER);
+    // Reverse verification: key the exclusion on the marker as well -- as the
+    // first spelling did -- and every shape leaves its tail in the clear.
+    const SENTINEL_CLASS = String.raw`\\*\\*\\*MASKED[^[:space:]\"'P-]`;
+    expect(mask.split(SENTINEL_CLASS).length - 1).toBe(2);
+    const onMarker = mask.split(SENTINEL_CLASS).join(String.raw`\\*\\*\\*MASKED[^[:space:]\"'*P-]`);
+    for (const input of partlyMasked) expect(runMask(onMarker, input), input).toContain(PLACEHOLDER);
+  });
+
+  it("never lets the sentinel leave mask(), and no other rule eats it mid-loop", () => {
+    const inputs = [
+      ...repeated,
+      ...partlyMasked,
+      `mysql -p${SK}${"e".repeat(22)}x -pB ; redis-cli -a ***MASKED** -a ${AK}${"F".repeat(16)}y && mysql -p*-`,
+      "mysql -p***MASKED*** -p***MASKEDP -a x"
+    ];
+    for (const input of inputs) {
+      const out = runMask(mask, input);
+      expect(out, input).not.toContain("MASKEDP");
+      expect(out, input).not.toContain(PLACEHOLDER);
+    }
+    // Reverse verification: drop the rule that turns the sentinel back, and it
+    // is written out.
+    expect(mask.split("\n")).toContain(RESTORE_RULE);
+    const unrestored = mask.split(`${RESTORE_RULE}\n`).join("");
+    expect(runMask(unrestored, repeated[0])).toContain("***MASKEDP***");
+  });
+
+  it("masks a value that is only a leading part of the marker, with or without trailing dashes (Codex P1 on #243)", () => {
+    // The complement above needs a character after the leading part, so `*`,
+    // `*-` or `***M-` matched nothing and was written out whole -- where main
+    // masked at least the part before the dashes. A rule of its own takes such
+    // a value when it ends there.
+    const shapes: Array<[string, string]> = [
+      ["mysql -p*", "mysql -p***MASKED***"],
+      ["mysql -p*-", "mysql -p***MASKED***"],
+      ["mysql -p*--", "mysql -p***MASKED***"],
+      ["mysql -p***M- appdb", "mysql -p***MASKED*** appdb"],
+      ["mysql -p***MASKED** appdb", "mysql -p***MASKED*** appdb"],
+      ["redis-cli -a *- ping", "redis-cli -a ***MASKED*** ping"],
+      ["redis-cli -a **---- ping", "redis-cli -a ***MASKED*** ping"],
+      ["mysql -p* -p*- -pab", "mysql -p***MASKED*** -p***MASKED*** -p***MASKED***"]
+    ];
+    for (const [line, expected] of shapes) expect(runMask(mask, line), line).toBe(expected);
+    // Reverse verification: drop the two rules and every shape that is a
+    // leading part of the sentinel leaves its value as it was typed.
+    const rules = markerPrefixRules(mask);
+    expect(rules).toHaveLength(2);
+    const without = rules.reduce((fn, rule) => fn.split(`${rule}\n`).join(""), mask);
+    for (const [line] of shapes.filter(([l]) => !l.includes("***MASKED**") && !l.includes("-pab"))) {
+      expect(runMask(without, line), line).toBe(line);
+    }
+  });
+
+  it("keeps the looped passes linear in the clients on a line", () => {
+    // Without `g` each pass masks one occurrence and restarts at the start of
+    // the line, so N clients cost N passes of O(N) work. With `g` a pass
+    // handles every client at once.
+    const line = "redis-cli -a x ".repeat(800);
+    const seconds = (fn: string) => {
+      const started = performance.now();
+      expect(runMask(fn, line)).not.toMatch(/-a x( |$)/);
+      return (performance.now() - started) / 1000;
+    };
+    const shipped = seconds(mask);
+    expect(shipped, `800 clients: ${shipped}s`).toBeLessThan(2);
+    // Reverse verification: take `g` off the two looped rules. The line is
+    // still fully masked -- so the slowdown is the missing `g`, not a failed
+    // match -- and it is several times slower.
+    const rules = looped(mask);
+    expect(rules).toHaveLength(2);
+    const ungloballed = rules.reduce((fn, rule) => fn.split(rule).join(rule.replace(/\/g" \\$/, '/" \\')), mask);
+    expect(looped(ungloballed).filter((r) => r.endsWith('/g" \\'))).toHaveLength(0);
+    const slow = seconds(ungloballed);
+    expect(slow, `with g: ${shipped}s, without: ${slow}s`).toBeGreaterThan(shipped * 5);
+  }, 120_000);
 });
 
 describe("session-archive vault authorization", () => {
