@@ -254,6 +254,24 @@ describe("A-53: lines end where CommonMark ends them", () => {
     }
   });
 
+  it("reads a heading line carrying U+2028 / U+2029 in linear time (2026-09-25 change scan, CWE-1333)", () => {
+    // Without `s` on the heading pattern, `.` stops at the separator, `$` fails,
+    // and every split of the space run is retried: measured 57 / 222 / 891 ms at
+    // 10k / 20k / 40k spaces. 100k spaces is seconds without `s`, well under one
+    // with it.
+    for (const separator of [" ", " "]) {
+      const line = `#${" ".repeat(100_000)}${separator}x`;
+      const started = performance.now();
+      const outline = outlineOf(line);
+      const elapsed = performance.now() - started;
+
+      // Time first: without `s` the heading is also not read, and asserting that
+      // first would red on the missing heading and never reach the cost.
+      expect(elapsed).toBeLessThan(1000);
+      expect(outline).toHaveLength(1);
+    }
+  });
+
   it("does not end a line at U+2028, U+2029 or a form feed, so no heading appears mid-line", () => {
     // The other direction: widening the line model past CommonMark would read a
     // heading that the reading view shows as the rest of a paragraph.

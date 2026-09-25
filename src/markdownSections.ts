@@ -146,7 +146,13 @@ function findHeadings(lines: readonly string[]): HeadingLine[] {
     // Narrowing this side rather than widening the renderer's is the choice that
     // does not depend on which branch lands: three branches are rewriting that
     // renderer, and this is the single consumer they all feed.
-    const heading = /^(#{1,6})[ \t]+(.*)$/.exec(line);
+    //
+    // `s`, as on codeFence's OPENER: without it `.` stops at U+2028 / U+2029 (a
+    // line splitLines does not end there), `$` fails, and the engine retries
+    // every split of `[ \t]+` against `.*` -- `#` + W spaces + U+2028 measured
+    // 57 / 222 / 891 ms at W = 10k / 20k / 40k, from one line of an untrusted
+    // note (2026-09-25 change scan, CWE-1333).
+    const heading = /^(#{1,6})[ \t]+(.*)$/s.exec(line);
     if (heading) {
       headings.push({ level: heading[1].length, title: closeHashes(heading[2].trim()), lineIndex });
     }
