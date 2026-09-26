@@ -468,9 +468,13 @@ clip() {
 
 # ⭐ 予算は【行 1 本】に対して掛ける。⛔ フィールドごとに掛けると、両方が上限に
 #    達した行が上限の 2 倍になる (実測: 2,000 B を超える intent が 26 行 実在)。
-intent_masked="$(clip "$(printf '%s' "$intent" | mask | tr '\n' ' ')" "$INTENT_BYTES")"
+# ⭐ 畳むのは LF と【単独の CR】の両方 (#246)。CommonMark は CR も行末とみなすので、
+#    LF だけを畳むと、コマンドや intent の中の CR で表の行が終わり、残りが表の外の
+#    地の文として描画された。⛔ U+2028 / U+2029 / 改ページは CommonMark の行末ではない
+#    ので畳まない (畳むと、読み手が 1 行と見るものを書き手が変えることになる)。
+intent_masked="$(clip "$(printf '%s' "$intent" | mask | tr '\r\n' '  ')" "$INTENT_BYTES")"
 intent_n=$(printf '%s' "$intent_masked" | wc -c | tr -d ' ')
-cmd_masked="$(clip "$(printf '%s' "$cmd"    | mask | tr '\n' ' ')" "$(( CLIP_BYTES - intent_n ))")"
+cmd_masked="$(clip "$(printf '%s' "$cmd"    | mask | tr '\r\n' '  ')" "$(( CLIP_BYTES - intent_n ))")"
 
 # --- route to <origin_repo>/<date>.md ------------------------------------
 # Every repo logs into its OWN folder, named after the origin repo — created
