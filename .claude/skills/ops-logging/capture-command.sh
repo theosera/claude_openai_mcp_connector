@@ -322,9 +322,8 @@ mask() {
   #     unbounded word run let every start on a line of repeated client names
   #     scan to the end before failing, quadratic under glibc's regex (the
   #     change scan's F1; BSD sed stays linear either way). `passwd` and
-  #     `passphrase` (`--passphrase V`, `--passphrase=V`, and since #232 a
-  #     QUOTED phrase, one rule per quote, taken to its closing quote)
-  #     get rules of their OWN, right after the keyword fallback, and are NOT in
+  #     `passphrase` (`--passphrase V`, `--passphrase=V`) get a rule of
+  #     their OWN, right after the keyword fallback, and are NOT in
   #     the shared alternation: there, a leftmost match starting on them took
   #     the real keyword after them as their value -- `--passphrase --key S`,
   #     or a prompt's closing quote before `PASSWORD="a b c"` -- and the secret
@@ -402,6 +401,16 @@ mask() {
   # with spaces and flag-shaped words inside quoted arguments are left for
   # #232, where a shell-aware reading of both was measured to need escapes, a
   # fallback for unclosed quotes and bounded quoted pieces.
+  # A QUOTED passwd / passphrase value (#232: `--passphrase "a b"`,
+  # `passwd: 'a b'`) is taken to its closing quote by one rule per quote,
+  # placed AFTER the argument-position loops. A quoted rule can start at the
+  # closing quote of a label (`"Enter passwd: "`) and take everything up to
+  # the next quote; placed before the `-u`, mysql and redis-cli rules, that
+  # span removed the flag or client name they key on, and the quoted
+  # credential after it -- masked on main -- was written out (change scan F1 /
+  # F2 on #232 a, reproduced). After every rule that reads a value, the span
+  # can only mask more. The cost: text between a label's closing quote and
+  # the next quote is masked too (`grep "passwd:"***MASKED***"...`).
   sed -E \
     -e '/-----BEGIN PGP PRIVATE KEY BLOCK-----|---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----/{x;s/.*/o/;x;}' \
     -e 's/gh[pousr]_[A-Za-z0-9]{20,}/***MASKED***/g' \
@@ -414,8 +423,6 @@ mask() {
     -e "s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\-]|\\\\.|-{1,4}([^'\\\\-]|\\\\.))*-{0,4}'/\1***MASKED***'/Ig" \
     -e "s/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+(Basic|Digest|Token|ApiKey|OAuth|SSWS)[[:space:]]+)([^[:space:],\"'-]|-{1,4}[^[:space:],\"'-])+/\1***MASKED***/Ig" \
     -e 's/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+/\1***MASKED***/Ig' \
-    -e "/\`\`\`|~~~/!s/((passwd|passphrase)['\"]?[=:[:space:]]+\")([^\"\\\\-]|\\\\.|-{1,4}([^\"\\\\-]|\\\\.))*-{0,4}\"/\1***MASKED***\"/Ig" \
-    -e "/\`\`\`|~~~/!s/((passwd|passphrase)['\"]?[=:[:space:]]+')([^'\\\\-]|\\\\.|-{1,4}([^'\\\\-]|\\\\.))*-{0,4}'/\1***MASKED***'/Ig" \
     -e "/\`\`\`|~~~/!s/((passwd|passphrase)[=:[:space:]]+)([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])+/\1***MASKED***/Ig" \
     -e '/-----BEGIN ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/{x;s/.*/o/;x;}' \
     -e 'x;/^ox{0,100}$/{s/$/x/;x;s/[A-Za-z0-9+\/=]{12,}/***MASKED***/g;s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*)?)[A-Za-z0-9+\/=]{1,11}[[:space:]]*$/\1***MASKED***/;/-----END ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/{x;s/.*//;x;};x;};x' \
@@ -436,6 +443,8 @@ mask() {
     -e "/\`\`\`|~~~/!s/(redis-cli([[:space:]]+[^[:space:]|;&]+){0,12}[[:space:]]+(-a|--pass)[[:space:]]+[\"']?)(\\*|\\*\\*|\\*\\*\\*|\\*\\*\\*M|\\*\\*\\*MA|\\*\\*\\*MAS|\\*\\*\\*MASK|\\*\\*\\*MASKE|\\*\\*\\*MASKED|\\*\\*\\*MASKEDP|\\*\\*\\*MASKEDP\\*|\\*\\*\\*MASKEDP\\*\\*)-{0,4}([[:space:]\"'|;&]|-----|$)/\1***MASKEDP***\5/g" \
     -e 'tr' \
     -e 's#\*\*\*MASKEDP\*\*\*#***MASKED***#g' \
+    -e "/\`\`\`|~~~/!s/((passwd|passphrase)['\"]?[=:[:space:]]+\")([^\"\\\\-]|\\\\.|-{1,4}([^\"\\\\-]|\\\\.))*-{0,4}\"/\1***MASKED***\"/Ig" \
+    -e "/\`\`\`|~~~/!s/((passwd|passphrase)['\"]?[=:[:space:]]+')([^'\\\\-]|\\\\.|-{1,4}([^'\\\\-]|\\\\.))*-{0,4}'/\1***MASKED***'/Ig" \
     -e '/^[[:space:]]*[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/.*/***MASKED***/' \
     -e '/^[[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-)[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-))[A-Za-z0-9+\/=]{32,}([[:space:]]*)$/\1***MASKED***\3/'
 }
