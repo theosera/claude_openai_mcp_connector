@@ -2758,7 +2758,7 @@ describe("session-archive masking: the 2026-09-24 series", () => {
       `passwd=${PLACEHOLDER}`
     ];
     for (const line of lines) expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
-    expect(passphraseRules(mask)).toHaveLength(1);
+    expect(passphraseRules(mask)).toHaveLength(3);
     // Reverse verification: drop the pass and every shape leaks.
     const without = passphraseRules(mask).reduce((fn, rule) => fn.split(`${rule}\n`).join(""), mask);
     for (const line of lines) expect(runMask(without, line), line).toContain(PLACEHOLDER);
@@ -2789,6 +2789,55 @@ describe("session-archive masking: the 2026-09-24 series", () => {
     expect(shapes.filter((line) => runMask(shared, line).includes(PLACEHOLDER)).length).toBeGreaterThanOrEqual(4);
   });
 
+  it("masks a quoted passphrase / passwd value to its closing quote, spaces included (#232)", () => {
+    // The bare pass stops at a quote, so a quoted phrase -- the usual shape for a
+    // passphrase with spaces -- was not masked at all. One rule per quote takes
+    // the value to its closing quote; they run after every other rule that
+    // reads a value, so they cannot move where another rule's value ends.
+    const shapes = [
+      `gpg --passphrase "${PLACEHOLDER} two three" --decrypt f`,
+      `gpg --passphrase '${PLACEHOLDER} two' --decrypt f`,
+      `passwd: '${PLACEHOLDER} two'`,
+      `openssl enc -passphrase="${PLACEHOLDER} two" -in f`,
+      `passphrase: "a\\" ${PLACEHOLDER}" next`
+    ];
+    for (const line of shapes) {
+      const out = runMask(mask, line);
+      expect(out, line).not.toContain(PLACEHOLDER);
+      expect(out, line).not.toContain("two");
+    }
+    expect(runMask(mask, shapes[0])).toBe(`gpg --passphrase "***MASKED***" --decrypt f`);
+    // Reverse verification: drop the two quoted rules and every shape leaks.
+    const quoted = passphraseRules(mask).filter((rule) => rule.includes('+\\"') || rule.includes("+'"));
+    expect(quoted).toHaveLength(2);
+    const without = quoted.reduce((fn, rule) => fn.split(`${rule}\n`).join(""), mask);
+    for (const line of shapes) expect(runMask(without, line), line).toContain(PLACEHOLDER);
+  });
+
+  it("runs the quoted passphrase / passwd rules after the argument-position rules (change scan F1 / F2 on #232 a)", () => {
+    // A quoted rule can start at the CLOSING quote of a label (`"Enter passwd: "`)
+    // and take everything up to the next quote. Placed before the `-u`, mysql and
+    // redis-cli rules, that span removed the flag or client name they key on, and
+    // the quoted credential after it -- masked on main -- reached the log.
+    const shapes = [
+      `grep -n "passwd:" deploy.yml && curl -fsS -u "deploy:${PLACEHOLDER}" https://ci/api`,
+      `echo "Enter passwd: "; mysql -uroot -p"${PLACEHOLDER}"`,
+      `echo "passphrase: "; redis-cli -h h -a "${PLACEHOLDER}" ping`,
+      `echo "Enter passwd: "; curl -u "admin:${PLACEHOLDER}" https://h`,
+      `echo 'passphrase: '; mysql -p'${PLACEHOLDER}' db`
+    ];
+    for (const line of shapes) expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
+    // Reverse verification: put the two rules back right before the bare pass,
+    // where the scan found them, and every shape leaks.
+    const quoted = passphraseRules(mask).filter((rule) => rule.includes('+\\"') || rule.includes("+'"));
+    const bare = passphraseRules(mask).filter((rule) => !quoted.includes(rule));
+    expect(bare).toHaveLength(1);
+    const lifted = quoted.reduce((fn, rule) => fn.split(`${rule}\n`).join(""), mask);
+    const early = lifted.split(`${bare[0]}\n`).join(`${quoted.join("\n")}\n${bare[0]}\n`);
+    expect(early.split("\n").length).toBe(mask.split("\n").length);
+    for (const line of shapes) expect(runMask(early, line), line).toContain(PLACEHOLDER);
+  });
+
   /** The address every rule this series added carries: skip any line holding a fence run. */
   const FENCE_LINE_ADDRESS = "/\\`\\`\\`|~~~/!";
   const seriesRules = (maskFn: string) =>
@@ -2814,7 +2863,7 @@ describe("session-archive masking: the 2026-09-24 series", () => {
     ];
     // The OLDER rules still act on such a line exactly as they always did; what
     // is pinned is that the series rules add nothing to it.
-    expect(seriesRules(mask)).toHaveLength(6);
+    expect(seriesRules(mask)).toHaveLength(8);
     const withoutSeries = seriesRules(mask).reduce((fn, rule) => fn.split(`${rule}\n`).join(""), mask);
     for (const line of lines) expect(runMask(mask, line), line).toBe(runMask(withoutSeries, line));
     expect(runMask(mask, lines[0])).toBe(lines[0]);
