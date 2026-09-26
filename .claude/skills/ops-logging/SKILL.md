@@ -261,8 +261,9 @@ terminal-ops-logs/
 - **引数位置の資格情報** (2026-09-24 追加・S-1 F6): `-u` / `--user` の `name:secret`、MySQL 系
   client の `-p<値>` (client 名に anchor — `-p` 単独は `mkdir -p` / `cp -pR` / `ssh -p2222`)、
   `redis-cli` の `-a` / `--pass`。`passwd` / `passphrase` は**共有の keyword 群に入れず**、fallback の**直後**の
-  専用の 1 本 (bare) で消す (`--passphrase V` / `--passphrase=V`)。⚠️ **引用された複数語の passphrase は
-  この変更では扱わない** (二重引用・単引用の 2 本は #186 と一緒にこの変更から外した・(c))。⛔ 共有群に入れると
+  専用の 1 本 (bare) で消す (`--passphrase V` / `--passphrase=V`)。**引用された複数語の passphrase は
+  #232 で戻した** (二重引用・単引用の 1 本ずつ・閉じ引用符まで・bare の直前。#231 では #186 と一緒に外していた・(c))。
+  ⚠️ 引用値の直後に語が続く形 (`passwd='a'\''b'`) は後半が残る (main は全体が残っていた・C-glue は別件)。⛔ 共有群に入れると
   最長一致で後続の本物の keyword を値として呑み (`--passphrase --key S` / `"Enter passphrase: " … PASSWORD="a b"`)、
   その値が平文で出た (2 回目の change scan F2 / F3・実測で再現)。
   ⛔ この系列が足した規則 4 本は**すべて address `/```|~~~/!` を持つ** — フェンスの連なりを含む行では動かない。
