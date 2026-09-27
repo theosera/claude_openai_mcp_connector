@@ -169,9 +169,14 @@ was outstanding:
   and two full quotas can land either side of one. At the configurable
   one-second floor the quota rises to 240 and the headroom narrows to 8x and
   4x — the tightest the range gets, and still not close. That holds under
-  the documented deployment, where a tunnel terminates at `127.0.0.1` and
-  every remote caller shares one bucket. A direct bind gives an attacker one
-  bucket per source IP.
+  the documented deployment, a loopback bind behind a tunnel or a same-host
+  proxy. There the socket peer is the local tunnel or proxy process, so every
+  remote caller shares one bucket. This was measured through Tailscale Funnel
+  (#205): 25 tunnelled requests split 20 allowed and 5 limited, and a direct
+  `127.0.0.1` request right after was limited too. Other tunnels and proxies
+  work the same way but were not measured. A direct bind reachable from many
+  hosts is outside that deployment. There each source IP gets its own bucket,
+  and the headroom above does not apply as stated.
   #174 separately removed a **one-request** sibling of the same end state, so
   what remains is the expensive version.
 

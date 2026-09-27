@@ -117,6 +117,12 @@ same store, so one file covers every web client). Security properties:
   grant** and keyed on `req.socket.remoteAddress`. The quota derives from
   `accessTokenTtlSec` and is 30 per 60-second window at the default TTL, so
   the thousands of rotations an eviction needs are not available to one peer.
+  In the supported deployment, a loopback bind behind a tunnel or a same-host
+  proxy, that peer is the local tunnel or proxy process. **Every remote caller
+  therefore shares one bucket.** This was measured through Tailscale Funnel
+  (#205); other tunnels and proxies work the same way but were not measured.
+  A direct bind reachable from many hosts gives each source IP its own bucket,
+  and this bound then does not hold as stated.
 - Persistence is narrower than "deletions reach disk". The three arms of
   `rotateRefreshToken` — expiry, a never-rotated `client_id` mismatch, and a
   successful rotation — each write through as they happen. Other paths do not:
