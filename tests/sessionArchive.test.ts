@@ -2696,20 +2696,66 @@ describe("session-archive masking: the 2026-09-24 series", () => {
     }
   });
 
-  it("leaves #186 as it was, and masks the shapes both tried fixes leaked (taken out under (c))", () => {
-    // #186 is NOT handled by this change. Two spellings were tried and each
-    // reached a credential the old rules masked (see the comment above the
-    // rules); owner decision (b') -> (c) took them out. What is pinned: the
-    // #186 tail stays as the base left it, and the inputs that exposed each
-    // tried spelling are masked as the base masked them.
-    expect(runMask(mask, `{'password': 'prefix''SUFFIX${PLACEHOLDER}'}`)).toContain(PLACEHOLDER);
-    for (const line of [
+  it("masks #186's doubled-apostrophe tail after every value-reading rule, and still masks the shapes both tried fixes leaked (#232)", () => {
+    // #186: the single-quoted keyword rules stop at the first `'` of YAML's `''`,
+    // so the rest of the scalar was written out. One rule now reads
+    // `***MASKED***''...'` -- a masked value followed by a doubled apostrophe and
+    // the rest of the scalar -- and masks it to the closing quote. It runs after
+    // every rule that reads a value, so it can only mask more; the two spellings
+    // #231 tried ran BEFORE the keyword fallback and moved where its value ended.
+    // It reads no backslash escapes (YAML's single quotes have none).
+    const tails = [
+      `{'password': 'prefix''SUFFIX${PLACEHOLDER}'}`,
+      `{'password': 'a''b''${PLACEHOLDER}'}`,
+      `{'token': 'x''${PLACEHOLDER}', 'user': 'me'}`
+    ];
+    for (const line of tails) expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
+    expect(runMask(mask, tails[0])).toBe(`{'password': '***MASKED***'}`);
+    const triedFixesLeaked = [
       `{'token': 'a''b'' ; password: 'hunter2${PLACEHOLDER}`,
       `{password: 'it''s\\ me',token: ${PLACEHOLDER}}`,
       `{password: 'a''b\\${DASHES}c',token: ${PLACEHOLDER}}`
-    ]) {
-      expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
-    }
+    ];
+    for (const line of triedFixesLeaked) expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
+
+    // Reverse verification 1: drop the rule and every tail is written out again.
+    const rule = mask.split("\n").filter((l) => l.trim().startsWith("-e") && l.includes("MASKED\\\\*\\\\*\\\\*''"));
+    expect(rule).toHaveLength(1);
+    const without = mask.split(`${rule[0]}\n`).join("");
+    for (const line of tails) expect(runMask(without, line), line).toContain(PLACEHOLDER);
+    // Reverse verification 2: put the same rule right before the keyword
+    // fallback, where the tried fixes ran, and the escaped-space shape leaks.
+    const fallback = mask
+      .split("\n")
+      .filter((l) => l.startsWith("    -e 's/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)("));
+    expect(fallback).toHaveLength(1);
+    const early = without.split(`${fallback[0]}\n`).join(`${rule[0]}\n${fallback[0]}\n`);
+    expect(early.split("\n").length).toBe(mask.split("\n").length);
+    expect(runMask(early, triedFixesLeaked[1])).toContain(PLACEHOLDER);
+  });
+
+  it("reads `''` only after a marker that follows an opening quote, so a shell's empty `''` is left alone (Codex on #250)", () => {
+    // A marker another rule left (`-u user:`, `-p`, `-a`) can be followed by a
+    // shell's empty `''`. Read as a YAML escape, it deleted everything up to the
+    // next apostrophe -- the URL and the commands between. These lines come out
+    // exactly as main left them.
+    const shell: Array<[string, string]> = [
+      [`curl -u user:secret'' https://x; echo 'done'`, `curl -u user:***MASKED***'' https://x; echo 'done'`],
+      [`mysql -psecret'' -h db -e 'select 1'`, `mysql -p***MASKED***'' -h db -e 'select 1'`],
+      [`redis-cli -a secret'' ping; echo 'ok'`, `redis-cli -a ***MASKED***'' ping; echo 'ok'`]
+    ];
+    for (const [line, expected] of shell) expect(runMask(mask, line), line).toBe(expected);
+    // #186 itself is still masked.
+    expect(runMask(mask, `{'password': 'prefix''SUFFIX${PLACEHOLDER}'}`)).toBe(`{'password': '***MASKED***'}`);
+    // Reverse verification: drop the opening-quote condition and every shell
+    // line loses its text up to the next apostrophe.
+    const rule = mask.split("\n").filter((l) => l.trim().startsWith("-e") && l.includes("MASKED\\\\*\\\\*\\\\*''"));
+    expect(rule).toHaveLength(1);
+    const unanchored = mask
+      .split(rule[0])
+      .join(rule[0].replace("s/'\\\\*", "s/\\\\*").replace("/'***MASKED***'/g", "/***MASKED***'/g"));
+    expect(unanchored).not.toBe(mask);
+    for (const [line, expected] of shell) expect(runMask(unanchored, line), line).not.toBe(expected);
   });
 
   it("reads `''` only AFTER a masked value, so a quoting typo cannot carry one value into the next", () => {
@@ -2863,7 +2909,7 @@ describe("session-archive masking: the 2026-09-24 series", () => {
     ];
     // The OLDER rules still act on such a line exactly as they always did; what
     // is pinned is that the series rules add nothing to it.
-    expect(seriesRules(mask)).toHaveLength(8);
+    expect(seriesRules(mask)).toHaveLength(9);
     const withoutSeries = seriesRules(mask).reduce((fn, rule) => fn.split(`${rule}\n`).join(""), mask);
     for (const line of lines) expect(runMask(mask, line), line).toBe(runMask(withoutSeries, line));
     expect(runMask(mask, lines[0])).toBe(lines[0]);
