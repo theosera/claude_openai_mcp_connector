@@ -2734,6 +2734,30 @@ describe("session-archive masking: the 2026-09-24 series", () => {
     expect(runMask(early, triedFixesLeaked[1])).toContain(PLACEHOLDER);
   });
 
+  it("reads `''` only after a marker that follows an opening quote, so a shell's empty `''` is left alone (Codex on #250)", () => {
+    // A marker another rule left (`-u user:`, `-p`, `-a`) can be followed by a
+    // shell's empty `''`. Read as a YAML escape, it deleted everything up to the
+    // next apostrophe -- the URL and the commands between. These lines come out
+    // exactly as main left them.
+    const shell: Array<[string, string]> = [
+      [`curl -u user:secret'' https://x; echo 'done'`, `curl -u user:***MASKED***'' https://x; echo 'done'`],
+      [`mysql -psecret'' -h db -e 'select 1'`, `mysql -p***MASKED***'' -h db -e 'select 1'`],
+      [`redis-cli -a secret'' ping; echo 'ok'`, `redis-cli -a ***MASKED***'' ping; echo 'ok'`]
+    ];
+    for (const [line, expected] of shell) expect(runMask(mask, line), line).toBe(expected);
+    // #186 itself is still masked.
+    expect(runMask(mask, `{'password': 'prefix''SUFFIX${PLACEHOLDER}'}`)).toBe(`{'password': '***MASKED***'}`);
+    // Reverse verification: drop the opening-quote condition and every shell
+    // line loses its text up to the next apostrophe.
+    const rule = mask.split("\n").filter((l) => l.trim().startsWith("-e") && l.includes("MASKED\\\\*\\\\*\\\\*''"));
+    expect(rule).toHaveLength(1);
+    const unanchored = mask
+      .split(rule[0])
+      .join(rule[0].replace("s/'\\\\*", "s/\\\\*").replace("/'***MASKED***'/g", "/***MASKED***'/g"));
+    expect(unanchored).not.toBe(mask);
+    for (const [line, expected] of shell) expect(runMask(unanchored, line), line).not.toBe(expected);
+  });
+
   it("reads `''` only AFTER a masked value, so a quoting typo cannot carry one value into the next", () => {
     // Change-scan F2 on this branch (2026-09-24): the first spelling put `''` in
     // the single-quoted value class itself. Under leftmost-longest matching a
