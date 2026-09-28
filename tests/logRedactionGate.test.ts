@@ -46,11 +46,13 @@ const sedOutputs = cases.map((c) =>
 );
 
 /**
- * Words still readable in `output`. Mask tokens are removed first: a secret word
- * can occur inside the token itself, and would otherwise count as a leak.
+ * Words still readable in `output`. Each mask token is replaced with a NUL first:
+ * a secret word can occur inside the token itself, and would otherwise count as a
+ * leak. Removing the token instead would join its two neighbours into a word that
+ * is not in the output.
  */
 function readable(output: string, words: string[]): string[] {
-  const text = output.split(MASK).join("");
+  const text = output.split(MASK).join("\0");
   return words.filter((word) => text.includes(word));
 }
 
@@ -125,6 +127,12 @@ describe("the migration gate's judge", () => {
   it("does not count a secret word that occurs only inside a mask token", () => {
     expect(readable(`key: ${MASK} and ${MASK}`, ["ASK", "MASKED"])).toEqual([]);
     expect(readable(`key: ${MASK} ASK`, ["ASK"])).toEqual(["ASK"]);
+  });
+
+  // Removing the token would join its neighbours: `AB***MASKED***CD` would read
+  // as `ABCD` and charge the engine with a `BC` that is not in its output.
+  it("does not join the text on either side of a mask token into a word", () => {
+    expect(readable(`AB${MASK}CD`, ["BC"])).toEqual([]);
   });
 
   it("refuses an engine that returns the wrong number of results", () => {
