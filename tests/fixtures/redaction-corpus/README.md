@@ -11,7 +11,7 @@ Synthetic inputs for the log redactor (#249). Every value is made up: the secret
 - `multiline` and `fence`: whether the input has more than one line, and whether it contains a Markdown code fence.
 - `input`: the text given to the redactor.
 - `secrets`: words that must not appear in the output. Count them after replacing every `***MASKED***` with a delimiter, because a secret word can occur inside the mask token itself. Replace it rather than remove it: removing it joins the text on either side into a word that is not in the output.
-- `preserve`: words that must still appear in the output. It does not rule out every over-mask. For example, case A-F1c's rule (when a quote is not closed, mask the union) can turn `mysql and later -price list` into `mysql and later -p***MASKED*** list`, and no `preserve` word requires otherwise.
+- `preserve`: words that must still appear in the output. It does not rule out every over-mask. For example, the shipped sed `mask()` (capture-command.sh as of 550ec24) already turns `mysql and later -price list` into `mysql and later -p***MASKED*** list` through its `mysql … -p` rule, whether a quote is left open or not. Case A-F1c's rule (when a quote is not closed, mask the union) keeps it that way, and no `preserve` word requires otherwise.
 - `baseline`: what the sed `mask()` at `rev` did to the input. `rev` is `965df52` for every case, which is before #250.
   - `leaked`: the secrets it left in the clear.
   - `broken`: the preserve words it removed.
