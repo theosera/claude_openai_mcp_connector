@@ -1,0 +1,14 @@
+{
+  "name": "@claude-openai-mcp-connector/log-redaction",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Log redaction for the ops-logging and session-archive hooks. Runs with bare node; no build step.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    "./policy": {
+      "types": "./src/policy.d.mts",
+      "default": "./src/policy.mjs"
+    }
+  }
+}

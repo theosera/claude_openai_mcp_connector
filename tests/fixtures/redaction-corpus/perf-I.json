@@ -1,0 +1,210 @@
+{
+ "section": "I",
+ "note": "件ではなく性能の仕様。gen は入力の作り方（Python の式の説明）。実測は macOS 上の値で、CI の値ではない",
+ "criterion": "同じ形で長さを 2 倍にしたとき、時間が 2.5 倍以下（線形の余裕を見た目安）。2 乗なら約 4 倍になる",
+ "sizes_bytes": [
+  65536,
+  131072,
+  262144
+ ],
+ "cases": [
+  {
+   "id": "I-unclosed-escaped",
+   "gen": "passphrase: \"の後に a\\\" を繰り返す閉じない 1 行（#249 の形）",
+   "measured": [
+    {
+     "rev": "965df52",
+     "rev_note": "main（#248 の後・#250 の前）",
+     "engine": "gnu",
+     "seconds": [
+      0.205,
+      0.824,
+      3.435
+     ],
+     "doubling_ratio": [
+      4.02,
+      4.17
+     ],
+     "linear_ok": false
+    },
+    {
+     "rev": "965df52",
+     "rev_note": "main（#248 の後・#250 の前）",
+     "engine": "bsd",
+     "seconds": [
+      0.085,
+      0.19,
+      0.334
+     ],
+     "doubling_ratio": [
+      2.24,
+      1.76
+     ],
+     "linear_ok": true
+    },
+    {
+     "rev": "7eebb7f",
+     "rev_note": "#250 の版（= connector main 550ec24 の mask da5c0b84）",
+     "engine": "gnu",
+     "seconds": [
+      0.221,
+      0.923,
+      3.518
+     ],
+     "doubling_ratio": [
+      4.18,
+      3.81
+     ],
+     "linear_ok": false
+    },
+    {
+     "rev": "7eebb7f",
+     "rev_note": "#250 の版（= connector main 550ec24 の mask da5c0b84）",
+     "engine": "bsd",
+     "seconds": [
+      0.087,
+      0.16,
+      0.299
+     ],
+     "doubling_ratio": [
+      1.84,
+      1.87
+     ],
+     "linear_ok": true
+    }
+   ]
+  },
+  {
+   "id": "I-masked-doubled",
+   "gen": "***MASKED***''x を繰り返す 1 行（#250 の規則の開始点を増やす形）",
+   "measured": [
+    {
+     "rev": "965df52",
+     "rev_note": "main（#248 の後・#250 の前）",
+     "engine": "gnu",
+     "seconds": [
+      0.014,
+      0.015,
+      0.017
+     ],
+     "doubling_ratio": [
+      1.07,
+      1.13
+     ],
+     "linear_ok": true
+    },
+    {
+     "rev": "965df52",
+     "rev_note": "main（#248 の後・#250 の前）",
+     "engine": "bsd",
+     "seconds": [
+      0.109,
+      0.174,
+      0.322
+     ],
+     "doubling_ratio": [
+      1.6,
+      1.85
+     ],
+     "linear_ok": true
+    },
+    {
+     "rev": "7eebb7f",
+     "rev_note": "#250 の版（= connector main 550ec24 の mask da5c0b84）",
+     "engine": "gnu",
+     "seconds": [
+      0.014,
+      0.015,
+      0.017
+     ],
+     "doubling_ratio": [
+      1.07,
+      1.13
+     ],
+     "linear_ok": true
+    },
+    {
+     "rev": "7eebb7f",
+     "rev_note": "#250 の版（= connector main 550ec24 の mask da5c0b84）",
+     "engine": "bsd",
+     "seconds": [
+      0.082,
+      0.144,
+      0.3
+     ],
+     "doubling_ratio": [
+      1.76,
+      2.08
+     ],
+     "linear_ok": true
+    }
+   ]
+  },
+  {
+   "id": "I-label-quotes",
+   "gen": "passwd: \"ab を繰り返す 1 行（引用の開始点を増やす形）",
+   "measured": [
+    {
+     "rev": "965df52",
+     "rev_note": "main（#248 の後・#250 の前）",
+     "engine": "gnu",
+     "seconds": [
+      0.028,
+      0.041,
+      0.068
+     ],
+     "doubling_ratio": [
+      1.46,
+      1.66
+     ],
+     "linear_ok": true
+    },
+    {
+     "rev": "965df52",
+     "rev_note": "main（#248 の後・#250 の前）",
+     "engine": "bsd",
+     "seconds": [
+      0.166,
+      0.205,
+      0.347
+     ],
+     "doubling_ratio": [
+      1.23,
+      1.69
+     ],
+     "linear_ok": true
+    },
+    {
+     "rev": "7eebb7f",
+     "rev_note": "#250 の版（= connector main 550ec24 の mask da5c0b84）",
+     "engine": "gnu",
+     "seconds": [
+      0.025,
+      0.043,
+      0.101
+     ],
+     "doubling_ratio": [
+      1.72,
+      2.35
+     ],
+     "linear_ok": true
+    },
+    {
+     "rev": "7eebb7f",
+     "rev_note": "#250 の版（= connector main 550ec24 の mask da5c0b84）",
+     "engine": "bsd",
+     "seconds": [
+      0.125,
+      0.19,
+      0.348
+     ],
+     "doubling_ratio": [
+      1.52,
+      1.83
+     ],
+     "linear_ok": true
+    }
+   ]
+  }
+ ]
+}
