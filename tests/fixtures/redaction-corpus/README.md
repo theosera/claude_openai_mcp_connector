@@ -4,7 +4,7 @@ Synthetic inputs for the log redactor (#249). Every value is made up: the secret
 
 ## `corpus.jsonl`
 
-124 cases, one JSON object per line. The fields are:
+137 cases, one JSON object per line. The fields are:
 
 - `id` and `section`: the case's name and the group it belongs to.
 - `kind`: `command` or `text`, the input kinds `packages/log-redaction/src/policy.mjs` declares.
@@ -17,7 +17,7 @@ Synthetic inputs for the log redactor (#249). Every value is made up: the secret
   - `broken`: the preserve words it removed.
 - `regressed_on`: the revisions on which the case got worse, each as `{rev, leaked, broken}` like `baseline`.
 
-The file is derived from the review corpus as of 2026-09-28 (55,647 bytes, sha256 prefix `63fbaf16d60704c3`). It keeps only the fields above. Two kinds of field are left out:
+The file is derived from the review corpus as of 2026-09-28 23:0x JST (61,414 bytes, sha256 prefix `e0c37952655711af`). It keeps only the fields above. Two kinds of field are left out:
 
 - Provenance (`source`, `origin`, `note`, `measured_by_80`), which points at files outside this repository.
 - Fields only some cases carry, which no check here reads yet: `syntax`, `redact_spans`, `preserve_spans` and `expected_output` (section H), and `fixed_on`.

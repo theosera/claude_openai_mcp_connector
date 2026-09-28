@@ -128,7 +128,9 @@ describe("the migration gate's judge", () => {
   });
 
   it("refuses an engine that returns the wrong number of results", () => {
-    expect(() => judge((inputs) => inputs.slice(1).map((text) => ({ text, status: "ok" })))).toThrow(/123 results/);
+    expect(() => judge((inputs) => inputs.slice(1).map((text) => ({ text, status: "ok" })))).toThrow(
+      `${cases.length - 1} results`
+    );
   });
 });
 
