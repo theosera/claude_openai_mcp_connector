@@ -1,5 +1,13 @@
 /**
- * The redaction vocabulary, held as data.
+ * Part of the redaction vocabulary, held as data: the part `vocabularyFrom`
+ * lifts from the shell (keywords, auth-scheme words, token shapes).
+ *
+ * The rest of the sed `mask()` is NOT here: the passwd / passphrase rules, the
+ * argument-position rules (`mysql -p`, `redis-cli -a`, `curl -u`), the URL
+ * userinfo rule and the YAML doubled-apostrophe rule. The test below does not
+ * see those rules, so a rule added to the shell in one of those families stays
+ * green here while the two drift apart. Where each family lives is decided in
+ * the core step of #249.
  *
  * Today `redact-log.mjs` lifts this vocabulary out of the shipped sed `mask()` at
  * run time (`vocabularyFrom`), so the engine does not run where

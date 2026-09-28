@@ -40,6 +40,9 @@ describe("policy.mjs matches the vocabulary lifted from the shipped mask()", () 
   });
 });
 
+/** What the sed `mask()` at `rev` did: secrets left in the clear, preserve words removed. */
+type Outcome = { rev: string; leaked: string[]; broken: string[] };
+
 type CorpusCase = {
   id: string;
   section: string;
@@ -49,8 +52,8 @@ type CorpusCase = {
   input: string;
   secrets: string[];
   preserve: string[];
-  baseline: { rev: string; leaked: string[]; broken: string[] };
-  regressed_on: string[];
+  baseline: Outcome;
+  regressed_on: Outcome[];
 };
 
 describe("the redaction corpus fixture", () => {
