@@ -20,10 +20,10 @@
     "check:stdio": "node scripts/check-stdio.mjs",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
-    "lint:ox": "oxlint src tests scripts",
-    "lint": "eslint src tests scripts",
-    "format": "prettier --write src tests scripts",
-    "format:check": "prettier --check src tests scripts",
+    "lint:ox": "oxlint src tests scripts packages",
+    "lint": "eslint src tests scripts packages",
+    "format": "prettier --write src tests scripts packages",
+    "format:check": "prettier --check src tests scripts packages",
     "dev": "tsx src/index.ts"
   },
   "engines": {

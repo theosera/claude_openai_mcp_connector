@@ -1,3 +1,5 @@
 dist
 node_modules
 pnpm-lock.yaml
+# Copied byte-for-byte from the review corpus; its sha is quoted in the README next to it.
+tests/fixtures/redaction-corpus/perf-I.json
