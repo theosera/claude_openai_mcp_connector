@@ -48,7 +48,7 @@ export function broken(input: string, output: string, preserve: string[]): strin
 /**
  * Judges one case. Every secret and preserve word must be in the input: a word the
  * input does not have is never leaked and never broken, so the case would be green
- * for any redactor at all.
+ * for any redactor at all. No preserve word may be part of a secret or contain one.
  *
  * An omitted body is reported as omitted, not as broken: dropping the body loses
  * every preserve word by construction. Its text is still read for secrets, so an
@@ -57,6 +57,10 @@ export function broken(input: string, output: string, preserve: string[]): strin
 export function judgeCase(input: string, result: EngineResult, secrets: string[], preserve: string[]): Verdict {
   const absent = [...secrets, ...preserve].filter((word) => !input.includes(word));
   if (absent.length > 0) throw new Error(`words not in the input, so never judged: ${JSON.stringify(absent)}`);
+  // A preserve word inside a secret (or the reverse) is lost by a correct redaction,
+  // so its count drops and the case reads as broken for a reason that is not one.
+  const tangled = preserve.filter((p) => secrets.some((s) => s.includes(p) || p.includes(s)));
+  if (tangled.length > 0) throw new Error(`preserve words tangled with a secret: ${JSON.stringify(tangled)}`);
   const omitted = result.status === "omitted";
   return {
     leaked: readable(result.text, secrets),

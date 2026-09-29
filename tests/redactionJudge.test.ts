@@ -94,6 +94,11 @@ describe("the shared judge, one rule at a time", () => {
     expect(() => judgeCase("abc", { text: "", status: "ok" }, [], ["KEEPMISSING"])).toThrow("never judged");
   });
 
+  it("refuses a preserve word that is part of a secret, or contains one", () => {
+    expect(() => judgeCase("x FKAB12 y", { text: "", status: "ok" }, ["FKAB12"], ["AB1"])).toThrow("tangled");
+    expect(() => judgeCase("x FKAB12 y", { text: "", status: "ok" }, ["AB1"], ["FKAB12"])).toThrow("tangled");
+  });
+
   it("refuses to count an empty word", () => {
     expect(() => occurrences("abc", "")).toThrow("empty word");
   });
