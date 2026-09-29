@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import { commandEngine, type Engine, type EngineResult, MASK, readable } from "./tools/redactionJudge.js";
+
 /**
  * Step ②-2 of #249: the migration gate's judge.
  *
@@ -19,11 +21,7 @@ import { describe, expect, it } from "vitest";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
-const MASK = "***MASKED***";
-
 type CorpusCase = { id: string; kind: string; input: string; secrets: string[]; preserve: string[] };
-type EngineResult = { text: string; status: string };
-type Engine = (inputs: string[]) => EngineResult[];
 
 const cases: CorpusCase[] = readFileSync(join(HERE, "fixtures", "redaction-corpus", "corpus.jsonl"), "utf8")
   .split("\n")
@@ -44,32 +42,6 @@ const maskFn = shippedMask();
 const sedOutputs = cases.map((c) =>
   execFileSync("bash", ["-c", `${maskFn}\nmask`], { input: c.input, encoding: "utf8" })
 );
-
-/**
- * Words still readable in `output`. Each mask token is replaced with a NUL first:
- * a secret word can occur inside the token itself, and would otherwise count as a
- * leak. Removing the token instead would join its two neighbours into a word that
- * is not in the output.
- */
-function readable(output: string, words: string[]): string[] {
-  const text = output.split(MASK).join("\0");
-  return words.filter((word) => text.includes(word));
-}
-
-/** Runs an engine through its command line: NDJSON strings in, NDJSON results out. */
-function commandEngine(argv: string[]): Engine {
-  return (inputs) => {
-    const stdout = execFileSync(argv[0]!, argv.slice(1), {
-      cwd: ROOT,
-      input: inputs.map((input) => `${JSON.stringify(input)}\n`).join(""),
-      encoding: "utf8"
-    });
-    return stdout
-      .split("\n")
-      .filter((line) => line.length > 0)
-      .map((line) => JSON.parse(line) as EngineResult);
-  };
-}
 
 type Gap = { id: string; words: string[] };
 
@@ -143,7 +115,7 @@ describe("the migration gate's judge", () => {
 });
 
 describe("the current engine, through its command line", () => {
-  const engine = commandEngine(["node", ".claude/skills/_shared/redact-log.mjs"]);
+  const engine = commandEngine(["node", ".claude/skills/_shared/redact-log.mjs"], ROOT);
 
   it("answers every corpus case with ok or omitted", () => {
     const { results } = judge(engine);
