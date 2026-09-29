@@ -47,7 +47,7 @@ type Gap = { id: string; words: string[] };
 
 /** The gate's one direction: secret words the sed mask() hides and the engine leaves readable. */
 function judge(engine: Engine): { gaps: Gap[]; results: EngineResult[] } {
-  const results = engine(cases.map((c) => c.input));
+  const results = engine(cases.map((c) => ({ text: c.input, kind: c.kind })));
   if (results.length !== cases.length) {
     throw new Error(`the engine returned ${results.length} results for ${cases.length} inputs`);
   }
@@ -74,7 +74,7 @@ describe("the migration gate's judge", () => {
   // with every word the sed mask() hides. A judge that reports less than that
   // is not reading the outputs it claims to compare.
   it("charges an engine that masks nothing with every secret the sed mask() hides", () => {
-    const { gaps } = judge((inputs) => inputs.map((text) => ({ text, status: "ok" })));
+    const { gaps } = judge((fragments) => fragments.map(({ text }) => ({ text, status: "ok" })));
     expect(hiddenBySed.length).toBeGreaterThan(0);
     expect(gaps).toEqual(hiddenBySed);
   });
@@ -88,8 +88,8 @@ describe("the migration gate's judge", () => {
   // An omission drops the body, so it hides every secret: the judge must not
   // count it as a leak. (Preserve words are lost too, which this gate does not measure.)
   it("does not charge an engine that omits every body", () => {
-    const { gaps } = judge((inputs) =>
-      inputs.map(() => ({ text: "***LOG_CONTENT_OMITTED: test***", status: "omitted" }))
+    const { gaps } = judge((fragments) =>
+      fragments.map(() => ({ text: "***LOG_CONTENT_OMITTED: test***", status: "omitted" }))
     );
     expect(gaps).toEqual([]);
   });
@@ -107,8 +107,20 @@ describe("the migration gate's judge", () => {
     expect(readable(`AB${MASK}CD`, ["BC"])).toEqual([]);
   });
 
+  // An engine that reads the kind judges the same text differently per kind, so
+  // the gate must hand each case its own.
+  it("hands the engine every case with its own kind", () => {
+    const seen: string[] = [];
+    judge((fragments) => {
+      seen.push(...fragments.map((f) => f.kind));
+      return fragments.map(({ text }) => ({ text, status: "ok" }));
+    });
+    expect(seen).toEqual(cases.map((c) => c.kind));
+    expect(new Set(seen).size).toBe(2);
+  });
+
   it("refuses an engine that returns the wrong number of results", () => {
-    expect(() => judge((inputs) => inputs.slice(1).map((text) => ({ text, status: "ok" })))).toThrow(
+    expect(() => judge((fragments) => fragments.slice(1).map(({ text }) => ({ text, status: "ok" })))).toThrow(
       `${cases.length - 1} results`
     );
   });

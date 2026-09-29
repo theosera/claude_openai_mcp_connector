@@ -25,16 +25,16 @@ const sample: FuzzCase[] = readFileSync(SAMPLE, "utf8")
 /** Runs the sed engine once per distinct input: each run is a bash process per case. */
 function memo(engine: Engine): Engine {
   const seen = new Map<string, EngineResult>();
-  return (inputs) => {
-    const fresh = [...new Set(inputs.filter((i) => !seen.has(i)))];
-    if (fresh.length > 0) engine(fresh).forEach((r, k) => seen.set(fresh[k]!, r));
-    return inputs.map((i) => seen.get(i)!);
+  return (fragments) => {
+    const fresh = [...new Map(fragments.filter((f) => !seen.has(f.text)).map((f) => [f.text, f])).values()];
+    if (fresh.length > 0) engine(fresh).forEach((r, k) => seen.set(fresh[k]!.text, r));
+    return fragments.map((f) => seen.get(f.text)!);
   };
 }
 
 const capture = memo(sedEngine(shippedMask(SED_COPIES.capture)));
 const archive = memo(sedEngine(shippedMask(SED_COPIES.archive)));
-const identity: Engine = (inputs) => inputs.map((text) => ({ text, status: "ok" }));
+const identity: Engine = (fragments) => fragments.map(({ text }) => ({ text, status: "ok" }));
 
 describe("the fuzz generator", () => {
   it("regenerates the committed sample byte for byte", () => {
@@ -58,7 +58,7 @@ describe("the shared judge on a real over-mask of the shipped sed mask()", { tim
       .filter((line) => line.length > 0)
       .map((line) => JSON.parse(line) as FuzzCase);
     const bn1 = corpus.find((c) => c.id === "B-N1")!;
-    const out = capture([bn1.input])[0]!.text;
+    const out = capture([{ text: bn1.input, kind: bn1.kind }])[0]!.text;
     expect(out.includes("gpg")).toBe(true);
     expect(broken(bn1.input, out, bn1.preserve)).toEqual(["gpg"]);
   });
@@ -66,7 +66,7 @@ describe("the shared judge on a real over-mask of the shipped sed mask()", { tim
 
 // Each sed run is a bash process per case; under a full parallel suite that can pass 5 s.
 describe("the fuzz runner against the shipped sed mask()", { timeout: 60_000 }, () => {
-  const bySed = capture(sample.map((c) => c.input));
+  const bySed = capture(sample.map((c) => ({ text: c.input, kind: c.kind })));
 
   // Negative control: the reference compared with itself has nothing new.
   it("finds nothing new when the candidate is the sed mask() itself", () => {
@@ -83,11 +83,23 @@ describe("the fuzz runner against the shipped sed mask()", { timeout: 60_000 }, 
   });
 
   it("charges an engine that returns nothing with the preserve words the sed mask() kept, and no leak", () => {
-    const col = compare(sample, capture, archive, (inputs) => inputs.map(() => ({ text: "", status: "ok" })));
+    const col = compare(sample, capture, archive, (fragments) => fragments.map(() => ({ text: "", status: "ok" })));
     const kept = sample.filter((c, i) => c.preserve.some((p) => bySed[i]!.text.includes(p)));
     expect(kept.length).toBeGreaterThan(0);
     expect(col.new_broken).toEqual(kept.map((c) => c.id));
     expect(col.new_leaked).toEqual([]);
+  });
+
+  // The candidate must receive each case's own kind: an engine that reads it
+  // (#249 step ②-3) judges `''` in a YAML text and in a shell command differently.
+  it("hands the candidate every case with its own kind", () => {
+    const seen: string[] = [];
+    compare(sample, capture, archive, (fragments) => {
+      seen.push(...fragments.map((f) => f.kind));
+      return fragments.map(({ text }) => ({ text, status: "ok" }));
+    });
+    expect(seen).toEqual(sample.map((c) => c.kind));
+    expect(new Set(seen).size).toBe(2);
   });
 
   it("finds the two shipped copies of mask() in agreement on every case", () => {

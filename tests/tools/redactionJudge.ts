@@ -16,7 +16,9 @@ import { execFileSync } from "node:child_process";
 export const MASK = "***MASKED***";
 
 export type EngineResult = { text: string; status: string };
-export type Engine = (inputs: string[]) => EngineResult[];
+/** One case as an engine receives it. The kind travels with the text so a judge can pin that it is sent. */
+export type Fragment = { text: string; kind: string };
+export type Engine = (fragments: Fragment[]) => EngineResult[];
 export type Verdict = { leaked: string[]; broken: string[]; omitted: boolean };
 
 /**
@@ -69,12 +71,16 @@ export function judgeCase(input: string, result: EngineResult, secrets: string[]
   };
 }
 
-/** Runs an engine through its command line: NDJSON strings in, NDJSON results out. */
+/**
+ * Runs an engine through its command line: NDJSON in, NDJSON results out. The
+ * shipped CLI reads one JSON string per line, so only the text is written; the
+ * engine that reads `{text, kind}` per line changes the one line marked below.
+ */
 export function commandEngine(argv: string[], cwd: string): Engine {
-  return (inputs) => {
+  return (fragments) => {
     const stdout = execFileSync(argv[0]!, argv.slice(1), {
       cwd,
-      input: inputs.map((input) => `${JSON.stringify(input)}\n`).join(""),
+      input: fragments.map((f) => `${JSON.stringify(f.text)}\n`).join(""), // the line that sends the kind
       encoding: "utf8"
     });
     return stdout

@@ -205,7 +205,8 @@ export function shippedMask(relPath: string, root: string = ROOT): string {
  */
 export function sedEngine(maskFn: string): Engine {
   const loop = `${maskFn}\nwhile IFS= read -r -d '' x; do printf '%s' "$x" | mask; printf '\\0'; done`;
-  return (inputs) => {
+  return (fragments) => {
+    const inputs = fragments.map((f) => f.text);
     if (inputs.some((i) => i.includes("\0"))) throw new Error("an input carries a NUL, which is the separator");
     const out = execFileSync("bash", ["-c", loop], {
       input: inputs.map((i) => `${i}\0`).join(""),
@@ -232,10 +233,10 @@ export type Columns = {
 
 /** Sorts every case into the columns in the header, against one sed copy as the reference. */
 export function compare(cases: FuzzCase[], reference: Engine, other: Engine, candidate: Engine): Columns {
-  const inputs = cases.map((c) => c.input);
-  const ref = reference(inputs);
-  const alt = other(inputs);
-  const cand = candidate(inputs);
+  const fragments = cases.map((c) => ({ text: c.input, kind: c.kind }));
+  const ref = reference(fragments);
+  const alt = other(fragments);
+  const cand = candidate(fragments);
   if (cand.length !== cases.length)
     throw new Error(`the candidate returned ${cand.length} results for ${cases.length} inputs`);
   const col: Columns = {
