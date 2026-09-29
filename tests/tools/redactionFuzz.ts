@@ -17,6 +17,8 @@
  *   new_broken    the sed mask() kept a preserve word and the candidate does not (red)
  *   main_leaked   both leave a secret readable: the sed mask()'s own leak, reported,
  *                 not allowed
+ *   main_broken   the sed mask() itself removed a preserve word: its own over-mask,
+ *                 reported for reference
  *   fixed         the sed mask() leaves a secret readable and the candidate hides it
  *   omitted       the candidate dropped the body
  *   copy_mismatch the two sed copies disagree on the case                     (red)
@@ -226,6 +228,7 @@ export type Columns = {
   new_leaked: string[];
   new_broken: string[];
   main_leaked: string[];
+  main_broken: string[];
   fixed: string[];
   omitted: string[];
   copy_mismatch: string[];
@@ -244,6 +247,7 @@ export function compare(cases: FuzzCase[], reference: Engine, other: Engine, can
     new_leaked: [],
     new_broken: [],
     main_leaked: [],
+    main_broken: [],
     fixed: [],
     omitted: [],
     copy_mismatch: []
@@ -256,6 +260,7 @@ export function compare(cases: FuzzCase[], reference: Engine, other: Engine, can
     if (byCand.leaked.some((w) => !bySed.leaked.includes(w))) col.new_leaked.push(c.id);
     if (byCand.broken.some((w) => !bySed.broken.includes(w))) col.new_broken.push(c.id);
     if (byCand.leaked.some((w) => bySed.leaked.includes(w))) col.main_leaked.push(c.id);
+    if (bySed.broken.length > 0) col.main_broken.push(c.id);
     if (bySed.leaked.some((w) => !byCand.leaked.includes(w))) col.fixed.push(c.id);
   });
   return col;
@@ -300,6 +305,7 @@ function main(argv: string[]): void {
         new_leaked: col.new_leaked.length,
         new_broken: col.new_broken.length,
         main_leaked: col.main_leaked.length,
+        main_broken: col.main_broken.length,
         fixed: col.fixed.length,
         omitted: col.omitted.length,
         copy_mismatch: col.copy_mismatch.length,

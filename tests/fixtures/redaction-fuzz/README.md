@@ -43,6 +43,7 @@ The runner compares the candidate engine with both shipped copies of `mask()` (t
 | `new_broken`    | the sed `mask()` kept a preserve word and the candidate does not     | yes                            |
 | `copy_mismatch` | the two sed copies give different outputs for the case               | yes                            |
 | `main_leaked`   | both leave a secret readable: the sed `mask()`'s own leak            | no, but it is not an allowance |
+| `main_broken`   | the sed `mask()` itself removed a preserve word: its own over-mask   | no, reported for reference     |
 | `fixed`         | the sed `mask()` leaves a secret readable and the candidate hides it | no                             |
 | `omitted`       | the candidate dropped the body                                       | not decided yet                |
 

@@ -61,6 +61,10 @@ describe("the shared judge on a real over-mask of the shipped sed mask()", { tim
     const out = capture([{ text: bn1.input, kind: bn1.kind }])[0]!.text;
     expect(out.includes("gpg")).toBe(true);
     expect(broken(bn1.input, out, bn1.preserve)).toEqual(["gpg"]);
+    // The runner reports it as the sed mask()'s own over-mask, which no red column carries.
+    const col = compare([bn1], capture, archive, capture);
+    expect(col.main_broken).toEqual(["B-N1"]);
+    expect(col.new_broken).toEqual([]);
   });
 });
 
