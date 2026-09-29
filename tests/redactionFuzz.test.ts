@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -130,5 +131,29 @@ describe("the fuzz runner against the shipped sed mask()", { timeout: 60_000 }, 
     expect(probe.length).toBeGreaterThan(0);
     expect(compare(probe, drifted, archive, archive).copy_mismatch).toEqual(probe.map((c) => c.id));
     expect(compare(probe, capture, archive, archive).copy_mismatch).toEqual([]);
+  });
+});
+
+// Exit 1 is a red result and exit 2 a broken run: a run that crashed must never be
+// read as one that found gaps.
+describe("the fuzz runner's exit status", { timeout: 120_000 }, () => {
+  const ROOT = join(HERE, "..");
+  const run = (engine: string) =>
+    spawnSync(
+      "pnpm",
+      ["exec", "tsx", "tests/tools/redactionFuzz.ts", "--seed", "1", "--count", "17", "--engine", engine],
+      { cwd: ROOT, encoding: "utf8" }
+    );
+
+  it("exits 1 when an engine that masks nothing leaves red columns", () => {
+    const r = run("node tests/tools/echoEngine.mjs");
+    expect(r.status).toBe(1);
+    expect(r.stdout).toContain('"new_leaked"');
+  });
+
+  it("exits 2 when the engine cannot run at all", () => {
+    const r = run("node tests/tools/no-such-engine.mjs");
+    expect(r.status).toBe(2);
+    expect(r.stdout).toBe("");
   });
 });

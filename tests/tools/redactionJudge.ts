@@ -81,7 +81,9 @@ export function commandEngine(argv: string[], cwd: string): Engine {
     const stdout = execFileSync(argv[0]!, argv.slice(1), {
       cwd,
       input: fragments.map((f) => `${JSON.stringify(f.text)}\n`).join(""), // the line that sends the kind
-      encoding: "utf8"
+      encoding: "utf8",
+      // The default 1 MiB fails a fuzz run of 16,000 cases with ENOBUFS.
+      maxBuffer: 1 << 30
     });
     return stdout
       .split("\n")

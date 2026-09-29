@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { broken, judgeCase, MASK, occurrences, readable } from "./tools/redactionJudge.js";
+import { broken, commandEngine, judgeCase, MASK, occurrences, readable } from "./tools/redactionJudge.js";
 
 /**
  * The shared judge, on its own: what it reports for engines whose answer is known.
@@ -12,6 +12,7 @@ import { broken, judgeCase, MASK, occurrences, readable } from "./tools/redactio
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const ROOT = join(HERE, "..");
 
 type CorpusCase = { id: string; input: string; secrets: string[]; preserve: string[] };
 
@@ -101,5 +102,21 @@ describe("the shared judge, one rule at a time", () => {
 
   it("refuses to count an empty word", () => {
     expect(() => occurrences("abc", "")).toThrow("empty word");
+  });
+});
+
+// A fuzz run answers 16,000 cases in one engine call, and the engine's output passed
+// the default 1 MiB buffer: the run ended in ENOBUFS with an empty report.
+describe("the command-line engine at fuzz scale", { timeout: 60_000 }, () => {
+  it("reads an engine output larger than 1 MiB to the last case", () => {
+    const fragments = Array.from({ length: 12_000 }, (_, i) => ({
+      text: `case ${i} ${"x".repeat(100)}`,
+      kind: "text"
+    }));
+    const results = commandEngine(["node", "tests/tools/echoEngine.mjs"], ROOT)(fragments);
+    const bytes = results.reduce((n, r) => n + JSON.stringify(r).length + 1, 0);
+    expect(bytes).toBeGreaterThan(1 << 20);
+    expect(results).toHaveLength(12_000);
+    expect(results.at(-1)!.text).toBe(fragments.at(-1)!.text);
   });
 });

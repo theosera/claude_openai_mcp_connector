@@ -23,7 +23,8 @@
  *   omitted       the candidate dropped the body
  *   copy_mismatch the two sed copies disagree on the case                     (red)
  *
- * The run exits 1 when any red column is non-empty for either reference.
+ * The run exits 1 when any red column is non-empty for either reference, and 2
+ * when the run itself fails, so a broken run is never read as a red result.
  */
 
 import { execFileSync } from "node:child_process";
@@ -322,4 +323,11 @@ function main(argv: string[]): void {
   }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) main(process.argv.slice(2));
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  try {
+    main(process.argv.slice(2));
+  } catch (error) {
+    console.error(error);
+    process.exitCode = 2;
+  }
+}
