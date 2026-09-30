@@ -486,6 +486,32 @@ export class OAuthStore {
     }
   }
 
+  /**
+   * Read a `pending` registration that holds a live token as `given`: a token
+   * is only ever issued after the password was entered, so it is proof of
+   * consent. This version never produces that combination. A state file
+   * carried back through an older binary, which consents without recording
+   * it, and then forward again does — and without this, a working ChatGPT
+   * connection would be reclaimed 24 h after its creation while its tokens
+   * went on refreshing with no registration behind them. Once every token has
+   * lapsed there is no proof left, and such a registration reads as the
+   * `pending` it was saved as. Returns how many were promoted, so load can
+   * write them down while the proof still exists.
+   */
+  private consentFromLiveTokens(): number {
+    const holders = new Set<string>();
+    for (const record of this.accessTokens.values()) holders.add(record.clientId);
+    for (const record of this.refreshTokens.values()) holders.add(record.clientId);
+    let promoted = 0;
+    for (const client of this.clients.values()) {
+      if (client.consent === "pending" && holders.has(client.clientId)) {
+        client.consent = "given";
+        promoted++;
+      }
+    }
+    return promoted;
+  }
+
   private countPending(): number {
     let pending = 0;
     for (const client of this.clients.values()) {
@@ -985,7 +1011,6 @@ export class OAuthStore {
           this.clients.set(client.clientId, { ...client, consent });
         }
       }
-      this.reclaimUnconsented();
       const loadTokens = (records: PersistedTokenRecord[] | undefined, into: Map<string, TokenRecord>) => {
         for (const record of records ?? []) {
           if (
@@ -1057,9 +1082,22 @@ export class OAuthStore {
         }
       }
       enforceTombstoneCap(this.rotatedTombstones, this.maxTombstones);
+      // After the tokens, because what a registration may be reclaimed for
+      // depends on whether it holds one.
+      const promoted = this.consentFromLiveTokens();
+      this.reclaimUnconsented();
       // Keep the verified salt/key for subsequent saves.
       this.hmacSalt = salt;
       this.hmacKey = key;
+      // A promotion held only in memory is lost if nothing else saves before
+      // its tokens lapse and the process restarts: the file would still say
+      // `pending`, and the proof would be gone. So write it now. Only here, on
+      // a file that verified, and only when something was promoted — a load
+      // that failed never reaches this line and must not overwrite the file
+      // with the empty state it fell back to.
+      if (promoted > 0) {
+        this.persist();
+      }
     } catch {
       // Never trust a state file that does not verify. No detail is logged (it
       // could echo attacker-controlled bytes). The operator symptom is that

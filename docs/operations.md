@@ -144,6 +144,12 @@ same store, so one file covers every web client). Security properties:
   - A registration read from a state file written before this change is kept
     the same way, because such a file cannot tell a used registration from an
     unused one.
+  - **Rolling back and forward again.** An older build does not record
+    consent, so a registration created by this version and authorized on the
+    older one is still saved as waiting. On the way forward it is recognized
+    by its live tokens and kept. If every token it held expired before you
+    moved forward again, nothing shows that it was authorized, and it is
+    removed like any registration nobody consented to.
   - At most 20 registrations may be waiting for consent at once, and at most
     100 may exist in all. When either is reached, `/register` answers
     `503 temporarily_unavailable` and removes nothing. Connectors that are

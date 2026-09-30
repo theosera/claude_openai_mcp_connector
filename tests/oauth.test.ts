@@ -1833,6 +1833,88 @@ describe("OAuthStore persistence", () => {
     expect(reloaded.getClient(client.clientId)?.redirectUris).toEqual(["https://chatgpt.com/cb"]);
   });
 
+  // Rolling back to a binary that does not record consent, consenting there,
+  // and moving forward again leaves a registration saved as `pending` that
+  // holds live tokens (#184). A token is proof of consent, so load reads it as
+  // `given` instead of reclaiming a working connection 24 h after its creation.
+  // The file is built the way that round trip leaves it: a pending
+  // registration with tokens issued to it directly.
+  //
+  // The tokenless pending registration beside it is the control: reclaimed
+  // at the same load, which also shows the reclaim ran after the tokens were
+  // read.
+  //
+  // Reverse-verified: removing consentFromLiveTokens from load reddens the
+  // first two asserts.
+  it("reads a pending registration that holds a live token as consented at load (#184)", async () => {
+    const file = await stateFilePath();
+    let t = 1_000_000;
+    const longRefresh = { ...opts, refreshTokenTtlSec: 30 * 24 * 60 * 60 };
+    const store = new OAuthStore({ ...longRefresh, persistPath: file, persistSecret: secret, now: () => t });
+    const roundTripped = mustRegister(store, ["https://chatgpt.com/cb"]);
+    const tokens = store.issueTokens(roundTripped.clientId, "vault.read", "r");
+    const tokenless = mustRegister(store, ["https://pending/cb"]);
+
+    t += REGISTRATION_CONSENT_DEADLINE_MS + 60 * 60 * 1000;
+    const reloaded = new OAuthStore({ ...longRefresh, persistPath: file, persistSecret: secret, now: () => t });
+    expect(reloaded.getClient(roundTripped.clientId)?.consent).toBe("given");
+    reloaded.registerClient(["https://later/cb"]);
+    expect(reloaded.getClient(roundTripped.clientId)).toBeDefined();
+    expect(reloaded.rotateRefreshToken(tokens.refreshToken, roundTripped.clientId)).not.toBeNull(); // reached: live
+    expect(reloaded.getClient(tokenless.clientId)).toBeUndefined(); // control
+  });
+
+  // The promotion above has to reach the file while its proof exists. If load
+  // kept it only in memory and nothing else saved before the tokens lapsed, the
+  // next start would read `pending` with no tokens and reclaim it.
+  //
+  // Reverse-verified: removing the save at the end of load reddens the last
+  // assert.
+  it("writes a consent read from live tokens to the state file at load (#184)", async () => {
+    const file = await stateFilePath();
+    let t = 1_000_000;
+    const longRefresh = { ...opts, refreshTokenTtlSec: 30 * 24 * 60 * 60 };
+    const store = new OAuthStore({ ...longRefresh, persistPath: file, persistSecret: secret, now: () => t });
+    const roundTripped = mustRegister(store, ["https://chatgpt.com/cb"]);
+    const tokens = store.issueTokens(roundTripped.clientId, "vault.read", "r");
+
+    t += REGISTRATION_CONSENT_DEADLINE_MS + 60 * 60 * 1000;
+    new OAuthStore({ ...longRefresh, persistPath: file, persistSecret: secret, now: () => t }); // nothing else saves
+
+    t += 31 * 24 * 60 * 60 * 1000;
+    const later = new OAuthStore({ ...longRefresh, persistPath: file, persistSecret: secret, now: () => t });
+    expect(later.rotateRefreshToken(tokens.refreshToken, roundTripped.clientId)).toBeNull(); // reached: proof gone
+    expect(later.getClient(roundTripped.clientId)?.consent).toBe("given");
+  });
+
+  // Load writes only for a promotion. A load that promotes nothing leaves the
+  // file as it was, and a load that failed verification — which starts empty —
+  // must never write that empty state over the file it could not read.
+  //
+  // Reverse-verified: saving at the end of every verified load reddens the
+  // first assert (the expired token is dropped from the file); saving in the
+  // failure path reddens the second.
+  it("does not rewrite the state file at load unless it promoted a registration (#184)", async () => {
+    const file = await stateFilePath();
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t });
+    const client = mustRegister(store, ["https://chatgpt.com/cb"]);
+    store.recordConsent(client.clientId);
+    store.issueTokens(client.clientId, "vault.read", "r"); // refresh TTL 600 s
+    const written = await fs.readFile(file, "utf8");
+
+    t += 60 * 60 * 1000; // the token has expired, so a rewrite would differ
+    new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t });
+    expect(await fs.readFile(file, "utf8")).toBe(written);
+
+    const tampered = written.replace(/"mac":"(.)/, (_m, c: string) => `"mac":"${c === "0" ? "1" : "0"}`);
+    expect(tampered).not.toBe(written); // reached: the MAC really changed
+    await fs.writeFile(file, tampered);
+    const empty = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t });
+    expect(empty.getClient(client.clientId)).toBeUndefined(); // it did fail closed
+    expect(await fs.readFile(file, "utf8")).toBe(tampered);
+  });
+
   // Consent is saved before any code is issued, and saved again on every
   // attempt (#184). After one failed save the memory says `given` and the disk
   // `pending`; a retry that trusted the memory would answer without saving,
