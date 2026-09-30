@@ -120,25 +120,36 @@ was outstanding:
   so where it used to claim more. The measurements are on #159; they were taken
   against a revision that predates the family id, and have not been reproduced
   since. 🔭
-- **Amended 2026-09-29 (#184): client registrations are no longer deleted
-  automatically.** ✅ The orphan sweep (tokenless and older than one hour, run on
-  every `/register` and at load) and the cap's eviction (oldest tokenless, else
-  oldest) are both gone. At 100 registrations `/register` now answers `503`
-  and every existing registration keeps working. Why: ChatGPT keeps the
-  `client_id` it registered with the app and does not register again on its
-  own. Measured 2026-09-28 with a 60 s grace: once its registration was swept,
-  `/authorize` answered `400 Unknown client_id.` on every attempt, and
-  uninstalling and reinstalling the app did not help. Only deleting the app and
-  creating it again did. Claude.ai re-registered on the next connect. A consent
-  page left open past the grace was the original #184 case, and it is covered
-  by the same change. **The trade:** anyone who can reach `/register` can fill
-  the registry and lock out *new* connectors until an operator removes
-  registrations. The `/register` rate limit bounds how fast, not whether. It is
-  keyed on the socket peer, so behind a tunnel a flood also spends the slots
-  of a genuine newcomer. On a direct bind, more sources mean more speed.
+- **Amended 2026-10-01 (#184): only registrations nobody consented to are
+  removed automatically, and only after 24 hours.** ✅ The orphan sweep
+  (tokenless and older than one hour, run on every `/register` and at load) and
+  the cap's eviction (oldest tokenless, else oldest) are both gone. What
+  decides now is consent, not tokens. A registration starts pending. Once the
+  owner enters the password for it, it is kept even after every token it held
+  has lapsed. A pending one is removed 24 hours after its creation, at the next
+  `/register` or load; opening the consent page does not extend that. A
+  registration from an older state file is kept, because that file cannot tell
+  used from unused. Pending registrations may take 20 of the 100 slots; when
+  either limit is reached, `/register` answers `503` and nothing is evicted.
+  Why: ChatGPT keeps the `client_id` it registered with the app and does not
+  register again on its own. Measured 2026-09-28 with a 60 s grace: once its
+  registration was swept, `/authorize` answered `400 Unknown client_id.` on
+  every attempt, and uninstalling and reinstalling the app did not help. Only
+  deleting the app and creating it again did. Claude.ai re-registered on the
+  next connect. **The trade:** a first attempt kept every registration, and a
+  change scan found that it let anyone fill the registry for good (F1). With
+  the deadline, a caller who keeps registering can still keep the 20 pending
+  slots full and lock out *new* connectors while they do. The `/register` rate
+  limit bounds how fast, not whether; it is keyed on the socket peer, so behind
+  a tunnel a flood also spends the requests of a genuine newcomer. The slots
+  come back once the caller stops, and authorized connectors are never
+  touched. A consent page left open for more than 24 hours still loses its
+  registration: the original #184 case with a wider window, not a cure. 24
+  hours and 20 are provisional values that nothing was measured to choose.
   🔭 **Still open:**
-  - An operator path that removes a registration it has named, so a full
-    registry has a remedy short of deleting the state file.
+  - An operator path that lists registrations and removes one it has named, so
+    a registry full of authorized registrations has a remedy short of deleting
+    the state file.
   - Client ID Metadata Documents (SEP-991). OpenAI's docs say ChatGPT supports
     them; whether Claude.ai does is unchecked. They are the structural fix,
     because a URL-shaped `client_id` has nothing to sweep. The
@@ -1580,9 +1591,10 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       slot inside a bug fix is the drift the ROADMAP firing rule exists to prevent.
 
       For comparison, the OAuth store has capped + pruned token and code
-      collections. It had orphan pruning of client registrations too, until
-      #184 removed it on 2026-09-29, so the asymmetry between the two state
-      stores is real and deliberate rather than an oversight.
+      collections, and prunes client registrations nobody consented to within
+      24 hours (#184, which replaced the one-hour orphan pruning), so the
+      asymmetry between the two state stores is real and deliberate rather than
+      an oversight.
 - [x] **RFC 9207 `iss` in the authorization response** (`src/oauth/`) — ✅ the
       `authorizePost` success redirect (the only redirect the AS emits — error
       paths render a 400 page precisely so codes cannot leak via redirects, so
@@ -2125,12 +2137,13 @@ Use cases, roughly by how real/soon they are:
    durable one.
 2. **Selective revocation (grew in value with token persistence).** The only
    _explicit_ revocation lever today is rotating the password (nukes _all_
-   sessions). The automatic slice that used to stand here was withdrawn on
-   2026-09-29 (#184). Registrations holding no live token used to be pruned
+   sessions). The automatic slice that used to stand here was narrowed on
+   2026-10-01 (#184). Registrations holding no live token used to be pruned
    after a one-hour grace window, and that stranded ChatGPT, which never
-   registers again on its own. Registrations are now kept until an operator
-   removes them, so an operator-triggered surface is no longer optional
-   polish: it is the only remedy for a full registry.
+   registers again on its own. Only registrations nobody consented to are
+   pruned now, after 24 hours; an authorized one is kept until an operator
+   removes it. So an operator-triggered surface is no longer optional polish:
+   it is the only remedy for a registry full of authorized registrations.
    Now that tokens persist across restarts, "revoke ChatGPT only, without making
    Claude.ai re-authorize" wants per-`client_id` token eviction.
    ⚠️ **Under DCR that lever is blunter than it reads**, which the entry did not

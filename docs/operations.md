@@ -127,32 +127,59 @@ same store, so one file covers every web client). Security properties:
   `rotateRefreshToken` — expiry, a never-rotated `client_id` mismatch, and a
   successful rotation — each write through as they happen. Other paths do not:
   `validateAccessToken` and `evictExpired` remove records without calling
-  `save()`. And `save()` reports its own failures as warnings without failing
-  the request, so even on the arms that do call it, "written" means attempted
-  rather than confirmed.
+  `save()`. And for tokens, a failed save is reported as a warning without
+  failing the request, so on those arms "written" means attempted rather than
+  confirmed. Two registration steps are the exception (next bullet): they are
+  not answered unless they reached the file.
 - What none of this buys you any more is single use across a restart.
-- **Client registrations are kept until an operator removes them (#184).**
-  Nothing deletes a registration automatically: not the lack of a token, and
-  not the arrival of a newer one.
-  - At 100 registrations, `/register` answers `503 temporarily_unavailable`.
-    Connectors that are already registered keep working. New ones cannot be
-    added until registrations are removed.
-  - There is no removal command yet. The only remedy today is to delete the
-    state file, which drops every registration and every token at once.
-  - Anyone who can reach `/register` can fill the registry. The rate limit
-    slows that down but does not stop it. It is keyed on the socket peer, so
-    behind a tunnel a flood also uses up the slots a genuine new connector
-    needs.
+- **A client registration is removed automatically only if nobody ever
+  consented to it (#184).** What decides is whether the owner has entered the
+  password for it, not whether it holds a token:
+  - A new registration waits for its first consent. If nobody consents within
+    **24 hours of its creation**, it is removed the next time anything
+    registers, or at the next start. Opening the consent page does not extend
+    the 24 hours.
+  - Once the password has been entered for it, a registration is kept, even
+    after every token it held has expired. Nothing removes it automatically.
+  - A registration read from a state file written before this change is kept
+    the same way, because such a file cannot tell a used registration from an
+    unused one.
+  - At most 20 registrations may be waiting for consent at once, and at most
+    100 may exist in all. When either is reached, `/register` answers
+    `503 temporarily_unavailable` and removes nothing. Connectors that are
+    already registered keep working. The 503 is this endpoint's own way of
+    saying "not now"; RFC 7591 does not define it for registration, and how
+    ChatGPT and Claude.ai display it has not been measured.
+  - 24 hours and 20 are provisional values. Nothing was measured to choose them.
+  - A registration, or a consent, that could not be written to the state file
+    is not answered as a success: `/register` answers 503 and the consent page
+    asks to try again.
+  - Anyone who can reach `/register` can fill the 20 waiting slots, and can
+    keep them full for as long as they keep registering. The rate limit slows
+    that down but does not stop it. It is keyed on the socket peer, so behind a
+    tunnel a flood also uses up the requests a genuine new connector needs.
+    Once the flood stops, the slots come back within 24 hours. The connectors
+    you have authorized are never affected.
   - Every registration is also lost in two other ways. One is running without
     a state file and restarting. The other is a state file that fails
     verification, and rotating `MCP_OAUTH_PASSWORD` counts as that. After
     either, ChatGPT needs the recovery below.
+- **When all 100 slots are taken by authorized registrations.** There is no
+  command yet to list registrations or remove one; it is planned as the next
+  change. Until then:
+  - **Do not edit the state file by hand.** It is protected by an HMAC, so an
+    edited file fails verification, and the server starts with no
+    registrations and no tokens at all — the same as deleting it.
+  - Deleting the state file is the only remedy, and it is a last resort, not a
+    procedure: every connector must connect again, and ChatGPT has to delete
+    and recreate its app.
 - **ChatGPT shows `400 Unknown client_id.` on every consent attempt.** Its
-  registration is gone from this server: an older build swept it, or the state
-  file was deleted or failed its integrity check. ChatGPT keeps the `client_id`
-  with the app and does not register again. Uninstalling and reinstalling the
-  app keeps the same `client_id`. **Delete the app and create it again**; the
-  new app registers afresh. Claude.ai recovers by pressing connect once more.
+  registration is gone from this server: nobody consented to it within 24 hours
+  (or an older build swept it after one hour), or the state file was deleted or
+  failed its integrity check. ChatGPT keeps the `client_id` with the app and
+  does not register again. Uninstalling and reinstalling the app keeps the same
+  `client_id`. **Delete the app and create it again**; the new app registers
+  afresh. Claude.ai recovers by pressing connect once more.
 
 **Fix 2: don't let the process die.** Run it supervised with auto-restart
 (below). With the state file, a restart costs nothing. Without it, a restart

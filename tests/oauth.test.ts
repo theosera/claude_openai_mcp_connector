@@ -2173,7 +2173,7 @@ describe("OAuthProvider flow", () => {
     const form = authorizeParams(clientId, challenge);
     expect(provider.authorizeGet(form).status).toBe(200); // the consent page is shown
 
-    t += 2 * 60 * 60 * 1000; // past the old one-hour grace, inside a 24 h flow expiry
+    t += 2 * 60 * 60 * 1000; // past the old one-hour grace, inside the consent deadline
     expect(provider.register({ redirect_uris: ["https://other/cb"] }).status).toBe(201); // where the sweep used to run
 
     form.set("password", "hunter2");
