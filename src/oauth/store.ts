@@ -31,11 +31,29 @@ import path from "node:path";
 //    beyond it single-use semantics hold across restarts exactly as before,
 //  - every collection is capped to bound memory (DoS via unbounded dynamic
 //    client registration / token minting). Codes and tokens are also pruned
-//    as they expire. Client registrations are not: once accepted, one is kept
-//    until an operator removes it, and a full registry refuses new ones
-//    instead of evicting old ones. See registerClient (#184).
+//    as they expire. Client registrations are pruned only while nobody has
+//    consented to them: one the owner has authorized is kept until an operator
+//    removes it, and a full registry refuses new ones instead of evicting old
+//    ones. See registerClient (#184).
 
-const DEFAULT_MAX_CLIENTS = 100;
+export const DEFAULT_MAX_CLIENTS = 100;
+
+/**
+ * How long a registration may wait for its first consent before it can be
+ * reclaimed (#184). A provisional value: nothing was measured to choose it. It
+ * is the window a consent page can be left open before a client whose
+ * registration was reclaimed has to register again — Claude.ai does that on
+ * its own, ChatGPT only by deleting and recreating its app.
+ */
+export const REGISTRATION_CONSENT_DEADLINE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How many registrations may be waiting for their first consent at once,
+ * counted INSIDE DEFAULT_MAX_CLIENTS rather than on top of it. A provisional
+ * value like the deadline above. Its job is to keep the slots an anonymous
+ * caller can take away from the ones the owner has already authorized.
+ */
+export const MAX_UNCONSENTED_CLIENTS = 20;
 const DEFAULT_MAX_CODES = 1000;
 const DEFAULT_MAX_TOKENS = 2000;
 
@@ -67,11 +85,29 @@ const STATE_VERSION = 1;
 const STATE_SALT_BYTES = 16;
 const HMAC_KEY_BYTES = 32;
 
+/**
+ * Where a registration stands with the owner (#184).
+ *
+ *  - `pending`: registered, and nobody has entered the password for it yet.
+ *    Anyone who can reach `/register` can create one, so these are the only
+ *    registrations that are ever reclaimed on their own, and only after
+ *    REGISTRATION_CONSENT_DEADLINE_MS.
+ *  - `given`: the owner consented at least once. Kept even after every token it
+ *    held has lapsed, because a client comes back with the same `client_id`
+ *    (ChatGPT never registers again on its own).
+ *  - `unknown`: loaded from a state file written before this field existed.
+ *    Such a file cannot tell a registration that was used and whose tokens all
+ *    lapsed from one that was never used, so it is kept like `given` and never
+ *    presumed abandoned.
+ */
+export type ClientConsent = "pending" | "given" | "unknown";
+
 export interface RegisteredClient {
   clientId: string;
   redirectUris: string[];
   clientName?: string;
   createdAt: number;
+  consent: ClientConsent;
 }
 
 export interface AuthorizationCode {
@@ -354,11 +390,12 @@ export class OAuthStore {
   }
 
   /**
-   * Register a client, or return `undefined` when the registry is full.
+   * Register a client as `pending`, or return `undefined` when there is no room.
+   * Throws `registration_not_persisted` when a state file is configured and the
+   * registration could not be written to it.
    *
-   * A registration, once accepted, is never removed automatically — not when
-   * it holds no token, and not to make room for a newer one. Both used to
-   * happen, and both broke a real client (#184, measured 2026-09-28):
+   * What may be removed without an operator is decided by consent, not by
+   * tokens (#184, measured 2026-09-28):
    *
    *  - ChatGPT keeps the `client_id` it registered with the app and never
    *    registers again on its own. Deleting that registration leaves the app
@@ -366,43 +403,95 @@ export class OAuthStore {
    *    answers `400 Unknown client_id.` on every attempt. Uninstalling and
    *    reinstalling the app did not help; only deleting and recreating it
    *    did. OpenAI's own docs say a client reuses its registration for as
-   *    long as the connection is used.
-   *  - A registration still waiting on its first consent holds no token, so
-   *    anything that sweeps tokenless registrations takes it mid-flow. The
-   *    orphan sweep protected it with a one-hour grace window, and a consent
-   *    page left open past the hour lost it.
-   *  - Evicting to make room is the same deletion by another route: the cap
-   *    removed the oldest tokenless registration, or the oldest of all when
-   *    every one held a token.
+   *    long as the connection is used. So a registration the owner has
+   *    consented to is kept even once every token it held has lapsed.
+   *  - A registration still waiting on its first consent holds no token. The
+   *    old orphan sweep took it after a one-hour grace window, so a consent
+   *    page left open past the hour lost it. It is now kept for
+   *    REGISTRATION_CONSENT_DEADLINE_MS, and the deadline runs from creation:
+   *    no unauthenticated request moves it.
+   *  - Keeping every registration, which the first attempt at this did, lets
+   *    anyone who can reach `/register` fill the registry for good. So an
+   *    unconsented registration past its deadline IS reclaimed, here and at
+   *    load, and nothing else is.
    *
-   * So the cap now refuses. At `DEFAULT_MAX_CLIENTS` a new registration is
-   * refused and every existing one keeps working. The failure moves to the
-   * party that is asking for something new, where it is loud, instead of
-   * landing silently and later on a client that was already connected.
+   * Nothing is evicted to make room. When the registry holds
+   * DEFAULT_MAX_CLIENTS, or MAX_UNCONSENTED_CLIENTS of them are pending, a new
+   * registration is refused and every existing one keeps working.
    *
-   * The cost is stated rather than hidden: `/register` is reachable by anyone
-   * who can reach the server, so a caller that fills the registry locks out
-   * new connectors until an operator removes registrations. The `/register`
-   * rate limit bounds how fast that can happen. It does not stop it. The limit
-   * is keyed on the socket peer, so behind a tunnel every caller shares one
-   * bucket and a flood also spends the slots a genuine newcomer needs. On a
-   * direct bind each source gets its own bucket, and more sources mean more
-   * speed.
+   * What is left, stated rather than hidden: a caller who keeps registering
+   * keeps the pending slots full, and new connectors cannot register for as
+   * long as they do. The `/register` rate limit bounds how fast that happens
+   * and does not stop it. It is keyed on the socket peer, so behind a tunnel
+   * every caller shares one bucket and a flood also spends the requests a
+   * genuine newcomer needs. What the deadline changes is afterwards: the slots
+   * come back once the caller stops, and the connectors the owner has
+   * authorized are never touched.
    */
   registerClient(redirectUris: string[], clientName?: string): RegisteredClient | undefined {
     this.prune();
-    if (this.clients.size >= DEFAULT_MAX_CLIENTS) {
+    this.reclaimUnconsented();
+    if (this.clients.size >= DEFAULT_MAX_CLIENTS || this.countPending() >= MAX_UNCONSENTED_CLIENTS) {
       return undefined;
     }
     const client: RegisteredClient = {
       clientId: `client_${randomSecret()}`,
       redirectUris,
       clientName,
-      createdAt: this.now()
+      createdAt: this.now(),
+      consent: "pending"
     };
     this.clients.set(client.clientId, client);
-    this.save();
+    // A registration answered with 201 that is gone after a restart strands
+    // ChatGPT exactly as a reclaimed one does, so it is not answered at all.
+    if (!this.persist()) {
+      this.clients.delete(client.clientId);
+      throw new Error("registration_not_persisted");
+    }
     return client;
+  }
+
+  /**
+   * Record that the owner consented to this client, and report whether that
+   * reached the state file (always true without one). Call it after the
+   * password has been checked and BEFORE issuing a code: a code then only
+   * ever exists for a registration that can no longer be reclaimed.
+   *
+   * It saves on every call, even when the client is already `given`. Skipping
+   * the save for a client that is `given` in memory would reopen the gap it
+   * closes: after one failed save the memory says `given` while the disk still
+   * says `pending`, and a retry that skipped the save would issue a code for a
+   * registration a restart would reclaim.
+   */
+  recordConsent(clientId: string): boolean {
+    const client = this.clients.get(clientId);
+    if (!client) {
+      return false;
+    }
+    client.consent = "given";
+    return this.persist();
+  }
+
+  /**
+   * Drop the registrations nobody consented to within the deadline. They never
+   * held a code or a token (a code is only issued after `recordConsent`), so
+   * nothing else refers to them.
+   */
+  private reclaimUnconsented(): void {
+    const t = this.now();
+    for (const [clientId, client] of this.clients) {
+      if (client.consent === "pending" && client.createdAt + REGISTRATION_CONSENT_DEADLINE_MS <= t) {
+        this.clients.delete(clientId);
+      }
+    }
+  }
+
+  private countPending(): number {
+    let pending = 0;
+    for (const client of this.clients.values()) {
+      if (client.consent === "pending") pending++;
+    }
+    return pending;
   }
 
   getClient(clientId: string): RegisteredClient | undefined {
@@ -886,9 +975,17 @@ export class OAuthStore {
       const t = this.now();
       for (const client of payload.clients ?? []) {
         if (typeof client?.clientId === "string" && Array.isArray(client.redirectUris)) {
-          this.clients.set(client.clientId, client);
+          // A file written before `consent` existed cannot say whether a
+          // tokenless registration was ever used, so its registrations load as
+          // `unknown` and are kept (#184). Only a value this version wrote
+          // itself is taken at its word; anything else reads as `unknown` too,
+          // because the one reading that must never be invented is `pending`.
+          const consent: ClientConsent =
+            client.consent === "pending" || client.consent === "given" ? client.consent : "unknown";
+          this.clients.set(client.clientId, { ...client, consent });
         }
       }
+      this.reclaimUnconsented();
       const loadTokens = (records: PersistedTokenRecord[] | undefined, into: Map<string, TokenRecord>) => {
         for (const record of records ?? []) {
           if (
@@ -977,10 +1074,20 @@ export class OAuthStore {
     }
   }
 
-  /** Atomic save (tmp + rename), 0600 file / 0700 dir. Failures only warn. */
+  /**
+   * Atomic save (tmp + rename), 0600 file / 0700 dir. Failures only warn: for
+   * tokens, persistence is an availability feature and a failed save must not
+   * break auth. The two registration transitions that must not be answered
+   * unless they landed call `persist` instead (#184).
+   */
   private save(): void {
+    this.persist();
+  }
+
+  /** Save, and report whether the state file was written (true without one). */
+  private persist(): boolean {
     if (!this.persistPath) {
-      return;
+      return true;
     }
     try {
       if (!this.hmacKey || !this.hmacSalt) {
@@ -1005,11 +1112,12 @@ export class OAuthStore {
       const tmp = `${this.persistPath}.tmp`;
       fs.writeFileSync(tmp, envelope, { mode: 0o600 });
       fs.renameSync(tmp, this.persistPath);
+      return true;
     } catch {
-      // Persistence is an availability feature; a failed save must not break
-      // auth. No path/error detail beyond this line (no secrets to leak, but
-      // keep the log surface minimal).
+      // No path/error detail beyond this line (no secrets to leak, but keep the
+      // log surface minimal).
       console.error("[oauth] failed to persist OAuth state");
+      return false;
     }
   }
 }

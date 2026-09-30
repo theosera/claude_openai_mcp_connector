@@ -19,7 +19,13 @@ import { SkillStore } from "../src/skillStore.js";
 import { isAllowedRedirectUri, OAuthProvider, SCOPE_READ, SCOPE_WRITE } from "../src/oauth/provider.js";
 import { computeS256Challenge, verifyPkceS256 } from "../src/oauth/pkce.js";
 import { RateLimiter } from "../src/oauth/rateLimiter.js";
-import { OAuthStore, ROTATION_GRACE_MS } from "../src/oauth/store.js";
+import {
+  DEFAULT_MAX_CLIENTS,
+  MAX_UNCONSENTED_CLIENTS,
+  OAuthStore,
+  REGISTRATION_CONSENT_DEADLINE_MS,
+  ROTATION_GRACE_MS
+} from "../src/oauth/store.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -1370,52 +1376,118 @@ describe("OAuthStore", () => {
 
   // #184. ChatGPT keeps the client_id it registered and never registers again
   // on its own (measured 2026-09-28), so deleting a registration it still holds
-  // strands it. None of the three clients below holds a live token; each one
-  // used to be swept, and the second one was swept mid-consent.
+  // strands it. A registration the owner consented to is therefore kept once
+  // every token it held has lapsed, however long ago.
   //
-  // Reverse-verified: putting back a sweep of tokenless registrations older
-  // than one hour, run from registerClient, reddens this test.
-  it("keeps every registration, tokenless or not, however old it gets (#184)", () => {
+  // The pending registration beside it is the control: it IS reclaimed by the
+  // same call, which shows the reclaim ran and chose.
+  //
+  // Reverse-verified: letting the reclaim take `given` registrations too
+  // reddens the first assert of the loop.
+  it("keeps a consented registration after every token has lapsed, however old (#184)", () => {
     let t = 1_000_000;
     const store = new OAuthStore({ ...opts, now: () => t });
-    const expired = mustRegister(store, ["https://expired/cb"]);
-    store.issueTokens(expired.clientId, "vault.read", "r"); // refresh TTL 600s
-    const pending = mustRegister(store, ["https://pending/cb"]); // consent not yet given: no token
-    const idle = mustRegister(store, ["https://idle/cb"]);
+    const consented = mustRegister(store, ["https://chatgpt.com/cb"]);
+    expect(store.recordConsent(consented.clientId)).toBe(true);
+    const tokens = store.issueTokens(consented.clientId, "vault.read", "r"); // refresh TTL 600s
+    const pending = mustRegister(store, ["https://pending/cb"]);
 
-    t += 31 * 24 * 60 * 60 * 1000; // past every TTL and the old one-hour grace, by a month
-    mustRegister(store, ["https://later/cb"]); // the call the sweep used to run from
+    t += 31 * 24 * 60 * 60 * 1000; // past every TTL and the consent deadline, by a month
+    mustRegister(store, ["https://later/cb"]); // registration is where the reclaim runs
 
-    // Reached: the clock really did move past the refresh TTL, so `expired`
-    // holds nothing and is tokenless like the other two.
-    expect(store.rotateRefreshToken("anything", expired.clientId)).toBeNull();
-    for (const client of [expired, pending, idle]) {
-      expect(store.getClient(client.clientId)?.redirectUris).toEqual(client.redirectUris);
-    }
+    expect(store.rotateRefreshToken(tokens.refreshToken, consented.clientId)).toBeNull(); // reached: nothing live
+    expect(store.getClient(consented.clientId)?.redirectUris).toEqual(["https://chatgpt.com/cb"]);
+    expect(store.getClient(pending.clientId)).toBeUndefined(); // control: the reclaim ran
   });
 
-  // The cap used to be a second deletion path: it evicted the oldest tokenless
-  // registration, or the oldest of all when every one held a token. It now
-  // refuses the newcomer and leaves the registry exactly as it was.
+  // The deadline runs from creation and the boundary is exact: kept one
+  // millisecond before it, reclaimed at it.
   //
-  // The registry is filled with both kinds so that either old eviction order
-  // would have had a victim. Reverse-verified: restoring the eviction reddens
-  // the "still there" loop (and the refusal assert, since the newcomer then
-  // gets a slot).
+  // Reverse-verified: `<=` -> `<` in reclaimUnconsented reddens the "at the
+  // deadline" assert.
+  it("reclaims an unconsented registration at its deadline and not a moment before (#184)", () => {
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, now: () => t });
+    const pending = mustRegister(store, ["https://pending/cb"]);
+
+    t += REGISTRATION_CONSENT_DEADLINE_MS - 1;
+    mustRegister(store, ["https://before/cb"]);
+    expect(store.getClient(pending.clientId)).toBeDefined();
+
+    t += 1; // exactly at the deadline
+    mustRegister(store, ["https://at/cb"]);
+    expect(store.getClient(pending.clientId)).toBeUndefined();
+  });
+
+  // Unconsented registrations are the ones anyone can create, so they get a
+  // share of the registry of their own. Filling that share refuses the next
+  // newcomer and evicts nobody; the slots come back at the deadline.
+  //
+  // Reverse-verified: dropping the MAX_UNCONSENTED_CLIENTS check reddens the
+  // refusal assert.
+  it("refuses a newcomer when the unconsented slots are full, and gives them back at the deadline (#184)", () => {
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, now: () => t });
+    const owners = mustRegister(store, ["https://chatgpt.com/cb"]);
+    store.recordConsent(owners.clientId);
+    const flood = [];
+    for (let i = 0; i < MAX_UNCONSENTED_CLIENTS; i += 1) {
+      flood.push(mustRegister(store, [`https://flood-${i}/cb`]));
+    }
+
+    expect(store.registerClient(["https://newcomer/cb"])).toBeUndefined();
+    for (const client of [owners, ...flood]) {
+      expect(store.getClient(client.clientId)).toBeDefined();
+    }
+
+    t += REGISTRATION_CONSENT_DEADLINE_MS;
+    expect(store.registerClient(["https://newcomer/cb"])).toBeDefined();
+    expect(store.getClient(owners.clientId)).toBeDefined();
+  });
+
+  // The cap used to be a deletion path: it evicted the oldest tokenless
+  // registration, or the oldest of all when every one held a token. It now
+  // refuses the newcomer and leaves the registry as it was — and a registry
+  // full of consented registrations stays full past any deadline, because
+  // none of them is ever reclaimed.
+  //
+  // Reverse-verified: restoring the eviction reddens the "still there" loop
+  // (and the refusal, since the newcomer then gets a slot).
   it("refuses a new registration at the cap instead of evicting one (#184)", () => {
-    const t = 1_000_000;
+    let t = 1_000_000;
     const store = new OAuthStore({ ...opts, now: () => t });
     const existing = [];
-    for (let i = 0; i < 100; i += 1) {
+    for (let i = 0; i < DEFAULT_MAX_CLIENTS; i += 1) {
       const client = mustRegister(store, [`https://c-${i}/cb`]);
+      store.recordConsent(client.clientId);
       if (i % 2 === 0) store.issueTokens(client.clientId, "vault.read", "r");
       existing.push(client);
     }
 
     expect(store.registerClient(["https://newcomer/cb"])).toBeUndefined();
+    t += 31 * 24 * 60 * 60 * 1000;
+    expect(store.registerClient(["https://newcomer/cb"])).toBeUndefined();
     for (const client of existing) {
       expect(store.getClient(client.clientId)).toBeDefined();
     }
+  });
+
+  // The unconsented share sits INSIDE the cap: it never lets the registry
+  // grow past DEFAULT_MAX_CLIENTS.
+  //
+  // Reverse-verified: dropping the total-cap check (keeping the pending one)
+  // reddens the refusal assert.
+  it("counts unconsented registrations inside the cap, not on top of it (#184)", () => {
+    const store = new OAuthStore({ ...opts, now: () => 1_000_000 });
+    const room = MAX_UNCONSENTED_CLIENTS / 2;
+    for (let i = 0; i < DEFAULT_MAX_CLIENTS - room; i += 1) {
+      store.recordConsent(mustRegister(store, [`https://c-${i}/cb`]).clientId);
+    }
+    for (let i = 0; i < room; i += 1) {
+      mustRegister(store, [`https://pending-${i}/cb`]);
+    }
+
+    expect(store.registerClient(["https://one-too-many/cb"])).toBeUndefined();
   });
 
   it("keeps an aged client's registration through a refresh rotation (no prune race)", () => {
@@ -1712,31 +1784,105 @@ describe("OAuthStore persistence", () => {
   });
 
   // The loader drops expired tokens, and it used to sweep the clients left
-  // holding none. It no longer does (#184): a client whose tokens all lapsed is
-  // exactly the one that comes back later with the same client_id and
-  // re-authorizes, and ChatGPT will not register again to recover from a
-  // missing one.
+  // holding none. It now reclaims only the unconsented ones past their
+  // deadline (#184): a consented client whose tokens all lapsed is exactly the
+  // one that comes back later with the same client_id, and ChatGPT will not
+  // register again to recover from a missing one.
   //
-  // Reverse-verified: putting the load-time sweep back reddens the second
-  // assert (the client is gone after the reload); the control stays green.
-  it("keeps a client at load after every token it held has expired (#184)", async () => {
+  // Reverse-verified: removing the reclaim from load reddens the control (the
+  // pending client survives); letting it take `given` reddens the other assert.
+  it("keeps a consented client at load after every token lapsed, and reclaims an unconsented one (#184)", async () => {
     const file = await stateFilePath();
     let t = 1_000_000;
     const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t });
     const client = mustRegister(store, ["https://chatgpt.com/cb"]);
+    expect(store.recordConsent(client.clientId)).toBe(true);
     const tokens = store.issueTokens(client.clientId, "vault.read", "r");
+    const pending = mustRegister(store, ["https://pending/cb"]);
 
-    // Control: inside the refresh TTL the client is kept.
-    t += 500_000;
-    expect(
-      new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t }).getClient(client.clientId)
-    ).toBeDefined();
-
-    // Past the refresh TTL and the old one-hour grace: nothing it held is live.
-    t = 1_000_000 + 2 * 60 * 60 * 1000;
+    t += REGISTRATION_CONSENT_DEADLINE_MS + 60 * 60 * 1000;
     const reloaded = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t });
     expect(reloaded.rotateRefreshToken(tokens.refreshToken, client.clientId)).toBeNull(); // reached: tokens dropped
     expect(reloaded.getClient(client.clientId)?.redirectUris).toEqual(["https://chatgpt.com/cb"]);
+    expect(reloaded.getClient(pending.clientId)).toBeUndefined(); // control: the reclaim ran at load
+  });
+
+  // A state file written before `consent` existed cannot tell a registration
+  // whose tokens all lapsed from one that was never used (#184). Such a
+  // registration must never be read as `pending`, or the first load past the
+  // deadline would drop a ChatGPT connection that was working.
+  //
+  // Reverse-verified: reading a missing `consent` as "pending" reddens the
+  // survival assert.
+  it("loads a registration from an older state file as unknown and keeps it, tokenless (#184)", async () => {
+    const file = await stateFilePath();
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t });
+    const client = mustRegister(store, ["https://chatgpt.com/cb"]);
+    const original = JSON.parse(await fs.readFile(file, "utf8"));
+    const payload = JSON.parse(original.payload as string);
+    for (const record of payload.clients as Record<string, unknown>[]) {
+      delete record.consent; // what an older writer produced
+    }
+    await fs.writeFile(file, JSON.stringify(signedEnvelope(original, JSON.stringify(payload), crypto.randomBytes(16))));
+
+    t += 31 * 24 * 60 * 60 * 1000;
+    const reloaded = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t });
+    expect(reloaded.getClient(client.clientId)?.consent).toBe("unknown");
+    reloaded.registerClient(["https://later/cb"]); // the reclaim also runs here
+    expect(reloaded.getClient(client.clientId)?.redirectUris).toEqual(["https://chatgpt.com/cb"]);
+  });
+
+  // Consent is saved before any code is issued, and saved again on every
+  // attempt (#184). After one failed save the memory says `given` and the disk
+  // `pending`; a retry that trusted the memory would answer without saving,
+  // and a restart past the deadline would drop a client that was told it was
+  // authorized.
+  //
+  // The save is made to fail by putting a directory where the store writes its
+  // temporary file.
+  //
+  // Reverse-verified: returning true without saving reddens the first assert;
+  // skipping the save for a client already `given` reddens the last.
+  it("saves consent before answering, and saves it again on a retry (#184)", async () => {
+    const file = await stateFilePath();
+    let t = 1_000_000;
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t });
+    const client = mustRegister(store, ["https://chatgpt.com/cb"]);
+
+    await fs.mkdir(`${file}.tmp`);
+    expect(store.recordConsent(client.clientId)).toBe(false);
+    await fs.rmdir(`${file}.tmp`);
+    expect(store.recordConsent(client.clientId)).toBe(true);
+
+    t += REGISTRATION_CONSENT_DEADLINE_MS + 1;
+    const reloaded = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t });
+    expect(reloaded.getClient(client.clientId)?.consent).toBe("given");
+  });
+
+  // A registration answered with 201 must survive a restart, or ChatGPT is
+  // left presenting a client_id nobody knows. So a registration that could not
+  // be saved is not kept in memory and not answered.
+  //
+  // Reverse-verified: returning the client despite the failed save reddens
+  // the throw assert.
+  it("does not keep or answer a registration it could not save (#184)", async () => {
+    const file = await stateFilePath();
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => 1_000_000 });
+    const before = mustRegister(store, ["https://before/cb"]);
+
+    await fs.mkdir(`${file}.tmp`);
+    expect(() => store.registerClient(["https://chatgpt.com/cb"])).toThrow("registration_not_persisted");
+    await fs.rmdir(`${file}.tmp`);
+
+    const reloaded = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => 1_000_000 });
+    expect(reloaded.getClient(before.clientId)).toBeDefined(); // control: the file is readable
+    const payload = JSON.parse(JSON.parse(await fs.readFile(file, "utf8")).payload as string);
+    expect((payload.clients as unknown[]).length).toBe(1);
+    // And the memory did not keep it either: the next save writes exactly two.
+    mustRegister(store, ["https://after/cb"]);
+    const after = JSON.parse(JSON.parse(await fs.readFile(file, "utf8")).payload as string);
+    expect((after.clients as unknown[]).length).toBe(2);
   });
 
   it("fails closed on a corrupt state file instead of throwing", async () => {
@@ -1983,12 +2129,13 @@ describe("OAuthProvider flow", () => {
     expect(provider.register({ redirect_uris: ["https://*.example.com/cb"] }).status).toBe(400);
   });
 
-  // #184: the cap refuses rather than evicts, and /register says so with a
-  // status the caller cannot fix by changing its request.
-  it("answers 503 at the registration cap and keeps the earlier clients working", () => {
+  // #184: a full share of unconsented registrations refuses rather than
+  // evicts, and /register says so with a status the caller cannot fix by
+  // changing its request.
+  it("answers 503 when the unconsented slots are full and keeps the earlier clients working", () => {
     const provider = new OAuthProvider(config);
     const first = JSON.parse(provider.register({ redirect_uris: ["https://chatgpt.com/cb"] }).body).client_id as string;
-    for (let i = 1; i < 100; i += 1) {
+    for (let i = 1; i < MAX_UNCONSENTED_CLIENTS; i += 1) {
       expect(provider.register({ redirect_uris: [`https://c-${i}/cb`] }).status).toBe(201);
     }
 
@@ -2005,9 +2152,8 @@ describe("OAuthProvider flow", () => {
   // still completes. This is the shape Codex's proposal names R1 (GET -> wait
   // -> DCR -> POST), and the shape the original report describes.
   //
-  // Two hours is past the old one-hour grace and inside the 24 h flow expiry
-  // that proposal would add, so this test stays green if that lands. A form
-  // older than the expiry is a separate property and gets its own test then.
+  // Two hours is past the old one-hour grace and inside the consent deadline.
+  // A page left open past the deadline is the next test.
   //
   // Reverse-verified: putting back a sweep of tokenless registrations older
   // than one hour, run from registerClient, reddens this test at the POST
@@ -2044,6 +2190,146 @@ describe("OAuthProvider flow", () => {
       })
     );
     expect(token.status).toBe(200);
+  });
+
+  function clockedProvider(codeTtlSec = config.codeTtlSec) {
+    const clock = { t: 1_000_000 };
+    const store = new OAuthStore({
+      accessTokenTtlSec: config.accessTokenTtlSec,
+      refreshTokenTtlSec: config.refreshTokenTtlSec,
+      codeTtlSec,
+      now: () => clock.t
+    });
+    return { clock, store, provider: new OAuthProvider(config, store) };
+  }
+
+  function exchangeCode(provider: OAuthProvider, clientId: string, code: string, verifier: string) {
+    return provider.token(
+      new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        client_id: clientId,
+        redirect_uri: "https://chatgpt.com/cb",
+        code_verifier: verifier
+      })
+    );
+  }
+
+  // #184: consent given one millisecond before the deadline is recorded before
+  // the code exists, so a reclaim that runs between the code and its exchange
+  // finds a consented registration and leaves it alone. The connection then
+  // survives indefinitely.
+  //
+  // Reverse-verified: removing the recordConsent call from authorizePost
+  // reddens the exchange (400 "client is no longer registered").
+  it("keeps a client that consented just before its deadline, through the exchange and after (#184)", () => {
+    const { clock, provider, store } = clockedProvider();
+    const clientId = JSON.parse(provider.register({ redirect_uris: ["https://chatgpt.com/cb"] }).body)
+      .client_id as string;
+    const { verifier, challenge } = pkcePair();
+    const form = authorizeParams(clientId, challenge);
+
+    clock.t += REGISTRATION_CONSENT_DEADLINE_MS - 1;
+    form.set("password", "hunter2");
+    const granted = provider.authorizePost(form);
+    expect(granted.status).toBe(302);
+    const code = new URL(granted.headers.location).searchParams.get("code")!;
+
+    clock.t += 2; // past the deadline, inside the code's 60 s
+    expect(provider.register({ redirect_uris: ["https://other/cb"] }).status).toBe(201); // the reclaim runs
+    expect(exchangeCode(provider, clientId, code, verifier).status).toBe(200);
+
+    clock.t += 31 * 24 * 60 * 60 * 1000;
+    provider.register({ redirect_uris: ["https://later/cb"] });
+    expect(store.getClient(clientId)?.consent).toBe("given");
+  });
+
+  // #184: the deadline runs from creation. Opening the consent page, which
+  // anyone can do without the password, neither extends it nor promotes the
+  // registration, so a flood of registrations that are merely looked at is
+  // still reclaimed and makes room again.
+  //
+  // Reverse-verified: resetting createdAt in validateAuthorizeParams, and
+  // separately recording consent there, each redden the reclaim assert.
+  it("does not let an unauthenticated authorize request extend or promote a registration (#184)", () => {
+    const { clock, provider, store } = clockedProvider();
+    const { challenge } = pkcePair();
+    const flood: string[] = [];
+    for (let i = 0; i < MAX_UNCONSENTED_CLIENTS; i += 1) {
+      flood.push(JSON.parse(provider.register({ redirect_uris: ["https://chatgpt.com/cb"] }).body).client_id as string);
+    }
+    clock.t += REGISTRATION_CONSENT_DEADLINE_MS - 1;
+    for (const clientId of flood) {
+      expect(provider.authorizeGet(authorizeParams(clientId, challenge)).status).toBe(200); // reached
+    }
+
+    clock.t += 1;
+    expect(provider.register({ redirect_uris: ["https://newcomer/cb"] }).status).toBe(201);
+    for (const clientId of flood) {
+      expect(store.getClient(clientId)).toBeUndefined();
+    }
+    // What is left after the deadline, stated: the page opened for it is now a 400.
+    expect(provider.authorizeGet(authorizeParams(flood[0]!, challenge)).status).toBe(400);
+  });
+
+  // #184: a code whose registration is gone yields no token. Consent before
+  // the code makes this unreachable through the provider today, so the test
+  // builds that state directly: a code minted in the store for a registration
+  // nobody consented to, exchanged after the registration was reclaimed. The
+  // code TTL is stretched past the deadline so that it is the registration,
+  // not the code, that is gone.
+  //
+  // Reverse-verified: removing the getClient check from tokenFromCode reddens
+  // the status assert (200).
+  it("issues no token for a code whose registration is gone (#184)", () => {
+    const { clock, provider, store } = clockedProvider((2 * REGISTRATION_CONSENT_DEADLINE_MS) / 1000);
+    const client = mustRegister(store, ["https://chatgpt.com/cb"]);
+    const { verifier, challenge } = pkcePair();
+    const code = store.createAuthorizationCode({
+      clientId: client.clientId,
+      redirectUri: "https://chatgpt.com/cb",
+      codeChallenge: challenge,
+      scope: "vault.read",
+      resource: `${config.issuer}/mcp`
+    });
+
+    clock.t += REGISTRATION_CONSENT_DEADLINE_MS;
+    mustRegister(store, ["https://other/cb"]);
+    expect(store.getClient(client.clientId)).toBeUndefined(); // reached: the registration is gone
+
+    const refused = exchangeCode(provider, client.clientId, code, verifier);
+    expect(refused.status).toBe(400);
+    expect(JSON.parse(refused.body).error).toBe("invalid_grant");
+  });
+
+  // #184: when consent cannot be saved, no code is issued, and the retry that
+  // follows works.
+  //
+  // Reverse-verified: ignoring recordConsent's result in authorizePost reddens
+  // the 503 assert.
+  it("issues no code when consent cannot be saved, and does on the retry (#184)", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-oauth-state-"));
+    const file = path.join(dir, "oauth-state.json");
+    const store = new OAuthStore({
+      accessTokenTtlSec: config.accessTokenTtlSec,
+      refreshTokenTtlSec: config.refreshTokenTtlSec,
+      codeTtlSec: config.codeTtlSec,
+      persistPath: file,
+      persistSecret: config.loginPassword
+    });
+    const provider = new OAuthProvider(config, store);
+    const clientId = JSON.parse(provider.register({ redirect_uris: ["https://chatgpt.com/cb"] }).body)
+      .client_id as string;
+    const { challenge } = pkcePair();
+    const form = authorizeParams(clientId, challenge);
+    form.set("password", "hunter2");
+
+    await fs.mkdir(`${file}.tmp`);
+    const failed = provider.authorizePost(form);
+    expect(failed.status).toBe(503);
+    expect(failed.headers.location).toBeUndefined();
+    await fs.rmdir(`${file}.tmp`);
+    expect(provider.authorizePost(form).status).toBe(302);
   });
 
   it("rejects authorize with unknown client or bad PKCE method", () => {
