@@ -96,6 +96,19 @@ describe("the core's command line", () => {
     );
     expect(results[1]).toEqual({ text: `token: ${MASK} KEEPSEP1 "`, status: "ok" });
   });
+
+  // Codex P2 on #254, through the process boundary: the same line sent as `text`
+  // and as `command` must come back with different secrets readable. A command
+  // line that dropped or fixed the kind would answer both the same way.
+  it("lets the kind on each line decide the verdict", () => {
+    const line = "don't log it: password: 'FKCLIK01''s FKCLIK02'";
+    const [asText, asCommand] = run(
+      [JSON.stringify({ text: line, kind: "text" }), JSON.stringify({ text: line, kind: "command" })].join("\n") + "\n"
+    );
+    const readable = (text: string) => ["FKCLIK01", "FKCLIK02"].filter((word) => text.includes(word));
+    expect(readable(asText!.text)).toEqual([]);
+    expect(readable(asCommand!.text)).toEqual(["FKCLIK02"]);
+  });
 });
 
 // One test per reading the quote lexer makes, so that breaking one reading turns
