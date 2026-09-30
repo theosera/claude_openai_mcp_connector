@@ -2,12 +2,13 @@
  * Part of the redaction vocabulary, held as data: the part `vocabularyFrom`
  * lifts from the shell (keywords, auth-scheme words, token shapes).
  *
- * The rest of the sed `mask()` is NOT here: the passwd / passphrase rules, the
+ * The rest of the sed `mask()` is NOT lifted: the passwd / passphrase rules, the
  * argument-position rules (`mysql -p`, `redis-cli -a`, `curl -u`), the URL
  * userinfo rule and the YAML doubled-apostrophe rule. The test below does not
  * see those rules, so a rule added to the shell in one of those families stays
- * green here while the two drift apart. Where each family lives is decided in
- * the core step of #249.
+ * green here while the two drift apart. `SECRET_LABELS` below carries the two
+ * passwd / passphrase words; the core reads quotes (and so the doubled
+ * apostrophe) itself. The argument-position rules come in the next step of #249.
  *
  * Today `redact-log.mjs` lifts this vocabulary out of the shipped sed `mask()` at
  * run time (`vocabularyFrom`), so the engine does not run where
@@ -25,6 +26,17 @@
 
 /** Keywords whose following value is masked. Order is the shell's alternation order. */
 export const KEYWORDS = Object.freeze(["token", "key", "secret", "password", "pat", "authorization", "bearer"]);
+
+/**
+ * The labels the core masks a value after: the shell's keywords plus the two
+ * words the sed `mask()` handles in rules of their own. They are appended here
+ * rather than added to `KEYWORDS`, which stays equal to what `vocabularyFrom`
+ * lifts from the shell. In the sed `mask()` they could not join the shared
+ * keyword group: the longest match then read a label's closing quote as its
+ * value's opening quote (#232). The core decides quotes from the original text
+ * first, so one list serves all nine.
+ */
+export const SECRET_LABELS = Object.freeze([...KEYWORDS, "passwd", "passphrase"]);
 
 /**
  * Auth schemes whose credential is masked together with the scheme word. The last

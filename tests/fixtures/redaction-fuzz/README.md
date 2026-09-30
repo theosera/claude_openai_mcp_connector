@@ -28,11 +28,11 @@ Every marker is in its input, none is part of another marker, and none is part o
 
 ## Full runs
 
-The committed sample is small so that `pnpm test` stays fast. The acceptance runs use several seeds with at least 16,000 cases each:
+The committed sample is small so that `pnpm test` stays fast. The acceptance runs use several seeds with at least 16,000 cases each. The engine reads one `{"text": …, "kind": …}` per line, so it has to be the core's command line; the shared engine's CLI reads bare strings:
 
 ```sh
 pnpm exec tsx tests/tools/redactionFuzz.ts --seed 13 --count 16000 \
-  --engine "node .claude/skills/_shared/redact-log.mjs"
+  --engine "node packages/log-redaction/src/cli.mjs"
 ```
 
 `--seed` is required and takes 0 to 4294967295, the generator's 32-bit state. `--count` takes a positive whole number and defaults to 16000. Both are read as decimal digits only, and `--engine` needs a value. The runner checks all three before it starts any engine. An invalid argument exits 2 with nothing on stdout, because a run that generated no cases would otherwise report no red columns and exit 0.
