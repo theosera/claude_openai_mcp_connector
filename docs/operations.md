@@ -159,20 +159,29 @@ same store, so one file covers every web client). Security properties:
   - 24 hours and 20 are provisional values. Nothing was measured to choose them.
   - A registration, or a consent, that could not be written to the state file
     is not answered as a success: `/register` answers 503 and the consent page
-    asks to try again.
+    asks to try again. Every password entry records consent, so while saves
+    keep failing this also stops an already-authorized connector from signing
+    in again, not only new ones. Tokens themselves are still issued when their
+    save fails.
   - Anyone who can reach `/register` can fill the 20 waiting slots, and can
-    keep them full for as long as they keep registering. The rate limit slows
-    that down but does not stop it. It is keyed on the socket peer, so behind a
-    tunnel a flood also uses up the requests a genuine new connector needs.
-    Once the flood stops, the slots come back within 24 hours. The connectors
-    you have authorized are never affected.
+    keep them full for as long as they keep registering. It takes little:
+    20 registrations every 24 hours are enough. The rate limit (20 per 10
+    minutes) does not stand in the way of that; it is keyed on the socket peer,
+    so behind a tunnel a flood also uses up the requests a genuine new
+    connector needs. Once the flood stops, the slots come back within 24 hours.
+    The connectors you have authorized are never affected.
   - Every registration is also lost in two other ways. One is running without
     a state file and restarting. The other is a state file that fails
     verification, and rotating `MCP_OAUTH_PASSWORD` counts as that. After
     either, ChatGPT needs the recovery below.
-- **When all 100 slots are taken by authorized registrations.** There is no
-  command yet to list registrations or remove one; it is planned as the next
-  change. Until then:
+- **When all 100 slots are taken by authorized registrations** — or by
+  registrations carried over from a state file written before this change,
+  which are kept the same way. A build before this one removed a registration
+  without a token only at its next `/register` or start, so its file can hold
+  any number of them, an anonymous caller's included, and they all count from
+  the first start after the upgrade. How many a real file holds has not been
+  measured. There is no command yet to list registrations or remove one; it is
+  planned as the next change. Until then:
   - **Do not edit the state file by hand.** It is protected by an HMAC, so an
     edited file fails verification, and the server starts with no
     registrations and no tokens at all — the same as deleting it.
