@@ -182,6 +182,17 @@ same store, so one file covers every web client). Security properties:
   the first start after the upgrade. How many a real file holds has not been
   measured. There is no command yet to list registrations or remove one; it is
   planned as the next change. Until then:
+  - **Read the counts at start-up.** With OAuth on, the startup line ends in
+    `registrations=given:N,pending:N,unknown:N` — how many registrations the
+    owner has authorized, how many are waiting for consent, and how many were
+    carried over. Counts only; no client_id or redirect URI is printed. Check
+    `unknown` on the first start after an upgrade.
+  - **All three at 0 means one of two things.** Either there was no state file
+    yet, or the file failed verification and the server started empty. The
+    second case is preceded by the line
+    `[oauth] state file failed verification; starting with empty OAuth state`,
+    and after it every connector must authorize again (ChatGPT by deleting and
+    recreating its app).
   - **Do not edit the state file by hand.** It is protected by an HMAC, so an
     edited file fails verification, and the server starts with no
     registrations and no tokens at all — the same as deleting it.
