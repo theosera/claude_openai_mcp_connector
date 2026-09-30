@@ -1,10 +1,10 @@
-import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 
 import { compare, type FuzzCase, generate, SED_COPIES, sedEngine, shippedMask } from "./tools/redactionFuzz.js";
 import { broken, type Engine, type EngineResult, readable } from "./tools/redactionJudge.js";
@@ -155,5 +155,132 @@ describe("the fuzz runner's exit status", { timeout: 120_000 }, () => {
     const r = run("node tests/tools/no-such-engine.mjs");
     expect(r.status).toBe(2);
     expect(r.stdout).toBe("");
+  });
+});
+
+// A run that judged nothing must not exit 0. Each case goes through the same
+// `pnpm exec tsx` the full runs use; the engine leaves a sentinel file when it
+// starts, so "the argument was refused before any engine ran" is observed, not
+// inferred from an engine that could not have run anyway.
+describe("the fuzz runner's command line", { timeout: 300_000 }, () => {
+  const ROOT = join(HERE, "..");
+  const SCRIPT = join(ROOT, "tests", "tools", "redactionFuzz.ts");
+  const ECHO = "node tests/tools/echoEngine.mjs";
+  const dir = mkdtempSync(join(tmpdir(), "fuzz-cli-"));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  // The runner splits --engine on spaces.
+  const SENTINEL_ENGINE = `node ${join(dir, "engine.mjs")}`;
+  writeFileSync(
+    join(dir, "engine.mjs"),
+    [
+      'import { writeFileSync } from "node:fs";',
+      'import process from "node:process";',
+      'writeFileSync(process.env.FUZZ_ENGINE_STARTED, "");',
+      `await import(${JSON.stringify(pathToFileURL(join(ROOT, "tests", "tools", "echoEngine.mjs")).href)});`,
+      ""
+    ].join("\n")
+  );
+
+  type Run = { status: number | null; signal: string | null; stdout: string; stderr: string; started: boolean };
+  let runs = 0;
+  const run = (script: string, args: string[]): Promise<Run> => {
+    const started = join(dir, `started-${runs++}`);
+    return new Promise((resolve, reject) => {
+      const child = spawn("pnpm", ["exec", "tsx", script, ...args], {
+        cwd: ROOT,
+        env: { ...process.env, FUZZ_ENGINE_STARTED: started }
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
+      child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
+      child.on("error", reject);
+      child.on("close", (status, signal) => resolve({ status, signal, stdout, stderr, started: existsSync(started) }));
+    });
+  };
+  type Report = { reference: string; seed: number; cases: number; new_leaked: number };
+  const reports = (r: Run) =>
+    r.stdout
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as Report);
+
+  it("rejects invalid numeric arguments before running the engine", async () => {
+    expect(dir).not.toContain(" ");
+    const E = SENTINEL_ENGINE;
+    const bad: [string, string[]][] = [
+      ...["typo", "NaN", "Infinity", "-Infinity", "0", "-1", "1.5", "9007199254740992", "", " "].map(
+        (v): [string, string[]] => ["count", ["--seed", "1", "--count", v, "--engine", E]]
+      ),
+      ...["typo", "NaN", "Infinity", "-1", "1.5", "4294967296", "", " "].map((v): [string, string[]] => [
+        "seed",
+        ["--seed", v, "--count", "17", "--engine", E]
+      ]),
+      ["count", ["--seed", "1", "--engine", E, "--count"]],
+      ["seed", ["--count", "17", "--engine", E, "--seed"]],
+      ["count", ["--seed", "1", "--count", "--engine", E]],
+      ["seed", ["--seed", "--count", "17", "--engine", E]],
+      ["engine", ["--seed", "1", "--count", "17", "--engine"]],
+      ["engine", ["--seed", "1", "--count", "17", "--engine", "--count"]]
+    ];
+    const results: Run[] = [];
+    for (let i = 0; i < bad.length; i += 6) {
+      results.push(...(await Promise.all(bad.slice(i, i + 6).map(([, args]) => run(SCRIPT, args)))));
+    }
+    const seen = results.map((r, i) => ({
+      args: bad[i]![1].join(" "),
+      status: r.status,
+      signal: r.signal,
+      stdout: r.stdout,
+      named: r.stderr.split("\n")[0]!.startsWith(`Error: --${bad[i]![0]} `),
+      started: r.started
+    }));
+    expect(seen).toEqual(
+      bad.map(([, args]) => ({
+        args: args.join(" "),
+        status: 2,
+        signal: null,
+        stdout: "",
+        named: true,
+        started: false
+      }))
+    );
+  });
+
+  // The positive control for the sentinel: a valid run does start the engine.
+  it("accepts boundary seeds and reports the requested case count", async () => {
+    for (const seed of ["0", "4294967295"]) {
+      const r = await run(SCRIPT, ["--seed", seed, "--count", "17", "--engine", SENTINEL_ENGINE]);
+      expect(r.status, r.stderr).toBe(1);
+      expect(r.started).toBe(true);
+      const rows = reports(r);
+      expect(rows.map((x) => [x.reference, x.seed, x.cases])).toEqual([
+        ["capture", Number(seed), 17],
+        ["archive", Number(seed), 17]
+      ]);
+      expect(rows.every((x) => x.new_leaked > 0)).toBe(true);
+    }
+  });
+
+  it("runs the fuzz through a symlinked entrypoint", async () => {
+    const link = join(dir, "redactionFuzz.ts");
+    symlinkSync(SCRIPT, link);
+    const args = ["--seed", "1", "--count", "17", "--engine", ECHO];
+    const [direct, linked] = await Promise.all([run(SCRIPT, args), run(link, args)]);
+    expect(direct.status, direct.stderr).toBe(1);
+    expect(reports(direct).map((x) => [x.reference, x.cases])).toEqual([
+      ["capture", 17],
+      ["archive", 17]
+    ]);
+    expect({ status: linked.status, stdout: linked.stdout }).toEqual({ status: 1, stdout: direct.stdout });
+  });
+
+  it("does not run the fuzz when imported", async () => {
+    const importer = join(dir, "importer.mjs");
+    writeFileSync(importer, `import ${JSON.stringify(pathToFileURL(SCRIPT).href)};\n`);
+    // The importer is given the runner's own arguments, so a main() that ran on
+    // import would judge 17 cases and start the engine.
+    const r = await run(importer, ["--seed", "1", "--count", "17", "--engine", SENTINEL_ENGINE]);
+    expect(r).toEqual({ status: 0, signal: null, stdout: "", stderr: "", started: false });
   });
 });

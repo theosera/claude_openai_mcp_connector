@@ -35,6 +35,8 @@ pnpm exec tsx tests/tools/redactionFuzz.ts --seed 13 --count 16000 \
   --engine "node .claude/skills/_shared/redact-log.mjs"
 ```
 
+`--seed` is required and takes 0 to 4294967295, the generator's 32-bit state. `--count` takes a positive whole number and defaults to 16000. Both are read as decimal digits only, and `--engine` needs a value. The runner checks all three before it starts any engine. An invalid argument exits 2 with nothing on stdout, because a run that generated no cases would otherwise report no red columns and exit 0.
+
 The runner compares the candidate engine with both shipped copies of `mask()` (the capture hook and the archive hook), one as the reference and then the other. For each reference it prints one JSON line with these counts:
 
 | Column          | Meaning                                                              | Fails the run                  |
@@ -48,3 +50,5 @@ The runner compares the candidate engine with both shipped copies of `mask()` (t
 | `omitted`       | the candidate dropped the body                                       | not decided yet                |
 
 Whether `omitted` cases can count toward a pass is a decision about the pass condition, and it has not been made.
+
+The run exits 1 when a column that fails the run is non-empty for either reference, and 2 when the run itself fails. A run is only valid when it printed two lines, one for `capture` and one for `archive`, each with `cases` equal to the requested count. Exit 0 alone does not show that.

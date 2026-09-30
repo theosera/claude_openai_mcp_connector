@@ -24,11 +24,14 @@
  *   copy_mismatch the two sed copies disagree on the case                     (red)
  *
  * The run exits 1 when any red column is non-empty for either reference, and 2
- * when the run itself fails, so a broken run is never read as a red result.
+ * when the run itself fails or an argument is invalid, so a broken run is never
+ * read as a red result and a run that judged nothing is never read as a pass.
+ * `--seed` (0 to 4294967295) and `--count` (at least 1, default 16000) take
+ * decimal digits only.
  */
 
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -276,10 +279,25 @@ function main(argv: string[]): void {
       if (fallback === undefined) throw new Error(`--${name} is required`);
       return fallback;
     }
-    return argv[i + 1]!;
+    const value = argv[i + 1];
+    if (value === undefined || value.startsWith("--")) throw new Error(`--${name} needs a value`);
+    return value;
   };
-  const seed = Number(arg("seed"));
-  const count = Number(arg("count", "16000"));
+  // Number() reads "typo" as NaN and "" as 0, and a count of NaN or 0 generates no
+  // cases, so the run would report nothing wrong without judging anything. Only
+  // decimal digits are read, and the value is checked before any engine starts.
+  const whole = (name: string, fallback?: string) => {
+    const value = arg(name, fallback);
+    if (!/^[0-9]+$/.test(value))
+      throw new Error(`--${name} must be written in decimal digits, got ${JSON.stringify(value)}`);
+    return Number(value);
+  };
+  const seed = whole("seed");
+  if (seed > 0xffffffff)
+    throw new Error(`--seed must be at most 4294967295, the generator's 32-bit state, got ${seed}`);
+  const count = whole("count", "16000");
+  if (!Number.isSafeInteger(count) || count === 0)
+    throw new Error(`--count must be a positive safe integer, got ${count}`);
   const engine = commandEngine(arg("engine").split(" "), ROOT);
   const cases = generate(seed, count);
   const capture = sedEngine(shippedMask(SED_COPIES.capture));
@@ -323,11 +341,13 @@ function main(argv: string[]): void {
   }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  try {
+// Both sides are resolved: run through a symlink, argv[1] names the link and the
+// module URL names the file, and a raw comparison skips main() and exits 0.
+try {
+  if (process.argv[1] && realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])) {
     main(process.argv.slice(2));
-  } catch (error) {
-    console.error(error);
-    process.exitCode = 2;
   }
+} catch (error) {
+  console.error(error);
+  process.exitCode = 2;
 }
