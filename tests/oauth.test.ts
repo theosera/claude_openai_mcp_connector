@@ -28,6 +28,13 @@ function pkcePair(): { verifier: string; challenge: string } {
   return { verifier, challenge: computeS256Challenge(verifier) };
 }
 
+/** Register a client and fail the test outright if the registry refused it. */
+function mustRegister(store: OAuthStore, redirectUris: string[], clientName?: string) {
+  const client = store.registerClient(redirectUris, clientName);
+  if (!client) throw new Error("registerClient refused: the registry is full");
+  return client;
+}
+
 async function makeStore(): Promise<KnowledgeStore> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-oauth-vault-"));
   const patchStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-oauth-patches-"));
@@ -1361,107 +1368,54 @@ describe("OAuthStore", () => {
     expect(store.rotateRefreshToken(tokens.refreshToken, "c")).toBeNull();
   });
 
-  it("prunes an orphaned client (no live token) once it ages past the grace window", () => {
-    let t = 1_000_000;
-    const store = new OAuthStore({ ...opts, clientOrphanGraceMs: 1000, now: () => t });
-    const orphan = store.registerClient(["https://x/cb"]); // registered, never exchanged for a token
-    expect(store.getClient(orphan.clientId)).toBeDefined();
-    t += 2000; // past the 1s grace
-    store.registerClient(["https://y/cb"]); // any activity triggers prune()
-    expect(store.getClient(orphan.clientId)).toBeUndefined();
-  });
-
-  it("keeps a client that still holds a live token, regardless of age", () => {
-    let t = 1_000_000;
-    const store = new OAuthStore({ ...opts, clientOrphanGraceMs: 1000, now: () => t });
-    const active = store.registerClient(["https://x/cb"]);
-    store.issueTokens(active.clientId, "vault.read", "r"); // live access (60s) + refresh (600s)
-    t += 10_000; // well past the 1s grace, still within the token TTLs
-    store.registerClient(["https://y/cb"]); // triggers prune()
-    expect(store.getClient(active.clientId)).toBeDefined();
-  });
-
-  it("does not prune a just-registered client that is still mid-flow (within grace)", () => {
-    const t = 1_000_000;
-    const store = new OAuthStore({ ...opts, clientOrphanGraceMs: 60_000, now: () => t });
-    const pending = store.registerClient(["https://x/cb"]); // no token yet: authorize->token in flight
-    store.registerClient(["https://other/cb"]); // triggers orphan pruning while `pending` is within grace
-    expect(store.getClient(pending.clientId)).toBeDefined(); // within grace, survives
-  });
-
-  // #184. The window is a sizing assumption about human latency, so the branch
-  // it turns on has to be pinned at the point where it turns. The test above
-  // only shows that a client aged 0 ms survives; it never advances the clock,
-  // so nothing here reached the comparison until this test.
+  // #184. ChatGPT keeps the client_id it registered and never registers again
+  // on its own (measured 2026-09-28), so deleting a registration it still holds
+  // strands it. None of the three clients below holds a live token; each one
+  // used to be swept, and the second one was swept mid-consent.
   //
-  // The bracket is the exact boundary, not a pair straddling it: the guard is
-  // `>=`, and a -1ms/+1ms pair satisfies `>` and `>=` alike. Measured over HTTP
-  // by a second session on 2026-09-03: at age === grace, /authorize answers 400.
-  it("sweeps an in-flight registration once it reaches the orphan grace window (#184)", () => {
+  // Reverse-verified: putting back a sweep of tokenless registrations older
+  // than one hour, run from registerClient, reddens this test.
+  it("keeps every registration, tokenless or not, however old it gets (#184)", () => {
     let t = 1_000_000;
-    const store = new OAuthStore({ ...opts, clientOrphanGraceMs: 60_000, now: () => t });
-    const pending = store.registerClient(["https://x/cb"]); // registered, no token yet
+    const store = new OAuthStore({ ...opts, now: () => t });
+    const expired = mustRegister(store, ["https://expired/cb"]);
+    store.issueTokens(expired.clientId, "vault.read", "r"); // refresh TTL 600s
+    const pending = mustRegister(store, ["https://pending/cb"]); // consent not yet given: no token
+    const idle = mustRegister(store, ["https://idle/cb"]);
 
-    t += 59_999; // one tick short of the window
-    store.registerClient(["https://mid/cb"]); // triggers orphan pruning
-    expect(store.getClient(pending.clientId)).toBeDefined();
+    t += 31 * 24 * 60 * 60 * 1000; // past every TTL and the old one-hour grace, by a month
+    mustRegister(store, ["https://later/cb"]); // the call the sweep used to run from
 
-    t += 1; // exactly at the window: `>=`, so this is the sweeping side
-    store.registerClient(["https://late/cb"]);
-    expect(store.getClient(pending.clientId)).toBeUndefined();
+    // Reached: the clock really did move past the refresh TTL, so `expired`
+    // holds nothing and is tokenless like the other two.
+    expect(store.rotateRefreshToken("anything", expired.clientId)).toBeNull();
+    for (const client of [expired, pending, idle]) {
+      expect(store.getClient(client.clientId)?.redirectUris).toEqual(client.redirectUris);
+    }
   });
 
-  // The cap is a second deletion path and it does not consult the grace window
-  // at all. What it must consult is whether the registration still describes
-  // live credentials: evicting one that does leaves the client able to refresh
-  // at /token but unable to authorize again, and re-registration is its only
-  // way back.
+  // The cap used to be a second deletion path: it evicted the oldest tokenless
+  // registration, or the oldest of all when every one held a token. It now
+  // refuses the newcomer and leaves the registry exactly as it was.
   //
-  // Scope, so the next reader does not over-read this: /token never looks the
-  // registry up (getClient has one caller, validateAuthorizeParams), so what
-  // this protects is the next authorize, not the token path.
-  it("evicts a tokenless registration before one that still holds a live token", () => {
+  // The registry is filled with both kinds so that either old eviction order
+  // would have had a victim. Reverse-verified: restoring the eviction reddens
+  // the "still there" loop (and the refusal assert, since the newcomer then
+  // gets a slot).
+  it("refuses a new registration at the cap instead of evicting one (#184)", () => {
     const t = 1_000_000;
     const store = new OAuthStore({ ...opts, now: () => t });
-    const holder = store.registerClient(["https://holder/cb"]);
-    store.issueTokens(holder.clientId, "vault.read", "r");
-    const tokenless = store.registerClient(["https://tokenless/cb"]);
-
-    for (let i = 0; i < 300; i += 1) {
-      store.registerClient([`https://churn-${i}/cb`]);
+    const existing = [];
+    for (let i = 0; i < 100; i += 1) {
+      const client = mustRegister(store, [`https://c-${i}/cb`]);
+      if (i % 2 === 0) store.issueTokens(client.clientId, "vault.read", "r");
+      existing.push(client);
     }
 
-    // Reached: the cap really did evict, so the assertion below is not vacuous.
-    expect(store.getClient(tokenless.clientId)).toBeUndefined();
-    expect(store.getClient(holder.clientId)).toBeDefined();
-  });
-
-  // The fallback arm, exercised on purpose. A `victim ?? oldest` branch that no
-  // test drives is a green that means nothing (measured on the token cap's
-  // equivalent arm, 2026-09-02: unreachable from the whole suite).
-  it("still evicts when every registration holds a live token", () => {
-    const t = 1_000_000;
-    const store = new OAuthStore({ ...opts, now: () => t });
-    const first = store.registerClient(["https://first/cb"]);
-    store.issueTokens(first.clientId, "vault.read", "r");
-
-    for (let i = 0; i < 300; i += 1) {
-      const churn = store.registerClient([`https://live-${i}/cb`]);
-      store.issueTokens(churn.clientId, "vault.read", "r");
+    expect(store.registerClient(["https://newcomer/cb"])).toBeUndefined();
+    for (const client of existing) {
+      expect(store.getClient(client.clientId)).toBeDefined();
     }
-
-    // Nothing is protected, so the cap falls back to age and the oldest goes.
-    expect(store.getClient(first.clientId)).toBeUndefined();
-  });
-
-  it("prunes a client once its last token expires", () => {
-    let t = 1_000_000;
-    const store = new OAuthStore({ ...opts, clientOrphanGraceMs: 1000, now: () => t });
-    const active = store.registerClient(["https://x/cb"]);
-    store.issueTokens(active.clientId, "vault.read", "r"); // refresh TTL 600s
-    t += 601_000; // past the refresh TTL AND the grace: tokens expire, client becomes orphaned
-    store.registerClient(["https://y/cb"]); // reaps expired tokens, then the orphan client
-    expect(store.getClient(active.clientId)).toBeUndefined();
   });
 
   it("keeps an aged client's registration through a refresh rotation (no prune race)", () => {
@@ -1481,10 +1435,10 @@ describe("OAuthStore", () => {
     // rotation does not cost an aged client its registration, which is the
     // property #44 cared about, by whichever mechanism holds it.
     let t = 1_000_000;
-    const store = new OAuthStore({ ...opts, clientOrphanGraceMs: 1000, now: () => t });
-    const client = store.registerClient(["https://x/cb"]);
+    const store = new OAuthStore({ ...opts, now: () => t });
+    const client = mustRegister(store, ["https://x/cb"]);
     const tokens = store.issueTokens(client.clientId, "vault.read", "r"); // access 60s, refresh 600s
-    t += 61_000; // access expired, refresh still valid, client now older than the 1s grace
+    t += 61_000; // access expired, refresh still valid
     expect(store.rotateRefreshToken(tokens.refreshToken, client.clientId)).not.toBeNull();
     expect(store.getClient(client.clientId)).toBeDefined(); // registration survives the rotation
   });
@@ -1525,7 +1479,7 @@ describe("OAuthStore persistence", () => {
   it("persists clients and tokens across a restart without raw secrets on disk", async () => {
     const file = await stateFilePath();
     const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
-    const client = store.registerClient(["https://chatgpt.com/cb"], "test");
+    const client = mustRegister(store, ["https://chatgpt.com/cb"], "test");
     const tokens = store.issueTokens(client.clientId, "vault.read", "r");
 
     // Hash-at-rest: the state file must not contain any recoverable credential.
@@ -1605,7 +1559,7 @@ describe("OAuthStore persistence", () => {
     // Trigger a save AFTER the code exists (createAuthorizationCode itself does
     // not persist), so the file is written while the code is live — this is what
     // makes the assertion non-vacuous: codes must still be absent on reload.
-    store.registerClient(["https://chatgpt.com/cb"]);
+    mustRegister(store, ["https://chatgpt.com/cb"]);
     const reloaded = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
     expect(reloaded.consumeAuthorizationCode(code)).toBeUndefined();
   });
@@ -1613,7 +1567,7 @@ describe("OAuthStore persistence", () => {
   it("fails closed on a tampered state file", async () => {
     const file = await stateFilePath();
     const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
-    const client = store.registerClient(["https://chatgpt.com/cb"]);
+    const client = mustRegister(store, ["https://chatgpt.com/cb"]);
     const tokens = store.issueTokens(client.clientId, "vault.read", "r");
 
     // Privilege-escalation attempt: flip the persisted scope to vault.write.
@@ -1757,22 +1711,20 @@ describe("OAuthStore persistence", () => {
     expect(loaded.validateAccessToken(f.accessToken)?.clientId).toBe("c");
   });
 
-  // The loader drops expired tokens, and then sweeps clients left holding
-  // none. The sweep only sees the maps, and does not look at expiry itself —
-  // so it is the drop that makes a client whose tokens all expired an orphan.
-  // The test above ("drops expired tokens…") checks the drop through
-  // validateAccessToken, which refuses an expired record on its own and so
-  // cannot tell dropped from kept. The client registry can.
+  // The loader drops expired tokens, and it used to sweep the clients left
+  // holding none. It no longer does (#184): a client whose tokens all lapsed is
+  // exactly the one that comes back later with the same client_id and
+  // re-authorizes, and ChatGPT will not register again to recover from a
+  // missing one.
   //
-  // Reverse-verified (2026-09-25): removing `record.expiresAt > t` from the
-  // load filter reddens only this test (the orphaned client survives the
-  // reload); the test above stays green under it.
-  it("drops a client at load once every token it held has expired (INV-7 item 7)", async () => {
+  // Reverse-verified: putting the load-time sweep back reddens the second
+  // assert (the client is gone after the reload); the control stays green.
+  it("keeps a client at load after every token it held has expired (#184)", async () => {
     const file = await stateFilePath();
     let t = 1_000_000;
     const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t });
-    const client = store.registerClient(["https://chatgpt.com/cb"]);
-    store.issueTokens(client.clientId, "vault.read", "r");
+    const client = mustRegister(store, ["https://chatgpt.com/cb"]);
+    const tokens = store.issueTokens(client.clientId, "vault.read", "r");
 
     // Control: inside the refresh TTL the client is kept.
     t += 500_000;
@@ -1780,12 +1732,11 @@ describe("OAuthStore persistence", () => {
       new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t }).getClient(client.clientId)
     ).toBeDefined();
 
-    // Past both the refresh TTL and the orphan grace (1 h): nothing it held is
-    // live, so it must not survive the load.
+    // Past the refresh TTL and the old one-hour grace: nothing it held is live.
     t = 1_000_000 + 2 * 60 * 60 * 1000;
-    expect(
-      new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t }).getClient(client.clientId)
-    ).toBeUndefined();
+    const reloaded = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t });
+    expect(reloaded.rotateRefreshToken(tokens.refreshToken, client.clientId)).toBeNull(); // reached: tokens dropped
+    expect(reloaded.getClient(client.clientId)?.redirectUris).toEqual(["https://chatgpt.com/cb"]);
   });
 
   it("fails closed on a corrupt state file instead of throwing", async () => {
@@ -2030,6 +1981,69 @@ describe("OAuthProvider flow", () => {
     const provider = new OAuthProvider(config);
     expect(provider.register({ redirect_uris: ["https://*/cb"] }).status).toBe(400);
     expect(provider.register({ redirect_uris: ["https://*.example.com/cb"] }).status).toBe(400);
+  });
+
+  // #184: the cap refuses rather than evicts, and /register says so with a
+  // status the caller cannot fix by changing its request.
+  it("answers 503 at the registration cap and keeps the earlier clients working", () => {
+    const provider = new OAuthProvider(config);
+    const first = JSON.parse(provider.register({ redirect_uris: ["https://chatgpt.com/cb"] }).body).client_id as string;
+    for (let i = 1; i < 100; i += 1) {
+      expect(provider.register({ redirect_uris: [`https://c-${i}/cb`] }).status).toBe(201);
+    }
+
+    const refused = provider.register({ redirect_uris: ["https://newcomer/cb"] });
+    expect(refused.status).toBe(503);
+    expect(JSON.parse(refused.body).error).toBe("temporarily_unavailable");
+
+    const { challenge } = pkcePair();
+    expect(provider.authorizeGet(authorizeParams(first, challenge)).status).toBe(200);
+  });
+
+  // #184, end to end through the provider: the consent page is opened, left
+  // for two hours, another client registers in the meantime, and the approval
+  // still completes. This is the shape Codex's proposal names R1 (GET -> wait
+  // -> DCR -> POST), and the shape the original report describes.
+  //
+  // Two hours is past the old one-hour grace and inside the 24 h flow expiry
+  // that proposal would add, so this test stays green if that lands. A form
+  // older than the expiry is a separate property and gets its own test then.
+  //
+  // Reverse-verified: putting back a sweep of tokenless registrations older
+  // than one hour, run from registerClient, reddens this test at the POST
+  // (400 Unknown client_id. instead of 302).
+  it("completes a consent left open for two hours while another client registers (#184)", () => {
+    let t = 1_000_000;
+    const store = new OAuthStore({
+      accessTokenTtlSec: config.accessTokenTtlSec,
+      refreshTokenTtlSec: config.refreshTokenTtlSec,
+      codeTtlSec: config.codeTtlSec,
+      now: () => t
+    });
+    const provider = new OAuthProvider(config, store);
+    const clientId = JSON.parse(provider.register({ redirect_uris: ["https://chatgpt.com/cb"] }).body)
+      .client_id as string;
+    const { verifier, challenge } = pkcePair();
+    const form = authorizeParams(clientId, challenge);
+    expect(provider.authorizeGet(form).status).toBe(200); // the consent page is shown
+
+    t += 2 * 60 * 60 * 1000; // past the old one-hour grace, inside a 24 h flow expiry
+    expect(provider.register({ redirect_uris: ["https://other/cb"] }).status).toBe(201); // where the sweep used to run
+
+    form.set("password", "hunter2");
+    const granted = provider.authorizePost(form);
+    expect(granted.status).toBe(302);
+    const code = new URL(granted.headers.location).searchParams.get("code")!;
+    const token = provider.token(
+      new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        client_id: clientId,
+        redirect_uri: "https://chatgpt.com/cb",
+        code_verifier: verifier
+      })
+    );
+    expect(token.status).toBe(200);
   });
 
   it("rejects authorize with unknown client or bad PKCE method", () => {

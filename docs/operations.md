@@ -131,11 +131,34 @@ same store, so one file covers every web client). Security properties:
   the request, so even on the arms that do call it, "written" means attempted
   rather than confirmed.
 - What none of this buys you any more is single use across a restart.
+- **Client registrations are kept until an operator removes them (#184).**
+  Nothing deletes a registration automatically: not the lack of a token, and
+  not the arrival of a newer one.
+  - At 100 registrations, `/register` answers `503 temporarily_unavailable`.
+    Connectors that are already registered keep working. New ones cannot be
+    added until registrations are removed.
+  - There is no removal command yet. The only remedy today is to delete the
+    state file, which drops every registration and every token at once.
+  - Anyone who can reach `/register` can fill the registry. The rate limit
+    slows that down but does not stop it. It is keyed on the socket peer, so
+    behind a tunnel a flood also uses up the slots a genuine new connector
+    needs.
+  - Every registration is also lost in two other ways. One is running without
+    a state file and restarting. The other is a state file that fails
+    verification, and rotating `MCP_OAUTH_PASSWORD` counts as that. After
+    either, ChatGPT needs the recovery below.
+- **ChatGPT shows `400 Unknown client_id.` on every consent attempt.** Its
+  registration is gone from this server: an older build swept it, or the state
+  file was deleted or failed its integrity check. ChatGPT keeps the `client_id`
+  with the app and does not register again. Uninstalling and reinstalling the
+  app keeps the same `client_id`. **Delete the app and create it again**; the
+  new app registers afresh. Claude.ai recovers by pressing connect once more.
 
 **Fix 2: don't let the process die.** Run it supervised with auto-restart
-(below). Without the state file a restart costs a re-auth; with it, a restart
-costs nothing (the connector URL stays the same either way, so **no
-re-registration** is ever needed).
+(below). With the state file, a restart costs nothing. Without it, a restart
+drops every registration. Claude.ai then re-authorizes. ChatGPT has to delete
+and recreate its app, because it does not register again on its own (#184,
+see above). The connector URL stays the same either way.
 
 ### C. MCP sessions in process memory — removed, no longer a cause
 

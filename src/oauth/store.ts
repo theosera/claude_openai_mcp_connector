@@ -29,18 +29,15 @@ import path from "node:path";
 //    survive for its descendants to be reachable). The window never
 //    extends on replay, its state is written to disk on every transition, and
 //    beyond it single-use semantics hold across restarts exactly as before,
-//  - every collection is capped and pruned to bound memory (DoS via unbounded
-//    dynamic client registration / token minting).
+//  - every collection is capped to bound memory (DoS via unbounded dynamic
+//    client registration / token minting). Codes and tokens are also pruned
+//    as they expire. Client registrations are not: once accepted, one is kept
+//    until an operator removes it, and a full registry refuses new ones
+//    instead of evicting old ones. See registerClient (#184).
 
 const DEFAULT_MAX_CLIENTS = 100;
 const DEFAULT_MAX_CODES = 1000;
 const DEFAULT_MAX_TOKENS = 2000;
-// A registered client that holds no live token is pruned once it is older than
-// this grace window. Tokens are the real credential and self-expire; a lingering
-// registration is dead weight. The window must comfortably exceed a plausible
-// authorize->token round-trip so an in-flight registration (registered, not yet
-// exchanged for a token) is never swept mid-flow.
-const DEFAULT_CLIENT_ORPHAN_GRACE_MS = 60 * 60 * 1000;
 
 // How long a refresh token stays replayable after it was rotated. Sized for
 // "the rotation response was lost on an unreliable link and the client retries
@@ -162,11 +159,6 @@ export interface OAuthStoreOptions {
   codeTtlSec: number;
   /** Hard cap per token map (default DEFAULT_MAX_TOKENS). Bounds memory. */
   maxTokens?: number;
-  /**
-   * Grace window (ms) before a client holding no live access/refresh token is
-   * pruned. Must exceed a plausible authorize->token round-trip. Default 1h.
-   */
-  clientOrphanGraceMs?: number;
   /**
    * Absolute path of the optional state file. When set, registered clients and
    * (hashed) tokens are persisted across restarts. Requires `persistSecret`.
@@ -343,7 +335,6 @@ export class OAuthStore {
    *    rate is reachable through the HTTP endpoint is still NOT measured.
    */
   private readonly maxTombstones: number;
-  private readonly clientOrphanGraceMs: number;
   private readonly persistPath?: string;
   /** scrypt(persistSecret, salt) — derived once per store, cached for saves. */
   private hmacKey?: Buffer;
@@ -353,7 +344,6 @@ export class OAuthStore {
     this.now = options.now ?? Date.now;
     this.maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS;
     this.maxTombstones = this.maxTokens;
-    this.clientOrphanGraceMs = options.clientOrphanGraceMs ?? DEFAULT_CLIENT_ORPHAN_GRACE_MS;
     if (options.persistPath) {
       if (!options.persistSecret) {
         throw new Error("OAuthStore persistence requires persistSecret (state-file HMAC key source).");
@@ -363,29 +353,46 @@ export class OAuthStore {
     }
   }
 
-  registerClient(redirectUris: string[], clientName?: string): RegisteredClient {
+  /**
+   * Register a client, or return `undefined` when the registry is full.
+   *
+   * A registration, once accepted, is never removed automatically — not when
+   * it holds no token, and not to make room for a newer one. Both used to
+   * happen, and both broke a real client (#184, measured 2026-09-28):
+   *
+   *  - ChatGPT keeps the `client_id` it registered with the app and never
+   *    registers again on its own. Deleting that registration leaves the app
+   *    presenting a `client_id` this server no longer knows, and `/authorize`
+   *    answers `400 Unknown client_id.` on every attempt. Uninstalling and
+   *    reinstalling the app did not help; only deleting and recreating it
+   *    did. OpenAI's own docs say a client reuses its registration for as
+   *    long as the connection is used.
+   *  - A registration still waiting on its first consent holds no token, so
+   *    anything that sweeps tokenless registrations takes it mid-flow. The
+   *    orphan sweep protected it with a one-hour grace window, and a consent
+   *    page left open past the hour lost it.
+   *  - Evicting to make room is the same deletion by another route: the cap
+   *    removed the oldest tokenless registration, or the oldest of all when
+   *    every one held a token.
+   *
+   * So the cap now refuses. At `DEFAULT_MAX_CLIENTS` a new registration is
+   * refused and every existing one keeps working. The failure moves to the
+   * party that is asking for something new, where it is loud, instead of
+   * landing silently and later on a client that was already connected.
+   *
+   * The cost is stated rather than hidden: `/register` is reachable by anyone
+   * who can reach the server, so a caller that fills the registry locks out
+   * new connectors until an operator removes registrations. The `/register`
+   * rate limit bounds how fast that can happen. It does not stop it. The limit
+   * is keyed on the socket peer, so behind a tunnel every caller shares one
+   * bucket and a flood also spends the slots a genuine newcomer needs. On a
+   * direct bind each source gets its own bucket, and more sources mean more
+   * speed.
+   */
+  registerClient(redirectUris: string[], clientName?: string): RegisteredClient | undefined {
     this.prune();
-    // Reap aged tokenless registrations HERE — a new registration is the moment
-    // reconnect churn accumulates — and NOT inside the shared prune()/mintTokens
-    // path. The hazard first written here has stopped existing: it said a
-    // rotation deletes the presented token and so leaves an aged client briefly
-    // tokenless between prune() and the replacement's insertion. Since the
-    // replay-grace window landed, a successful rotation KEEPS that record, so a
-    // live refresh token spans the whole mint and that window never opens.
-    //
-    // What the placement is actually for: a registration that has not yet
-    // exchanged its code holds no token, so anything reaping tokenless clients
-    // would take it mid-flow. Calling it only here does not make that safe —
-    // clientOrphanGraceMs (default one hour) does, and it is a sizing
-    // assumption rather than a structural one. See #184; a consent screen left
-    // open past the hour breaks it.
-    //
-    // The client added below is not the one at risk, and not because of any
-    // window: it does not exist yet. It is constructed and inserted after this
-    // line.
-    this.pruneOrphanClients();
     if (this.clients.size >= DEFAULT_MAX_CLIENTS) {
-      this.evictOneClientForCap();
+      return undefined;
     }
     const client: RegisteredClient = {
       clientId: `client_${randomSecret()}`,
@@ -814,113 +821,6 @@ export class OAuthStore {
     this.evictExpired();
   }
 
-  /**
-   * Free one slot for a new registration, preferring one that holds no live
-   * credential.
-   *
-   * Age alone is the wrong order to delete in. A client whose registration is
-   * evicted while it still holds a valid access token — or a refresh token it
-   * can rotate — keeps working at `/token` and fails only the next time it
-   * reaches `/authorize`, where `getClient` no longer knows it. The registry
-   * and the credentials it is supposed to describe then disagree, and the
-   * client cannot refresh its way out: recovery costs a re-registration.
-   * Measured 2026-09-03 on #184: with the shipped cap, a client holding a live
-   * pair was evicted by 100 registrations while its access token still
-   * validated and its refresh token still rotated.
-   *
-   * Tokenless registrations have no such state to contradict, so they go
-   * first, oldest first. `prune()` has already run at the top of
-   * `registerClient`, so an expired token is not counted as live.
-   *
-   * That preference has a cost, and under the shipped TTLs it lands on the
-   * class #184 is about. The orphan sweep immediately above has already
-   * removed every tokenless registration past its grace window, so every
-   * tokenless candidate left here is one still inside it — and a completed
-   * flow holds its refresh token for thirty days while a registration only has
-   * to outlive an hour to leave the sweep's reach, so what is left inside is
-   * an authorization still in flight. Preferring them means that is now the
-   * first thing offered to the cap. Measured 2026-09-03 either side of #185,
-   * with an oldest token-holder and a second in-flight registration and the
-   * cap driven past its limit: before, the holder was evicted and the
-   * in-flight one survived; after, exactly the reverse.
-   *
-   * It is a trade and not an oversight. Both evictions end in the same 400
-   * with no machine-readable OAuth error, but an evicted holder breaks
-   * silently and later — at an `/authorize` it had no reason to expect to
-   * fail, while it was still refreshing successfully — and an in-flight
-   * registration breaks now.
-   *
-   * "Now" is narrower than it sounds, and the narrowing is the useful part.
-   * The eviction is only immediately visible while the flow is still short of
-   * its code: once `/authorize` has issued one, redemption never consults the
-   * registry — `tokenFromCode` does not call `getClient`, and evicting a
-   * client leaves its pending codes alone — so the exchange succeeds and
-   * nothing surfaces. Measured 2026-09-03: a client evicted after its code was
-   * issued still redeemed it and received a valid access token. A tokenless
-   * registration may also simply be idle, with nobody waiting on it at all.
-   * So what this arm buys is a failure that is visible *during the pre-code
-   * window*, not at every eviction, and that is what it is chosen for.
-   *
-   * "Those two" is itself a sizing assumption — `refreshTokenTtlSec >=
-   * clientOrphanGraceMs` — which is the kind of thing #184 was filed about, so
-   * it is written down rather than leaned on quietly. Drop
-   * `MCP_OAUTH_REFRESH_TTL` below the hour and a client that completed its
-   * flow goes tokenless while still inside the grace window: a third class,
-   * neither in flight nor holding credentials, and the one the cap then takes
-   * first. Measured 2026-09-03 at a 60 s refresh TTL, on both sides of #185:
-   * the completed-then-expired client was evicted and the in-flight one
-   * survived. Found by a second session, which built the counterexample rather
-   * than accepting the claim that there was none.
-   *
-   * There is no lever on the other side of that relation: `clientOrphanGraceMs`
-   * has no environment binding, so an operator shortening sessions cannot
-   * widen the grace to restore it.
-   *
-   * The bound is unchanged: exactly one registration is removed per call, and
-   * when every one of them holds a live token the oldest still goes — the cap
-   * has to be enforced with something. `DEFAULT_MAX_CLIENTS` has no options
-   * field and no environment override, so this order is the shipped one and
-   * an operator cannot tune around it.
-   */
-  private evictOneClientForCap(): void {
-    const holdsLiveToken = new Set<string>();
-    for (const record of this.accessTokens.values()) holdsLiveToken.add(record.clientId);
-    for (const record of this.refreshTokens.values()) holdsLiveToken.add(record.clientId);
-    const oldestFirst = [...this.clients.values()].sort((a, b) => a.createdAt - b.createdAt);
-    const victim = oldestFirst.find((client) => !holdsLiveToken.has(client.clientId)) ?? oldestFirst[0];
-    if (victim) {
-      this.clients.delete(victim.clientId);
-    }
-  }
-
-  /**
-   * Drop client registrations that hold no live token and are older than the
-   * orphan grace window. Tokens are the credential and self-expire; a
-   * registration with no surviving token is dead weight that would otherwise
-   * linger until the hard client cap evicts it. Invoked only from registerClient
-   * (where reconnect churn accumulates) and after a state-file load —
-   * deliberately NOT from the shared prune()/mintTokens path. The reason given
-   * for that used to be a rotation leaving an aged client momentarily tokenless
-   * between prune() and the replacement's insertion; the replay-grace window
-   * ended it, because a successful rotation keeps the presented record. What
-   * the grace window protects is an in-flight registration — no token until the
-   * code is exchanged — and it protects it by being an hour long, not by any
-   * structural guarantee. The other caller on that path is
-   * createAuthorizationCode. See #184.
-   */
-  private pruneOrphanClients(): void {
-    const t = this.now();
-    const liveClientIds = new Set<string>();
-    for (const record of this.accessTokens.values()) liveClientIds.add(record.clientId);
-    for (const record of this.refreshTokens.values()) liveClientIds.add(record.clientId);
-    for (const [clientId, client] of this.clients) {
-      if (liveClientIds.has(clientId)) continue;
-      if (t - client.createdAt >= this.clientOrphanGraceMs) {
-        this.clients.delete(clientId);
-      }
-    }
-  }
-
   private evictExpired(): void {
     const t = this.now();
     for (const [token, record] of this.accessTokens) {
@@ -1060,16 +960,15 @@ export class OAuthStore {
         }
       }
       enforceTombstoneCap(this.rotatedTombstones, this.maxTombstones);
-      // Loaded state may carry clients whose tokens all expired (and so were
-      // dropped above); sweep those now instead of waiting for the next write.
-      this.pruneOrphanClients();
       // Keep the verified salt/key for subsequent saves.
       this.hmacSalt = salt;
       this.hmacKey = key;
     } catch {
       // Never trust a state file that does not verify. No detail is logged (it
-      // could echo attacker-controlled bytes); the operator symptom is simply
-      // that clients must re-authorize.
+      // could echo attacker-controlled bytes). The operator symptom is that
+      // every client must connect again, and that includes rotating the
+      // password. Claude.ai registers again on its own; ChatGPT does not, and
+      // recovers only by deleting and recreating its app (#184).
       this.clients.clear();
       this.accessTokens.clear();
       this.refreshTokens.clear();

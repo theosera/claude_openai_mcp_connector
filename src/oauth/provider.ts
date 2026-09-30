@@ -175,6 +175,15 @@ export class OAuthProvider {
     }
     const clientName = typeof record.client_name === "string" ? record.client_name : undefined;
     const client = this.store.registerClient(redirectUris, clientName);
+    if (!client) {
+      // The registry is full, and existing registrations are never evicted to
+      // make room (#184). Nothing the caller changes in the request fixes this;
+      // an operator has to remove a registration first.
+      return json(503, {
+        error: "temporarily_unavailable",
+        error_description: "The client registration limit has been reached. An operator must remove a registration."
+      });
+    }
     return json(201, {
       client_id: client.clientId,
       client_id_issued_at: Math.floor(client.createdAt / 1000),

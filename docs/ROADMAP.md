@@ -120,6 +120,30 @@ was outstanding:
   so where it used to claim more. The measurements are on #159; they were taken
   against a revision that predates the family id, and have not been reproduced
   since. 🔭
+- **Amended 2026-09-29 (#184): client registrations are no longer deleted
+  automatically.** ✅ The orphan sweep (tokenless and older than one hour, run on
+  every `/register` and at load) and the cap's eviction (oldest tokenless, else
+  oldest) are both gone. At 100 registrations `/register` now answers `503`
+  and every existing registration keeps working. Why: ChatGPT keeps the
+  `client_id` it registered with the app and does not register again on its
+  own. Measured 2026-09-28 with a 60 s grace: once its registration was swept,
+  `/authorize` answered `400 Unknown client_id.` on every attempt, and
+  uninstalling and reinstalling the app did not help. Only deleting the app and
+  creating it again did. Claude.ai re-registered on the next connect. A consent
+  page left open past the grace was the original #184 case, and it is covered
+  by the same change. **The trade:** anyone who can reach `/register` can fill
+  the registry and lock out *new* connectors until an operator removes
+  registrations. The `/register` rate limit bounds how fast, not whether. It is
+  keyed on the socket peer, so behind a tunnel a flood also spends the slots
+  of a genuine newcomer. On a direct bind, more sources mean more speed.
+  🔭 **Still open:**
+  - An operator path that removes a registration it has named, so a full
+    registry has a remedy short of deleting the state file.
+  - Client ID Metadata Documents (SEP-991). OpenAI's docs say ChatGPT supports
+    them; whether Claude.ai does is unchecked. They are the structural fix,
+    because a URL-shaped `client_id` has nothing to sweep. The
+    [`client_id` appendix](#appendix--future-uses-of-the-authenticated-client_id)
+    and its re-open test apply when this starts.
 - **The cap can sweep the record the replay revokes on, and the only candidate
   fix does not move the threshold (#170).** 🔭 The grace window's replay does two
   things — serves the stranded client, and revokes everything minted downstream
@@ -1555,9 +1579,10 @@ Concrete, low-risk items teed up for a future session (in rough priority order):
       strictly heavier call than when this item was written. Spending a budgeted
       slot inside a bug fix is the drift the ROADMAP firing rule exists to prevent.
 
-      For comparison, the OAuth store has capped + pruned collections *and*
-      orphan pruning, so the asymmetry between the two state stores is real and
-      deliberate rather than an oversight.
+      For comparison, the OAuth store has capped + pruned token and code
+      collections. It had orphan pruning of client registrations too, until
+      #184 removed it on 2026-09-29, so the asymmetry between the two state
+      stores is real and deliberate rather than an oversight.
 - [x] **RFC 9207 `iss` in the authorization response** (`src/oauth/`) — ✅ the
       `authorizePost` success redirect (the only redirect the AS emits — error
       paths render a 400 page precisely so codes cannot leak via redirects, so
@@ -2100,10 +2125,12 @@ Use cases, roughly by how real/soon they are:
    durable one.
 2. **Selective revocation (grew in value with token persistence).** The only
    _explicit_ revocation lever today is rotating the password (nukes _all_
-   sessions). 🚧 A first automatic slice landed: client registrations holding no
-   live token are pruned after a grace window (`src/oauth/store.ts`), so
-   abandoned reconnect churn self-cleans; explicit per-`client_id` revocation
-   (an operator-triggered surface) remains future.
+   sessions). The automatic slice that used to stand here was withdrawn on
+   2026-09-29 (#184). Registrations holding no live token used to be pruned
+   after a one-hour grace window, and that stranded ChatGPT, which never
+   registers again on its own. Registrations are now kept until an operator
+   removes them, so an operator-triggered surface is no longer optional
+   polish: it is the only remedy for a full registry.
    Now that tokens persist across restarts, "revoke ChatGPT only, without making
    Claude.ai re-authorize" wants per-`client_id` token eviction.
    ⚠️ **Under DCR that lever is blunter than it reads**, which the entry did not
