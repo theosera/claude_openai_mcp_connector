@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import { commandEngine, type Engine, type EngineResult, MASK, readable } from "./tools/redactionJudge.js";
+
 /**
  * Step ②-2 of #249: the migration gate's judge.
  *
@@ -19,11 +21,7 @@ import { describe, expect, it } from "vitest";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
-const MASK = "***MASKED***";
-
 type CorpusCase = { id: string; kind: string; input: string; secrets: string[]; preserve: string[] };
-type EngineResult = { text: string; status: string };
-type Engine = (inputs: string[]) => EngineResult[];
 
 const cases: CorpusCase[] = readFileSync(join(HERE, "fixtures", "redaction-corpus", "corpus.jsonl"), "utf8")
   .split("\n")
@@ -45,37 +43,11 @@ const sedOutputs = cases.map((c) =>
   execFileSync("bash", ["-c", `${maskFn}\nmask`], { input: c.input, encoding: "utf8" })
 );
 
-/**
- * Words still readable in `output`. Each mask token is replaced with a NUL first:
- * a secret word can occur inside the token itself, and would otherwise count as a
- * leak. Removing the token instead would join its two neighbours into a word that
- * is not in the output.
- */
-function readable(output: string, words: string[]): string[] {
-  const text = output.split(MASK).join("\0");
-  return words.filter((word) => text.includes(word));
-}
-
-/** Runs an engine through its command line: NDJSON strings in, NDJSON results out. */
-function commandEngine(argv: string[]): Engine {
-  return (inputs) => {
-    const stdout = execFileSync(argv[0]!, argv.slice(1), {
-      cwd: ROOT,
-      input: inputs.map((input) => `${JSON.stringify(input)}\n`).join(""),
-      encoding: "utf8"
-    });
-    return stdout
-      .split("\n")
-      .filter((line) => line.length > 0)
-      .map((line) => JSON.parse(line) as EngineResult);
-  };
-}
-
 type Gap = { id: string; words: string[] };
 
 /** The gate's one direction: secret words the sed mask() hides and the engine leaves readable. */
 function judge(engine: Engine): { gaps: Gap[]; results: EngineResult[] } {
-  const results = engine(cases.map((c) => c.input));
+  const results = engine(cases.map((c) => ({ text: c.input, kind: c.kind })));
   if (results.length !== cases.length) {
     throw new Error(`the engine returned ${results.length} results for ${cases.length} inputs`);
   }
@@ -102,7 +74,7 @@ describe("the migration gate's judge", () => {
   // with every word the sed mask() hides. A judge that reports less than that
   // is not reading the outputs it claims to compare.
   it("charges an engine that masks nothing with every secret the sed mask() hides", () => {
-    const { gaps } = judge((inputs) => inputs.map((text) => ({ text, status: "ok" })));
+    const { gaps } = judge((fragments) => fragments.map(({ text }) => ({ text, status: "ok" })));
     expect(hiddenBySed.length).toBeGreaterThan(0);
     expect(gaps).toEqual(hiddenBySed);
   });
@@ -116,8 +88,8 @@ describe("the migration gate's judge", () => {
   // An omission drops the body, so it hides every secret: the judge must not
   // count it as a leak. (Preserve words are lost too, which this gate does not measure.)
   it("does not charge an engine that omits every body", () => {
-    const { gaps } = judge((inputs) =>
-      inputs.map(() => ({ text: "***LOG_CONTENT_OMITTED: test***", status: "omitted" }))
+    const { gaps } = judge((fragments) =>
+      fragments.map(() => ({ text: "***LOG_CONTENT_OMITTED: test***", status: "omitted" }))
     );
     expect(gaps).toEqual([]);
   });
@@ -135,15 +107,27 @@ describe("the migration gate's judge", () => {
     expect(readable(`AB${MASK}CD`, ["BC"])).toEqual([]);
   });
 
+  // An engine that reads the kind judges the same text differently per kind, so
+  // the gate must hand each case its own.
+  it("hands the engine every case with its own kind", () => {
+    const seen: string[] = [];
+    judge((fragments) => {
+      seen.push(...fragments.map((f) => f.kind));
+      return fragments.map(({ text }) => ({ text, status: "ok" }));
+    });
+    expect(seen).toEqual(cases.map((c) => c.kind));
+    expect(new Set(seen).size).toBe(2);
+  });
+
   it("refuses an engine that returns the wrong number of results", () => {
-    expect(() => judge((inputs) => inputs.slice(1).map((text) => ({ text, status: "ok" })))).toThrow(
+    expect(() => judge((fragments) => fragments.slice(1).map(({ text }) => ({ text, status: "ok" })))).toThrow(
       `${cases.length - 1} results`
     );
   });
 });
 
 describe("the current engine, through its command line", () => {
-  const engine = commandEngine(["node", ".claude/skills/_shared/redact-log.mjs"]);
+  const engine = commandEngine(["node", ".claude/skills/_shared/redact-log.mjs"], ROOT);
 
   it("answers every corpus case with ok or omitted", () => {
     const { results } = judge(engine);
