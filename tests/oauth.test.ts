@@ -2332,6 +2332,57 @@ describe("OAuthProvider flow", () => {
     expect(provider.authorizePost(form).status).toBe(302);
   });
 
+  // #184: only the password promotes. A POST with the wrong one is refused
+  // and leaves the registration pending, so it is still reclaimed at its
+  // deadline. If a wrong password promoted, an anonymous caller could create
+  // `given` registrations, which are never reclaimed, and fill the registry
+  // for good.
+  //
+  // Reverse-verified: recording consent inside the wrong-password branch
+  // reddens the "pending" assert.
+  it("leaves a registration pending after a POST with the wrong password (#184)", () => {
+    const { clock, provider, store } = clockedProvider();
+    const clientId = JSON.parse(provider.register({ redirect_uris: ["https://chatgpt.com/cb"] }).body)
+      .client_id as string;
+    const { challenge } = pkcePair();
+    const form = authorizeParams(clientId, challenge);
+    form.set("password", `${config.loginPassword}-not`);
+
+    const denied = provider.authorizePost(form);
+    expect(denied.status).toBe(200); // reached: the form is shown again, no redirect
+    expect(denied.headers.location).toBeUndefined();
+    expect(store.getClient(clientId)?.consent).toBe("pending");
+
+    clock.t += REGISTRATION_CONSENT_DEADLINE_MS;
+    provider.register({ redirect_uris: ["https://other/cb"] });
+    expect(store.getClient(clientId)).toBeUndefined();
+  });
+
+  // #184: a registration that could not be written is refused with the same
+  // 503 as a full registry, not a 500 and not a 201.
+  //
+  // Reverse-verified: removing the try/catch around registerClient in
+  // provider.register reddens this test (the store's throw escapes).
+  it("answers 503 when a registration cannot be saved, and 201 once it can (#184)", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-oauth-state-"));
+    const file = path.join(dir, "oauth-state.json");
+    const store = new OAuthStore({
+      accessTokenTtlSec: config.accessTokenTtlSec,
+      refreshTokenTtlSec: config.refreshTokenTtlSec,
+      codeTtlSec: config.codeTtlSec,
+      persistPath: file,
+      persistSecret: config.loginPassword
+    });
+    const provider = new OAuthProvider(config, store);
+
+    await fs.mkdir(`${file}.tmp`);
+    const refused = provider.register({ redirect_uris: ["https://chatgpt.com/cb"] });
+    expect(refused.status).toBe(503);
+    expect(JSON.parse(refused.body).error).toBe("temporarily_unavailable");
+    await fs.rmdir(`${file}.tmp`);
+    expect(provider.register({ redirect_uris: ["https://chatgpt.com/cb"] }).status).toBe(201);
+  });
+
   it("rejects authorize with unknown client or bad PKCE method", () => {
     const { provider, clientId } = setup();
     const { challenge } = pkcePair();
