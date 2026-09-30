@@ -62,7 +62,7 @@ export const SHAPES = Object.freeze(
 
 /**
  * Input kinds the engine will be told about. Only two to start with (owner
- * decision 2026-09-28): the 137-case corpus has examples of these two and no
+ * decision 2026-09-28): the 145-case corpus has examples of these two and no
  * others. YAML's doubled apostrophe is read as an escape only for `text`; a
  * `command` is read with shell quoting. Add a kind when an adapter needs it and
  * the corpus holds an example of it.

@@ -410,6 +410,10 @@ function escapeRegExp(word) {
  *   its segment closes. A `:` or `=` must follow, then the value is read as
  *   outside quotes. A quoted word with no `:` or `=` after it is a search term,
  *   not a key (`grep -rn "password" docs/`).
+ * - As a key quoted inside a quoted argument (JSON in `curl -d '{"password": …}'`,
+ *   a dict in `python3 -c "…{'secret': …}"`): the inner quote after the label
+ *   belongs to the key, a `:` or `=` must follow, and a value in inner quotes
+ *   ends at its own closing inner quote.
  * - Inside a quoted segment with a separator after it (`echo "token: v"`): the
  *   value is the rest of that segment, and in a `command` also whatever the
  *   shell word joins on after the segment closes. A label whose segment closes
@@ -487,6 +491,41 @@ function collectLabelSpans(original, kind, vocabulary) {
     return match && from + match[0].length < limit ? from + match[0].length : from;
   };
 
+  const assigns = (from, to) => {
+    for (let index = from; index < to; index += 1) {
+      if (original[index] === ":" || original[index] === "=") return true;
+    }
+    return false;
+  };
+
+  /** Length of an inner quote at `at` inside a segment (`"`, `'`, or escaped `\"` `\'`), or 0. */
+  const innerQuote = (at, segment) => {
+    if (at >= segment.close) return 0;
+    const ch = original[at];
+    if ((ch === '"' || ch === "'") && ch !== original[segment.open]) return 1;
+    if (ch === "\\" && (original[at + 1] === '"' || original[at + 1] === "'")) return 2;
+    return 0;
+  };
+
+  /** Where the inner quote opened at `from` closes, before `limit`; -1 if it does not. */
+  const innerClose = (from, length, limit) => {
+    const quote = original[from + length - 1];
+    for (let index = from + length; index < limit; index += 1) {
+      const ch = original[index];
+      if (length === 2) {
+        if (ch === "\\" && original[index + 1] === quote) return index;
+        if (ch === "\\") index += 1;
+        continue;
+      }
+      if (ch === "\\" && quote === '"') {
+        index += 1;
+        continue;
+      }
+      if (ch === quote) return index;
+    }
+    return -1;
+  };
+
   /** The value that starts at `from`, outside quotes. */
   const valueAt = (from) => {
     if (from >= original.length || isLineEnd(original[from])) return null;
@@ -517,15 +556,31 @@ function collectLabelSpans(original, kind, vocabulary) {
       const between = original.slice(segment.close + 1, after);
       if (between.includes(":") || between.includes("=")) value = valueAt(skipScheme(after, original.length));
     } else if (segment) {
-      const after = separatorEnd(end, segment.close);
-      if (after > end) {
+      // A key quoted inside the quoted argument (JSON in `curl -d '{"password": …}'`,
+      // a dict in `python3 -c "…{'secret': …}"`): the inner quote after the label
+      // belongs to the key, and a `:` or `=` must follow. The shell sees one quoted
+      // argument there, so without this the value was never read.
+      const keyQuote = innerQuote(end, segment);
+      const keyEnd = end + keyQuote;
+      const after = separatorEnd(keyEnd, segment.close);
+      if (after > keyEnd && (keyQuote === 0 || assigns(keyEnd, after))) {
         const from = skipScheme(after, segment.close);
-        const joined = kind === "command" && segment.closed ? wordEnd(segment.close + 1) : segment.close + 1;
-        const continues = joined > segment.close + 1;
-        if (from < segment.close) {
-          value = { start: from, end: continues ? joined : segment.close, next: continues ? joined : segment.close };
-        } else if (continues) {
-          value = { start: segment.close + 1, end: joined, next: joined };
+        const valueQuote = innerQuote(from, segment);
+        if (valueQuote > 0) {
+          // A value in inner quotes ends at its own closing inner quote.
+          const close = innerClose(from, valueQuote, segment.close);
+          const stop = close < 0 ? segment.close : close;
+          if (stop > from + valueQuote) {
+            value = { start: from + valueQuote, end: stop, next: close < 0 ? segment.close : close + valueQuote };
+          }
+        } else {
+          const joined = kind === "command" && segment.closed ? wordEnd(segment.close + 1) : segment.close + 1;
+          const continues = joined > segment.close + 1;
+          if (from < segment.close) {
+            value = { start: from, end: continues ? joined : segment.close, next: continues ? joined : segment.close };
+          } else if (continues) {
+            value = { start: segment.close + 1, end: joined, next: joined };
+          }
         }
       }
     } else {

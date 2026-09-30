@@ -169,3 +169,45 @@ describe("the core's reading of quotes", () => {
     expect(redact('echo "open\ntoken: FKQ00016 KEEPQ016 "', "command")).toBe(`echo "open\ntoken: ${MASK} KEEPQ016 "`);
   });
 });
+
+// Shapes an independent review of step 2-3 found the sed mask() masking and the
+// core leaving readable (#249, 2026-10-01). The corpus's section N holds the same
+// shapes; these pin the output whole.
+describe("the core on the step 2-3 review's shapes", () => {
+  const cases: readonly (readonly [string, "command" | "text", string, string])[] = [
+    [
+      "JSON inside a single-quoted argument",
+      "command",
+      `curl -d '{"password": "FKRV0001", "user": "KEEPRV01"}' https://h/x`,
+      `curl -d '{"password": "${MASK}", "user": "KEEPRV01"}' https://h/x`
+    ],
+    [
+      "JSON inside a quoted argument, in text",
+      "text",
+      `curl -d '{"password": "FKRV0002"}' https://h/x`,
+      `curl -d '{"password": "${MASK}"}' https://h/x`
+    ],
+    [
+      "a dict inside a double-quoted argument",
+      "command",
+      `python3 -c "print({'client_secret': 'FKRV0003'})"`,
+      `python3 -c "print({'client_secret': '${MASK}'})"`
+    ],
+    [
+      "escaped JSON inside a double-quoted argument",
+      "command",
+      `x --data "{\\"token\\": \\"FKRV0004\\"}"`,
+      `x --data "{\\"token\\": \\"${MASK}\\"}"`
+    ],
+    [
+      "a search term inside a quoted argument",
+      "command",
+      `bash -c 'grep "password" docs/KEEPRV05'`,
+      `bash -c 'grep "password" docs/KEEPRV05'`
+    ]
+  ];
+
+  it.each(cases)("%s", (_name, kind, input, expected) => {
+    expect(redactFragment({ text: input, kind })).toEqual({ text: expected, status: "ok" });
+  });
+});
