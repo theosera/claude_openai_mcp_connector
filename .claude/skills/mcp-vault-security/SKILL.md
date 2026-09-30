@@ -241,7 +241,11 @@ private vault を HTTP で公開する経路は新しい攻撃面。以下を**�
    自プロセスを spawn した側で、面は定数 — pin と per-request が観測上同一。**対称性を理由に
    どちらかをもう一方へ合わせない** (stdio を per-request 化しない / HTTP に pin を戻さない)。
 5. **body サイズ上限** — `readBody` が `MAX_BODY_BYTES` を超えたら 413 (JSON / form 双方の入口)。
-6. token / vault 本文を**ログに出さない** (stderr の起動行は host:port と write 可否のみ)。
+6. token / vault 本文を**ログに出さない** (stderr の起動行は host:port と write 可否、それに
+   OAuth 有効時だけ状態ごとの登録件数 `registrations=given:N,pending:N,unknown:N` のみ。#184:
+   旧 state file から持ち込んだ `unknown` が枠を埋めていることは件数でしか見えない)。
+   **件数以外 (client_id・redirect URI・token・パスワード) を起動行に足さない** —
+   `tests/config.test.ts` の起動行の試験が、それらが出ないことを spawn した実 entrypoint で見ている。
    secret は env のみ (INV-4 と同じ規律)。
 
 ### INV-7 OAuth 2.1 authorization server (web client 用 / opt-in)

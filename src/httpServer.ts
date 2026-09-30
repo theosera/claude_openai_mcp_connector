@@ -7,6 +7,7 @@ import type { AuditStore } from "./auditStore.js";
 import type { SkillStore } from "./skillStore.js";
 import type { OAuthHttpResponse } from "./oauth/provider.js";
 import { OAuthProvider, SCOPE_READ, SCOPE_WRITE } from "./oauth/provider.js";
+import type { ClientConsent } from "./oauth/store.js";
 import { RateLimiter } from "./oauth/rateLimiter.js";
 import { buildMcpServer, type BuildServerOptions } from "./server.js";
 import type { TypeRules } from "./typeRules.js";
@@ -80,7 +81,7 @@ export async function startHttpServer(
   auditStore?: AuditStore,
   contextTypeRules?: TypeRules,
   projectStateTag?: string
-): Promise<http.Server> {
+): Promise<http.Server & { registrationCounts?: Record<ClientConsent, number> }> {
   // OAuth 2.1 authorization server (only when configured). ChatGPT / Claude.ai
   // web require it; Desktop / Code / API keep using the static bearer.
   const oauth = config.oauth ? new OAuthProvider(config.oauth) : undefined;
@@ -171,7 +172,8 @@ export async function startHttpServer(
   });
 
   await new Promise<void>((resolve) => httpServer.listen(config.port, config.host, resolve));
-  return httpServer;
+  // Taken once, after the state file was loaded, for the start-up line only.
+  return Object.assign(httpServer, { registrationCounts: oauth?.store.registrationCounts() });
 }
 
 /**

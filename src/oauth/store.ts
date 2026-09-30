@@ -512,6 +512,20 @@ export class OAuthStore {
     return promoted;
   }
 
+  /**
+   * How many registrations stand in each state — numbers only, never an id or
+   * a URI. For the start-up line (#184): registrations carried over from an
+   * older state file are kept as `unknown`, and an operator can only tell that
+   * they fill the registry by counting them.
+   */
+  registrationCounts(): Record<ClientConsent, number> {
+    const counts: Record<ClientConsent, number> = { given: 0, pending: 0, unknown: 0 };
+    for (const client of this.clients.values()) {
+      counts[client.consent]++;
+    }
+    return counts;
+  }
+
   private countPending(): number {
     let pending = 0;
     for (const client of this.clients.values()) {
