@@ -6,7 +6,12 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { SHIPPED_MASK, vocabularyFrom } from "../.claude/skills/_shared/redact-log.mjs";
-import { MASK, POLICY_VOCABULARY, redactFragment } from "../packages/log-redaction/src/core.mjs";
+import {
+  collectCredentialSpans,
+  MASK,
+  POLICY_VOCABULARY,
+  redactFragment
+} from "../packages/log-redaction/src/core.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
@@ -97,6 +102,13 @@ describe("the core's command line", () => {
     expect(results[1]).toEqual({ text: `token: ${MASK} KEEPSEP1 "`, status: "ok" });
   });
 
+  // An empty line gets no answer, and neither does one of blanks only (a CRLF's
+  // `\r` among them): otherwise the count of answers turned on invisible text.
+  it("answers no line that holds only blanks", () => {
+    const results = run(["", "\r", "  \t", JSON.stringify({ text: "KEEPBL01", kind: "text" }), ""].join("\n"));
+    expect(results).toEqual([{ text: "KEEPBL01", status: "ok" }]);
+  });
+
   // Codex P2 on #254, through the process boundary: the same line sent as `text`
   // and as `command` must come back with different secrets readable. A command
   // line that dropped or fixed the kind would answer both the same way.
@@ -171,9 +183,11 @@ describe("the core's reading of quotes", () => {
 });
 
 // Shapes an independent review of step 2-3 found the sed mask() masking and the
-// core leaving readable (#249, 2026-10-01). The corpus's section N holds the same
-// shapes; these pin the output whole.
+// core leaving readable, or the core over-masking (#249, 2026-10-01). None was in
+// the corpus or the fuzz grammar then; the corpus's section N now holds the first
+// five. One case each, output pinned whole.
 describe("the core on the step 2-3 review's shapes", () => {
+  const B64 = "QUJD".repeat(16);
   const cases: readonly (readonly [string, "command" | "text", string, string])[] = [
     [
       "JSON inside a single-quoted argument",
@@ -204,10 +218,60 @@ describe("the core on the step 2-3 review's shapes", () => {
       "command",
       `bash -c 'grep "password" docs/KEEPRV05'`,
       `bash -c 'grep "password" docs/KEEPRV05'`
-    ]
+    ],
+    ["a key body line behind a line number", "text", `     7\t${B64}`, `     7\t${MASK}`],
+    ["a key body line behind a grep prefix", "command", `src/id:4:${B64}`, `src/id:4:${MASK}`],
+    ["an ideographic space after the separator", "text", "password:\u3000FKRV0006", `password:\u3000${MASK}`],
+    ["a no-break space after the separator", "text", "token:\u00a0FKRV0007", `token:\u00a0${MASK}`],
+    ["a semicolon inside an unquoted text value", "text", "password: FKRV0008;FKRV0009", `password: ${MASK}`],
+    [
+      "a comma inside an unquoted command value",
+      "command",
+      "export PASSWORD=FKRV0010,FKRV0011",
+      `export PASSWORD=${MASK}`
+    ],
+    [
+      "a scheme word behind a bracket",
+      "text",
+      "{Authorization=[Bearer FKRV0012], Accept=[KEEPRV12]}",
+      `{Authorization=[Bearer ${MASK} Accept=[KEEPRV12]}`
+    ],
+    [
+      "an option that is itself a label",
+      "command",
+      "gpg --passphrase --key FKRV0013",
+      `gpg --passphrase ${MASK} ${MASK}`
+    ],
+    ["a value that is itself a label", "text", "passwd=secret: FKRV0014", `passwd=${MASK} ${MASK}`],
+    ["a backslash-escaped quote in a text scalar", "text", "password: 'FKRV0015\\'FKRV0016'", `password: '${MASK}'`],
+    ["a value glued to a label's closing quote", "text", `"token: "FKRV0017`, `"token: "${MASK}`],
+    ["a quoted key and value with a tab between", "text", `set "secret"\t"FKRV0018"`, `set "secret"\t"${MASK}"`],
+    ["an inch mark earlier on the line", "text", `27" monitor, api_key: "FKRV0019"`, `27" monitor, api_key: "${MASK}"`],
+    [
+      "a label in a commit subject takes one word",
+      "command",
+      `git commit -m "Mask a quoted passphrase / passwd value to its closing quote (#248)"`,
+      `git commit -m "Mask a quoted passphrase ${MASK} passwd ${MASK} to its closing quote (#248)"`
+    ],
+    ["a hash arrow as the separator", "text", `password => "FKRV0021"`, `password => "${MASK}"`],
+    [
+      "a scheme word behind a quote that opens nothing",
+      "command",
+      `Authorization => "Bearer FKRV0022`,
+      `Authorization => "Bearer ${MASK}`
+    ],
+    ["a word glued to a one-word scalar", "text", "API_KEY:'FKRV0023'FKRV0024''", `API_KEY:'${MASK}`]
   ];
 
   it.each(cases)("%s", (_name, kind, input, expected) => {
     expect(redactFragment({ text: input, kind })).toEqual({ text: expected, status: "ok" });
+  });
+
+  it("keeps the file name of a redirection", () => {
+    expect(redactFragment({ text: "./gen_token > KEEPRV20.txt", kind: "command" }).text).toContain("KEEPRV20.txt");
+  });
+
+  it("refuses a call with no kind rather than skipping the labels", () => {
+    expect(() => collectCredentialSpans("password: FKRV0025")).toThrow(TypeError);
   });
 });

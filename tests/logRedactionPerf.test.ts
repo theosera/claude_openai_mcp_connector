@@ -11,7 +11,9 @@ import { MASK, redactFragment } from "../packages/log-redaction/src/core.mjs";
  * the median time must grow by less than 3.0 times per doubling. A quadratic walk
  * grows by about 4. The shapes are the three in `perf-I.json`, where the sed
  * `mask()` went quadratic under GNU sed, plus a line of many short labelled
- * values, which stresses the span handling instead of the quote walk.
+ * values, which stresses the span handling instead of the quote walk, and a word
+ * of nested labels. `I-unclosed-escaped` as `text` also caught a quadratic
+ * rescan here: every escaped quote was walked to the line end again.
  *
  * Each shape starts with a secret word, and every size is checked for it before
  * anything is timed: a core that stopped masking would otherwise pass by doing
@@ -46,7 +48,11 @@ const SHAPES: readonly (readonly [string, string, (length: number) => string])[]
   ["I-unclosed-escaped", "FKPERFUE1", (n) => fill('passphrase: "FKPERFUE1 ', 'a\\"', n)],
   ["I-masked-doubled", "FKPERFMD1", (n) => fill("token=FKPERFMD1 ", `${MASK}''x`, n)],
   ["I-label-quotes", "FKPERFLQ1", (n) => fill('passwd: "FKPERFLQ1', 'passwd: "ab', n)],
-  ["many-labels", "FKPERFML1", (n) => fill("token=FKPERFML1 ", "token=v ", n)]
+  ["many-labels", "FKPERFML1", (n) => fill("token=FKPERFML1 ", "token=v ", n)],
+  // Labels nested in one unquoted word: each is read again, and each value runs
+  // to the end of the same word. Measured quadratic until the word's end and
+  // quotedness were remembered (3.5 to 3.9 per doubling as a command).
+  ["nested-labels", "FKPERFNL1", (n) => fill("token=FKPERFNL1 ", "token:", n)]
 ];
 
 function median(values: readonly number[]): number {

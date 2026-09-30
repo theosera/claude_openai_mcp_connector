@@ -6,7 +6,9 @@
  *
  * A line that is not JSON, or not an object with a string `text` and a `kind`
  * from `KINDS`, is answered with an omission. Nothing is ever answered with its
- * input.
+ * input. A line holding only blanks (a CRLF's `\r` included) is not a fragment
+ * and gets no answer, like an empty line: answering one and not the other made
+ * the count of answers depend on invisible characters.
  */
 
 import { Buffer } from "node:buffer";
@@ -19,7 +21,7 @@ for await (const chunk of process.stdin) chunks.push(chunk);
 const lines = Buffer.concat(chunks)
   .toString("utf8")
   .split("\n")
-  .filter((line) => line.length > 0);
+  .filter((line) => line.trim().length > 0);
 
 for (const line of lines) {
   let fragment;
