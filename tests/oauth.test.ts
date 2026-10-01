@@ -1822,6 +1822,28 @@ describe("OAuthStore persistence", () => {
     expect(refusal(file)).toBeNull();
   });
 
+  // A file can verify and still fail part way through the load: here the
+  // registrations read, and then the token list is not a list. Nothing read
+  // before the failure may stay in the store, even though the server will not
+  // start on it: a caller that skips `assertUsable` must not see those
+  // registrations either. (3a's review of this change, F3.)
+  it("holds nothing from a state file whose load failed part way (#263)", async () => {
+    const { file, clientId } = await verifiedFile();
+    const original = JSON.parse(await fs.readFile(file, "utf8")) as Record<string, unknown>;
+    const payload = JSON.parse(original.payload as string) as { clients: unknown[] };
+    const broken = JSON.stringify({ clients: payload.clients, accessTokens: 5 });
+    await fs.writeFile(file, JSON.stringify(signedEnvelope(original, broken, crypto.randomBytes(16))));
+
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    expect(store.loadOutcome).toBe("failed");
+    expect(store.getClient(clientId)).toBeUndefined();
+    expect(store.listRegistrations()).toEqual([]);
+    // The control: the same registrations with a token list that is a list load.
+    const whole = JSON.stringify({ clients: payload.clients, accessTokens: [] });
+    await fs.writeFile(file, JSON.stringify(signedEnvelope(original, whole, crypto.randomBytes(16))));
+    expect(new OAuthStore({ ...opts, persistPath: file, persistSecret: secret }).getClient(clientId)).toBeDefined();
+  });
+
   // Refusing loses nothing: the file is as it was, so setting the password that
   // wrote it brings every registration and token back.
   it("brings every registration back once the password that wrote the file is set again (#263)", async () => {
