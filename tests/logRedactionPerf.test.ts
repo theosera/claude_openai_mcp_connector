@@ -81,8 +81,10 @@ const SHAPES: readonly (readonly [string, string, (length: number) => string])[]
   // Escaped quotes before a blank inside one text quote, each looking ahead for a
   // label before the next quote, and elements that never close, each looking
   // ahead for its closing tag. Each looks only as far as the next quote or `<`.
+  // A blank follows each tag so that no tag takes a value that would run over
+  // the rest of the line and leave the other tags unread.
   ["escaped-quotes-blank", "FKPERFEB1", (n) => fill("passphrase: 'FKPERFEB1 ", "n\\' x ", n)],
-  ["unclosed-elements", "FKPERFUN1", (n) => fill("token=FKPERFUN1 ", "<password>x", n)],
+  ["unclosed-elements", "FKPERFUN1", (n) => fill("token=FKPERFUN1 ", "<password> x", n)],
   // A line number, then blanks and no base64. Two adjacent blank quantifiers in
   // the line-number prefix split the blanks every way before failing (7.5 s at
   // 32,768 blanks).
