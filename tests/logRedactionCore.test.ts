@@ -641,3 +641,64 @@ describe("the core on the fifth review's shapes", () => {
     expect(redactFragment({ text: input, kind })).toEqual({ text: expected, status: "ok" });
   });
 });
+
+// A sixth independent review, of the fifth review's fixes (#249, 2026-10-02),
+// found values those fixes left readable, and two guards no test held.
+describe("the core on the sixth review's shapes", () => {
+  const both = ["command", "text"] as const;
+  const header = ["Author", "ization"].join("");
+  const bearer = ["Bea", "rer"].join("");
+  const basic = ["Ba", "sic"].join("");
+  const cases: readonly (readonly [string, readonly ("command" | "text")[], string, string])[] = [
+    [
+      "a word glued after a quoted scheme value",
+      both,
+      `${header}: "${bearer} FKRV0130"FKRV0131 KEEPRW30`,
+      `${header}: "${bearer} ${MASK} KEEPRW30`
+    ],
+    [
+      "a quote that holds only the scheme word",
+      both,
+      `${header}= "${basic} "FKRV0132 KEEPRW32`,
+      `${header}= "${basic} "${MASK} KEEPRW32`
+    ],
+    [
+      "a key element with an attribute",
+      both,
+      '<key id="x">FKRV0133</key> KEEPRW33',
+      `<key id="x">${MASK}</key> KEEPRW33`
+    ],
+    [
+      "a key element with an attribute before another element",
+      both,
+      '<key id="x">FKRV0140</key><string>KEEPRW40</string>',
+      `<key id="x">${MASK}</key><string>KEEPRW40</string>`
+    ],
+    ["a key element with a blank before >", both, "<key >FKRV0134</key> KEEPRW34", `<key >${MASK}</key> KEEPRW34`],
+    [
+      "a Key element that is no plist key",
+      both,
+      '<Key name="license">FKRV0135</Key> KEEPRW35',
+      `<Key name="license">${MASK}</Key> KEEPRW35`
+    ],
+    ["a key element with no element after it", both, "<key>FKRV0139</key> KEEPRW39", `<key>${MASK}</key> KEEPRW39`],
+    [
+      "a plist key and value with a blank between",
+      both,
+      "<key>token</key> <string>FKRV0136</string> KEEPRW36",
+      `<key>token</key> <string>${MASK}</string> KEEPRW36`
+    ],
+    [
+      "a list item that ends in a label, after &",
+      ["text"],
+      "passphrase = FKRV0137&secret_key FKRV0138 KEEPRW37",
+      `passphrase = ${MASK} ${MASK} KEEPRW37`
+    ]
+  ];
+
+  it.each(
+    cases.flatMap(([name, kinds, input, expected]) => kinds.map((kind) => [name, kind, input, expected] as const))
+  )("%s, as %s", (_name, kind, input, expected) => {
+    expect(redactFragment({ text: input, kind })).toEqual({ text: expected, status: "ok" });
+  });
+});

@@ -861,26 +861,27 @@ function collectLabelSpans(original, kind, vocabulary) {
     let close = after + 2 + name.length;
     while (close < original.length && BLANK.test(original[close])) close += 1;
     if (original[close] !== ">") return null;
-    return { name, start: textStart, end: textEnd, closeEnd: close + 1 };
+    return { name, bare: open === end, start: textStart, end: textEnd, closeEnd: close + 1 };
   };
 
   /**
-   * The value an element holds. A plist writes a key and its value as two
-   * elements (`<key>token</key><string>v</string>`): an element named `key`
-   * holds no value itself, and the next element's text is the value when the key
-   * holds a label. Any other element's text is the value.
+   * The value an element holds: its text. A plist writes a key and its value as
+   * two elements (`<key>token</key><string>v</string>`): a bare `<key>` followed by
+   * another element holds no value itself, and that element's text is the value
+   * when the key holds a label. A `<key>` with attributes, a blank before its `>`
+   * or no element after it is an ordinary element (`<key id="x">v</key>`,
+   * `<key>v</key>`): plists write none of those, and the text may be the secret.
    */
   const elementValue = (element) => {
-    if (element.name !== "key") {
-      return element.end > element.start ? { start: element.start, end: element.end, next: element.end } : null;
-    }
-    if (!labelWord.test(original.slice(element.start, element.end))) return null;
+    const text = element.end > element.start ? { start: element.start, end: element.end, next: element.end } : null;
+    if (element.name !== "key" || !element.bare) return text;
     let at = element.closeEnd;
     while (at < original.length && BLANK.test(original[at])) at += 1;
-    if (original[at] !== "<") return null;
+    if (original[at] !== "<") return text;
     let name = at + 1;
     while (name < original.length && /[A-Za-z0-9_.:-]/.test(original[name])) name += 1;
-    if (name === at + 1 || original[name] !== ">") return null;
+    if (name === at + 1 || original[name] !== ">") return text;
+    if (!labelWord.test(original.slice(element.start, element.end))) return null;
     const stop = tagTextEnd(name + 1);
     return stop > name + 1 ? { start: name + 1, end: stop, next: stop } : null;
   };
@@ -888,14 +889,19 @@ function collectLabelSpans(original, kind, vocabulary) {
   /**
    * The value after a separator, past a scheme word. When the scheme word sits
    * inside a closed quote (`"Bearer a b"`), the value is the rest of that quote:
-   * reading one word there left the rest of the credential in the clear.
+   * reading one word there left the rest of the credential in the clear. What is
+   * glued after the closing quote belongs to it too (`"Bearer a"b`, one shell
+   * word; `"Basic "v`, a quote that holds only the scheme word).
    */
   const valueAfter = (after) => {
     const from = skipScheme(after, original.length);
     for (let at = after; at < from; at += 1) {
       const segment = opened.get(at);
       if (segment && segment.closed && segment.close >= from) {
-        return segment.close > from ? { start: from, end: segment.close, next: segment.close + 1 } : null;
+        const joined = joinedEnd(segment);
+        const start = from < segment.close ? from : segment.close + 1;
+        const end = joined > segment.close + 1 ? joined : segment.close;
+        return end > start ? { start, end, next: Math.max(end, segment.close + 1) } : null;
       }
     }
     return valueAt(from);
