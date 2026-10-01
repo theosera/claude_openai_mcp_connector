@@ -1342,8 +1342,6 @@ yaml_seq() {
   [ -n "$escaped" ] || return 0
   printf '"%s"' "$(printf '%s' "$escaped" | sed 's/ /", "/g')"
 }
-# ANSI escape sequences (colors, line clears) leak into raw tool output and
-# make the note unreadable in Obsidian — strip them everywhere.
 # mask() runs on the assembled note AFTER defang has decided each text turn's
 # fence parity, and it can delete a backtick from a run's info string: a line
 # at column 0 that opened nothing becomes an opener, the note's parity flips,
@@ -1354,14 +1352,21 @@ yaml_seq() {
 # renderer's own fences are such lines, and escaping them would break the
 # structure this pass protects. Segments split on CR are compared the way
 # defang reads them; if their number differs, every counting segment is
-# escaped. Lines are emitted one at a time, not joined: a join over every
+# escaped. The pass looks only for a run that became a fence. mask() can
+# also take one away: a keyword rule's separator matches CR, so a run that
+# follows `key:` and a CR can be masked as the value. That is harmless only
+# because defang gives a run on a line split by a bare CR the absorbing
+# marker, so every run in that text turn is already escaped, and in a tool
+# result the run is content. A change to that defang rule has to re-check
+# this pass. Lines are emitted one at a time, not joined: a join over every
 # line of a note is quadratic in jq 1.8.2 (0.30 / 0.98 / 4.30 s for 20,000 /
 # 40,000 / 80,000 lines). mask() never adds or removes a line; if the counts
-# differ, the program fails and the note is not written (below).
+# differ, the program halts with status 9 and the note is not written
+# (below).
 refence_jq="$fence_jq"'
   def counts: fence_m as $m | $m != null and (not_a_fence($m) | not);
   ($a | split("\n")) as $A | ($b | split("\n")) as $B | ($B | length) as $n
-  | if ($A | length) != $n then error("mask() changed the line count")
+  | if ($A | length) != $n then "mask() changed the line count" | halt_error(9)
     else range(0; $n) as $i
       | (($A[$i] | split("\r")) as $x | ($B[$i] | split("\r")) as $y
          | [ range(0; $y | length) as $j
@@ -1372,6 +1377,8 @@ refence_jq="$fence_jq"'
     end
 '
 
+# ANSI escape sequences (colors, line clears) leak into raw tool output and
+# make the note unreadable in Obsidian — strip them everywhere.
 ESC_CHAR="$(printf '\033')"
 strip_ansi() { sed -E "s/${ESC_CHAR}\[[0-9;]*[mK]//g"; }
 now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -1399,11 +1406,19 @@ grep -q '[^[:space:]]' "$body_tmp" || exit 0
 # The hook masks the body plus one newline, and refence_jq compares exactly
 # that input with mask()'s output. A note whose lines no longer line up cannot
 # be re-checked, so it is not written: the previous note stays, and the hook
-# still exits 0 so the turn is not blocked.
+# still exits 0 so the turn is not blocked. The same holds when jq fails for
+# any other reason. Only jq's status is read: its message is never shown,
+# because an error from jq can quote its input, and the input here is the
+# note before masking.
 printf '\n' >> "$body_tmp"
 mask < "$body_tmp" > "$masked_tmp"
-if ! jq -jn --rawfile a "$body_tmp" --rawfile b "$masked_tmp" "$refence_jq" > "$fenced_tmp" 2>/dev/null; then
+refence_status=0
+jq -jn --rawfile a "$body_tmp" --rawfile b "$masked_tmp" "$refence_jq" > "$fenced_tmp" 2>/dev/null || refence_status=$?
+if [ "$refence_status" -eq 9 ]; then
   printf 'session-archive: masking changed the line count of the note, so its fences could not be re-checked. Not archiving this turn.\n' >&2
+  exit 0
+elif [ "$refence_status" -ne 0 ]; then
+  printf 'session-archive: the fence re-check after masking failed (jq exit %s). Not archiving this turn.\n' "$refence_status" >&2
   exit 0
 fi
 

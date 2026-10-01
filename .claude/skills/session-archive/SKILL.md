@@ -49,6 +49,14 @@ Claude Code のセッション transcript (JSONL) を Markdown 1 ノート/セ�
   見分けが付かない。
 - **secret マスキングは ops-logging と同一規則** (`mask()` を同期させる —
   token 形式を追加したら capture-command.sh と archive-session.sh の両方を更新)。
+- **伏せた後にフェンスを確かめ直す (#228)**: `mask()` は組み立てたノートに走るので、
+  info string のバッククォートを消して、何も開かなかった行をフェンスの開きに変えうる。
+  `refence_jq` が `mask()` の前後で各行を比べ、伏せた後に初めてフェンスとして数える
+  連なりだけを defang と同じ `\` で逃がす (CR 区切りの断片の数が変わった行では、数える
+  断片をすべて逃がす)。行数が合わないとき・jq が失敗したときはノートを書かず、
+  警告 1 行を stderr に出して exit 0 (前のノートが残る)。警告に jq の文言は載せない —
+  jq のエラーは入力を引用しうるし、その入力は伏せる前のノートである。
+  ⚠️ 終わったセッションの既存のノートは作り直されない。
 - push が non-fast-forward なら `git pull --rebase --autostash` → 再 push
   (バックオフ付き)。失敗してもターンをブロックしない (常に exit 0)。
 - 一時停止: `SESSION_ARCHIVE_DISABLE=1`。

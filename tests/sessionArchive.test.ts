@@ -4862,9 +4862,6 @@ describe("session-archive fence re-check after masking (#228)", () => {
     expect(refence(refenceProgram, "```a\rb\n", "```c\rd\n")).toBe("```c\rd\n");
   });
 
-  // Both directions: a masked text with a line more fails on its own (jq cannot
-  // split the missing line), but one with a line fewer would line up silently,
-  // one line off, without the explicit check.
   // The shared rule that a backtick run whose info string holds a backtick
   // opens nothing, pinned through defang alone and judged by outlineOf, which
   // implements it (src/codeFence.ts). The lenient reader most suites use opens a
@@ -4884,9 +4881,15 @@ describe("session-archive fence re-check after masking (#228)", () => {
     expect(forgedTurnsInOutline(render(renderer, tildeOpener))).toBe(0);
   });
 
+  // Both directions stop at the explicit check, with the status the hook reads
+  // as a line-count change. Without it, a masked text with a line more fails on
+  // its own (jq cannot split the missing line) with jq's own status, and one
+  // with a line fewer would line up silently, one line off.
   it("refuses to line up two texts whose line counts differ", () => {
-    expect(() => refence(refenceProgram, "a\nb\n", "a\nb\nc\n")).toThrow();
-    expect(() => refence(refenceProgram, "a\nb\nc\n", "a\nb\n")).toThrow();
+    const status = (before: string, after: string) =>
+      spawnSync("jq", ["-jn", "--arg", "a", before, "--arg", "b", after, refenceProgram], { encoding: "utf8" }).status;
+    expect(status("a\nb\n", "a\nb\nc\n")).toBe(9);
+    expect(status("a\nb\nc\n", "a\nb\n")).toBe(9);
     expect(refence(refenceProgram, "a\nb\n", "a\nb\n")).toBe("a\nb\n");
   });
 
@@ -4949,20 +4952,71 @@ describe("session-archive fence re-check after masking (#228)", () => {
     expect(notesPushedTo(vault.remote, fixture)).toEqual([]);
 
     // Reverse verification: without the guard, the jq failure stops the hook
-    // under `set -e`, with a non-zero status, instead of a warning and exit 0.
+    // under `set -e`, with jq's status, instead of a warning and exit 0.
     const unguarded = path.join(fixture.root, "hook-unguarded.sh");
     await fs.writeFile(
       unguarded,
       mutate(
         await fs.readFile(extraLine, "utf8"),
-        'if ! jq -jn --rawfile a "$body_tmp" --rawfile b "$masked_tmp" "$refence_jq" > "$fenced_tmp" 2>/dev/null; then',
-        'jq -jn --rawfile a "$body_tmp" --rawfile b "$masked_tmp" "$refence_jq" > "$fenced_tmp" 2>/dev/null\nif false; then',
+        '"$fenced_tmp" 2>/dev/null || refence_status=$?\n',
+        '"$fenced_tmp" 2>/dev/null\n',
         "the line-count guard"
       )
     );
-    expect(runHook(fixture, env, unguarded).status).not.toBe(0);
+    expect(runHook(fixture, env, unguarded).status).toBe(9);
 
     // The control: the unmodified hook archives.
+    expect(runHook(fixture, env).status).toBe(0);
+    expect(notesPushedTo(vault.remote, fixture)).toHaveLength(1);
+  }, 60_000);
+
+  // jq can fail for reasons other than a line count (an old jq without
+  // --rawfile, memory), and its message can quote its input: here, the note
+  // before masking. The hook names the failure by jq's status alone.
+  // (3a's review of this change, F3, and f4's note on where the line goes.)
+  it("names any other failure of the re-check by jq's status alone, and shows nothing jq printed", async () => {
+    const fixture = await makeFixture();
+    const vault = await markedClone(fixture, "vault-clone");
+    const env = hookEnv(fixture, { SESSION_VAULT_ORIGIN: vault.remote });
+    const marker = "a-line-only-this-transcript-holds";
+    await fs.writeFile(
+      fixture.transcript,
+      [
+        { type: "user", isMeta: false, timestamp: "2026-08-10T09:59:59.000Z", message: { content: marker } },
+        ...textTurns("noted")
+      ]
+        .map((line) => JSON.stringify(line))
+        .join("\n") + "\n"
+    );
+    // A failure that quotes its input: jq's message is the whole note before masking.
+    const failing = mutate(
+      await fs.readFile(hookPath, "utf8"),
+      '"$refence_jq" > "$fenced_tmp"',
+      "'error($a)' > \"$fenced_tmp\"",
+      "the re-check program"
+    );
+    const failingPath = path.join(fixture.root, "hook-failing.sh");
+    await fs.writeFile(failingPath, failing);
+
+    const refused = runHook(fixture, env, failingPath);
+    expect(refused.status).toBe(0);
+    expect(refused.stderr).toContain("the fence re-check after masking failed (jq exit 5)");
+    expect(refused.stderr).not.toContain("masking changed the line count");
+    expect(refused.stderr).not.toContain(marker);
+    expect(notesPushedTo(vault.remote, fixture)).toEqual([]);
+
+    // Reverse verification: let jq's message through, and the note before
+    // masking reaches the hook's stderr, so the assertion above is not vacuous.
+    const echoing = path.join(fixture.root, "hook-echoing.sh");
+    await fs.writeFile(
+      echoing,
+      mutate(failing, '"$fenced_tmp" 2>/dev/null || refence_status', '"$fenced_tmp" || refence_status', "jq's stderr")
+    );
+    const leaked = runHook(fixture, env, echoing);
+    expect(leaked.status).toBe(0);
+    expect(leaked.stderr).toContain(marker);
+
+    // The control: the unmodified hook archives this transcript.
     expect(runHook(fixture, env).status).toBe(0);
     expect(notesPushedTo(vault.remote, fixture)).toHaveLength(1);
   }, 60_000);
