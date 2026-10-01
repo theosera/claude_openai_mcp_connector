@@ -1,6 +1,6 @@
 import { verifyLoginPassword } from "../httpAuth.js";
 import { verifyPkceS256 } from "./pkce.js";
-import { OAuthStore } from "./store.js";
+import { OAuthStore, REGISTRATION_CONSENT_DEADLINE_MS, type RegisteredClient } from "./store.js";
 
 // Minimal single-user OAuth 2.1 authorization server, just enough for the MCP
 // authorization spec so ChatGPT / Claude.ai web can connect to the private
@@ -174,7 +174,29 @@ export class OAuthProvider {
       return json(400, { error: "invalid_client_metadata", error_description: "client_name is too long" });
     }
     const clientName = typeof record.client_name === "string" ? record.client_name : undefined;
-    const client = this.store.registerClient(redirectUris, clientName);
+    // Both refusals below are 503 with `temporarily_unavailable`. That pairing
+    // is this endpoint's own contract for "cannot take a registration now";
+    // RFC 7591 §3.2.2 defines neither for registration, and no client was
+    // measured reacting to it. Nothing the caller changes in the request fixes
+    // either one, so neither is a 400.
+    let client: RegisteredClient | undefined;
+    try {
+      client = this.store.registerClient(redirectUris, clientName);
+    } catch {
+      return json(503, {
+        error: "temporarily_unavailable",
+        error_description: "The registration could not be saved. Try again."
+      });
+    }
+    if (!client) {
+      // No room, and existing registrations are never evicted to make some
+      // (#184). Unconsented ones free their slot at their deadline; the
+      // consented ones only when an operator removes them.
+      return json(503, {
+        error: "temporarily_unavailable",
+        error_description: `The client registration limit has been reached. Registrations nobody authorizes are released after ${REGISTRATION_CONSENT_DEADLINE_MS / 3_600_000} hours; otherwise an operator must remove one.`
+      });
+    }
     return json(201, {
       client_id: client.clientId,
       client_id_issued_at: Math.floor(client.createdAt / 1000),
@@ -211,6 +233,14 @@ export class OAuthProvider {
     const password = form.get("password") ?? "";
     if (!verifyLoginPassword(password, this.config.loginPassword)) {
       return this.renderLoginForm(check.params, "Incorrect password.");
+    }
+    // Consent is recorded, and saved, before any code exists (#184). A
+    // registration the owner consented to is never reclaimed, so from here on
+    // no code can outlive its registration. If the save fails, no code is
+    // issued: the disk would still say `pending`, and a restart past the
+    // deadline would reclaim a registration the client was told was authorized.
+    if (!this.store.recordConsent(check.params.clientId)) {
+      return htmlPage(503, "Authorization error", "<p>The authorization could not be saved. Try again.</p>");
     }
     const code = this.store.createAuthorizationCode({
       clientId: check.params.clientId,
@@ -260,6 +290,13 @@ export class OAuthProvider {
     }
     if (!verifyPkceS256(codeVerifier, record.codeChallenge)) {
       return json(400, { error: "invalid_grant", error_description: "PKCE verification failed" });
+    }
+    // The code outlives nothing by itself: a registration removed after the
+    // code was issued must not end up holding live tokens (#184). Consent
+    // before the code makes this unreachable today; an operator removal path
+    // will not be.
+    if (!this.store.getClient(record.clientId)) {
+      return json(400, { error: "invalid_grant", error_description: "client is no longer registered" });
     }
     const tokens = this.store.issueTokens(record.clientId, record.scope, record.resource);
     return tokenResponse(tokens);

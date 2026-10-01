@@ -75,6 +75,15 @@ if (transport === "http") {
   // Confirming it took reading loadHttpConfig; it is one word now.
   const httpSkillsState = !skillStore ? "off" : httpConfig.allowSkillWrite ? "on" : "reserved-only";
   const httpAuditState = !auditStore ? "off" : httpConfig.allowAuditWrite ? "on" : "reserved-only";
+  // With OAuth on, how many client registrations stand in each state (#184).
+  // Registrations carried over from a state file written before consent was
+  // recorded load as `unknown` and are never reclaimed, so they can fill the
+  // registry from the first start; this count is how an operator sees that.
+  // Counts only: no client_id, no redirect URI, nothing a caller supplied.
+  const counts = httpServer.registrationCounts;
+  const httpRegistrations = counts
+    ? `, registrations=given:${counts.given},pending:${counts.pending},unknown:${counts.unknown}`
+    : "";
   // stderr only — stdout is reserved for protocol data on stdio, and we keep
   // logs free of the auth token or any vault content.
   process.stderr.write(
@@ -88,7 +97,7 @@ if (transport === "http") {
       `legacy_create=${httpConfig.allowWrite && httpConfig.allowLegacyCreateDocument ? "on" : "off"}, ` +
       `skills=${httpSkillsState}, ` +
       `audit=${httpAuditState}, ` +
-      `oauth=${httpConfig.oauth ? "on" : "off"})\n`
+      `oauth=${httpConfig.oauth ? "on" : "off"}${httpRegistrations})\n`
   );
 } else {
   // Local stdio transport for CLI clients (Claude Code, Codex, Claude Desktop).

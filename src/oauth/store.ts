@@ -29,18 +29,33 @@ import path from "node:path";
 //    survive for its descendants to be reachable). The window never
 //    extends on replay, its state is written to disk on every transition, and
 //    beyond it single-use semantics hold across restarts exactly as before,
-//  - every collection is capped and pruned to bound memory (DoS via unbounded
-//    dynamic client registration / token minting).
+//  - every collection is capped to bound memory (DoS via unbounded dynamic
+//    client registration / token minting). Codes and tokens are also pruned
+//    as they expire. Client registrations are pruned only while nobody has
+//    consented to them: one the owner has authorized is kept until an operator
+//    removes it, and a full registry refuses new ones instead of evicting old
+//    ones. See registerClient (#184).
 
-const DEFAULT_MAX_CLIENTS = 100;
+export const DEFAULT_MAX_CLIENTS = 100;
+
+/**
+ * How long a registration may wait for its first consent before it can be
+ * reclaimed (#184). A provisional value: nothing was measured to choose it. It
+ * is the window a consent page can be left open before a client whose
+ * registration was reclaimed has to register again — Claude.ai does that on
+ * its own, ChatGPT only by deleting and recreating its app.
+ */
+export const REGISTRATION_CONSENT_DEADLINE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How many registrations may be waiting for their first consent at once,
+ * counted INSIDE DEFAULT_MAX_CLIENTS rather than on top of it. A provisional
+ * value like the deadline above. Its job is to keep the slots an anonymous
+ * caller can take away from the ones the owner has already authorized.
+ */
+export const MAX_UNCONSENTED_CLIENTS = 20;
 const DEFAULT_MAX_CODES = 1000;
 const DEFAULT_MAX_TOKENS = 2000;
-// A registered client that holds no live token is pruned once it is older than
-// this grace window. Tokens are the real credential and self-expire; a lingering
-// registration is dead weight. The window must comfortably exceed a plausible
-// authorize->token round-trip so an in-flight registration (registered, not yet
-// exchanged for a token) is never swept mid-flow.
-const DEFAULT_CLIENT_ORPHAN_GRACE_MS = 60 * 60 * 1000;
 
 // How long a refresh token stays replayable after it was rotated. Sized for
 // "the rotation response was lost on an unreliable link and the client retries
@@ -70,11 +85,29 @@ const STATE_VERSION = 1;
 const STATE_SALT_BYTES = 16;
 const HMAC_KEY_BYTES = 32;
 
+/**
+ * Where a registration stands with the owner (#184).
+ *
+ *  - `pending`: registered, and nobody has entered the password for it yet.
+ *    Anyone who can reach `/register` can create one, so these are the only
+ *    registrations that are ever reclaimed on their own, and only after
+ *    REGISTRATION_CONSENT_DEADLINE_MS.
+ *  - `given`: the owner consented at least once. Kept even after every token it
+ *    held has lapsed, because a client comes back with the same `client_id`
+ *    (ChatGPT never registers again on its own).
+ *  - `unknown`: loaded from a state file written before this field existed.
+ *    Such a file cannot tell a registration that was used and whose tokens all
+ *    lapsed from one that was never used, so it is kept like `given` and never
+ *    presumed abandoned.
+ */
+export type ClientConsent = "pending" | "given" | "unknown";
+
 export interface RegisteredClient {
   clientId: string;
   redirectUris: string[];
   clientName?: string;
   createdAt: number;
+  consent: ClientConsent;
 }
 
 export interface AuthorizationCode {
@@ -162,11 +195,6 @@ export interface OAuthStoreOptions {
   codeTtlSec: number;
   /** Hard cap per token map (default DEFAULT_MAX_TOKENS). Bounds memory. */
   maxTokens?: number;
-  /**
-   * Grace window (ms) before a client holding no live access/refresh token is
-   * pruned. Must exceed a plausible authorize->token round-trip. Default 1h.
-   */
-  clientOrphanGraceMs?: number;
   /**
    * Absolute path of the optional state file. When set, registered clients and
    * (hashed) tokens are persisted across restarts. Requires `persistSecret`.
@@ -343,7 +371,6 @@ export class OAuthStore {
    *    rate is reachable through the HTTP endpoint is still NOT measured.
    */
   private readonly maxTombstones: number;
-  private readonly clientOrphanGraceMs: number;
   private readonly persistPath?: string;
   /** scrypt(persistSecret, salt) — derived once per store, cached for saves. */
   private hmacKey?: Buffer;
@@ -353,7 +380,6 @@ export class OAuthStore {
     this.now = options.now ?? Date.now;
     this.maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS;
     this.maxTombstones = this.maxTokens;
-    this.clientOrphanGraceMs = options.clientOrphanGraceMs ?? DEFAULT_CLIENT_ORPHAN_GRACE_MS;
     if (options.persistPath) {
       if (!options.persistSecret) {
         throw new Error("OAuthStore persistence requires persistSecret (state-file HMAC key source).");
@@ -363,39 +389,149 @@ export class OAuthStore {
     }
   }
 
-  registerClient(redirectUris: string[], clientName?: string): RegisteredClient {
+  /**
+   * Register a client as `pending`, or return `undefined` when there is no room.
+   * Throws `registration_not_persisted` when a state file is configured and the
+   * registration could not be written to it.
+   *
+   * What may be removed without an operator is decided by consent, not by
+   * tokens (#184, measured 2026-09-28):
+   *
+   *  - ChatGPT keeps the `client_id` it registered with the app and never
+   *    registers again on its own. Deleting that registration leaves the app
+   *    presenting a `client_id` this server no longer knows, and `/authorize`
+   *    answers `400 Unknown client_id.` on every attempt. Uninstalling and
+   *    reinstalling the app did not help; only deleting and recreating it
+   *    did. OpenAI's own docs say a client reuses its registration for as
+   *    long as the connection is used. So a registration the owner has
+   *    consented to is kept even once every token it held has lapsed.
+   *  - A registration still waiting on its first consent holds no token. The
+   *    old orphan sweep took it after a one-hour grace window, so a consent
+   *    page left open past the hour lost it. It is now kept for
+   *    REGISTRATION_CONSENT_DEADLINE_MS, and the deadline runs from creation:
+   *    no unauthenticated request moves it.
+   *  - Keeping every registration, which the first attempt at this did, lets
+   *    anyone who can reach `/register` fill the registry for good. So an
+   *    unconsented registration past its deadline IS reclaimed, here and at
+   *    load, and nothing else is.
+   *
+   * Nothing is evicted to make room. When the registry holds
+   * DEFAULT_MAX_CLIENTS, or MAX_UNCONSENTED_CLIENTS of them are pending, a new
+   * registration is refused and every existing one keeps working.
+   *
+   * What is left, stated rather than hidden: a caller who keeps registering
+   * keeps the pending slots full, and new connectors cannot register for as
+   * long as they do. The `/register` rate limit bounds how fast that happens
+   * and does not stop it. It is keyed on the socket peer, so behind a tunnel
+   * every caller shares one bucket and a flood also spends the requests a
+   * genuine newcomer needs. What the deadline changes is afterwards: the slots
+   * come back once the caller stops, and the connectors the owner has
+   * authorized are never touched.
+   */
+  registerClient(redirectUris: string[], clientName?: string): RegisteredClient | undefined {
     this.prune();
-    // Reap aged tokenless registrations HERE — a new registration is the moment
-    // reconnect churn accumulates — and NOT inside the shared prune()/mintTokens
-    // path. The hazard first written here has stopped existing: it said a
-    // rotation deletes the presented token and so leaves an aged client briefly
-    // tokenless between prune() and the replacement's insertion. Since the
-    // replay-grace window landed, a successful rotation KEEPS that record, so a
-    // live refresh token spans the whole mint and that window never opens.
-    //
-    // What the placement is actually for: a registration that has not yet
-    // exchanged its code holds no token, so anything reaping tokenless clients
-    // would take it mid-flow. Calling it only here does not make that safe —
-    // clientOrphanGraceMs (default one hour) does, and it is a sizing
-    // assumption rather than a structural one. See #184; a consent screen left
-    // open past the hour breaks it.
-    //
-    // The client added below is not the one at risk, and not because of any
-    // window: it does not exist yet. It is constructed and inserted after this
-    // line.
-    this.pruneOrphanClients();
-    if (this.clients.size >= DEFAULT_MAX_CLIENTS) {
-      this.evictOneClientForCap();
+    this.reclaimUnconsented();
+    if (this.clients.size >= DEFAULT_MAX_CLIENTS || this.countPending() >= MAX_UNCONSENTED_CLIENTS) {
+      return undefined;
     }
     const client: RegisteredClient = {
       clientId: `client_${randomSecret()}`,
       redirectUris,
       clientName,
-      createdAt: this.now()
+      createdAt: this.now(),
+      consent: "pending"
     };
     this.clients.set(client.clientId, client);
-    this.save();
+    // A registration answered with 201 that is gone after a restart strands
+    // ChatGPT exactly as a reclaimed one does, so it is not answered at all.
+    if (!this.persist()) {
+      this.clients.delete(client.clientId);
+      throw new Error("registration_not_persisted");
+    }
     return client;
+  }
+
+  /**
+   * Record that the owner consented to this client, and report whether that
+   * reached the state file (always true without one). Call it after the
+   * password has been checked and BEFORE issuing a code: a code then only
+   * ever exists for a registration that can no longer be reclaimed.
+   *
+   * It saves on every call, even when the client is already `given`. Skipping
+   * the save for a client that is `given` in memory would reopen the gap it
+   * closes: after one failed save the memory says `given` while the disk still
+   * says `pending`, and a retry that skipped the save would issue a code for a
+   * registration a restart would reclaim.
+   */
+  recordConsent(clientId: string): boolean {
+    const client = this.clients.get(clientId);
+    if (!client) {
+      return false;
+    }
+    client.consent = "given";
+    return this.persist();
+  }
+
+  /**
+   * Drop the registrations nobody consented to within the deadline. They never
+   * held a code or a token (a code is only issued after `recordConsent`), so
+   * nothing else refers to them.
+   */
+  private reclaimUnconsented(): void {
+    const t = this.now();
+    for (const [clientId, client] of this.clients) {
+      if (client.consent === "pending" && client.createdAt + REGISTRATION_CONSENT_DEADLINE_MS <= t) {
+        this.clients.delete(clientId);
+      }
+    }
+  }
+
+  /**
+   * Read a `pending` registration that holds a live token as `given`: a token
+   * is only ever issued after the password was entered, so it is proof of
+   * consent. This version never produces that combination. A state file
+   * carried back through an older binary, which consents without recording
+   * it, and then forward again does — and without this, a working ChatGPT
+   * connection would be reclaimed 24 h after its creation while its tokens
+   * went on refreshing with no registration behind them. Once every token has
+   * lapsed there is no proof left, and such a registration reads as the
+   * `pending` it was saved as. Returns how many were promoted, so load can
+   * write them down while the proof still exists.
+   */
+  private consentFromLiveTokens(): number {
+    const holders = new Set<string>();
+    for (const record of this.accessTokens.values()) holders.add(record.clientId);
+    for (const record of this.refreshTokens.values()) holders.add(record.clientId);
+    let promoted = 0;
+    for (const client of this.clients.values()) {
+      if (client.consent === "pending" && holders.has(client.clientId)) {
+        client.consent = "given";
+        promoted++;
+      }
+    }
+    return promoted;
+  }
+
+  /**
+   * How many registrations stand in each state — numbers only, never an id or
+   * a URI. For the start-up line (#184): registrations carried over from an
+   * older state file are kept as `unknown`, and an operator can only tell that
+   * they fill the registry by counting them.
+   */
+  registrationCounts(): Record<ClientConsent, number> {
+    const counts: Record<ClientConsent, number> = { given: 0, pending: 0, unknown: 0 };
+    for (const client of this.clients.values()) {
+      counts[client.consent]++;
+    }
+    return counts;
+  }
+
+  private countPending(): number {
+    let pending = 0;
+    for (const client of this.clients.values()) {
+      if (client.consent === "pending") pending++;
+    }
+    return pending;
   }
 
   getClient(clientId: string): RegisteredClient | undefined {
@@ -814,113 +950,6 @@ export class OAuthStore {
     this.evictExpired();
   }
 
-  /**
-   * Free one slot for a new registration, preferring one that holds no live
-   * credential.
-   *
-   * Age alone is the wrong order to delete in. A client whose registration is
-   * evicted while it still holds a valid access token — or a refresh token it
-   * can rotate — keeps working at `/token` and fails only the next time it
-   * reaches `/authorize`, where `getClient` no longer knows it. The registry
-   * and the credentials it is supposed to describe then disagree, and the
-   * client cannot refresh its way out: recovery costs a re-registration.
-   * Measured 2026-09-03 on #184: with the shipped cap, a client holding a live
-   * pair was evicted by 100 registrations while its access token still
-   * validated and its refresh token still rotated.
-   *
-   * Tokenless registrations have no such state to contradict, so they go
-   * first, oldest first. `prune()` has already run at the top of
-   * `registerClient`, so an expired token is not counted as live.
-   *
-   * That preference has a cost, and under the shipped TTLs it lands on the
-   * class #184 is about. The orphan sweep immediately above has already
-   * removed every tokenless registration past its grace window, so every
-   * tokenless candidate left here is one still inside it — and a completed
-   * flow holds its refresh token for thirty days while a registration only has
-   * to outlive an hour to leave the sweep's reach, so what is left inside is
-   * an authorization still in flight. Preferring them means that is now the
-   * first thing offered to the cap. Measured 2026-09-03 either side of #185,
-   * with an oldest token-holder and a second in-flight registration and the
-   * cap driven past its limit: before, the holder was evicted and the
-   * in-flight one survived; after, exactly the reverse.
-   *
-   * It is a trade and not an oversight. Both evictions end in the same 400
-   * with no machine-readable OAuth error, but an evicted holder breaks
-   * silently and later — at an `/authorize` it had no reason to expect to
-   * fail, while it was still refreshing successfully — and an in-flight
-   * registration breaks now.
-   *
-   * "Now" is narrower than it sounds, and the narrowing is the useful part.
-   * The eviction is only immediately visible while the flow is still short of
-   * its code: once `/authorize` has issued one, redemption never consults the
-   * registry — `tokenFromCode` does not call `getClient`, and evicting a
-   * client leaves its pending codes alone — so the exchange succeeds and
-   * nothing surfaces. Measured 2026-09-03: a client evicted after its code was
-   * issued still redeemed it and received a valid access token. A tokenless
-   * registration may also simply be idle, with nobody waiting on it at all.
-   * So what this arm buys is a failure that is visible *during the pre-code
-   * window*, not at every eviction, and that is what it is chosen for.
-   *
-   * "Those two" is itself a sizing assumption — `refreshTokenTtlSec >=
-   * clientOrphanGraceMs` — which is the kind of thing #184 was filed about, so
-   * it is written down rather than leaned on quietly. Drop
-   * `MCP_OAUTH_REFRESH_TTL` below the hour and a client that completed its
-   * flow goes tokenless while still inside the grace window: a third class,
-   * neither in flight nor holding credentials, and the one the cap then takes
-   * first. Measured 2026-09-03 at a 60 s refresh TTL, on both sides of #185:
-   * the completed-then-expired client was evicted and the in-flight one
-   * survived. Found by a second session, which built the counterexample rather
-   * than accepting the claim that there was none.
-   *
-   * There is no lever on the other side of that relation: `clientOrphanGraceMs`
-   * has no environment binding, so an operator shortening sessions cannot
-   * widen the grace to restore it.
-   *
-   * The bound is unchanged: exactly one registration is removed per call, and
-   * when every one of them holds a live token the oldest still goes — the cap
-   * has to be enforced with something. `DEFAULT_MAX_CLIENTS` has no options
-   * field and no environment override, so this order is the shipped one and
-   * an operator cannot tune around it.
-   */
-  private evictOneClientForCap(): void {
-    const holdsLiveToken = new Set<string>();
-    for (const record of this.accessTokens.values()) holdsLiveToken.add(record.clientId);
-    for (const record of this.refreshTokens.values()) holdsLiveToken.add(record.clientId);
-    const oldestFirst = [...this.clients.values()].sort((a, b) => a.createdAt - b.createdAt);
-    const victim = oldestFirst.find((client) => !holdsLiveToken.has(client.clientId)) ?? oldestFirst[0];
-    if (victim) {
-      this.clients.delete(victim.clientId);
-    }
-  }
-
-  /**
-   * Drop client registrations that hold no live token and are older than the
-   * orphan grace window. Tokens are the credential and self-expire; a
-   * registration with no surviving token is dead weight that would otherwise
-   * linger until the hard client cap evicts it. Invoked only from registerClient
-   * (where reconnect churn accumulates) and after a state-file load —
-   * deliberately NOT from the shared prune()/mintTokens path. The reason given
-   * for that used to be a rotation leaving an aged client momentarily tokenless
-   * between prune() and the replacement's insertion; the replay-grace window
-   * ended it, because a successful rotation keeps the presented record. What
-   * the grace window protects is an in-flight registration — no token until the
-   * code is exchanged — and it protects it by being an hour long, not by any
-   * structural guarantee. The other caller on that path is
-   * createAuthorizationCode. See #184.
-   */
-  private pruneOrphanClients(): void {
-    const t = this.now();
-    const liveClientIds = new Set<string>();
-    for (const record of this.accessTokens.values()) liveClientIds.add(record.clientId);
-    for (const record of this.refreshTokens.values()) liveClientIds.add(record.clientId);
-    for (const [clientId, client] of this.clients) {
-      if (liveClientIds.has(clientId)) continue;
-      if (t - client.createdAt >= this.clientOrphanGraceMs) {
-        this.clients.delete(clientId);
-      }
-    }
-  }
-
   private evictExpired(): void {
     const t = this.now();
     for (const [token, record] of this.accessTokens) {
@@ -986,7 +1015,14 @@ export class OAuthStore {
       const t = this.now();
       for (const client of payload.clients ?? []) {
         if (typeof client?.clientId === "string" && Array.isArray(client.redirectUris)) {
-          this.clients.set(client.clientId, client);
+          // A file written before `consent` existed cannot say whether a
+          // tokenless registration was ever used, so its registrations load as
+          // `unknown` and are kept (#184). Only a value this version wrote
+          // itself is taken at its word; anything else reads as `unknown` too,
+          // because the one reading that must never be invented is `pending`.
+          const consent: ClientConsent =
+            client.consent === "pending" || client.consent === "given" ? client.consent : "unknown";
+          this.clients.set(client.clientId, { ...client, consent });
         }
       }
       const loadTokens = (records: PersistedTokenRecord[] | undefined, into: Map<string, TokenRecord>) => {
@@ -1060,16 +1096,28 @@ export class OAuthStore {
         }
       }
       enforceTombstoneCap(this.rotatedTombstones, this.maxTombstones);
-      // Loaded state may carry clients whose tokens all expired (and so were
-      // dropped above); sweep those now instead of waiting for the next write.
-      this.pruneOrphanClients();
+      // After the tokens, because what a registration may be reclaimed for
+      // depends on whether it holds one.
+      const promoted = this.consentFromLiveTokens();
+      this.reclaimUnconsented();
       // Keep the verified salt/key for subsequent saves.
       this.hmacSalt = salt;
       this.hmacKey = key;
+      // A promotion held only in memory is lost if nothing else saves before
+      // its tokens lapse and the process restarts: the file would still say
+      // `pending`, and the proof would be gone. So write it now. Only here, on
+      // a file that verified, and only when something was promoted — a load
+      // that failed never reaches this line and must not overwrite the file
+      // with the empty state it fell back to.
+      if (promoted > 0) {
+        this.persist();
+      }
     } catch {
       // Never trust a state file that does not verify. No detail is logged (it
-      // could echo attacker-controlled bytes); the operator symptom is simply
-      // that clients must re-authorize.
+      // could echo attacker-controlled bytes). The operator symptom is that
+      // every client must connect again, and that includes rotating the
+      // password. Claude.ai registers again on its own; ChatGPT does not, and
+      // recovers only by deleting and recreating its app (#184).
       this.clients.clear();
       this.accessTokens.clear();
       this.refreshTokens.clear();
@@ -1078,10 +1126,20 @@ export class OAuthStore {
     }
   }
 
-  /** Atomic save (tmp + rename), 0600 file / 0700 dir. Failures only warn. */
+  /**
+   * Atomic save (tmp + rename), 0600 file / 0700 dir. Failures only warn: for
+   * tokens, persistence is an availability feature and a failed save must not
+   * break auth. The two registration transitions that must not be answered
+   * unless they landed call `persist` instead (#184).
+   */
   private save(): void {
+    this.persist();
+  }
+
+  /** Save, and report whether the state file was written (true without one). */
+  private persist(): boolean {
     if (!this.persistPath) {
-      return;
+      return true;
     }
     try {
       if (!this.hmacKey || !this.hmacSalt) {
@@ -1106,11 +1164,12 @@ export class OAuthStore {
       const tmp = `${this.persistPath}.tmp`;
       fs.writeFileSync(tmp, envelope, { mode: 0o600 });
       fs.renameSync(tmp, this.persistPath);
+      return true;
     } catch {
-      // Persistence is an availability feature; a failed save must not break
-      // auth. No path/error detail beyond this line (no secrets to leak, but
-      // keep the log surface minimal).
+      // No path/error detail beyond this line (no secrets to leak, but keep the
+      // log surface minimal).
       console.error("[oauth] failed to persist OAuth state");
+      return false;
     }
   }
 }
