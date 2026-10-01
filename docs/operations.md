@@ -108,8 +108,13 @@ same store, so one file covers every web client). Security properties:
   agent is restarted and refused again until the file is fixed, so that line
   repeats in its `StandardErrorPath` log. **Fix the file's ownership and
   permissions:** it should be mode `0600` and owned by the account the server
-  runs as. If the path is a symbolic link, bring its target back (mount the
-  volume) rather than replacing the link. The next restart then loads it. Do not delete the file to get the
+  runs as. The next restart then loads it. **Do not keep a symbolic link at the
+  path.** Bringing a missing target back (mounting the volume) lets the next
+  start read it, but the first save after that replaces the link with a regular
+  file at the path — a save writes a temporary file beside the path and renames
+  it over — and the target is left with the old state. So bring the target
+  back, set `MCP_OAUTH_STATE_FILE` to the target file's own path, and start
+  again. Do not delete the file to get the
   server up again: that loses every registration, and ChatGPT has to delete and
   recreate its app.
 - Authorization codes are never persisted; they are single-use with a TTL of

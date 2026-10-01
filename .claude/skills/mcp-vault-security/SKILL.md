@@ -302,7 +302,10 @@ DCR + metadata discovery 必須**。`src/oauth/` の最小単一ユーザ AS。*
    親ディレクトリに入れない場合 (EACCES / ENOTDIR / ELOOP) は、store より先に `loadOAuthConfig` の path 照合が止める。
    メッセージは env 名と errno コードだけで、path も中身も出さない。**パスに何も無いときだけが初回** —
    行き先の無い symlink も ENOENT を返すので、`lstat` で何か在れば拒む (初回にすると最初の save の rename が
-   symlink そのものを置き換え、行き先が戻っても二度と読まない)。auth code は
+   symlink そのものを置き換え、行き先が戻っても二度と読まない)。⚠️ **行き先が在っても、save は link を
+   通常の file に置き換える** (temp を path の隣に書いて rename で被せるため) — 運用者への案内は
+   「`MCP_OAUTH_STATE_FILE` に実体の file の path を指す」であって「行き先を戻せ」ではない
+   (#265 の Codex P2。link を保つ直しは #263 の範囲)。auth code は
    **永続化しない** (60s 単回)。**`rotateRefreshToken` の 3 アーム** (期限切れ / 未 rotate の
    client_id 不一致 / 回転成功) は**除去・遷移を即 disk 反映**する。⛔ **全 write 経路の話ではない** —
    例えば `validateAccessToken` の期限切れ除去は save しない。
