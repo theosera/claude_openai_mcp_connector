@@ -357,15 +357,19 @@ function closingQuote(original, open, kind, labelAt) {
     // In `text` it escapes a backslash as well, so `'v\\'` closes: reading only
     // `\'` as a pair made the second backslash escape the closing quote, and the
     // next label's value was read as outside every quote and left in the clear.
-    const next = original[index + 1];
-    const quoteEscaped =
-      ch === "\\" && next === "'" && index + 2 < original.length && escapedBeforeBlank(original, index + 2, labelAt);
-    const escapes = quote === '"' || (kind === "text" && (next === "\\" || quoteEscaped));
-    if (ch === "\\" && escapes) {
-      if (index + 1 >= original.length) return { at: original.length, closed: false };
-      if (isLineEnd(original[index + 1])) return { at: index + 1, closed: false };
-      index += 1;
-      continue;
+    if (ch === "\\") {
+      const next = original[index + 1];
+      const escapes =
+        quote === '"' ||
+        (kind === "text" &&
+          (next === "\\" ||
+            (next === "'" && index + 2 < original.length && escapedBeforeBlank(original, index + 2, labelAt))));
+      if (escapes) {
+        if (index + 1 >= original.length) return { at: original.length, closed: false };
+        if (isLineEnd(original[index + 1])) return { at: index + 1, closed: false };
+        index += 1;
+        continue;
+      }
     }
     if (ch !== quote) continue;
     if (kind === "text" && quote === "'" && original[index + 1] === "'") {
@@ -534,9 +538,12 @@ function collectLabelSpans(original, kind, vocabulary) {
   const schemeWords = vocabulary.schemeWords ?? [];
   const scheme =
     schemeWords.length > 0 ? new RegExp(`(?:${schemeWords.map(escapeRegExp).join("|")})[^\\S\\r\\n]+`, "iy") : null;
-  // A label word with what separates it from a value right after it: `=`, `:`, a
-  // blank or a quote. Not a label inside a longer word (`path`, `keychain`).
-  const labelKey = new RegExp(`(?:${labelSource})(?=[=:'"]|[^\\S\\r\\n])`, "iy");
+  // A label word with what separates it from a value right after it: `=`, `:` or
+  // a blank. Not a label inside a longer word (`path`, `keychain`), and not one
+  // before a quote: stopping a value before `token'v'` left `v` in the clear.
+  const labelKey = new RegExp(`(?:${labelSource})(?=[=:]|[^\\S\\r\\n])`, "iy");
+  const labelWord = new RegExp(`(?:${labelSource})`, "i");
+  const labelAtEnd = new RegExp(`(?:${labelSource})$`, "i");
   const label = new RegExp(
     [...labels]
       .sort((a, b) => b.length - a.length)
@@ -797,26 +804,132 @@ function collectLabelSpans(original, kind, vocabulary) {
     return continues ? { start: segment.close + 1, end: joined, next: joined } : null;
   };
 
-  /**
-   * Where the text of the element the label at `start`..`end` names ends: the `<`
-   * of its closing tag, when `<label>` opens an element that closes on the same
-   * line. -1 otherwise. The text runs to the next `<`, so each is walked once.
-   */
-  const elementTextEnd = (start, end) => {
-    if (original[start - 1] !== "<" || original[end] !== ">") return -1;
-    let stop = end + 1;
+  /** Where a run with no blank, `<` or line end that starts at `from` ends. */
+  const tagTextEnd = (from) => {
+    let stop = from;
     while (stop < original.length && original[stop] !== "<" && !isLineEnd(original[stop])) stop += 1;
-    const closing = `</${original.slice(start, end)}>`.toLowerCase();
-    return original.slice(stop, stop + closing.length).toLowerCase() === closing ? stop : -1;
+    return stop;
   };
 
-  /** Whether an option named by a label starts at `at` (`-token`, `--token`). */
+  // Where the last search for a CDATA section's end started, and what it found
+  // (-1 for none before the line end): CDATA openings with no end on one line
+  // each searched to the line end, and the line took quadratic time.
+  let cdataFrom = -1;
+  let cdataStop = -1;
+  let cdataFound = false;
+  /** Where the `]]>` that ends a CDATA section whose content starts at `from` is, or -1. */
+  const cdataEnd = (from) => {
+    if (cdataFrom >= 0 && from >= cdataFrom && from <= cdataStop) return cdataFound ? cdataStop : -1;
+    let at = from;
+    while (at < original.length && !isLineEnd(original[at]) && !original.startsWith("]]>", at)) at += 1;
+    cdataFrom = from;
+    cdataStop = at;
+    cdataFound = original.startsWith("]]>", at);
+    return cdataFound ? at : -1;
+  };
+
+  /**
+   * The element the label at `start`..`end` names, when `<label>` opens one that
+   * closes on the same line (`</label>`, blanks allowed before its `>`): its text,
+   * a CDATA section's content if it holds one, and where its closing tag ends.
+   * Attributes may stand before the opening tag's `>` (`<password type="plain">`).
+   * Null otherwise. The text runs to the next `<`, so each is walked once.
+   */
+  const elementAt = (start, end) => {
+    if (original[start - 1] !== "<") return null;
+    let open = end;
+    if (original[open] !== ">") {
+      if (!BLANK.test(original[open] ?? "")) return null;
+      while (open < original.length && original[open] !== ">" && original[open] !== "<" && !isLineEnd(original[open]))
+        open += 1;
+      if (original[open] !== ">") return null;
+    }
+    let textStart = open + 1;
+    let textEnd;
+    let after;
+    if (original.startsWith("<![CDATA[", textStart)) {
+      textStart += 9;
+      textEnd = cdataEnd(textStart);
+      if (textEnd < 0) return null;
+      after = textEnd + 3;
+    } else {
+      textEnd = tagTextEnd(textStart);
+      after = textEnd;
+    }
+    const name = original.slice(start, end).toLowerCase();
+    if (original.slice(after, after + 2 + name.length).toLowerCase() !== `</${name}`) return null;
+    let close = after + 2 + name.length;
+    while (close < original.length && BLANK.test(original[close])) close += 1;
+    if (original[close] !== ">") return null;
+    return { name, start: textStart, end: textEnd, closeEnd: close + 1 };
+  };
+
+  /**
+   * The value an element holds. A plist writes a key and its value as two
+   * elements (`<key>token</key><string>v</string>`): an element named `key`
+   * holds no value itself, and the next element's text is the value when the key
+   * holds a label. Any other element's text is the value.
+   */
+  const elementValue = (element) => {
+    if (element.name !== "key") {
+      return element.end > element.start ? { start: element.start, end: element.end, next: element.end } : null;
+    }
+    if (!labelWord.test(original.slice(element.start, element.end))) return null;
+    let at = element.closeEnd;
+    while (at < original.length && BLANK.test(original[at])) at += 1;
+    if (original[at] !== "<") return null;
+    let name = at + 1;
+    while (name < original.length && /[A-Za-z0-9_.:-]/.test(original[name])) name += 1;
+    if (name === at + 1 || original[name] !== ">") return null;
+    const stop = tagTextEnd(name + 1);
+    return stop > name + 1 ? { start: name + 1, end: stop, next: stop } : null;
+  };
+
+  /**
+   * The value after a separator, past a scheme word. When the scheme word sits
+   * inside a closed quote (`"Bearer a b"`), the value is the rest of that quote:
+   * reading one word there left the rest of the credential in the clear.
+   */
+  const valueAfter = (after) => {
+    const from = skipScheme(after, original.length);
+    for (let at = after; at < from; at += 1) {
+      const segment = opened.get(at);
+      if (segment && segment.closed && segment.close >= from) {
+        return segment.close > from ? { start: from, end: segment.close, next: segment.close + 1 } : null;
+      }
+    }
+    return valueAt(from);
+  };
+
+  /**
+   * Whether an option named by a label starts at `at`: the label right after one
+   * or two dashes (`-token`, `--token`), or a long option whose name ends in a
+   * label (`--api-token`, `--client-secret`). Not a short option that merely
+   * holds one (`-my_token`).
+   */
   const labelOptionAt = (at) => {
     let index = at;
-    while (index < at + 2 && original[index] === "-") index += 1;
-    if (index === at) return false;
+    while (original[index] === "-") index += 1;
+    const dashes = index - at;
+    if (dashes === 0) return false;
     labelAt.lastIndex = index;
-    return labelAt.test(original);
+    if (dashes <= 2 && labelAt.test(original)) return true;
+    if (dashes < 2) return false;
+    let stop = index;
+    while (stop < original.length && /[A-Za-z0-9_-]/.test(original[stop])) stop += 1;
+    return labelAtEnd.test(original.slice(index, stop));
+  };
+
+  /**
+   * The last list separator in `from`..`to`, or -1. Asked only of a value not
+   * shaped like a label, and the next such value starts after its last separator
+   * or after its end, so the searches together walk each character at most twice
+   * (labels nested in one word, `k:k:k:…`, are shaped like labels and never ask).
+   */
+  const lastListSeparator = (from, to) => {
+    let at = to - 1;
+    while (at >= from && original[at] !== "," && original[at] !== ";" && original[at] !== "&") at -= 1;
+    return at >= from ? at : -1;
   };
 
   let match;
@@ -831,27 +944,34 @@ function collectLabelSpans(original, kind, vocabulary) {
       // next (`set "secret"\t"v"`); before an unquoted word it is a search term.
       const after = separatorEnd(segment.close + 1, original.length);
       if (assigns(segment.close + 1, after) || (after > segment.close + 1 && opened.has(after))) {
-        value = valueAt(skipScheme(after, original.length));
+        value = valueAfter(after);
       }
     } else if (segment) {
       value = valueInside(segment, end);
     } else {
       // A label as an element name (`<password>v</password>`, as Maven's
-      // settings.xml writes one) takes the element's text, when the element closes
-      // on the same line. Without its closing tag it is not an element: a
-      // placeholder (`-p<password> -h host`) or a type (`Optional<Secret> s`).
-      const element = elementTextEnd(start, end);
-      if (element >= 0) {
-        value = element > end + 1 ? { start: end + 1, end: element, next: element } : null;
+      // settings.xml writes one) takes the element's text.
+      const element = elementAt(start, end);
+      const closingTag = original[start - 1] === "/" && original[start - 2] === "<";
+      const tag = (original[start - 1] === "<" && original[end] === ">") || closingTag;
+      if (element) {
+        value = elementValue(element);
+      } else if (tag) {
+        // A tag that opens no element on this line, or a closing tag: what is glued
+        // after its `>` is a value (`<password>v`, `<token>=v`, `Enter <password>:
+        // v`), as step 2-3 read it. A blank after the `>` is not (`-p<password> -h
+        // host`, `Optional<Secret> s`), and a closing tag's name takes nothing else.
+        const glued = original[end] === ">" && end + 1 < original.length && !/[\s<]/.test(original[end + 1]);
+        if (glued) value = valueAfter(separatorEnd(end + 1, original.length, false));
       } else {
         // A quote right after the label that opens nothing -- an apostrophe-like
         // quote in `text` -- belongs to the label, as the anchor's `['"]?` allowed.
         const quoted = (original[end] === "'" || original[end] === '"') && !opened.has(end) ? end + 1 : end;
-        // After `<` or `/` (`<key>`, `</key>`, `/etc/password> f`) a `>` closes a
-        // tag or redirects; it is not a prompt.
-        const tag = original[start - 1] === "<" || original[start - 1] === "/";
-        const after = separatorEnd(quoted, original.length, !tag);
-        if (after > quoted) value = valueAt(skipScheme(after, original.length));
+        // A `>` right after the label is a prompt (`mysql/password> v`), also where
+        // it could be a redirection (`cat /etc/password> f`): the two cannot be told
+        // apart, and step 2-3 masked both.
+        const after = separatorEnd(quoted, original.length);
+        if (after > quoted) value = valueAfter(after);
       }
     }
 
@@ -867,7 +987,10 @@ function collectLabelSpans(original, kind, vocabulary) {
       const leadingQuote = opened.get(value.start - 1);
       const optionAfterQuote = leadingQuote !== undefined && labelOptionAt(leadingQuote.close + 1);
       const labelLike = original[value.start] === "-" || last === ":" || last === "=" || optionAfterQuote;
-      if (!labelLike) label.lastIndex = Math.max(label.lastIndex, value.next);
+      // A list value is read again from its last item: an item that ends in a
+      // label (`S1,secret_key S2`, `S1;keytoken S2`) names the value after it.
+      const separator = labelLike ? -1 : lastListSeparator(value.start, value.end);
+      if (!labelLike) label.lastIndex = Math.max(label.lastIndex, separator >= 0 ? separator + 1 : value.next);
     }
   }
   return spans;
@@ -900,10 +1023,13 @@ const URL_AUTHORITY_VALUE = /(:\/\/[^/:@\s]+:)([^/@\s]+)(@)/g;
  * characters too, and a prefix that could end anywhere inside a run of digits
  * made a long line of digits that fails the match take quadratic time to fail
  * (measured, 3.6 s at 32,000 characters), and left the leading digits of a
- * base64 line unmasked as if they were a line number.
+ * base64 line unmasked as if they were a line number. The blanks after the
+ * number are read by one quantifier: two adjacent ones (`[ ]+[|:>]?[ ]*`) could
+ * split a run of blanks either way, and a line of a number, blanks and no base64
+ * took quadratic time to fail (measured, 7.5 s at 32,768 blanks).
  */
 const BARE_BASE64_LINE =
-  /^([^\S\r\n]*(?:[0-9]+(?:[^\S\r\n]+[|:>]?|[|:>])[^\S\r\n]*|[>|]+[^\S\r\n]*|[^\s:]+:[0-9]+:[^\S\r\n]*|-)?)([A-Za-z0-9+/=]{32,})[^\S\r\n]*$/gm;
+  /^([^\S\r\n]*(?:[0-9]+(?:[^\S\r\n]+(?:[|:>][^\S\r\n]*)?|[|:>][^\S\r\n]*)|[>|]+[^\S\r\n]*|[^\s:]+:[0-9]+:[^\S\r\n]*|-)?)([A-Za-z0-9+/=]{32,})[^\S\r\n]*$/gm;
 
 /**
  * Collects the span of every credential value, decided against the original.

@@ -82,7 +82,13 @@ const SHAPES: readonly (readonly [string, string, (length: number) => string])[]
   // label before the next quote, and elements that never close, each looking
   // ahead for its closing tag. Each looks only as far as the next quote or `<`.
   ["escaped-quotes-blank", "FKPERFEB1", (n) => fill("passphrase: 'FKPERFEB1 ", "n\\' x ", n)],
-  ["unclosed-elements", "FKPERFUN1", (n) => fill("token=FKPERFUN1 ", "<password>x", n)]
+  ["unclosed-elements", "FKPERFUN1", (n) => fill("token=FKPERFUN1 ", "<password>x", n)],
+  // A line number, then blanks and no base64. Two adjacent blank quantifiers in
+  // the line-number prefix split the blanks every way before failing (7.5 s at
+  // 32,768 blanks).
+  ["number-blanks", "FKPERFNB1", (n) => "token=FKPERFNB1\n1" + " ".repeat(n - 18) + "!"],
+  // Elements whose CDATA section never ends, each looking ahead for its `]]>`.
+  ["unclosed-cdata", "FKPERFCD1", (n) => fill("token=FKPERFCD1 ", "<password><![CDATA[x", n)]
 ];
 
 function median(values: readonly number[]): number {

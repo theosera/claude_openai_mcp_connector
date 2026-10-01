@@ -299,10 +299,10 @@ describe("the core on the second review's shapes", () => {
     ["a value that ends in a label word", "command", "TOKEN=my_token KEEPRV34", `TOKEN=${MASK} KEEPRV34`],
     ["a prompt's > right after the label", "text", "password> FKRV0035", `password> ${MASK}`],
     [
-      "a label as a tag name keeps the next element",
+      "a plist key that holds a label names the next element's text",
       "text",
-      "<key>token</key><string>KEEPRV36</string>",
-      `<key>${MASK}</key><string>KEEPRV36</string>`
+      "<key>token</key><string>FKRV0036</string> KEEPRV36",
+      `<key>token</key><string>${MASK}</string> KEEPRV36`
     ],
     [
       "a prefixed string in text",
@@ -327,7 +327,7 @@ describe("the core on the second review's shapes", () => {
       "a scheme word in a quoted list item",
       "text",
       '"Authorization": ["Bearer FKRV0044"], "x": "KEEPRV41"',
-      `"Authorization": ["Bearer ${MASK} "x": "KEEPRV41"`
+      `"Authorization": ["Bearer ${MASK}"], "x": "KEEPRV41"`
     ],
     [
       "a label glued to a command value's closing quote",
@@ -347,7 +347,7 @@ describe("the core on the second review's shapes", () => {
       "a value that is a shell ANSI-C string with a scheme word",
       "text",
       "src/a.ts:3: TOKEN=  $'Bearer FKRV0049' KEEPRV45",
-      `src/a.ts:3: TOKEN=  $'Bearer ${MASK} KEEPRV45`
+      `src/a.ts:3: TOKEN=  $'Bearer ${MASK}' KEEPRV45`
     ]
   ];
 
@@ -494,10 +494,10 @@ describe("the core on the fourth review's shapes", () => {
       "Optional<Secret> s = vault.get(KEEPRV82)"
     ],
     [
-      "a label in a path before a redirection",
+      "a label in a path before a >, read as a prompt as the sed mask() reads it",
       ["command"],
-      "cat /etc/password> KEEPRV83",
-      "cat /etc/password> KEEPRV83"
+      "cat /etc/password> FKRV0083",
+      `cat /etc/password> ${MASK}`
     ],
     [
       "a label glued after ] and a closing quote",
@@ -523,6 +523,116 @@ describe("the core on the fourth review's shapes", () => {
       `api_key => ${tick}Token FKRV0087${tick} KEEPRV87`,
       `api_key => ${tick}Token ${MASK} KEEPRV87`
     ]
+  ];
+
+  it.each(
+    cases.flatMap(([name, kinds, input, expected]) => kinds.map((kind) => [name, kind, input, expected] as const))
+  )("%s, as %s", (_name, kind, input, expected) => {
+    expect(redactFragment({ text: input, kind })).toEqual({ text: expected, status: "ok" });
+  });
+});
+
+// A fifth independent review and a change scan, of the fourth review's fixes
+// (#249, 2026-10-02), found values step 2-3 masked and the fixes left readable.
+describe("the core on the fifth review's shapes", () => {
+  const both = ["command", "text"] as const;
+  const header = ["Author", "ization"].join("");
+  const cases: readonly (readonly [string, readonly ("command" | "text")[], string, string])[] = [
+    [
+      "a plist key without a label keeps the next element",
+      both,
+      "<key>CFBundleName</key><string>KEEPRV91</string>",
+      "<key>CFBundleName</key><string>KEEPRV91</string>"
+    ],
+    ["a tag with no closing tag", both, "<password>FKRV0092 KEEPRV92", `<password>${MASK} KEEPRV92`],
+    [
+      "an element with attributes",
+      both,
+      '<password type="plain">FKRV0120</password> KEEPRW20',
+      `<password type="plain">${MASK}</password> KEEPRW20`
+    ],
+    [
+      "a closing tag on the next line",
+      both,
+      "<password>FKRV0093\n</password> KEEPRV93",
+      `<password>${MASK}\n</password> KEEPRV93`
+    ],
+    ["a prompt after a tag", both, "Enter <password>: FKRV0094 KEEPRV94", `Enter <password>: ${MASK} KEEPRV94`],
+    [
+      "a closing tag with a blank before >",
+      both,
+      "<password>FKRV0095</password > KEEPRV95",
+      `<password>${MASK}</password > KEEPRV95`
+    ],
+    ["= after a tag", both, "<token>=FKRV0096 KEEPRV96", `<token>=${MASK} KEEPRV96`],
+    [
+      "a CDATA section",
+      both,
+      "<password><![CDATA[FKRV0097]]></password> KEEPRV97",
+      `<password><![CDATA[${MASK}]]></password> KEEPRV97`
+    ],
+    [
+      "a closing tag that does not match",
+      both,
+      "<password>FKRV0098</passwordx> KEEPRV98",
+      `<password>${MASK} KEEPRV98`
+    ],
+    [
+      "text glued after a closing tag",
+      both,
+      "<password>FKRV0099</password>FKRV0100</password> KEEPRV99",
+      `<password>${MASK}</password>${MASK} KEEPRV99`
+    ],
+    ["a < inside the element text", both, "<password>FKRV0101<<FKRV0102</password>", `<password>${MASK}`],
+    [
+      "a scheme word inside a closed quote",
+      both,
+      `${header}: "Bearer FKRV0104 FKRV0105" KEEPRW04`,
+      `${header}: "Bearer ${MASK}" KEEPRW04`
+    ],
+    [
+      "a list item that ends in a label",
+      both,
+      "passphrase: FKRV0106,secret_key FKRV0107 KEEPRW06",
+      `passphrase: ${MASK} ${MASK} KEEPRW06`
+    ],
+    [
+      "a list item that ends in a label, after ;",
+      ["text"],
+      "password: FKRV0108;keytoken FKRV0109 KEEPRW08",
+      `password: ${MASK} ${MASK} KEEPRW08`
+    ],
+    [
+      "a list item that is a label with no word boundary before it",
+      both,
+      "passphrase: FKRV0110,api_key FKRV0111 KEEPRW10",
+      `passphrase: ${MASK} ${MASK} KEEPRW10`
+    ],
+    [
+      "a long option ending in a label glued after a quoted value",
+      both,
+      "password='FKRV0112'--api-token FKRV0113 KEEPRW12",
+      `password='${MASK} ${MASK} KEEPRW12`
+    ],
+    [
+      "three dashes before a label after a quoted value",
+      both,
+      "password='FKRV0118'---token FKRV0119 KEEPRW18",
+      `password='${MASK} ${MASK} KEEPRW18`
+    ],
+    [
+      "a label before a quote in a list",
+      ["text"],
+      "password=FKRV0114,token'FKRV0115' KEEPRW14",
+      `password=${MASK} KEEPRW14`
+    ],
+    [
+      "a label and : in a list",
+      both,
+      "password=a,token: FKRV0116 KEEPRW16",
+      `password=${MASK},token: ${MASK} KEEPRW16`
+    ],
+    ["a prompt after a slash", both, "mysql/password> FKRV0117 KEEPRW17", `mysql/password> ${MASK} KEEPRW17`]
   ];
 
   it.each(
