@@ -73,7 +73,9 @@ const LABELS = ["password", "token", "secret", "api_key", "pat"] as const;
  * first, dash runs of 4 to 8, an unclosed quote from prose, the shell's `'\''` and
  * YAML's `''`, argument-position secrets, adjacent keywords, and a preserve word on
  * the next line. Preserve words sit at the edges of the secret's range, where an
- * over-reaching rule eats them first.
+ * over-reaching rule eats them first. The last two families come from sections L
+ * and M of the redaction corpus: a password in a URL's userinfo between a kept user
+ * name and host, and a passwd value joined by five dashes just before a key's armor.
  */
 const FAMILIES: readonly Family[] = [
   { name: "mysql-p", kind: "command", make: (p) => `mysql -u app -p${p.S()} ${p.K()}` },
@@ -128,7 +130,28 @@ const FAMILIES: readonly Family[] = [
     make: (p) => `the mysql client won't prompt if you pass -p${p.S()} ${p.K()}`
   },
   { name: "next-line", kind: "text", make: (p) => `token=${p.S()}\n${p.K()} stays` },
-  { name: "preserve-only", kind: "command", make: (p) => `grep -rn "password" docs/${p.K()} | head -n 3` }
+  { name: "preserve-only", kind: "command", make: (p) => `grep -rn "password" docs/${p.K()} | head -n 3` },
+  {
+    name: "url-userinfo",
+    kind: "command",
+    make: (p) => {
+      const [command, scheme] = p.pick([
+        ["git clone", "https"],
+        ["curl", "http"],
+        ["psql", "postgres"]
+      ] as const);
+      return `${command} ${scheme}://${p.K()}:${p.S()}@${p.K()}.example.test/app`;
+    }
+  },
+  {
+    name: "dash-armor",
+    kind: "text",
+    make: (p) => {
+      const q = p.pick(Q);
+      const block = p.pick(["RSA PRIVATE KEY", "OPENSSH PRIVATE KEY", "PGP PRIVATE KEY BLOCK"]);
+      return `passwd=${q}${p.S()}-----${p.S()}${q}\n-----BEGIN ${block}-----\n${p.S()}\n-----END ${block}-----\n${p.K()} after`;
+    }
+  }
 ];
 
 function word(r: () => number, prefix: string, length: number): string {

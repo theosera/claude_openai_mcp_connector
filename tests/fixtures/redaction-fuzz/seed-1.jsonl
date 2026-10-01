@@ -15,156 +15,176 @@
 {"id":"FZ-s1-000014","family":"prose-apostrophe","seed":1,"kind":"text","input":"the mysql client won't prompt if you pass -pFK9YTAYB39 KEEPFY6WWP","secrets":["FK9YTAYB39"],"preserve":["KEEPFY6WWP"]}
 {"id":"FZ-s1-000015","family":"next-line","seed":1,"kind":"text","input":"> token=FKW35P20HF\nKEEP6P8UYQ stays","secrets":["FKW35P20HF"],"preserve":["KEEP6P8UYQ"]}
 {"id":"FZ-s1-000016","family":"preserve-only","seed":1,"kind":"command","input":"grep -rn \"password\" docs/KEEP2Y2DA3 | head -n 3","secrets":[],"preserve":["KEEP2Y2DA3"]}
-{"id":"FZ-s1-000017","family":"mysql-p","seed":1,"kind":"command","input":"> mysql -u app -pFKHL1BHBK7 KEEPLQZEY3","secrets":["FKHL1BHBK7"],"preserve":["KEEPLQZEY3"]}
-{"id":"FZ-s1-000018","family":"mysql-p-quoted","seed":1,"kind":"command","input":"> mysql -h db -p\"FKDQ7R79XG\" KEEPYXX7N7","secrets":["FKDQ7R79XG"],"preserve":["KEEPYXX7N7"]}
-{"id":"FZ-s1-000019","family":"redis-a","seed":1,"kind":"command","input":"redis-cli -h cache -a FKRHAUR3K3 KEEP7QFVVN","secrets":["FKRHAUR3K3"],"preserve":["KEEP7QFVVN"]}
-{"id":"FZ-s1-000020","family":"curl-u","seed":1,"kind":"command","input":"  curl -u deploy:FKYWCPF3VG https://example.test/KEEPTAENW9","secrets":["FKYWCPF3VG"],"preserve":["KEEPTAENW9"]}
-{"id":"FZ-s1-000021","family":"label-quoted","seed":1,"kind":"text","input":"secret: 'FKCY97T3TA' KEEPJ7BN45","secrets":["FKCY97T3TA"],"preserve":["KEEPJ7BN45"]}
-{"id":"FZ-s1-000022","family":"json-pair","seed":1,"kind":"text","input":"{\"api_key\": \"FK4XFBFYTU\", \"KEEPRLY24C\": 1}","secrets":["FK4XFBFYTU"],"preserve":["KEEPRLY24C"]}
-{"id":"FZ-s1-000023","family":"label-bare","seed":1,"kind":"command","input":"  export SECRET=FKN5UNN4W5 KEEPH6Q1EK","secrets":["FKN5UNN4W5"],"preserve":["KEEPH6Q1EK"]}
-{"id":"FZ-s1-000024","family":"adjacent-keywords","seed":1,"kind":"command","input":"password=FK0NUTL009 token=FKC9KDPZPU KEEPN071DL","secrets":["FK0NUTL009","FKC9KDPZPU"],"preserve":["KEEPN071DL"]}
-{"id":"FZ-s1-000025","family":"dash-run","seed":1,"kind":"command","input":"--password FKHBYV93PT------FKYCYNJ26L KEEP26954R","secrets":["FKHBYV93PT","FKYCYNJ26L"],"preserve":["KEEP26954R"]}
-{"id":"FZ-s1-000026","family":"passphrase-quoted","seed":1,"kind":"command","input":"$ gpg --passphrase \"FK61BH4Y2A FKYWBHB1C6\" KEEPGPBYZ5","secrets":["FK61BH4Y2A","FKYWBHB1C6"],"preserve":["KEEPGPBYZ5"]}
-{"id":"FZ-s1-000027","family":"passwd-label","seed":1,"kind":"text","input":"  passwd: FKC7YXLB3G\nKEEPZ6KP85 next line","secrets":["FKC7YXLB3G"],"preserve":["KEEPZ6KP85"]}
-{"id":"FZ-s1-000028","family":"yaml-doubled","seed":1,"kind":"text","input":"password: 'FK2CVNFDGQ''FKVE8LBRGN with X'\nKEEPAY89H3: 1","secrets":["FK2CVNFDGQ","FKVE8LBRGN"],"preserve":["KEEPAY89H3"]}
-{"id":"FZ-s1-000029","family":"shell-quote-join","seed":1,"kind":"command","input":"$ echo 'token='\\''FKH6BCBP4Z'\\'' KEEP100BRQ","secrets":["FKH6BCBP4Z"],"preserve":["KEEP100BRQ"]}
-{"id":"FZ-s1-000030","family":"label-closes-first","seed":1,"kind":"command","input":"$ grep -n 'token: ' src/KEEP0G807F.ts && echo token=FK9AREXCXD KEEPEJ04TT","secrets":["FK9AREXCXD"],"preserve":["KEEP0G807F","KEEPEJ04TT"]}
-{"id":"FZ-s1-000031","family":"prose-apostrophe","seed":1,"kind":"text","input":"  the mysql client won't prompt if you pass -pFK2C8DGVWX KEEPDNZ0NU","secrets":["FK2C8DGVWX"],"preserve":["KEEPDNZ0NU"]}
-{"id":"FZ-s1-000032","family":"next-line","seed":1,"kind":"text","input":"> token=FK8Y721L63\nKEEPTL387C stays","secrets":["FK8Y721L63"],"preserve":["KEEPTL387C"]}
-{"id":"FZ-s1-000033","family":"preserve-only","seed":1,"kind":"command","input":"  grep -rn \"password\" docs/KEEPU9VB9V | head -n 3","secrets":[],"preserve":["KEEPU9VB9V"]}
-{"id":"FZ-s1-000034","family":"mysql-p","seed":1,"kind":"command","input":"> mysql -u app -pFKA23276ZB KEEPZR8VXF","secrets":["FKA23276ZB"],"preserve":["KEEPZR8VXF"]}
-{"id":"FZ-s1-000035","family":"mysql-p-quoted","seed":1,"kind":"command","input":"> mysql -h db -p\"FKYFKR5V8N\" KEEPHXNB7B","secrets":["FKYFKR5V8N"],"preserve":["KEEPHXNB7B"]}
-{"id":"FZ-s1-000036","family":"redis-a","seed":1,"kind":"command","input":"redis-cli -h cache -a FK5FE1W1HZ KEEPN82HJL","secrets":["FK5FE1W1HZ"],"preserve":["KEEPN82HJL"]}
-{"id":"FZ-s1-000037","family":"curl-u","seed":1,"kind":"command","input":"curl -u deploy:FKZAJ9QKZ1 https://example.test/KEEPK090CZ","secrets":["FKZAJ9QKZ1"],"preserve":["KEEPK090CZ"]}
-{"id":"FZ-s1-000038","family":"label-quoted","seed":1,"kind":"text","input":"token: \"FK9UQ8CP38\" KEEPCYJ8EC","secrets":["FK9UQ8CP38"],"preserve":["KEEPCYJ8EC"]}
-{"id":"FZ-s1-000039","family":"json-pair","seed":1,"kind":"text","input":"$ {\"password\": \"FKZKANN12V\", \"KEEP09J8QY\": 1}","secrets":["FKZKANN12V"],"preserve":["KEEP09J8QY"]}
-{"id":"FZ-s1-000040","family":"label-bare","seed":1,"kind":"command","input":"export PAT=FKR1XZ3JLK KEEP1YP3ZA","secrets":["FKR1XZ3JLK"],"preserve":["KEEP1YP3ZA"]}
-{"id":"FZ-s1-000041","family":"adjacent-keywords","seed":1,"kind":"command","input":"> password=FK90PF2L4H token=FK2FZANKP0 KEEPCRRG0G","secrets":["FK90PF2L4H","FK2FZANKP0"],"preserve":["KEEPCRRG0G"]}
-{"id":"FZ-s1-000042","family":"dash-run","seed":1,"kind":"command","input":"  --password FKF6Y3LLEP--------FKYHYXN9R3 KEEP6W0Y56","secrets":["FKF6Y3LLEP","FKYHYXN9R3"],"preserve":["KEEP6W0Y56"]}
-{"id":"FZ-s1-000043","family":"passphrase-quoted","seed":1,"kind":"command","input":"  gpg --passphrase 'FKZRGG5EHW FKA725WK7G' KEEPZD10J0","secrets":["FKZRGG5EHW","FKA725WK7G"],"preserve":["KEEPZD10J0"]}
-{"id":"FZ-s1-000044","family":"passwd-label","seed":1,"kind":"text","input":"$ passwd: FK6JJN1YZA\nKEEP64HXGF next line","secrets":["FK6JJN1YZA"],"preserve":["KEEP64HXGF"]}
-{"id":"FZ-s1-000045","family":"yaml-doubled","seed":1,"kind":"text","input":"password: 'FKCFWJPZ6L''FK6RT9Q7UQ with X'\nKEEP9LA0BE: 1","secrets":["FKCFWJPZ6L","FK6RT9Q7UQ"],"preserve":["KEEP9LA0BE"]}
-{"id":"FZ-s1-000046","family":"shell-quote-join","seed":1,"kind":"command","input":"  echo 'token='\\''FK63Z9A1AF'\\'' KEEPUHW4N8","secrets":["FK63Z9A1AF"],"preserve":["KEEPUHW4N8"]}
-{"id":"FZ-s1-000047","family":"label-closes-first","seed":1,"kind":"command","input":"grep -n \"token: \" src/KEEP44TDFC.ts && echo token=FKUDVU3G3L KEEPUPP7NQ","secrets":["FKUDVU3G3L"],"preserve":["KEEP44TDFC","KEEPUPP7NQ"]}
-{"id":"FZ-s1-000048","family":"prose-apostrophe","seed":1,"kind":"text","input":"$ the mysql client won't prompt if you pass -pFK4414K45X KEEPDA4X41","secrets":["FK4414K45X"],"preserve":["KEEPDA4X41"]}
-{"id":"FZ-s1-000049","family":"next-line","seed":1,"kind":"text","input":"$ token=FKW6NRFQVU\nKEEPGPR7LW stays","secrets":["FKW6NRFQVU"],"preserve":["KEEPGPR7LW"]}
-{"id":"FZ-s1-000050","family":"preserve-only","seed":1,"kind":"command","input":"> grep -rn \"password\" docs/KEEPC46T7B | head -n 3","secrets":[],"preserve":["KEEPC46T7B"]}
-{"id":"FZ-s1-000051","family":"mysql-p","seed":1,"kind":"command","input":"mysql -u app -pFK94H2RXDZ KEEPHF4E22","secrets":["FK94H2RXDZ"],"preserve":["KEEPHF4E22"]}
-{"id":"FZ-s1-000052","family":"mysql-p-quoted","seed":1,"kind":"command","input":"mysql -h db -p\"FK7B1L2KWQ\" KEEP4W84NZ","secrets":["FK7B1L2KWQ"],"preserve":["KEEP4W84NZ"]}
-{"id":"FZ-s1-000053","family":"redis-a","seed":1,"kind":"command","input":"redis-cli -h cache -a FK6BDB3P9X KEEPLHYQ46","secrets":["FK6BDB3P9X"],"preserve":["KEEPLHYQ46"]}
-{"id":"FZ-s1-000054","family":"curl-u","seed":1,"kind":"command","input":"  curl -u deploy:FK340A85TP https://example.test/KEEPA1B023","secrets":["FK340A85TP"],"preserve":["KEEPA1B023"]}
-{"id":"FZ-s1-000055","family":"label-quoted","seed":1,"kind":"text","input":"> token: \"FK591HGAB9\" KEEPLLGKE4","secrets":["FK591HGAB9"],"preserve":["KEEPLLGKE4"]}
-{"id":"FZ-s1-000056","family":"json-pair","seed":1,"kind":"text","input":"{\"api_key\": \"FK8P2FVW7L\", \"KEEPXE6RC9\": 1}","secrets":["FK8P2FVW7L"],"preserve":["KEEPXE6RC9"]}
-{"id":"FZ-s1-000057","family":"label-bare","seed":1,"kind":"command","input":"$ export API_KEY=FKY45XX87J KEEPEE94X0","secrets":["FKY45XX87J"],"preserve":["KEEPEE94X0"]}
-{"id":"FZ-s1-000058","family":"adjacent-keywords","seed":1,"kind":"command","input":"$ password=FKRQ2PYQKW token=FKY8Y42YD6 KEEPN2A3FF","secrets":["FKRQ2PYQKW","FKY8Y42YD6"],"preserve":["KEEPN2A3FF"]}
-{"id":"FZ-s1-000059","family":"dash-run","seed":1,"kind":"command","input":"$ --password FKXK1XLJTR-----FKVBJ0VEJE KEEP23RF7N","secrets":["FKXK1XLJTR","FKVBJ0VEJE"],"preserve":["KEEP23RF7N"]}
-{"id":"FZ-s1-000060","family":"passphrase-quoted","seed":1,"kind":"command","input":"> gpg --passphrase 'FKHE77L7RT FK7R5WZHX8' KEEPDXHD0R","secrets":["FKHE77L7RT","FK7R5WZHX8"],"preserve":["KEEPDXHD0R"]}
-{"id":"FZ-s1-000061","family":"passwd-label","seed":1,"kind":"text","input":"passwd: FK1NKY6D22\nKEEP8K0NWC next line","secrets":["FK1NKY6D22"],"preserve":["KEEP8K0NWC"]}
-{"id":"FZ-s1-000062","family":"yaml-doubled","seed":1,"kind":"text","input":"  password: 'FKYQYRDYA2''FKEABCYDW5 with X'\nKEEPRP1EP6: 1","secrets":["FKYQYRDYA2","FKEABCYDW5"],"preserve":["KEEPRP1EP6"]}
-{"id":"FZ-s1-000063","family":"shell-quote-join","seed":1,"kind":"command","input":"  echo 'token='\\''FKWY3QB832'\\'' KEEPQQ4T6K","secrets":["FKWY3QB832"],"preserve":["KEEPQQ4T6K"]}
-{"id":"FZ-s1-000064","family":"label-closes-first","seed":1,"kind":"command","input":"grep -n \"token: \" src/KEEPEHG6RQ.ts && echo token=FKUAP8K1K0 KEEPTZUEC5","secrets":["FKUAP8K1K0"],"preserve":["KEEPEHG6RQ","KEEPTZUEC5"]}
-{"id":"FZ-s1-000065","family":"prose-apostrophe","seed":1,"kind":"text","input":"> the mysql client won't prompt if you pass -pFK629DRB7T KEEPC88N0U","secrets":["FK629DRB7T"],"preserve":["KEEPC88N0U"]}
-{"id":"FZ-s1-000066","family":"next-line","seed":1,"kind":"text","input":"token=FKTVUT1YD7\nKEEP0PE8TA stays","secrets":["FKTVUT1YD7"],"preserve":["KEEP0PE8TA"]}
-{"id":"FZ-s1-000067","family":"preserve-only","seed":1,"kind":"command","input":"$ grep -rn \"password\" docs/KEEPGLV8ZR | head -n 3","secrets":[],"preserve":["KEEPGLV8ZR"]}
-{"id":"FZ-s1-000068","family":"mysql-p","seed":1,"kind":"command","input":"> mysql -u app -pFKN83VRQ3Y KEEPL2YJZX","secrets":["FKN83VRQ3Y"],"preserve":["KEEPL2YJZX"]}
-{"id":"FZ-s1-000069","family":"mysql-p-quoted","seed":1,"kind":"command","input":"mysql -h db -p\"FKQ5B95GQR\" KEEPY5THT0","secrets":["FKQ5B95GQR"],"preserve":["KEEPY5THT0"]}
-{"id":"FZ-s1-000070","family":"redis-a","seed":1,"kind":"command","input":"$ redis-cli -h cache -a FK04L33F7J KEEP1NK83H","secrets":["FK04L33F7J"],"preserve":["KEEP1NK83H"]}
-{"id":"FZ-s1-000071","family":"curl-u","seed":1,"kind":"command","input":"curl -u deploy:FKJW618GCR https://example.test/KEEP0QKK6A","secrets":["FKJW618GCR"],"preserve":["KEEP0QKK6A"]}
-{"id":"FZ-s1-000072","family":"label-quoted","seed":1,"kind":"text","input":"$ token: \"FK2C9DGPNW\" KEEPPKN5RZ","secrets":["FK2C9DGPNW"],"preserve":["KEEPPKN5RZ"]}
-{"id":"FZ-s1-000073","family":"json-pair","seed":1,"kind":"text","input":"> {\"api_key\": \"FKQYX372ZX\", \"KEEP2AC4Y7\": 1}","secrets":["FKQYX372ZX"],"preserve":["KEEP2AC4Y7"]}
-{"id":"FZ-s1-000074","family":"label-bare","seed":1,"kind":"command","input":"export PASSWORD=FK59838HXX KEEPN4R3YC","secrets":["FK59838HXX"],"preserve":["KEEPN4R3YC"]}
-{"id":"FZ-s1-000075","family":"adjacent-keywords","seed":1,"kind":"command","input":"$ password=FKZ9EYF1Z0 token=FKTP1FLCXD KEEP6GVJ3F","secrets":["FKZ9EYF1Z0","FKTP1FLCXD"],"preserve":["KEEP6GVJ3F"]}
-{"id":"FZ-s1-000076","family":"dash-run","seed":1,"kind":"command","input":"$ --password FKP803V7Y1-----FK8V34EKXH KEEPR8U1ZZ","secrets":["FKP803V7Y1","FK8V34EKXH"],"preserve":["KEEPR8U1ZZ"]}
-{"id":"FZ-s1-000077","family":"passphrase-quoted","seed":1,"kind":"command","input":"gpg --passphrase 'FKW7BBN36G FKE7RDKU5L' KEEP2DVATL","secrets":["FKW7BBN36G","FKE7RDKU5L"],"preserve":["KEEP2DVATL"]}
-{"id":"FZ-s1-000078","family":"passwd-label","seed":1,"kind":"text","input":"passwd: FKG2QFJYLZ\nKEEPCKG4W0 next line","secrets":["FKG2QFJYLZ"],"preserve":["KEEPCKG4W0"]}
-{"id":"FZ-s1-000079","family":"yaml-doubled","seed":1,"kind":"text","input":"> password: 'FKDZ57YTLV''FKAYBC4ZJ2 with X'\nKEEPD180R1: 1","secrets":["FKDZ57YTLV","FKAYBC4ZJ2"],"preserve":["KEEPD180R1"]}
-{"id":"FZ-s1-000080","family":"shell-quote-join","seed":1,"kind":"command","input":"  echo 'token='\\''FKZ1HT4XLJ'\\'' KEEPQKR54C","secrets":["FKZ1HT4XLJ"],"preserve":["KEEPQKR54C"]}
-{"id":"FZ-s1-000081","family":"label-closes-first","seed":1,"kind":"command","input":"$ grep -n 'token: ' src/KEEPFAJTL8.ts && echo token=FKA7FW5YH3 KEEP36CUPD","secrets":["FKA7FW5YH3"],"preserve":["KEEPFAJTL8","KEEP36CUPD"]}
-{"id":"FZ-s1-000082","family":"prose-apostrophe","seed":1,"kind":"text","input":"the mysql client won't prompt if you pass -pFK3HHFL9QV KEEP4GVU78","secrets":["FK3HHFL9QV"],"preserve":["KEEP4GVU78"]}
-{"id":"FZ-s1-000083","family":"next-line","seed":1,"kind":"text","input":"$ token=FKXA07Z94D\nKEEP4FX0UY stays","secrets":["FKXA07Z94D"],"preserve":["KEEP4FX0UY"]}
-{"id":"FZ-s1-000084","family":"preserve-only","seed":1,"kind":"command","input":"> grep -rn \"password\" docs/KEEP8CLDLG | head -n 3","secrets":[],"preserve":["KEEP8CLDLG"]}
-{"id":"FZ-s1-000085","family":"mysql-p","seed":1,"kind":"command","input":"$ mysql -u app -pFK5AYC29NT KEEPBVEA8H","secrets":["FK5AYC29NT"],"preserve":["KEEPBVEA8H"]}
-{"id":"FZ-s1-000086","family":"mysql-p-quoted","seed":1,"kind":"command","input":"> mysql -h db -p'FKA9LBKE2A' KEEP0UJ4QA","secrets":["FKA9LBKE2A"],"preserve":["KEEP0UJ4QA"]}
-{"id":"FZ-s1-000087","family":"redis-a","seed":1,"kind":"command","input":"$ redis-cli -h cache -a FK4QU2B1GR KEEPPEN4XP","secrets":["FK4QU2B1GR"],"preserve":["KEEPPEN4XP"]}
-{"id":"FZ-s1-000088","family":"curl-u","seed":1,"kind":"command","input":"curl -u deploy:FKFP4J8B5Y https://example.test/KEEPFB8AY1","secrets":["FKFP4J8B5Y"],"preserve":["KEEPFB8AY1"]}
-{"id":"FZ-s1-000089","family":"label-quoted","seed":1,"kind":"text","input":"> api_key: 'FKCL3YFFCK' KEEP119VTU","secrets":["FKCL3YFFCK"],"preserve":["KEEP119VTU"]}
-{"id":"FZ-s1-000090","family":"json-pair","seed":1,"kind":"text","input":"{\"token\": \"FKLEXE12DY\", \"KEEP3XCYKG\": 1}","secrets":["FKLEXE12DY"],"preserve":["KEEP3XCYKG"]}
-{"id":"FZ-s1-000091","family":"label-bare","seed":1,"kind":"command","input":"$ export PAT=FKL0QNGBTL KEEPD8Y7LV","secrets":["FKL0QNGBTL"],"preserve":["KEEPD8Y7LV"]}
-{"id":"FZ-s1-000092","family":"adjacent-keywords","seed":1,"kind":"command","input":"> password=FK0BT15F2B token=FK0DKYWU37 KEEPL2BQ8F","secrets":["FK0BT15F2B","FK0DKYWU37"],"preserve":["KEEPL2BQ8F"]}
-{"id":"FZ-s1-000093","family":"dash-run","seed":1,"kind":"command","input":"--password FKGPZ3CK56------FK5Z3G6A2V KEEPGA67UG","secrets":["FKGPZ3CK56","FK5Z3G6A2V"],"preserve":["KEEPGA67UG"]}
-{"id":"FZ-s1-000094","family":"passphrase-quoted","seed":1,"kind":"command","input":"$ gpg --passphrase 'FKLRFW1GF4 FK41VLA65J' KEEPZPN576","secrets":["FKLRFW1GF4","FK41VLA65J"],"preserve":["KEEPZPN576"]}
-{"id":"FZ-s1-000095","family":"passwd-label","seed":1,"kind":"text","input":"$ passwd: FKQ82QFB73\nKEEPNZUL0E next line","secrets":["FKQ82QFB73"],"preserve":["KEEPNZUL0E"]}
-{"id":"FZ-s1-000096","family":"yaml-doubled","seed":1,"kind":"text","input":"password: 'FK5580BEHG''FK9CWQTTLC with X'\nKEEPBZ0F0W: 1","secrets":["FK5580BEHG","FK9CWQTTLC"],"preserve":["KEEPBZ0F0W"]}
-{"id":"FZ-s1-000097","family":"shell-quote-join","seed":1,"kind":"command","input":"echo 'token='\\''FKBPPHG0PG'\\'' KEEPRBH2J7","secrets":["FKBPPHG0PG"],"preserve":["KEEPRBH2J7"]}
-{"id":"FZ-s1-000098","family":"label-closes-first","seed":1,"kind":"command","input":"$ grep -n \"token: \" src/KEEPW0FX71.ts && echo token=FKKX5FTB42 KEEP1LZXUH","secrets":["FKKX5FTB42"],"preserve":["KEEPW0FX71","KEEP1LZXUH"]}
-{"id":"FZ-s1-000099","family":"prose-apostrophe","seed":1,"kind":"text","input":"> the mysql client won't prompt if you pass -pFK2A0B80V8 KEEP15U5TF","secrets":["FK2A0B80V8"],"preserve":["KEEP15U5TF"]}
-{"id":"FZ-s1-000100","family":"next-line","seed":1,"kind":"text","input":"> token=FKH7ADG0H7\nKEEPHGQW6W stays","secrets":["FKH7ADG0H7"],"preserve":["KEEPHGQW6W"]}
-{"id":"FZ-s1-000101","family":"preserve-only","seed":1,"kind":"command","input":"$ grep -rn \"password\" docs/KEEPNXXHD1 | head -n 3","secrets":[],"preserve":["KEEPNXXHD1"]}
-{"id":"FZ-s1-000102","family":"mysql-p","seed":1,"kind":"command","input":"> mysql -u app -pFKJA8JY4CT KEEP064RRD","secrets":["FKJA8JY4CT"],"preserve":["KEEP064RRD"]}
-{"id":"FZ-s1-000103","family":"mysql-p-quoted","seed":1,"kind":"command","input":"mysql -h db -p'FKTQ3D4Q33' KEEPX59HQ4","secrets":["FKTQ3D4Q33"],"preserve":["KEEPX59HQ4"]}
-{"id":"FZ-s1-000104","family":"redis-a","seed":1,"kind":"command","input":"redis-cli -h cache -a FKJXFRUG4U KEEP7YRRAP","secrets":["FKJXFRUG4U"],"preserve":["KEEP7YRRAP"]}
-{"id":"FZ-s1-000105","family":"curl-u","seed":1,"kind":"command","input":"curl -u deploy:FK6THZV1HL https://example.test/KEEPZ8E82N","secrets":["FK6THZV1HL"],"preserve":["KEEPZ8E82N"]}
-{"id":"FZ-s1-000106","family":"label-quoted","seed":1,"kind":"text","input":"$ api_key: \"FKCXC1A5KD\" KEEP1296YA","secrets":["FKCXC1A5KD"],"preserve":["KEEP1296YA"]}
-{"id":"FZ-s1-000107","family":"json-pair","seed":1,"kind":"text","input":"{\"password\": \"FK539UL5NH\", \"KEEPG4KY3C\": 1}","secrets":["FK539UL5NH"],"preserve":["KEEPG4KY3C"]}
-{"id":"FZ-s1-000108","family":"label-bare","seed":1,"kind":"command","input":"export PAT=FK5AHCJQJH KEEP636NTU","secrets":["FK5AHCJQJH"],"preserve":["KEEP636NTU"]}
-{"id":"FZ-s1-000109","family":"adjacent-keywords","seed":1,"kind":"command","input":"  password=FKN08Z9RRD token=FK36YDD6T6 KEEPGWZ690","secrets":["FKN08Z9RRD","FK36YDD6T6"],"preserve":["KEEPGWZ690"]}
-{"id":"FZ-s1-000110","family":"dash-run","seed":1,"kind":"command","input":"> --password FK5GA7WLFV-------FK0NB55VCN KEEP2YYF0H","secrets":["FK5GA7WLFV","FK0NB55VCN"],"preserve":["KEEP2YYF0H"]}
-{"id":"FZ-s1-000111","family":"passphrase-quoted","seed":1,"kind":"command","input":"  gpg --passphrase \"FKLFHK9VDR FKZVJEVW7U\" KEEPBCCE2V","secrets":["FKLFHK9VDR","FKZVJEVW7U"],"preserve":["KEEPBCCE2V"]}
-{"id":"FZ-s1-000112","family":"passwd-label","seed":1,"kind":"text","input":"> passwd: FK9BU5868N\nKEEP3ETZFH next line","secrets":["FK9BU5868N"],"preserve":["KEEP3ETZFH"]}
-{"id":"FZ-s1-000113","family":"yaml-doubled","seed":1,"kind":"text","input":"password: 'FKVY9BVL3X''FKJJNP11GX with X'\nKEEPBD8UFT: 1","secrets":["FKVY9BVL3X","FKJJNP11GX"],"preserve":["KEEPBD8UFT"]}
-{"id":"FZ-s1-000114","family":"shell-quote-join","seed":1,"kind":"command","input":"echo 'token='\\''FK7AW0KU0R'\\'' KEEPEQZ4NU","secrets":["FK7AW0KU0R"],"preserve":["KEEPEQZ4NU"]}
-{"id":"FZ-s1-000115","family":"label-closes-first","seed":1,"kind":"command","input":"> grep -n 'token: ' src/KEEPZPNUH6.ts && echo token=FKXCAA72L4 KEEPJ74WVG","secrets":["FKXCAA72L4"],"preserve":["KEEPZPNUH6","KEEPJ74WVG"]}
-{"id":"FZ-s1-000116","family":"prose-apostrophe","seed":1,"kind":"text","input":"> the mysql client won't prompt if you pass -pFKJK62W5PA KEEPY0RFBN","secrets":["FKJK62W5PA"],"preserve":["KEEPY0RFBN"]}
-{"id":"FZ-s1-000117","family":"next-line","seed":1,"kind":"text","input":"token=FKLQZ99UE9\nKEEP5YDUZX stays","secrets":["FKLQZ99UE9"],"preserve":["KEEP5YDUZX"]}
-{"id":"FZ-s1-000118","family":"preserve-only","seed":1,"kind":"command","input":"> grep -rn \"password\" docs/KEEP3FPYXW | head -n 3","secrets":[],"preserve":["KEEP3FPYXW"]}
-{"id":"FZ-s1-000119","family":"mysql-p","seed":1,"kind":"command","input":"$ mysql -u app -pFK7WTP9EXG KEEPD9AQ4J","secrets":["FK7WTP9EXG"],"preserve":["KEEPD9AQ4J"]}
-{"id":"FZ-s1-000120","family":"mysql-p-quoted","seed":1,"kind":"command","input":"$ mysql -h db -p'FKCP9U7E07' KEEPHQP7RH","secrets":["FKCP9U7E07"],"preserve":["KEEPHQP7RH"]}
-{"id":"FZ-s1-000121","family":"redis-a","seed":1,"kind":"command","input":"redis-cli -h cache -a FKCTLEQD1K KEEPT4T49L","secrets":["FKCTLEQD1K"],"preserve":["KEEPT4T49L"]}
-{"id":"FZ-s1-000122","family":"curl-u","seed":1,"kind":"command","input":"curl -u deploy:FK9GWTD9Y4 https://example.test/KEEPZ37HEF","secrets":["FK9GWTD9Y4"],"preserve":["KEEPZ37HEF"]}
-{"id":"FZ-s1-000123","family":"label-quoted","seed":1,"kind":"text","input":"> api_key: \"FKQCEQH12C\" KEEPB5P380","secrets":["FKQCEQH12C"],"preserve":["KEEPB5P380"]}
-{"id":"FZ-s1-000124","family":"json-pair","seed":1,"kind":"text","input":"{\"token\": \"FK2D91V8ZJ\", \"KEEPNG2RUF\": 1}","secrets":["FK2D91V8ZJ"],"preserve":["KEEPNG2RUF"]}
-{"id":"FZ-s1-000125","family":"label-bare","seed":1,"kind":"command","input":"export SECRET=FKG1HWHL5X KEEPUZ484W","secrets":["FKG1HWHL5X"],"preserve":["KEEPUZ484W"]}
-{"id":"FZ-s1-000126","family":"adjacent-keywords","seed":1,"kind":"command","input":"password=FKD2QY0023 token=FKFX6WH7NN KEEPN33BDD","secrets":["FKD2QY0023","FKFX6WH7NN"],"preserve":["KEEPN33BDD"]}
-{"id":"FZ-s1-000127","family":"dash-run","seed":1,"kind":"command","input":"$ --password FKL8TV1CPP----FKCPD4DG82 KEEPZ590ZY","secrets":["FKL8TV1CPP","FKCPD4DG82"],"preserve":["KEEPZ590ZY"]}
-{"id":"FZ-s1-000128","family":"passphrase-quoted","seed":1,"kind":"command","input":"  gpg --passphrase 'FKH4B61K3L FKRXYAG0QZ' KEEP06VRTP","secrets":["FKH4B61K3L","FKRXYAG0QZ"],"preserve":["KEEP06VRTP"]}
-{"id":"FZ-s1-000129","family":"passwd-label","seed":1,"kind":"text","input":"passwd: FKQ32FVYDW\nKEEPGQ5JV5 next line","secrets":["FKQ32FVYDW"],"preserve":["KEEPGQ5JV5"]}
-{"id":"FZ-s1-000130","family":"yaml-doubled","seed":1,"kind":"text","input":"> password: 'FKBV4LECVE''FK32677V6Q with X'\nKEEPZ6FG5K: 1","secrets":["FKBV4LECVE","FK32677V6Q"],"preserve":["KEEPZ6FG5K"]}
-{"id":"FZ-s1-000131","family":"shell-quote-join","seed":1,"kind":"command","input":"echo 'token='\\''FKBPD4Z6BV'\\'' KEEP1P2DHU","secrets":["FKBPD4Z6BV"],"preserve":["KEEP1P2DHU"]}
-{"id":"FZ-s1-000132","family":"label-closes-first","seed":1,"kind":"command","input":"grep -n 'token: ' src/KEEP6HBLW0.ts && echo token=FKQG2GWUC4 KEEPRYR7ZD","secrets":["FKQG2GWUC4"],"preserve":["KEEP6HBLW0","KEEPRYR7ZD"]}
-{"id":"FZ-s1-000133","family":"prose-apostrophe","seed":1,"kind":"text","input":"  the mysql client won't prompt if you pass -pFK4ZXG2ZKC KEEP6957R8","secrets":["FK4ZXG2ZKC"],"preserve":["KEEP6957R8"]}
-{"id":"FZ-s1-000134","family":"next-line","seed":1,"kind":"text","input":"$ token=FKWV3QTLTE\nKEEPXD485J stays","secrets":["FKWV3QTLTE"],"preserve":["KEEPXD485J"]}
-{"id":"FZ-s1-000135","family":"preserve-only","seed":1,"kind":"command","input":"grep -rn \"password\" docs/KEEPPF23BR | head -n 3","secrets":[],"preserve":["KEEPPF23BR"]}
-{"id":"FZ-s1-000136","family":"mysql-p","seed":1,"kind":"command","input":"  mysql -u app -pFK2ZWR9VJB KEEPPWE014","secrets":["FK2ZWR9VJB"],"preserve":["KEEPPWE014"]}
-{"id":"FZ-s1-000137","family":"mysql-p-quoted","seed":1,"kind":"command","input":"$ mysql -h db -p\"FKHECP6C56\" KEEPA0N5R5","secrets":["FKHECP6C56"],"preserve":["KEEPA0N5R5"]}
-{"id":"FZ-s1-000138","family":"redis-a","seed":1,"kind":"command","input":"> redis-cli -h cache -a FKFPXABLH2 KEEPEL1HDG","secrets":["FKFPXABLH2"],"preserve":["KEEPEL1HDG"]}
-{"id":"FZ-s1-000139","family":"curl-u","seed":1,"kind":"command","input":"curl -u deploy:FK24F1G0FC https://example.test/KEEPA6B7N1","secrets":["FK24F1G0FC"],"preserve":["KEEPA6B7N1"]}
-{"id":"FZ-s1-000140","family":"label-quoted","seed":1,"kind":"text","input":"$ token: 'FK0DHY8KXL' KEEPU415Q1","secrets":["FK0DHY8KXL"],"preserve":["KEEPU415Q1"]}
-{"id":"FZ-s1-000141","family":"json-pair","seed":1,"kind":"text","input":"{\"pat\": \"FKKZQX85TL\", \"KEEP3K0TCJ\": 1}","secrets":["FKKZQX85TL"],"preserve":["KEEP3K0TCJ"]}
-{"id":"FZ-s1-000142","family":"label-bare","seed":1,"kind":"command","input":"export TOKEN=FKPCRWZVG4 KEEPH1DL6L","secrets":["FKPCRWZVG4"],"preserve":["KEEPH1DL6L"]}
-{"id":"FZ-s1-000143","family":"adjacent-keywords","seed":1,"kind":"command","input":"> password=FKKJUJHA8R token=FK8LLT7VYK KEEPV93K4H","secrets":["FKKJUJHA8R","FK8LLT7VYK"],"preserve":["KEEPV93K4H"]}
-{"id":"FZ-s1-000144","family":"dash-run","seed":1,"kind":"command","input":"> --password FK518A8L95-----FKQ2A2TKG3 KEEP4DJR5U","secrets":["FK518A8L95","FKQ2A2TKG3"],"preserve":["KEEP4DJR5U"]}
-{"id":"FZ-s1-000145","family":"passphrase-quoted","seed":1,"kind":"command","input":"$ gpg --passphrase 'FKR820WGKA FKB9NVB2X0' KEEPD25G26","secrets":["FKR820WGKA","FKB9NVB2X0"],"preserve":["KEEPD25G26"]}
-{"id":"FZ-s1-000146","family":"passwd-label","seed":1,"kind":"text","input":"passwd: FKLP2N0YDZ\nKEEPEP46EW next line","secrets":["FKLP2N0YDZ"],"preserve":["KEEPEP46EW"]}
-{"id":"FZ-s1-000147","family":"yaml-doubled","seed":1,"kind":"text","input":"$ password: 'FK2C2JJ28H''FKRJ4K8VV3 with X'\nKEEPEQ6P89: 1","secrets":["FK2C2JJ28H","FKRJ4K8VV3"],"preserve":["KEEPEQ6P89"]}
-{"id":"FZ-s1-000148","family":"shell-quote-join","seed":1,"kind":"command","input":"echo 'token='\\''FKC5XL1WBE'\\'' KEEPE4Q6U8","secrets":["FKC5XL1WBE"],"preserve":["KEEPE4Q6U8"]}
-{"id":"FZ-s1-000149","family":"label-closes-first","seed":1,"kind":"command","input":"grep -n 'token: ' src/KEEPVTF2P8.ts && echo token=FKN2FDKEG6 KEEP190GKJ","secrets":["FKN2FDKEG6"],"preserve":["KEEPVTF2P8","KEEP190GKJ"]}
-{"id":"FZ-s1-000150","family":"prose-apostrophe","seed":1,"kind":"text","input":"> the mysql client won't prompt if you pass -pFK6C93VEU7 KEEPL05DKX","secrets":["FK6C93VEU7"],"preserve":["KEEPL05DKX"]}
-{"id":"FZ-s1-000151","family":"next-line","seed":1,"kind":"text","input":"$ token=FKJ9CEAKQZ\nKEEP35NDA6 stays","secrets":["FKJ9CEAKQZ"],"preserve":["KEEP35NDA6"]}
-{"id":"FZ-s1-000152","family":"preserve-only","seed":1,"kind":"command","input":"> grep -rn \"password\" docs/KEEP55WAQR | head -n 3","secrets":[],"preserve":["KEEP55WAQR"]}
-{"id":"FZ-s1-000153","family":"mysql-p","seed":1,"kind":"command","input":"mysql -u app -pFK2E46J8ZN KEEPUR8WZP","secrets":["FK2E46J8ZN"],"preserve":["KEEPUR8WZP"]}
-{"id":"FZ-s1-000154","family":"mysql-p-quoted","seed":1,"kind":"command","input":"> mysql -h db -p\"FKY4B8P5HK\" KEEPYU97RC","secrets":["FKY4B8P5HK"],"preserve":["KEEPYU97RC"]}
-{"id":"FZ-s1-000155","family":"redis-a","seed":1,"kind":"command","input":"$ redis-cli -h cache -a FK3XZWTFP9 KEEP03VWUZ","secrets":["FK3XZWTFP9"],"preserve":["KEEP03VWUZ"]}
-{"id":"FZ-s1-000156","family":"curl-u","seed":1,"kind":"command","input":"> curl -u deploy:FKH28XR0NC https://example.test/KEEPQT6WWD","secrets":["FKH28XR0NC"],"preserve":["KEEPQT6WWD"]}
-{"id":"FZ-s1-000157","family":"label-quoted","seed":1,"kind":"text","input":"> pat: \"FKNG0GN8KY\" KEEPBV49UC","secrets":["FKNG0GN8KY"],"preserve":["KEEPBV49UC"]}
-{"id":"FZ-s1-000158","family":"json-pair","seed":1,"kind":"text","input":"$ {\"api_key\": \"FK1HUNTWEW\", \"KEEPY4Y172\": 1}","secrets":["FK1HUNTWEW"],"preserve":["KEEPY4Y172"]}
-{"id":"FZ-s1-000159","family":"label-bare","seed":1,"kind":"command","input":"  export PAT=FKPZ7G984E KEEP7BJP1F","secrets":["FKPZ7G984E"],"preserve":["KEEP7BJP1F"]}
-{"id":"FZ-s1-000160","family":"adjacent-keywords","seed":1,"kind":"command","input":"password=FKEE0AJT8A token=FKZ72RCEJX KEEPNKER3U","secrets":["FKEE0AJT8A","FKZ72RCEJX"],"preserve":["KEEPNKER3U"]}
-{"id":"FZ-s1-000161","family":"dash-run","seed":1,"kind":"command","input":"  --password FKCVQF0FBK-----FKA4PF2YUW KEEPDW80PU","secrets":["FKCVQF0FBK","FKA4PF2YUW"],"preserve":["KEEPDW80PU"]}
-{"id":"FZ-s1-000162","family":"passphrase-quoted","seed":1,"kind":"command","input":"gpg --passphrase 'FKTCR6ZC5U FKQ0WWQFZR' KEEPW4AJF1","secrets":["FKTCR6ZC5U","FKQ0WWQFZR"],"preserve":["KEEPW4AJF1"]}
-{"id":"FZ-s1-000163","family":"passwd-label","seed":1,"kind":"text","input":"passwd: FKH4NF4BX0\nKEEPPZC6UX next line","secrets":["FKH4NF4BX0"],"preserve":["KEEPPZC6UX"]}
-{"id":"FZ-s1-000164","family":"yaml-doubled","seed":1,"kind":"text","input":"> password: 'FK3B13L0F3''FKVVY40C0B with X'\nKEEPZVKWH1: 1","secrets":["FK3B13L0F3","FKVVY40C0B"],"preserve":["KEEPZVKWH1"]}
-{"id":"FZ-s1-000165","family":"shell-quote-join","seed":1,"kind":"command","input":"> echo 'token='\\''FKC1JBDDAB'\\'' KEEP08WGYB","secrets":["FKC1JBDDAB"],"preserve":["KEEP08WGYB"]}
-{"id":"FZ-s1-000166","family":"label-closes-first","seed":1,"kind":"command","input":"> grep -n \"token: \" src/KEEP84WRY1.ts && echo token=FK7L4D0GV1 KEEPEQ5B7R","secrets":["FK7L4D0GV1"],"preserve":["KEEP84WRY1","KEEPEQ5B7R"]}
-{"id":"FZ-s1-000167","family":"prose-apostrophe","seed":1,"kind":"text","input":"$ the mysql client won't prompt if you pass -pFKFGK9ZFJ8 KEEPAJDWT9","secrets":["FKFGK9ZFJ8"],"preserve":["KEEPAJDWT9"]}
-{"id":"FZ-s1-000168","family":"next-line","seed":1,"kind":"text","input":"> token=FK808L3TFV\nKEEPFBK2TA stays","secrets":["FK808L3TFV"],"preserve":["KEEPFBK2TA"]}
-{"id":"FZ-s1-000169","family":"preserve-only","seed":1,"kind":"command","input":"grep -rn \"password\" docs/KEEPXUED6T | head -n 3","secrets":[],"preserve":["KEEPXUED6T"]}
+{"id":"FZ-s1-000017","family":"url-userinfo","seed":1,"kind":"command","input":"> git clone https://KEEPL1BHBK:FK7LQZEY3Z@KEEPTDQ7R7.example.test/app","secrets":["FK7LQZEY3Z"],"preserve":["KEEPL1BHBK","KEEPTDQ7R7"]}
+{"id":"FZ-s1-000018","family":"dash-armor","seed":1,"kind":"text","input":"  passwd='FKYXX7N7BR-----FKHAUR3K37'\n-----BEGIN RSA PRIVATE KEY-----\nFKQFVVN8YU\n-----END RSA PRIVATE KEY-----\nKEEPF3VGTA after","secrets":["FKYXX7N7BR","FKHAUR3K37","FKQFVVN8YU"],"preserve":["KEEPF3VGTA"]}
+{"id":"FZ-s1-000019","family":"mysql-p","seed":1,"kind":"command","input":"mysql -u app -pFKNW9PXUPP KEEPCY97T3","secrets":["FKNW9PXUPP"],"preserve":["KEEPCY97T3"]}
+{"id":"FZ-s1-000020","family":"mysql-p-quoted","seed":1,"kind":"command","input":"$ mysql -h db -p\"FKJ7BN45P2\" KEEP4XFBFY","secrets":["FKJ7BN45P2"],"preserve":["KEEP4XFBFY"]}
+{"id":"FZ-s1-000021","family":"redis-a","seed":1,"kind":"command","input":"$ redis-cli -h cache -a FKURLY24C6 KEEPVN5UNN","secrets":["FKURLY24C6"],"preserve":["KEEPVN5UNN"]}
+{"id":"FZ-s1-000022","family":"curl-u","seed":1,"kind":"command","input":"  curl -u deploy:FKW5H6Q1EK https://example.test/KEEPL0NUTL","secrets":["FKW5H6Q1EK"],"preserve":["KEEPL0NUTL"]}
+{"id":"FZ-s1-000023","family":"label-quoted","seed":1,"kind":"text","input":"> pat: 'FKC9KDPZPU' KEEPN071DL","secrets":["FKC9KDPZPU"],"preserve":["KEEPN071DL"]}
+{"id":"FZ-s1-000024","family":"json-pair","seed":1,"kind":"text","input":"{\"password\": \"FKBYV93PTW\", \"KEEPYCYNJ2\": 1}","secrets":["FKBYV93PTW"],"preserve":["KEEPYCYNJ2"]}
+{"id":"FZ-s1-000025","family":"label-bare","seed":1,"kind":"command","input":"  export TOKEN=FK26954RQG KEEP61BH4Y","secrets":["FK26954RQG"],"preserve":["KEEP61BH4Y"]}
+{"id":"FZ-s1-000026","family":"adjacent-keywords","seed":1,"kind":"command","input":"> password=FKAYWBHB1C token=FK6GPBYZ57 KEEPC7YXLB","secrets":["FKAYWBHB1C","FK6GPBYZ57"],"preserve":["KEEPC7YXLB"]}
+{"id":"FZ-s1-000027","family":"dash-run","seed":1,"kind":"command","input":"  --password FKGZ6KP85E-------FKE8LBRGNA KEEPY89H3V","secrets":["FKGZ6KP85E","FKE8LBRGNA"],"preserve":["KEEPY89H3V"]}
+{"id":"FZ-s1-000028","family":"passphrase-quoted","seed":1,"kind":"command","input":"gpg --passphrase 'FKBCBP4ZKN FKRPWT100B' KEEPRQQ50G","secrets":["FKBCBP4ZKN","FKRPWT100B"],"preserve":["KEEPRQQ50G"]}
+{"id":"FZ-s1-000029","family":"passwd-label","seed":1,"kind":"text","input":"  passwd: FK07F9AREX\nKEEPJXCEJ0 next line","secrets":["FK07F9AREX"],"preserve":["KEEPJXCEJ0"]}
+{"id":"FZ-s1-000030","family":"yaml-doubled","seed":1,"kind":"text","input":"  password: 'FKTT92C8DG''FKVWXDNZ0N with X'\nKEEPU08Y72: 1","secrets":["FKTT92C8DG","FKVWXDNZ0N"],"preserve":["KEEPU08Y72"]}
+{"id":"FZ-s1-000031","family":"shell-quote-join","seed":1,"kind":"command","input":"> echo 'token='\\''FKL63TL387'\\'' KEEPC4TPEQ","secrets":["FKL63TL387"],"preserve":["KEEPC4TPEQ"]}
+{"id":"FZ-s1-000032","family":"label-closes-first","seed":1,"kind":"command","input":"$ grep -n \"token: \" src/KEEPU9VB9V.ts && echo token=FKZA23276Z KEEPBZR8VX","secrets":["FKZA23276Z"],"preserve":["KEEPU9VB9V","KEEPBZR8VX"]}
+{"id":"FZ-s1-000033","family":"prose-apostrophe","seed":1,"kind":"text","input":"the mysql client won't prompt if you pass -pFK1FUJGPDB KEEP5V8NNU","secrets":["FK1FUJGPDB"],"preserve":["KEEP5V8NNU"]}
+{"id":"FZ-s1-000034","family":"next-line","seed":1,"kind":"text","input":"token=FKEHXNB7BC\nKEEP5FE1W1 stays","secrets":["FKEHXNB7BC"],"preserve":["KEEP5FE1W1"]}
+{"id":"FZ-s1-000035","family":"preserve-only","seed":1,"kind":"command","input":"grep -rn \"password\" docs/KEEPZN82HJ | head -n 3","secrets":[],"preserve":["KEEPZN82HJ"]}
+{"id":"FZ-s1-000036","family":"url-userinfo","seed":1,"kind":"command","input":"git clone https://KEEPZAJ9QK:FKZ1K090CZ@KEEPJTP9UQ.example.test/app","secrets":["FKZ1K090CZ"],"preserve":["KEEPZAJ9QK","KEEPJTP9UQ"]}
+{"id":"FZ-s1-000037","family":"dash-armor","seed":1,"kind":"text","input":"  passwd=\"FK38CYJ8EC-----FKWDZKANN1\"\n-----BEGIN OPENSSH PRIVATE KEY-----\nFK2V09J8QY\n-----END OPENSSH PRIVATE KEY-----\nKEEPK3R1XZ after","secrets":["FK38CYJ8EC","FKWDZKANN1","FK2V09J8QY"],"preserve":["KEEPK3R1XZ"]}
+{"id":"FZ-s1-000038","family":"mysql-p","seed":1,"kind":"command","input":"  mysql -u app -pFKJLK1YP3Z KEEPAZ90PF","secrets":["FKJLK1YP3Z"],"preserve":["KEEPAZ90PF"]}
+{"id":"FZ-s1-000039","family":"mysql-p-quoted","seed":1,"kind":"command","input":"> mysql -h db -p\"FK4H2FZANK\" KEEPP0CRRG","secrets":["FK4H2FZANK"],"preserve":["KEEPP0CRRG"]}
+{"id":"FZ-s1-000040","family":"redis-a","seed":1,"kind":"command","input":"> redis-cli -h cache -a FKG9F6Y3LL KEEPEP4YHY","secrets":["FKG9F6Y3LL"],"preserve":["KEEPEP4YHY"]}
+{"id":"FZ-s1-000041","family":"curl-u","seed":1,"kind":"command","input":"> curl -u deploy:FKN9R36W0Y https://example.test/KEEP5675ZR","secrets":["FKN9R36W0Y"],"preserve":["KEEP5675ZR"]}
+{"id":"FZ-s1-000042","family":"label-quoted","seed":1,"kind":"text","input":"pat: \"FKEHWA725W\" KEEPK7GZD1","secrets":["FKEHWA725W"],"preserve":["KEEPK7GZD1"]}
+{"id":"FZ-s1-000043","family":"json-pair","seed":1,"kind":"text","input":"> {\"token\": \"FK0V6JJN1Y\", \"KEEPZA64HX\": 1}","secrets":["FK0V6JJN1Y"],"preserve":["KEEPZA64HX"]}
+{"id":"FZ-s1-000044","family":"label-bare","seed":1,"kind":"command","input":"export PASSWORD=FKLCFWJPZ6 KEEPL6RT9Q","secrets":["FKLCFWJPZ6"],"preserve":["KEEPL6RT9Q"]}
+{"id":"FZ-s1-000045","family":"adjacent-keywords","seed":1,"kind":"command","input":"  password=FK9LA0BE56 token=FK3Z9A1AFU KEEPHW4N8D","secrets":["FK9LA0BE56","FK3Z9A1AFU"],"preserve":["KEEPHW4N8D"]}
+{"id":"FZ-s1-000046","family":"dash-run","seed":1,"kind":"command","input":"--password FKUYZLAW44------FKDFCUDVU3 KEEPG3LUPP","secrets":["FKUYZLAW44","FKDFCUDVU3"],"preserve":["KEEPG3LUPP"]}
+{"id":"FZ-s1-000047","family":"passphrase-quoted","seed":1,"kind":"command","input":"  gpg --passphrase \"FKQT4414K4 FK5XDA4X41\" KEEPTW6NRF","secrets":["FKQT4414K4","FK5XDA4X41"],"preserve":["KEEPTW6NRF"]}
+{"id":"FZ-s1-000048","family":"passwd-label","seed":1,"kind":"text","input":"$ passwd: FKVUGPR7LW\nKEEPZC46T7 next line","secrets":["FKVUGPR7LW"],"preserve":["KEEPZC46T7"]}
+{"id":"FZ-s1-000049","family":"yaml-doubled","seed":1,"kind":"text","input":"password: 'FKN94H2RXD''FKF4E22EH7 with X'\nKEEPB1L2KW: 1","secrets":["FKN94H2RXD","FKF4E22EH7"],"preserve":["KEEPB1L2KW"]}
+{"id":"FZ-s1-000050","family":"shell-quote-join","seed":1,"kind":"command","input":"$ echo 'token='\\''FKLVVREG4W'\\'' KEEP84NZE6","secrets":["FKLVVREG4W"],"preserve":["KEEP84NZE6"]}
+{"id":"FZ-s1-000051","family":"label-closes-first","seed":1,"kind":"command","input":"grep -n \"token: \" src/KEEPB3P9XL.ts && echo token=FKHYQ46334 KEEP0A85TP","secrets":["FKHYQ46334"],"preserve":["KEEPB3P9XL","KEEP0A85TP"]}
+{"id":"FZ-s1-000052","family":"prose-apostrophe","seed":1,"kind":"text","input":"the mysql client won't prompt if you pass -pFK1B0231QK KEEP591HGA","secrets":["FK1B0231QK"],"preserve":["KEEP591HGA"]}
+{"id":"FZ-s1-000053","family":"next-line","seed":1,"kind":"text","input":"token=FK9LLGKE4J\nKEEP38P2FV stays","secrets":["FK9LLGKE4J"],"preserve":["KEEP38P2FV"]}
+{"id":"FZ-s1-000054","family":"preserve-only","seed":1,"kind":"command","input":"$ grep -rn \"password\" docs/KEEP7LXE6R | head -n 3","secrets":[],"preserve":["KEEP7LXE6R"]}
+{"id":"FZ-s1-000055","family":"url-userinfo","seed":1,"kind":"command","input":"psql postgres://KEEPV1Y45X:FKX87JEE94@KEEPX0WRQ2.example.test/app","secrets":["FKX87JEE94"],"preserve":["KEEPV1Y45X","KEEPX0WRQ2"]}
+{"id":"FZ-s1-000056","family":"dash-armor","seed":1,"kind":"text","input":"passwd='FKKWY8Y42Y-----FKD6N2A3FF'\n-----BEGIN OPENSSH PRIVATE KEY-----\nFKUXK1XLJT\n-----END OPENSSH PRIVATE KEY-----\nKEEPRJVBJ0 after","secrets":["FKKWY8Y42Y","FKD6N2A3FF","FKUXK1XLJT"],"preserve":["KEEPRJVBJ0"]}
+{"id":"FZ-s1-000057","family":"mysql-p","seed":1,"kind":"command","input":"$ mysql -u app -pFKEJE23RF7 KEEPNY1CKE","secrets":["FKEJE23RF7"],"preserve":["KEEPNY1CKE"]}
+{"id":"FZ-s1-000058","family":"mysql-p-quoted","seed":1,"kind":"command","input":"mysql -h db -p\"FKETNHE77L\" KEEP7RT7R5","secrets":["FKETNHE77L"],"preserve":["KEEP7RT7R5"]}
+{"id":"FZ-s1-000059","family":"redis-a","seed":1,"kind":"command","input":"$ redis-cli -h cache -a FKZHX8DXHD KEEP0RC1NK","secrets":["FKZHX8DXHD"],"preserve":["KEEP0RC1NK"]}
+{"id":"FZ-s1-000060","family":"curl-u","seed":1,"kind":"command","input":"> curl -u deploy:FK6D22KTRF https://example.test/KEEPXT8K0N","secrets":["FK6D22KTRF"],"preserve":["KEEPXT8K0N"]}
+{"id":"FZ-s1-000061","family":"label-quoted","seed":1,"kind":"text","input":"$ pat: \"FKYQYRDYA2\" KEEPW5RP1E","secrets":["FKYQYRDYA2"],"preserve":["KEEPW5RP1E"]}
+{"id":"FZ-s1-000062","family":"json-pair","seed":1,"kind":"text","input":"{\"pat\": \"FK9WY3QB83\", \"KEEP2QQ4T6\": 1}","secrets":["FK9WY3QB83"],"preserve":["KEEP2QQ4T6"]}
+{"id":"FZ-s1-000063","family":"label-bare","seed":1,"kind":"command","input":"export PASSWORD=FKAEHG6RQU KEEPAP8K1K","secrets":["FKAEHG6RQU"],"preserve":["KEEPAP8K1K"]}
+{"id":"FZ-s1-000064","family":"adjacent-keywords","seed":1,"kind":"command","input":"> password=FKTZUEC516 token=FK29DRB7TC KEEP88N0UP","secrets":["FKTZUEC516","FK29DRB7TC"],"preserve":["KEEP88N0UP"]}
+{"id":"FZ-s1-000065","family":"dash-run","seed":1,"kind":"command","input":"$ --password FKVUT1YD70-----FKE8TAPNPE KEEP8ZR2N8","secrets":["FKVUT1YD70","FKE8TAPNPE"],"preserve":["KEEP8ZR2N8"]}
+{"id":"FZ-s1-000066","family":"passphrase-quoted","seed":1,"kind":"command","input":"> gpg --passphrase 'FKRQ3YL2YJ FKZXKJQ5B9' KEEP5GQRY5","secrets":["FKRQ3YL2YJ","FKZXKJQ5B9"],"preserve":["KEEP5GQRY5"]}
+{"id":"FZ-s1-000067","family":"passwd-label","seed":1,"kind":"text","input":"$ passwd: FKHT0Q04L3\nKEEP3F7J1N next line","secrets":["FKHT0Q04L3"],"preserve":["KEEP3F7J1N"]}
+{"id":"FZ-s1-000068","family":"yaml-doubled","seed":1,"kind":"text","input":"password: 'FK83HKWLQD''FKVECDJW61 with X'\nKEEP8GCR0Q: 1","secrets":["FK83HKWLQD","FKVECDJW61"],"preserve":["KEEP8GCR0Q"]}
+{"id":"FZ-s1-000069","family":"shell-quote-join","seed":1,"kind":"command","input":"echo 'token='\\''FKK6AWCNXY'\\'' KEEP2C9DGP","secrets":["FKK6AWCNXY"],"preserve":["KEEP2C9DGP"]}
+{"id":"FZ-s1-000070","family":"label-closes-first","seed":1,"kind":"command","input":"grep -n 'token: ' src/KEEPPKN5RZ.ts && echo token=FK1ZQYX372 KEEPZX2AC4","secrets":["FK1ZQYX372"],"preserve":["KEEPPKN5RZ","KEEPZX2AC4"]}
+{"id":"FZ-s1-000071","family":"prose-apostrophe","seed":1,"kind":"text","input":"> the mysql client won't prompt if you pass -pFK7BB59838 KEEPHXXN4R","secrets":["FK7BB59838"],"preserve":["KEEPHXXN4R"]}
+{"id":"FZ-s1-000072","family":"next-line","seed":1,"kind":"text","input":"> token=FKYCWZ9EYF\nKEEP1Z0TP1 stays","secrets":["FKYCWZ9EYF"],"preserve":["KEEP1Z0TP1"]}
+{"id":"FZ-s1-000073","family":"preserve-only","seed":1,"kind":"command","input":"grep -rn \"password\" docs/KEEPLCXD6G | head -n 3","secrets":[],"preserve":["KEEPLCXD6G"]}
+{"id":"FZ-s1-000074","family":"url-userinfo","seed":1,"kind":"command","input":"$ git clone https://KEEP3FUTLF:FKBRQYKP80@KEEP3V7Y1N.example.test/app","secrets":["FKBRQYKP80"],"preserve":["KEEP3FUTLF","KEEP3V7Y1N"]}
+{"id":"FZ-s1-000075","family":"dash-armor","seed":1,"kind":"text","input":"  passwd='FK4EKXHR8U-----FK1ZZJUW7B'\n-----BEGIN PGP PRIVATE KEY BLOCK-----\nFKBN36GE7R\n-----END PGP PRIVATE KEY BLOCK-----\nKEEPDKU5L2 after","secrets":["FK4EKXHR8U","FK1ZZJUW7B","FKBN36GE7R"],"preserve":["KEEPDKU5L2"]}
+{"id":"FZ-s1-000076","family":"mysql-p","seed":1,"kind":"command","input":"mysql -u app -pFKVATLFG2Q KEEPKG4W00","secrets":["FKVATLFG2Q"],"preserve":["KEEPKG4W00"]}
+{"id":"FZ-s1-000077","family":"mysql-p-quoted","seed":1,"kind":"command","input":"mysql -h db -p'FK57YTLVAY' KEEPBC4ZJ2","secrets":["FK57YTLVAY"],"preserve":["KEEPBC4ZJ2"]}
+{"id":"FZ-s1-000078","family":"redis-a","seed":1,"kind":"command","input":"redis-cli -h cache -a FK180R15Z1 KEEPHT4XLJ","secrets":["FK180R15Z1"],"preserve":["KEEPHT4XLJ"]}
+{"id":"FZ-s1-000079","family":"curl-u","seed":1,"kind":"command","input":"$ curl -u deploy:FKKR54CV4F https://example.test/KEEPAJTL8A","secrets":["FKKR54CV4F"],"preserve":["KEEPAJTL8A"]}
+{"id":"FZ-s1-000080","family":"label-quoted","seed":1,"kind":"text","input":"  secret: \"FK5YH336CU\" KEEPPDN3HH","secrets":["FK5YH336CU"],"preserve":["KEEPPDN3HH"]}
+{"id":"FZ-s1-000081","family":"json-pair","seed":1,"kind":"text","input":"{\"token\": \"FK9QVUYVKW\", \"KEEPU4GVU7\": 1}","secrets":["FK9QVUYVKW"],"preserve":["KEEPU4GVU7"]}
+{"id":"FZ-s1-000082","family":"label-bare","seed":1,"kind":"command","input":"  export SECRET=FKXA07Z94D KEEP4FX0UY","secrets":["FKXA07Z94D"],"preserve":["KEEP4FX0UY"]}
+{"id":"FZ-s1-000083","family":"adjacent-keywords","seed":1,"kind":"command","input":"> password=FK8CLDLGQU token=FKADQTPVX5 KEEPAYC29N","secrets":["FK8CLDLGQU","FKADQTPVX5"],"preserve":["KEEPAYC29N"]}
+{"id":"FZ-s1-000084","family":"dash-run","seed":1,"kind":"command","input":"$ --password FKBVEA8HY5----FK9LBKE2A0 KEEPUJ4QAV","secrets":["FKBVEA8HY5","FK9LBKE2A0"],"preserve":["KEEPUJ4QAV"]}
+{"id":"FZ-s1-000085","family":"passphrase-quoted","seed":1,"kind":"command","input":"  gpg --passphrase \"FKU2B1GRPE FKN4XPPFP4\" KEEPJ8B5YF","secrets":["FKU2B1GRPE","FKN4XPPFP4"],"preserve":["KEEPJ8B5YF"]}
+{"id":"FZ-s1-000086","family":"passwd-label","seed":1,"kind":"text","input":"passwd: FK8AY1Z7YC\nKEEPL3YFFC next line","secrets":["FK8AY1Z7YC"],"preserve":["KEEPL3YFFC"]}
+{"id":"FZ-s1-000087","family":"yaml-doubled","seed":1,"kind":"text","input":"password: 'FKLNPTHK11''FK9VTUHHLE with X'\nKEEPXE12DY: 1","secrets":["FKLNPTHK11","FK9VTUHHLE"],"preserve":["KEEPXE12DY"]}
+{"id":"FZ-s1-000088","family":"shell-quote-join","seed":1,"kind":"command","input":"  echo 'token='\\''FKXCYKGR5L'\\'' KEEP0QNGBT","secrets":["FKXCYKGR5L"],"preserve":["KEEP0QNGBT"]}
+{"id":"FZ-s1-000089","family":"label-closes-first","seed":1,"kind":"command","input":"grep -n \"token: \" src/KEEP8Y7LV0.ts && echo token=FK0BT15F2B KEEP0DKYWU","secrets":["FK0BT15F2B"],"preserve":["KEEP8Y7LV0","KEEP0DKYWU"]}
+{"id":"FZ-s1-000090","family":"prose-apostrophe","seed":1,"kind":"text","input":"  the mysql client won't prompt if you pass -pFK7L2BQ8FF KEEPGPZ3CK","secrets":["FK7L2BQ8FF"],"preserve":["KEEPGPZ3CK"]}
+{"id":"FZ-s1-000091","family":"next-line","seed":1,"kind":"text","input":"  token=FK6T5Z3G6A\nKEEP2VGA67 stays","secrets":["FK6T5Z3G6A"],"preserve":["KEEP2VGA67"]}
+{"id":"FZ-s1-000092","family":"preserve-only","seed":1,"kind":"command","input":"$ grep -rn \"password\" docs/KEEPRFW1GF | head -n 3","secrets":[],"preserve":["KEEPRFW1GF"]}
+{"id":"FZ-s1-000093","family":"url-userinfo","seed":1,"kind":"command","input":"  psql postgres://KEEP1VLA65:FKJZPN576T@KEEPQ82QFB.example.test/app","secrets":["FKJZPN576T"],"preserve":["KEEP1VLA65","KEEPQ82QFB"]}
+{"id":"FZ-s1-000094","family":"dash-armor","seed":1,"kind":"text","input":"  passwd='FKZUL0EJ55-----FK80BEHG9C'\n-----BEGIN OPENSSH PRIVATE KEY-----\nFK0F0WFBPP\n-----END OPENSSH PRIVATE KEY-----\nKEEPHG0PGR after","secrets":["FKZUL0EJ55","FK80BEHG9C","FK0F0WFBPP"],"preserve":["KEEPHG0PGR"]}
+{"id":"FZ-s1-000095","family":"mysql-p","seed":1,"kind":"command","input":"mysql -u app -pFKH2J7WHW0 KEEPFX71KX","secrets":["FKH2J7WHW0"],"preserve":["KEEPFX71KX"]}
+{"id":"FZ-s1-000096","family":"mysql-p-quoted","seed":1,"kind":"command","input":"  mysql -h db -p\"FKTB421LZX\" KEEPUHX2A0","secrets":["FKTB421LZX"],"preserve":["KEEPUHX2A0"]}
+{"id":"FZ-s1-000097","family":"redis-a","seed":1,"kind":"command","input":"redis-cli -h cache -a FK80V815U5 KEEPTFZH7A","secrets":["FK80V815U5"],"preserve":["KEEPTFZH7A"]}
+{"id":"FZ-s1-000098","family":"curl-u","seed":1,"kind":"command","input":"curl -u deploy:FKG0H7HGQW https://example.test/KEEP6WVZBA","secrets":["FKG0H7HGQW"],"preserve":["KEEP6WVZBA"]}
+{"id":"FZ-s1-000099","family":"label-quoted","seed":1,"kind":"text","input":"$ token: 'FKNXXHD11J' KEEPA8JY4C","secrets":["FKNXXHD11J"],"preserve":["KEEPA8JY4C"]}
+{"id":"FZ-s1-000100","family":"json-pair","seed":1,"kind":"text","input":"$ {\"api_key\": \"FK64RRDF4T\", \"KEEPQ3D4Q3\": 1}","secrets":["FK64RRDF4T"],"preserve":["KEEPQ3D4Q3"]}
+{"id":"FZ-s1-000101","family":"label-bare","seed":1,"kind":"command","input":"> export PASSWORD=FKPACLGX59 KEEPHQ4CJX","secrets":["FKPACLGX59"],"preserve":["KEEPHQ4CJX"]}
+{"id":"FZ-s1-000102","family":"adjacent-keywords","seed":1,"kind":"command","input":"password=FKRUG4U7YR token=FKRAPE6THZ KEEPV1HLZ8","secrets":["FKRUG4U7YR","FKRAPE6THZ"],"preserve":["KEEPV1HLZ8"]}
+{"id":"FZ-s1-000103","family":"dash-run","seed":1,"kind":"command","input":"--password FK82NVD2VT------FK1A5KD129 KEEP6YADA5","secrets":["FK82NVD2VT","FK1A5KD129"],"preserve":["KEEP6YADA5"]}
+{"id":"FZ-s1-000104","family":"passphrase-quoted","seed":1,"kind":"command","input":"  gpg --passphrase 'FKUL5NHG4K FKY3CL85AH' KEEPCJQJH6","secrets":["FKUL5NHG4K","FKY3CL85AH"],"preserve":["KEEPCJQJH6"]}
+{"id":"FZ-s1-000105","family":"passwd-label","seed":1,"kind":"text","input":"  passwd: FK6NTU4N08\nKEEPZ9RRD3 next line","secrets":["FK6NTU4N08"],"preserve":["KEEPZ9RRD3"]}
+{"id":"FZ-s1-000106","family":"yaml-doubled","seed":1,"kind":"text","input":"  password: 'FKYDD6T6GW''FKZ6901RVU with X'\nKEEPF5GA7W: 1","secrets":["FKYDD6T6GW","FKZ6901RVU"],"preserve":["KEEPF5GA7W"]}
+{"id":"FZ-s1-000107","family":"shell-quote-join","seed":1,"kind":"command","input":"echo 'token='\\''FKFV10NB55'\\'' KEEPVCN2YY","secrets":["FKFV10NB55"],"preserve":["KEEPVCN2YY"]}
+{"id":"FZ-s1-000108","family":"label-closes-first","seed":1,"kind":"command","input":"grep -n 'token: ' src/KEEPH6KLFH.ts && echo token=FKK9VDRZVJ KEEPEVW7UY","secrets":["FKK9VDRZVJ"],"preserve":["KEEPH6KLFH","KEEPEVW7UY"]}
+{"id":"FZ-s1-000109","family":"prose-apostrophe","seed":1,"kind":"text","input":"the mysql client won't prompt if you pass -pFK2VX9BU58 KEEP68N3ET","secrets":["FK2VX9BU58"],"preserve":["KEEP68N3ET"]}
+{"id":"FZ-s1-000110","family":"next-line","seed":1,"kind":"text","input":"> token=FKFHNVY9BV\nKEEPL3XJJN stays","secrets":["FKFHNVY9BV"],"preserve":["KEEPL3XJJN"]}
+{"id":"FZ-s1-000111","family":"preserve-only","seed":1,"kind":"command","input":"grep -rn \"password\" docs/KEEP11GXBD | head -n 3","secrets":[],"preserve":["KEEP11GXBD"]}
+{"id":"FZ-s1-000112","family":"url-userinfo","seed":1,"kind":"command","input":"  curl http://KEEPFTN7AW:FK0KU0REQZ@KEEP4NUX5Z.example.test/app","secrets":["FK0KU0REQZ"],"preserve":["KEEPFTN7AW","KEEP4NUX5Z"]}
+{"id":"FZ-s1-000113","family":"dash-armor","seed":1,"kind":"text","input":"passwd=\"FKH6XCAA72-----FKL4J74WVG\"\n-----BEGIN OPENSSH PRIVATE KEY-----\nFK0JK62W5P\n-----END OPENSSH PRIVATE KEY-----\nKEEPAY0RFB after","secrets":["FKH6XCAA72","FKL4J74WVG","FK0JK62W5P"],"preserve":["KEEPAY0RFB"]}
+{"id":"FZ-s1-000114","family":"mysql-p","seed":1,"kind":"command","input":"mysql -u app -pFKDLQZ99UE KEEP95YDUZ","secrets":["FKDLQZ99UE"],"preserve":["KEEP95YDUZ"]}
+{"id":"FZ-s1-000115","family":"mysql-p-quoted","seed":1,"kind":"command","input":"> mysql -h db -p'FK3FPYXWQ7' KEEPWTP9EX","secrets":["FK3FPYXWQ7"],"preserve":["KEEPWTP9EX"]}
+{"id":"FZ-s1-000116","family":"redis-a","seed":1,"kind":"command","input":"redis-cli -h cache -a FKD9AQ4JV7 KEEPCP9U7E","secrets":["FKD9AQ4JV7"],"preserve":["KEEPCP9U7E"]}
+{"id":"FZ-s1-000117","family":"curl-u","seed":1,"kind":"command","input":"> curl -u deploy:FK7HQP7RHJ https://example.test/KEEP1KT4T4","secrets":["FK7HQP7RHJ"],"preserve":["KEEP1KT4T4"]}
+{"id":"FZ-s1-000118","family":"label-quoted","seed":1,"kind":"text","input":"  token: \"FK9GWTD9Y4\" KEEPZ37HEF","secrets":["FK9GWTD9Y4"],"preserve":["KEEPZ37HEF"]}
+{"id":"FZ-s1-000119","family":"json-pair","seed":1,"kind":"text","input":"> {\"token\": \"FK3QCEQH12\", \"KEEPCB5P38\": 1}","secrets":["FK3QCEQH12"],"preserve":["KEEPCB5P38"]}
+{"id":"FZ-s1-000120","family":"label-bare","seed":1,"kind":"command","input":"> export PASSWORD=FKK2D91V8Z KEEPJNG2RU","secrets":["FKK2D91V8Z"],"preserve":["KEEPJNG2RU"]}
+{"id":"FZ-s1-000121","family":"adjacent-keywords","seed":1,"kind":"command","input":"password=FKAWG1HWHL token=FK5XUZ484W KEEPPD2QY0","secrets":["FKAWG1HWHL","FK5XUZ484W"],"preserve":["KEEPPD2QY0"]}
+{"id":"FZ-s1-000122","family":"dash-run","seed":1,"kind":"command","input":"> --password FK23YHABKL------FKCFX6WH7N KEEPLN33BD","secrets":["FK23YHABKL","FKCFX6WH7N"],"preserve":["KEEPLN33BD"]}
+{"id":"FZ-s1-000123","family":"passphrase-quoted","seed":1,"kind":"command","input":"gpg --passphrase 'FKL8TV1CPP FKDCPD4DG8' KEEP2Z590Z","secrets":["FKL8TV1CPP","FKDCPD4DG8"],"preserve":["KEEP2Z590Z"]}
+{"id":"FZ-s1-000124","family":"passwd-label","seed":1,"kind":"text","input":"> passwd: FK8XH4B61K\nKEEP3LRXYA next line","secrets":["FK8XH4B61K"],"preserve":["KEEP3LRXYA"]}
+{"id":"FZ-s1-000125","family":"yaml-doubled","seed":1,"kind":"text","input":"password: 'FK0QZ06VRT''FKPJQ32FVY with X'\nKEEPWZGQ5J: 1","secrets":["FK0QZ06VRT","FKPJQ32FVY"],"preserve":["KEEPWZGQ5J"]}
+{"id":"FZ-s1-000126","family":"shell-quote-join","seed":1,"kind":"command","input":"$ echo 'token='\\''FK5YBV4LEC'\\'' KEEPVE3267","secrets":["FK5YBV4LEC"],"preserve":["KEEPVE3267"]}
+{"id":"FZ-s1-000127","family":"label-closes-first","seed":1,"kind":"command","input":"  grep -n 'token: ' src/KEEP6QZ6FG.ts && echo token=FK5KFBPD4Z KEEP6BV1P2","secrets":["FK5KFBPD4Z"],"preserve":["KEEP6QZ6FG","KEEP6BV1P2"]}
+{"id":"FZ-s1-000128","family":"prose-apostrophe","seed":1,"kind":"text","input":"the mysql client won't prompt if you pass -pFKHUJ66HBL KEEPW0QG2G","secrets":["FKHUJ66HBL"],"preserve":["KEEPW0QG2G"]}
+{"id":"FZ-s1-000129","family":"next-line","seed":1,"kind":"text","input":"$ token=FKUC4RYR7Z\nKEEPD44ZXG stays","secrets":["FKUC4RYR7Z"],"preserve":["KEEPD44ZXG"]}
+{"id":"FZ-s1-000130","family":"preserve-only","seed":1,"kind":"command","input":"> grep -rn \"password\" docs/KEEPZKC695 | head -n 3","secrets":[],"preserve":["KEEPZKC695"]}
+{"id":"FZ-s1-000131","family":"url-userinfo","seed":1,"kind":"command","input":"  curl http://KEEP8WWV3Q:FKTLTEXD48@KEEP5JLPF2.example.test/app","secrets":["FKTLTEXD48"],"preserve":["KEEP8WWV3Q","KEEP5JLPF2"]}
+{"id":"FZ-s1-000132","family":"dash-armor","seed":1,"kind":"text","input":"> passwd=\"FK42ZWR9VJ-----FKBPWE014T\"\n-----BEGIN OPENSSH PRIVATE KEY-----\nFKEHECP6C5\n-----END OPENSSH PRIVATE KEY-----\nKEEP6A0N5R after","secrets":["FK42ZWR9VJ","FKBPWE014T","FKEHECP6C5"],"preserve":["KEEP6A0N5R"]}
+{"id":"FZ-s1-000133","family":"mysql-p","seed":1,"kind":"command","input":"  mysql -u app -pFK2EL1HDGA KEEP24F1G0","secrets":["FK2EL1HDGA"],"preserve":["KEEP24F1G0"]}
+{"id":"FZ-s1-000134","family":"mysql-p-quoted","seed":1,"kind":"command","input":"mysql -h db -p\"FKA6B7N1R9\" KEEPL0DHY8","secrets":["FKA6B7N1R9"],"preserve":["KEEPL0DHY8"]}
+{"id":"FZ-s1-000135","family":"redis-a","seed":1,"kind":"command","input":"redis-cli -h cache -a FKXLU415Q1 KEEPH7KZQX","secrets":["FKXLU415Q1"],"preserve":["KEEPH7KZQX"]}
+{"id":"FZ-s1-000136","family":"curl-u","seed":1,"kind":"command","input":"  curl -u deploy:FK5TL3K0TC https://example.test/KEEPWZVG4H","secrets":["FK5TL3K0TC"],"preserve":["KEEPWZVG4H"]}
+{"id":"FZ-s1-000137","family":"label-quoted","seed":1,"kind":"text","input":"> token: \"FK6L1KJUJH\" KEEPA8R8LL","secrets":["FK6L1KJUJH"],"preserve":["KEEPA8R8LL"]}
+{"id":"FZ-s1-000138","family":"json-pair","seed":1,"kind":"text","input":"$ {\"pat\": \"FKVYKV93K4\", \"KEEPHY518A\": 1}","secrets":["FKVYKV93K4"],"preserve":["KEEPHY518A"]}
+{"id":"FZ-s1-000139","family":"label-bare","seed":1,"kind":"command","input":"  export TOKEN=FK95KQ2A2T KEEPKG34DJ","secrets":["FK95KQ2A2T"],"preserve":["KEEPKG34DJ"]}
+{"id":"FZ-s1-000140","family":"adjacent-keywords","seed":1,"kind":"command","input":"$ password=FK5UT8R820 token=FKWGKAB9NV KEEPB2X0D2","secrets":["FK5UT8R820","FKWGKAB9NV"],"preserve":["KEEPB2X0D2"]}
+{"id":"FZ-s1-000141","family":"dash-run","seed":1,"kind":"command","input":"  --password FKG26NVULR----FKTNALP2N0 KEEPYDZEP4","secrets":["FKG26NVULR","FKTNALP2N0"],"preserve":["KEEPYDZEP4"]}
+{"id":"FZ-s1-000142","family":"passphrase-quoted","seed":1,"kind":"command","input":"  gpg --passphrase \"FKWU2C2JJ2 FK8HRJ4K8V\" KEEPV3EQ6P","secrets":["FKWU2C2JJ2","FK8HRJ4K8V"],"preserve":["KEEPV3EQ6P"]}
+{"id":"FZ-s1-000143","family":"passwd-label","seed":1,"kind":"text","input":"  passwd: FK9NC5XL1W\nKEEPBEE4Q6 next line","secrets":["FK9NC5XL1W"],"preserve":["KEEPBEE4Q6"]}
+{"id":"FZ-s1-000144","family":"yaml-doubled","seed":1,"kind":"text","input":"$ password: 'FK8KWVTF2P''FK8N2FDKEG with X'\nKEEP6190GK: 1","secrets":["FK8KWVTF2P","FK8N2FDKEG"],"preserve":["KEEP6190GK"]}
+{"id":"FZ-s1-000145","family":"shell-quote-join","seed":1,"kind":"command","input":"echo 'token='\\''FK16C93VEU'\\'' KEEP7L05DK","secrets":["FK16C93VEU"],"preserve":["KEEP7L05DK"]}
+{"id":"FZ-s1-000146","family":"label-closes-first","seed":1,"kind":"command","input":"> grep -n \"token: \" src/KEEPJ9CEAK.ts && echo token=FKQZ35NDA6 KEEP2NQRBL","secrets":["FKQZ35NDA6"],"preserve":["KEEPJ9CEAK","KEEP2NQRBL"]}
+{"id":"FZ-s1-000147","family":"prose-apostrophe","seed":1,"kind":"text","input":"$ the mysql client won't prompt if you pass -pFK55WAQRC2 KEEPE46J8Z","secrets":["FK55WAQRC2"],"preserve":["KEEPE46J8Z"]}
+{"id":"FZ-s1-000148","family":"next-line","seed":1,"kind":"text","input":"token=FKUR8WZP2K\nKEEPY4B8P5 stays","secrets":["FKUR8WZP2K"],"preserve":["KEEPY4B8P5"]}
+{"id":"FZ-s1-000149","family":"preserve-only","seed":1,"kind":"command","input":"grep -rn \"password\" docs/KEEPKYU97R | head -n 3","secrets":[],"preserve":["KEEPKYU97R"]}
+{"id":"FZ-s1-000150","family":"url-userinfo","seed":1,"kind":"command","input":"curl http://KEEP3XZWTF:FKP903VWUZ@KEEP0H28XR.example.test/app","secrets":["FKP903VWUZ"],"preserve":["KEEP3XZWTF","KEEP0H28XR"]}
+{"id":"FZ-s1-000151","family":"dash-armor","seed":1,"kind":"text","input":"> passwd=\"FKQT6WWDYB-----FK9NG0GN8K\"\n-----BEGIN RSA PRIVATE KEY-----\nFKYBV49UCW\n-----END RSA PRIVATE KEY-----\nKEEP01HUNT after","secrets":["FKQT6WWDYB","FK9NG0GN8K","FKYBV49UCW"],"preserve":["KEEP01HUNT"]}
+{"id":"FZ-s1-000152","family":"mysql-p","seed":1,"kind":"command","input":"$ mysql -u app -pFKEWY4Y172 KEEP66PZ7G","secrets":["FKEWY4Y172"],"preserve":["KEEP66PZ7G"]}
+{"id":"FZ-s1-000153","family":"mysql-p-quoted","seed":1,"kind":"command","input":"  mysql -h db -p'FK4E7BJP1F' KEEPAEE0AJ","secrets":["FK4E7BJP1F"],"preserve":["KEEPAEE0AJ"]}
+{"id":"FZ-s1-000154","family":"redis-a","seed":1,"kind":"command","input":"$ redis-cli -h cache -a FK8AZ72RCE KEEP3U5CVQ","secrets":["FK8AZ72RCE"],"preserve":["KEEP3U5CVQ"]}
+{"id":"FZ-s1-000155","family":"curl-u","seed":1,"kind":"command","input":"curl -u deploy:FK0FBKKA4P https://example.test/KEEPF2YUWD","secrets":["FK0FBKKA4P"],"preserve":["KEEPF2YUWD"]}
+{"id":"FZ-s1-000156","family":"label-quoted","seed":1,"kind":"text","input":"$ api_key: 'FKPUDYTCR6' KEEPZC5UQ0","secrets":["FKPUDYTCR6"],"preserve":["KEEPZC5UQ0"]}
+{"id":"FZ-s1-000157","family":"json-pair","seed":1,"kind":"text","input":"$ {\"secret\": \"FKEKW4AJF1\", \"KEEPLH4NF4\": 1}","secrets":["FKEKW4AJF1"],"preserve":["KEEPLH4NF4"]}
+{"id":"FZ-s1-000158","family":"label-bare","seed":1,"kind":"command","input":"export API_KEY=FK0PZC6UX3 KEEP3B13L0","secrets":["FK0PZC6UX3"],"preserve":["KEEP3B13L0"]}
+{"id":"FZ-s1-000159","family":"adjacent-keywords","seed":1,"kind":"command","input":"password=FK3VVY40C0 token=FKBZVKWH1Y KEEPC1JBDD","secrets":["FK3VVY40C0","FKBZVKWH1Y"],"preserve":["KEEPC1JBDD"]}
+{"id":"FZ-s1-000160","family":"dash-run","seed":1,"kind":"command","input":"--password FKB08WGYB0----FK84WRY17L KEEP4D0GV1","secrets":["FKB08WGYB0","FK84WRY17L"],"preserve":["KEEP4D0GV1"]}
+{"id":"FZ-s1-000161","family":"passphrase-quoted","seed":1,"kind":"command","input":"gpg --passphrase \"FK5B7RQFGK FK9ZFJ8AJD\" KEEPWT9Z80","secrets":["FK5B7RQFGK","FK9ZFJ8AJD"],"preserve":["KEEPWT9Z80"]}
+{"id":"FZ-s1-000162","family":"passwd-label","seed":1,"kind":"text","input":"  passwd: FKL3TFVFBK\nKEEP2TAHXU next line","secrets":["FKL3TFVFBK"],"preserve":["KEEP2TAHXU"]}
+{"id":"FZ-s1-000163","family":"yaml-doubled","seed":1,"kind":"text","input":"password: 'FKD6TX4B87''FKBFZV6055 with X'\nKEEPJ3AQBY: 1","secrets":["FKD6TX4B87","FKBFZV6055"],"preserve":["KEEPJ3AQBY"]}
+{"id":"FZ-s1-000164","family":"shell-quote-join","seed":1,"kind":"command","input":"  echo 'token='\\''FK8765EBNT'\\'' KEEP1672A2","secrets":["FK8765EBNT"],"preserve":["KEEP1672A2"]}
+{"id":"FZ-s1-000165","family":"label-closes-first","seed":1,"kind":"command","input":"$ grep -n 'token: ' src/KEEPVQU357.ts && echo token=FKU1LBP74J KEEPV79NLP","secrets":["FKU1LBP74J"],"preserve":["KEEPVQU357","KEEPV79NLP"]}
+{"id":"FZ-s1-000166","family":"prose-apostrophe","seed":1,"kind":"text","input":"  the mysql client won't prompt if you pass -pFKWYGPWL08 KEEP85EK5R","secrets":["FKWYGPWL08"],"preserve":["KEEP85EK5R"]}
+{"id":"FZ-s1-000167","family":"next-line","seed":1,"kind":"text","input":"token=FK4J1UHBJY\nKEEPT6ELTC stays","secrets":["FK4J1UHBJY"],"preserve":["KEEPT6ELTC"]}
+{"id":"FZ-s1-000168","family":"preserve-only","seed":1,"kind":"command","input":"grep -rn \"password\" docs/KEEP7FLF9W | head -n 3","secrets":[],"preserve":["KEEP7FLF9W"]}
+{"id":"FZ-s1-000169","family":"url-userinfo","seed":1,"kind":"command","input":"git clone https://KEEP9ZHGAJ:FKFH39T479@KEEP6VNKGP.example.test/app","secrets":["FKFH39T479"],"preserve":["KEEP9ZHGAJ","KEEP6VNKGP"]}
+{"id":"FZ-s1-000170","family":"dash-armor","seed":1,"kind":"text","input":"passwd=\"FKCLE7Q40J-----FKKHC8QFND\"\n-----BEGIN RSA PRIVATE KEY-----\nFKDZK6U17K\n-----END RSA PRIVATE KEY-----\nKEEPE0372V after","secrets":["FKCLE7Q40J","FKKHC8QFND","FKDZK6U17K"],"preserve":["KEEPE0372V"]}
+{"id":"FZ-s1-000171","family":"mysql-p","seed":1,"kind":"command","input":"$ mysql -u app -pFKR42XGR5A KEEPJCPX7W","secrets":["FKR42XGR5A"],"preserve":["KEEPJCPX7W"]}
+{"id":"FZ-s1-000172","family":"mysql-p-quoted","seed":1,"kind":"command","input":"> mysql -h db -p'FK38K7HNDU' KEEP9AGV7K","secrets":["FK38K7HNDU"],"preserve":["KEEP9AGV7K"]}
+{"id":"FZ-s1-000173","family":"redis-a","seed":1,"kind":"command","input":"redis-cli -h cache -a FK4JEPZ3G4 KEEPPT9TDJ","secrets":["FK4JEPZ3G4"],"preserve":["KEEPPT9TDJ"]}
+{"id":"FZ-s1-000174","family":"curl-u","seed":1,"kind":"command","input":"  curl -u deploy:FKHRD0TH3K https://example.test/KEEPDJUUF9","secrets":["FKHRD0TH3K"],"preserve":["KEEPDJUUF9"]}
+{"id":"FZ-s1-000175","family":"label-quoted","seed":1,"kind":"text","input":"  pat: 'FKVRE0G4QY' KEEPRH7ZQ4","secrets":["FKVRE0G4QY"],"preserve":["KEEPRH7ZQ4"]}
+{"id":"FZ-s1-000176","family":"json-pair","seed":1,"kind":"text","input":"{\"secret\": \"FK140FBQ6Q\", \"KEEPBL5EDL\": 1}","secrets":["FK140FBQ6Q"],"preserve":["KEEPBL5EDL"]}
+{"id":"FZ-s1-000177","family":"label-bare","seed":1,"kind":"command","input":"$ export PASSWORD=FK9G5XPB1X KEEPXQ1UE2","secrets":["FK9G5XPB1X"],"preserve":["KEEPXQ1UE2"]}
+{"id":"FZ-s1-000178","family":"adjacent-keywords","seed":1,"kind":"command","input":"$ password=FKBG2VUKBU token=FKKA76EV5X KEEP4A4U6D","secrets":["FKBG2VUKBU","FKKA76EV5X"],"preserve":["KEEP4A4U6D"]}
+{"id":"FZ-s1-000179","family":"dash-run","seed":1,"kind":"command","input":"--password FKDD6BALJ3-----FK893U3BVE KEEP1Q18UF","secrets":["FKDD6BALJ3","FK893U3BVE"],"preserve":["KEEP1Q18UF"]}
+{"id":"FZ-s1-000180","family":"passphrase-quoted","seed":1,"kind":"command","input":"$ gpg --passphrase \"FKKA7CND5J FKLARBANW5\" KEEPE582YD","secrets":["FKKA7CND5J","FKLARBANW5"],"preserve":["KEEPE582YD"]}
+{"id":"FZ-s1-000181","family":"passwd-label","seed":1,"kind":"text","input":"passwd: FKFQX2ULFR\nKEEP7UPJ15 next line","secrets":["FKFQX2ULFR"],"preserve":["KEEP7UPJ15"]}
+{"id":"FZ-s1-000182","family":"yaml-doubled","seed":1,"kind":"text","input":"password: 'FK1EXUQXF8''FK7AHNKC0F with X'\nKEEP7DDGE2: 1","secrets":["FK1EXUQXF8","FK7AHNKC0F"],"preserve":["KEEP7DDGE2"]}
+{"id":"FZ-s1-000183","family":"shell-quote-join","seed":1,"kind":"command","input":"echo 'token='\\''FK6GZPR33P'\\'' KEEPC9K4EY","secrets":["FK6GZPR33P"],"preserve":["KEEPC9K4EY"]}
+{"id":"FZ-s1-000184","family":"label-closes-first","seed":1,"kind":"command","input":"grep -n \"token: \" src/KEEP8QQ6H7.ts && echo token=FKHF763P6E KEEP8YKH9R","secrets":["FKHF763P6E"],"preserve":["KEEP8QQ6H7","KEEP8YKH9R"]}
+{"id":"FZ-s1-000185","family":"prose-apostrophe","seed":1,"kind":"text","input":"> the mysql client won't prompt if you pass -pFKT8TZ4Q3G KEEP35JADZ","secrets":["FKT8TZ4Q3G"],"preserve":["KEEP35JADZ"]}
+{"id":"FZ-s1-000186","family":"next-line","seed":1,"kind":"text","input":"token=FKWL1KQUF1\nKEEPK332PW stays","secrets":["FKWL1KQUF1"],"preserve":["KEEPK332PW"]}
+{"id":"FZ-s1-000187","family":"preserve-only","seed":1,"kind":"command","input":"grep -rn \"password\" docs/KEEP07ELRH | head -n 3","secrets":[],"preserve":["KEEP07ELRH"]}
+{"id":"FZ-s1-000188","family":"url-userinfo","seed":1,"kind":"command","input":"  psql postgres://KEEPYHNEB3:FKF4ECAYN6@KEEP0CAYQN.example.test/app","secrets":["FKF4ECAYN6"],"preserve":["KEEPYHNEB3","KEEP0CAYQN"]}
+{"id":"FZ-s1-000189","family":"dash-armor","seed":1,"kind":"text","input":"> passwd='FKBRL82BZN-----FKKL1Q8EEZ'\n-----BEGIN OPENSSH PRIVATE KEY-----\nFKV0BVRFE3\n-----END OPENSSH PRIVATE KEY-----\nKEEPEHG0PV after","secrets":["FKBRL82BZN","FKKL1Q8EEZ","FKV0BVRFE3"],"preserve":["KEEPEHG0PV"]}
