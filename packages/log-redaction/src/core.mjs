@@ -269,10 +269,10 @@ export const POLICY_VOCABULARY = Object.freeze({
  *   single-quoted word.
  * - `text` reads YAML-style scalars. A doubled `''` inside a single-quoted
  *   segment is an escaped quote, and so is `\'`; a double-quoted segment takes
- *   a backslash escape. A quote right after a letter or digit opens nothing: it
- *   is an apostrophe (`won't`, `it's`) or an inch mark (`27"`). Prose is the
- *   common case in `text`, and reading those as quotes turns the rest of the
- *   line inside out.
+ *   a backslash escape. A single quote right after a letter or digit opens
+ *   nothing (an apostrophe: `won't`, `it's`), nor does a double quote right after
+ *   a digit (an inch mark: `27"`). Prose is the common case in `text`, and
+ *   reading those as quotes turns the rest of the line inside out.
  *
  * A segment never crosses a line end. Every line starts outside quotes, so one
  * stray quote cannot invert the rest of a long fragment.
@@ -280,10 +280,7 @@ export const POLICY_VOCABULARY = Object.freeze({
  * @typedef {{ open: number, close: number, closed: boolean }} Segment
  */
 
-/**
- * In `text`, a quote right after one of these is not an opening quote: it is an
- * apostrophe (`won't`) or an inch mark (`27"`).
- */
+/** In `text`, a single quote right after one of these is an apostrophe (`won't`), not an opening quote. */
 const WORD_CHAR = /[A-Za-z0-9_]/;
 
 /**
@@ -295,11 +292,19 @@ const WORD_CHAR = /[A-Za-z0-9_]/;
 const COMMAND_STOP = /[\s;&|)]/;
 
 /**
- * Characters that end a shell word only right after a closing quote. A value in
- * a flow mapping (`{password: 'v',token: …}`) stops at the next key there; an
- * unquoted value may hold them (`PASSWORD=a,b`), so nowhere else.
+ * Characters that end a shell word only right after a closing quote and before
+ * another key (`NEXT_KEY`). A value in a flow mapping (`{password: 'v',token: …}`)
+ * stops at the next key there; an unquoted value may hold them (`PASSWORD=a,b`),
+ * and so may a quoted one followed by more of itself (`'a',b`).
  */
 const AFTER_QUOTE_STOP = /[,}\]]/;
+
+/**
+ * What must follow `,` `}` `]` after a closing quote for the word to end there:
+ * another key (`token:`, `user=`). Before anything else they are part of the
+ * value (`'a',b`), and ending there left the rest of the value in the clear.
+ */
+const NEXT_KEY = /[^\S\r\n]*[A-Za-z_][\w.-]*[^\S\r\n]*[:=]/y;
 
 /**
  * Blanks other than line ends. The sed `mask()`'s `[[:space:]]` covers the
@@ -327,7 +332,11 @@ function closingQuote(original, open, kind) {
     // A backslash escapes a quote in a double-quoted segment, and in `text` in a
     // single-quoted one too: YAML does not, but a repr or a JSON-ish log line
     // does (`'it\'s'`), and closing there left the rest of the value in the clear.
-    if (ch === "\\" && (quote === '"' || (kind === "text" && original[index + 1] === "'"))) {
+    // In `text` it escapes a backslash as well, so `'v\\'` closes: reading only
+    // `\'` as a pair made the second backslash escape the closing quote, and the
+    // next label's value was read as outside every quote and left in the clear.
+    const escapes = quote === '"' || (kind === "text" && (original[index + 1] === "'" || original[index + 1] === "\\"));
+    if (ch === "\\" && escapes) {
       if (index + 1 >= original.length) return { at: original.length, closed: false };
       if (isLineEnd(original[index + 1])) return { at: index + 1, closed: false };
       index += 1;
@@ -387,7 +396,11 @@ function lexQuotes(original, kind) {
       index += 1;
       continue;
     }
-    if (kind === "text" && index > 0 && WORD_CHAR.test(original[index - 1])) {
+    // In `text`, a single quote after a letter or digit is an apostrophe, and a
+    // double quote after a digit is an inch mark. A double quote after a letter
+    // still opens a string: `f"…"`, `r"…"`, `-p"…"`.
+    const before = index > 0 ? original[index - 1] : "";
+    if (kind === "text" && (ch === "'" ? WORD_CHAR.test(before) : /[0-9]/.test(before))) {
       index += 1;
       continue;
     }
@@ -513,7 +526,10 @@ function collectLabelSpans(original, kind, vocabulary) {
       if (segment) {
         quoted = true;
         index = segment.close + 1;
-        if (index < original.length && AFTER_QUOTE_STOP.test(original[index])) break;
+        if (index < original.length && AFTER_QUOTE_STOP.test(original[index])) {
+          NEXT_KEY.lastIndex = index + 1;
+          if (NEXT_KEY.test(original)) break;
+        }
         continue;
       }
       const ch = original[index];
@@ -548,11 +564,14 @@ function collectLabelSpans(original, kind, vocabulary) {
    * hashes), and in a `command` a backslash-newline. A `>` on its own is not one:
    * `./gen_token > out.txt` is a redirection, and the file name is not a secret.
    */
-  const separatorEnd = (from, limit) => {
+  const separatorEnd = (from, limit, arrowAfterLabel = true) => {
     let index = from;
     while (index < limit) {
       const ch = original[index];
-      if (ch === "=" || ch === ":" || BLANK.test(ch) || (ch === ">" && original[index - 1] === "=")) {
+      // `>` separates only right after the label (`password> v`, a prompt) or
+      // after `=` (`=>`). After a blank it is a redirection (`gen_token > out`).
+      const arrow = ch === ">" && ((index === from && arrowAfterLabel) || original[index - 1] === "=");
+      if (ch === "=" || ch === ":" || BLANK.test(ch) || arrow) {
         index += 1;
         continue;
       }
@@ -574,18 +593,23 @@ function collectLabelSpans(original, kind, vocabulary) {
 
   /**
    * Skips an auth-scheme word, also one behind a bracket (`[Bearer v]`, as Java
-   * and Go print a header map) or behind a quote that opens nothing (`"Bearer v`
-   * with the quote left open).
+   * and Go print a header map), a quote (`"Bearer v` left open, or a quoted list
+   * item), or both (`["Bearer v"]`).
    */
   const skipScheme = (from, limit) => {
     if (!scheme) return from;
-    const lead = original[from] ?? "";
-    const skippable = "[({".includes(lead) || ((lead === '"' || lead === "'") && !opened.has(from));
-    for (const at of [from, from + 1]) {
-      if (at > from && !skippable) break;
+    // Up to two characters may stand before the scheme word: a bracket, a quote,
+    // or a bracket or `$` and then a quote (`["Bearer v"]`, a header map printed
+    // as JSON; `$'Bearer v'`, a shell ANSI-C string).
+    let at = from;
+    for (let step = 0; step <= 2 && at < limit; step += 1) {
       scheme.lastIndex = at;
       const match = scheme.exec(original);
       if (match && at + match[0].length < limit) return at + match[0].length;
+      const ch = original[at];
+      const lead = "[({$".includes(ch) && step === 0;
+      if (!lead && ch !== '"' && ch !== "'") break;
+      at += 1;
     }
     return from;
   };
@@ -639,6 +663,20 @@ function collectLabelSpans(original, kind, vocabulary) {
         !/\s/.test(original.slice(from + 1, segment.close));
       const end = glued ? runEnd(segment.close + 1) : segment.close;
       return end > from + 1 ? { start: from + 1, end, next: glued ? end : segment.close + 1, bare: false } : null;
+    }
+    // An empty pair of quotes at the start (`''v`) is not a quote left open: the
+    // value is the word after it.
+    const q = original[from];
+    if ((q === "'" || q === '"') && original[from + 1] === q && !opened.has(from)) {
+      const end = runEnd(from + 2);
+      return end > from + 2 ? { start: from + 2, end, next: end, bare: true } : null;
+    }
+    // A value that opens a quote and never closes it runs to the line end: its
+    // words after the first are as likely to be the secret as the first is.
+    if ((original[from] === "'" || original[from] === '"') && !opened.has(from)) {
+      let lineEnd = from + 1;
+      while (lineEnd < original.length && !isLineEnd(original[lineEnd])) lineEnd += 1;
+      return lineEnd > from + 1 ? { start: from + 1, end: lineEnd, next: lineEnd, bare: false } : null;
     }
     const end = runEnd(from);
     return end > from ? { start: from, end, next: end, bare: true } : null;
@@ -706,13 +744,22 @@ function collectLabelSpans(original, kind, vocabulary) {
       // A quote right after the label that opens nothing -- an apostrophe-like
       // quote in `text` -- belongs to the label, as the anchor's `['"]?` allowed.
       const quoted = (original[end] === "'" || original[end] === '"') && !opened.has(end) ? end + 1 : end;
-      const after = separatorEnd(quoted, original.length);
+      // In a tag (`<key>`, `</key>`) the `>` closes the tag; it is not a prompt.
+      const tag = original[start - 1] === "<" || original[start - 1] === "/";
+      const after = separatorEnd(quoted, original.length, !tag);
       if (after > quoted) value = valueAt(skipScheme(after, original.length));
     }
 
     if (value && value.end > value.start) {
       spans.push({ start: value.start, end: value.end, kind: "credential:label" });
-      if (!value.bare) label.lastIndex = Math.max(label.lastIndex, value.next);
+      // A label inside a value is read again only when the value is shaped like a
+      // label itself: an option (`--key`) or a word ending in `:` or `=`, quoted
+      // parts or not (`'x'secret:`). A plain word that happens to contain a label
+      // (`=secret`, `=my_token`) is the value, and reading it again masked the
+      // word after it.
+      const last = original[value.end - 1];
+      const labelLike = original[value.start] === "-" || last === ":" || last === "=";
+      if (!labelLike) label.lastIndex = Math.max(label.lastIndex, value.next);
     }
   }
   return spans;
@@ -740,9 +787,15 @@ const URL_AUTHORITY_VALUE = /(:\/\/[^/:@\s]+:)([^/@\s]+)(@)/g;
  * (`cat -n`, `nl`, an editor gutter), `> ` or `| `, `file:12:` from `grep -n`,
  * or a diff's `-`. The prefix stays; only the base64 run is masked. Without it,
  * a key body printed by `cat -n` came through whole.
+ *
+ * A line number needs a blank or `|`, `:`, `>` after it. Digits are base64
+ * characters too, and a prefix that could end anywhere inside a run of digits
+ * made a long line of digits that fails the match take quadratic time to fail
+ * (measured, 3.6 s at 32,000 characters), and left the leading digits of a
+ * base64 line unmasked as if they were a line number.
  */
 const BARE_BASE64_LINE =
-  /^([ \t]*(?:[0-9]+[ \t]*[|:>]?[ \t]*|[>|]+[ \t]*|[^\s:]+:[0-9]+:[ \t]*|-)?)([A-Za-z0-9+/=]{32,})[ \t]*$/gm;
+  /^([^\S\r\n]*(?:[0-9]+(?:[^\S\r\n]+[|:>]?|[|:>])[^\S\r\n]*|[>|]+[^\S\r\n]*|[^\s:]+:[0-9]+:[^\S\r\n]*|-)?)([A-Za-z0-9+/=]{32,})[^\S\r\n]*$/gm;
 
 /**
  * Collects the span of every credential value, decided against the original.

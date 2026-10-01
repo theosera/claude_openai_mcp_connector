@@ -275,3 +275,83 @@ describe("the core on the step 2-3 review's shapes", () => {
     expect(() => collectCredentialSpans("password: FKRV0025")).toThrow(TypeError);
   });
 });
+
+// A second independent review, of the fixes above (#249, 2026-10-01), found them
+// adding faults of their own; and the first review's probe, run on the fixed core,
+// found shapes where it had become worse than before. One case each.
+describe("the core on the second review's shapes", () => {
+  const B64 = "QUJD".repeat(10);
+  const cases: readonly (readonly [string, "command" | "text", string, string])[] = [
+    [
+      "a text scalar ending in an escaped backslash",
+      "text",
+      "password: 'FKRV0030\\\\' and token: 'FKRV0031'",
+      `password: '${MASK}' and token: '${MASK}'`
+    ],
+    ["a label glued to a text scalar's closing quote", "text", "passwd='x'secret: FKRV0032", `passwd='${MASK} ${MASK}`],
+    ["a base64 line that starts with digits", "text", `1234${B64}`, MASK],
+    [
+      "a value that is a label word",
+      "command",
+      "POSTGRES_PASSWORD=secret KEEPRV33 -p",
+      `POSTGRES_PASSWORD=${MASK} KEEPRV33 -p`
+    ],
+    ["a value that ends in a label word", "command", "TOKEN=my_token KEEPRV34", `TOKEN=${MASK} KEEPRV34`],
+    ["a prompt's > right after the label", "text", "password> FKRV0035", `password> ${MASK}`],
+    [
+      "a label as a tag name",
+      "text",
+      "<key>token</key><string>KEEPRV36</string>",
+      "<key>token</key><string>KEEPRV36</string>"
+    ],
+    [
+      "a prefixed string in text",
+      "text",
+      'print(f"password: FKRV0037 FKRV0038") KEEPRV37',
+      `print(f"password: ${MASK}") KEEPRV37`
+    ],
+    [
+      "a text value whose quote never closes",
+      "text",
+      'passphrase: "FKRV0039 FKRV0040\nKEEPRV38',
+      `passphrase: "${MASK}\nKEEPRV38`
+    ],
+    ["an empty pair before the value", "text", "'x  token: ''FKRV0041 KEEPRV39", `'x  token: ''${MASK} KEEPRV39`],
+    [
+      "a comma glued after a quoted command value",
+      "command",
+      "export PASSWORD='FKRV0042',FKRV0043 KEEPRV40",
+      `export PASSWORD='${MASK} KEEPRV40`
+    ],
+    [
+      "a scheme word in a quoted list item",
+      "text",
+      '"Authorization": ["Bearer FKRV0044"], "x": "KEEPRV41"',
+      `"Authorization": ["Bearer ${MASK} "x": "KEEPRV41"`
+    ],
+    [
+      "a label glued to a command value's closing quote",
+      "command",
+      "passwd='x'secret: FKRV0045 KEEPRV42",
+      `passwd='${MASK} ${MASK} KEEPRV42`
+    ],
+    ["an ideographic space after a base64 line", "text", `FKRV0046${B64}\u3000`, `${MASK}\u3000`],
+    [
+      "a quoted key, blanks and a quoted value",
+      "text",
+      'set "secret"  "FKRV0047" KEEPRV43',
+      `set "secret"  "${MASK}" KEEPRV43`
+    ],
+    ["a long run of digits that is not base64", "text", `${"7".repeat(100)}!`, `${"7".repeat(100)}!`],
+    [
+      "a value that is a shell ANSI-C string with a scheme word",
+      "text",
+      "src/a.ts:3: TOKEN=  $'Bearer FKRV0049' KEEPRV45",
+      `src/a.ts:3: TOKEN=  $'Bearer ${MASK} KEEPRV45`
+    ]
+  ];
+
+  it.each(cases)("%s", (_name, kind, input, expected) => {
+    expect(redactFragment({ text: input, kind })).toEqual({ text: expected, status: "ok" });
+  });
+});

@@ -51,8 +51,15 @@ const SHAPES: readonly (readonly [string, string, (length: number) => string])[]
   ["many-labels", "FKPERFML1", (n) => fill("token=FKPERFML1 ", "token=v ", n)],
   // Labels nested in one unquoted word: each is read again, and each value runs
   // to the end of the same word. Measured quadratic until the word's end and
-  // quotedness were remembered (3.5 to 3.9 per doubling as a command).
-  ["nested-labels", "FKPERFNL1", (n) => fill("token=FKPERFNL1 ", "token:", n)]
+  // quotedness were remembered (3.5 to 3.9 per doubling as a command). Whole
+  // labels only: a word is read again only when it ends like a label (`token:`),
+  // so a word cut mid-label at one size and not the next times two different
+  // paths and reads as a jump of 6 in one doubling.
+  ["nested-labels", "FKPERFNL1", (n) => "token=FKPERFNL1 " + "token:".repeat(Math.floor((n - 16) / 6))],
+  // A long run of digits that fails a base64 line at its last character. A line
+  // number prefix that could end anywhere inside the digits made this quadratic
+  // (3.6 s at 32,000 characters).
+  ["digits-bang", "FKPERFDG1", (n) => "token=FKPERFDG1\n" + "7".repeat(n - 17) + "!"]
 ];
 
 function median(values: readonly number[]): number {
