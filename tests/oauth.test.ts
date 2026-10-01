@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import type http from "node:http";
 import net from "node:net";
@@ -1561,6 +1562,127 @@ describe("OAuthStore persistence", () => {
     store.registerClient(["https://chatgpt.com/cb"]);
     expect(new OAuthStore({ ...opts, persistPath: file, persistSecret: secret }).loadOutcome).toBe("loaded");
     expect(new OAuthStore({ ...opts, persistPath: file, persistSecret: "another" }).loadOutcome).toBe("failed");
+  });
+
+  // #258: only a missing state file is a first run. A state file that exists and
+  // cannot be read stops the store from starting. Starting empty would be silent,
+  // and the next save renames over the file, which needs only directory write
+  // permission: every registration in it would be lost (ChatGPT does not register
+  // again, #184). The before / after view of the file comes from one handle
+  // each, so the bytes and the inode are of the same file.
+  async function snapshot(file: string): Promise<{ bytes: string; ino: number }> {
+    const handle = await fs.open(file, "r");
+    try {
+      const st = await handle.stat();
+      return { bytes: (await handle.readFile()).toString("base64"), ino: st.ino };
+    } finally {
+      await handle.close();
+    }
+  }
+
+  /** Starts a store on `file`: the refusal message, or null when it started. */
+  //
+  // A store that starts anyway is given one registration, as a running server
+  // would be: that save is what replaces the file, so the file checks below can
+  // see a regression that starts empty.
+  function refusal(file: string): string | null {
+    let store: OAuthStore;
+    try {
+      store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+    try {
+      store.registerClient(["https://claude.ai/cb"]);
+    } catch {
+      // A save that fails is not what these tests are about.
+    }
+    return null;
+  }
+
+  /** A refusal names the variable and the error code, and not the path or the password. */
+  function expectRefusal(message: string | null, code: string, file: string): void {
+    expect(message, "the store started instead of refusing").not.toBeNull();
+    expect(message).toMatch(
+      new RegExp(`^MCP_OAUTH_STATE_FILE is set but the state file could not be read \\(${code}\\)`)
+    );
+    expect(message).not.toContain(path.dirname(file));
+    expect(message).not.toContain(path.basename(file));
+    expect(message).not.toContain(secret);
+  }
+
+  it("refuses to start on an unreadable state file, and leaves it as it was (#258)", async (ctx) => {
+    const file = await stateFilePath();
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    const kept = mustRegister(store, ["https://chatgpt.com/cb"], "ChatGPT");
+    store.recordConsent(kept.clientId);
+    const before = await snapshot(file);
+    await fs.chmod(file, 0o000);
+    let message: string | null;
+    try {
+      const denied = await fs.readFile(file).then(
+        () => null,
+        (error: NodeJS.ErrnoException) => error.code
+      );
+      if (denied !== "EACCES") ctx.skip(); // run as root: the file is still readable
+      message = refusal(file);
+    } finally {
+      await fs.chmod(file, 0o600);
+    }
+    expect(await snapshot(file)).toEqual(before);
+    expectRefusal(message, "EACCES", file);
+    expect(
+      new OAuthStore({ ...opts, persistPath: file, persistSecret: secret }).getClient(kept.clientId)
+    ).toBeDefined();
+  });
+
+  it("refuses to start when the state path is a directory, and leaves it as it was (#258)", async () => {
+    const file = await stateFilePath();
+    await fs.mkdir(file);
+    const message = refusal(file);
+    expect((await fs.stat(file)).isDirectory()).toBe(true);
+    expect(await fs.readdir(file)).toEqual([]);
+    expectRefusal(message, "EISDIR", file);
+  });
+
+  // The code is printed only when it has the shape of an errno code. An error
+  // with no code, or a code that is not one, reads "an unknown error", and
+  // nothing the error carried reaches the message.
+  it("names a read error without a usable code as unknown, and echoes nothing from it (#258)", async () => {
+    const file = await stateFilePath();
+    for (const thrown of [
+      new Error("no code at all"),
+      Object.assign(new Error("odd code"), { code: "not a code /tmp/elsewhere" })
+    ]) {
+      const read = vi.spyOn(fsSync, "readFileSync").mockImplementation(() => {
+        throw thrown;
+      });
+      try {
+        const message = refusal(file);
+        expectRefusal(message, "an unknown error", file);
+        expect(message).not.toContain(thrown.message);
+        expect(message).not.toContain("/tmp/elsewhere");
+        expect(read).toHaveBeenCalled();
+      } finally {
+        read.mockRestore();
+      }
+    }
+  });
+
+  // The control for the two tests above: a missing file is still a first run.
+  // It starts, logs nothing, and the next save creates the file.
+  it("still starts on a missing state file, silently, as a first run (#258)", async () => {
+    const file = await stateFilePath();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(new OAuthStore({ ...opts, persistPath: file, persistSecret: secret }).loadOutcome).toBe("absent");
+      // Starts, and its one registration is saved: the file now exists.
+      expect(refusal(file)).toBeNull();
+      expect(logged).not.toHaveBeenCalled();
+    } finally {
+      logged.mockRestore();
+    }
+    expect(new OAuthStore({ ...opts, persistPath: file, persistSecret: secret }).loadOutcome).toBe("loaded");
   });
 
   // What the operator command shows carries nothing that authenticates.

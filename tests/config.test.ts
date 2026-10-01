@@ -458,6 +458,55 @@ describe("startup env boundary (spawned entrypoint)", () => {
     expect(off).not.toContain("registrations=");
   }, 60_000);
 
+  // #258 on the real entrypoint: an OAuth state file that exists and cannot be
+  // read stops the server before it listens, and the message names the variable
+  // and the error code, not the path or the password. The file is left as it
+  // was. The same environment with the file readable starts, as the control.
+  it("refuses to start on an OAuth state file it cannot read (#258)", async (ctx) => {
+    const password = "correct horse battery staple";
+    const stateFile = path.join(stateDir, "oauth-state.json");
+    await fs.writeFile(stateFile, "{}", { mode: 0o600 });
+    const snapshot = async () => {
+      const handle = await fs.open(stateFile, "r");
+      try {
+        return { bytes: (await handle.readFile()).toString("base64"), ino: (await handle.stat()).ino };
+      } finally {
+        await handle.close();
+      }
+    };
+    const before = await snapshot();
+    const env = async () => ({
+      KNOWLEDGE_ROOT: vault,
+      MCP_PATCH_STATE_DIR: path.join(stateDir, "patches"),
+      MCP_HTTP_PORT: String(await freePort()),
+      MCP_OAUTH_ENABLED: "1",
+      MCP_HTTP_PUBLIC_URL: "https://vault.example",
+      MCP_OAUTH_PASSWORD: password,
+      MCP_OAUTH_STATE_FILE: stateFile
+    });
+
+    await fs.chmod(stateFile, 0o000);
+    let refused: string;
+    try {
+      const denied = await fs.readFile(stateFile).then(
+        () => null,
+        (error: NodeJS.ErrnoException) => error.code
+      );
+      if (denied !== "EACCES") ctx.skip(); // run as root: the file is still readable
+      refused = await runHttpServer(await env());
+    } finally {
+      await fs.chmod(stateFile, 0o600);
+    }
+    expect(refused).toMatch(/MCP_OAUTH_STATE_FILE is set but the state file could not be read \(EACCES\)/);
+    expect(refused).not.toMatch(/transport listening/);
+    expect(refused).not.toContain(stateDir);
+    expect(refused).not.toContain(password);
+    expect(await snapshot()).toEqual(before);
+
+    const started = await runHttpServer(await env());
+    expect(started).toMatch(/transport listening/);
+  }, 60_000);
+
   it("refuses to start on a relative or unreadable MCP_ENV_FILE", async () => {
     const relative = await runServer({ KNOWLEDGE_ROOT: vault, MCP_ENV_FILE: CWD_ENV_FILE });
     expect(relative.code).toBe(1);

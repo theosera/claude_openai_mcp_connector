@@ -1091,20 +1091,44 @@ export class OAuthStore {
   // File layout: { version, salt, mac, payload } where `payload` is the JSON
   // *string* of PersistedPayload and `mac` = HMAC-SHA256(key, payload). Keeping
   // the payload as an opaque string makes the MAC byte-exact (no re-serialize
-  // ambiguity). Any failure to verify/parse fails CLOSED: start empty.
+  // ambiguity). Any failure to verify/parse fails CLOSED: start empty. A file
+  // that cannot be READ is different, and refuses to start (#258).
 
-  /** Fail-closed load: on any corruption/tamper/version/secret mismatch → empty. */
+  /**
+   * Fail-closed load: on any corruption/tamper/version/secret mismatch → empty.
+   * A read error other than a missing file throws, which stops the server.
+   */
   private load(secret: string): void {
     if (!this.persistPath) {
       return;
     }
-    let raw: string;
+    let read: { raw: string } | { unreadable: string };
     try {
-      raw = fs.readFileSync(this.persistPath, "utf8");
-    } catch {
-      // Missing file is the normal first run; derive a fresh salt lazily on save.
-      return;
+      read = { raw: fs.readFileSync(this.persistPath, "utf8") };
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        // Missing file is the normal first run; derive a fresh salt lazily on save.
+        return;
+      }
+      read = { unreadable: typeof code === "string" && /^[A-Z][A-Z0-9_]*$/.test(code) ? code : "an unknown error" };
     }
+    if ("unreadable" in read) {
+      // Anything but a missing file (EACCES from another account, EISDIR, EIO)
+      // is a state file that exists and was not read. Starting empty would be
+      // silent, and the next save renames over the file, which needs write
+      // permission on the directory only: every registration in it would be
+      // lost, and ChatGPT does not register again (#184). So the server does
+      // not start. The message names the variable and the error code only.
+      // The caught error is deliberately not attached as `cause`: its message
+      // carries the path, and Node prints the cause of an uncaught error.
+      throw new Error(
+        `MCP_OAUTH_STATE_FILE is set but the state file could not be read (${read.unreadable}). ` +
+          "Refusing to start: running on an empty OAuth state would replace the file at the next save " +
+          "and lose every client registration. Fix the file's permissions or ownership, then start again."
+      );
+    }
+    const raw = read.raw;
     try {
       const envelope = JSON.parse(raw) as { version?: unknown; salt?: unknown; mac?: unknown; payload?: unknown };
       if (

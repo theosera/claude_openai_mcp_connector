@@ -94,6 +94,19 @@ same store, so one file covers every web client). Security properties:
   password-rotated state file fails **closed**: the server starts with empty
   OAuth state and clients simply re-authorize. Rotating the password is
   therefore also how you revoke all persisted sessions at once.
+- A state file that exists but **cannot be read** is different: the server
+  **refuses to start** (#258). This happens when another account owns the file,
+  the path is a directory, or the disk returns an I/O error. The log shows
+  `MCP_OAUTH_STATE_FILE is set but the state file could not be read (<code>)`,
+  with the error code only. Starting empty instead would let the next save
+  replace the file, which needs write permission on the directory only, and
+  every registration in it would be lost. Under launchd with `KeepAlive`, the
+  agent is restarted and refused again until the file is fixed, so that line
+  repeats in its `StandardErrorPath` log. **Fix the file's ownership and
+  permissions:** it should be mode `0600` and owned by the account the server
+  runs as. The next restart then loads it. Do not delete the file to get the
+  server up again: that loses every registration, and ChatGPT has to delete and
+  recreate its app.
 - Authorization codes are never persisted; they are single-use with a TTL of
   60 seconds by default, configurable via `MCP_OAUTH_CODE_TTL`.
 - A rotated refresh token is **not** invalidated immediately — it is
