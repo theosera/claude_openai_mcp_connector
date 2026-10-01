@@ -94,6 +94,29 @@ same store, so one file covers every web client). Security properties:
   password-rotated state file fails **closed**: the server starts with empty
   OAuth state and clients simply re-authorize. Rotating the password is
   therefore also how you revoke all persisted sessions at once.
+- A state file that exists but **cannot be read** is different: the server
+  **refuses to start** (#258). This happens when the file itself cannot be
+  read: its owner or mode changed, the path is a directory, the path is a
+  symbolic link whose target is missing (an unmounted volume, say), or the disk
+  returns an I/O error. The log shows
+  `MCP_OAUTH_STATE_FILE is set but the state file could not be read (<code>)`,
+  with the error code only. (A parent directory that cannot be entered is
+  refused earlier, by the configuration check, with its own message.) For an
+  unreadable file, starting empty instead would let the next save replace it,
+  which needs write permission on the directory only, and every registration
+  in it would be lost. Under launchd with `KeepAlive`, the
+  agent is restarted and refused again until the file is fixed, so that line
+  repeats in its `StandardErrorPath` log. **Fix the file's ownership and
+  permissions:** it should be mode `0600` and owned by the account the server
+  runs as. The next restart then loads it. **Do not keep a symbolic link at the
+  path.** Bringing a missing target back (mounting the volume) lets the next
+  start read it, but the first save after that replaces the link with a regular
+  file at the path — a save writes a temporary file beside the path and renames
+  it over — and the target is left with the old state. So bring the target
+  back, set `MCP_OAUTH_STATE_FILE` to the target file's own path, and start
+  again. Do not delete the file to get the
+  server up again: that loses every registration, and ChatGPT has to delete and
+  recreate its app.
 - Authorization codes are never persisted; they are single-use with a TTL of
   60 seconds by default, configurable via `MCP_OAUTH_CODE_TTL`.
 - A rotated refresh token is **not** invalidated immediately — it is
