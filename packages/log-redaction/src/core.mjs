@@ -865,25 +865,28 @@ function collectLabelSpans(original, kind, vocabulary) {
   };
 
   /**
-   * The value an element holds: its text. A plist writes a key and its value as
-   * two elements (`<key>token</key><string>v</string>`): a bare `<key>` followed by
-   * another element holds no value itself, and that element's text is the value
-   * when the key holds a label. A `<key>` with attributes, a blank before its `>`
-   * or no element after it is an ordinary element (`<key id="x">v</key>`,
+   * The values an element holds, in order: its text. A plist writes a key and its
+   * value as two elements (`<key>token</key><string>v</string>`): a bare `<key>`
+   * followed by another element holds no value itself, and that element's text is
+   * the value when the key holds a label. A `<key>` with attributes, a blank before
+   * its `>` or no element after it is an ordinary element (`<key id="x">v</key>`,
    * `<key>v</key>`): plists write none of those, and the text may be the secret.
+   * When such a `<key>` holds a label and another element follows, that element's
+   * text is a value too (`<key id="x">token</key><string>v</string>`).
    */
-  const elementValue = (element) => {
+  const elementValues = (element) => {
     const text = element.end > element.start ? { start: element.start, end: element.end, next: element.end } : null;
-    if (element.name !== "key" || !element.bare) return text;
+    if (element.name !== "key") return [text];
     let at = element.closeEnd;
     while (at < original.length && BLANK.test(original[at])) at += 1;
-    if (original[at] !== "<") return text;
+    if (original[at] !== "<") return [text];
     let name = at + 1;
     while (name < original.length && /[A-Za-z0-9_.:-]/.test(original[name])) name += 1;
-    if (name === at + 1 || original[name] !== ">") return text;
-    if (!labelWord.test(original.slice(element.start, element.end))) return null;
+    if (name === at + 1 || original[name] !== ">") return [text];
     const stop = tagTextEnd(name + 1);
-    return stop > name + 1 ? { start: name + 1, end: stop, next: stop } : null;
+    const next = stop > name + 1 ? { start: name + 1, end: stop, next: stop } : null;
+    if (!labelWord.test(original.slice(element.start, element.end))) return element.bare ? [] : [text];
+    return element.bare ? [next] : [text, next];
   };
 
   /**
@@ -891,7 +894,9 @@ function collectLabelSpans(original, kind, vocabulary) {
    * inside a closed quote (`"Bearer a b"`), the value is the rest of that quote:
    * reading one word there left the rest of the credential in the clear. What is
    * glued after the closing quote belongs to it too (`"Bearer a"b`, one shell
-   * word; `"Basic "v`, a quote that holds only the scheme word).
+   * word; `"Basic "v`, a quote that holds only the scheme word). Labels are read
+   * again from the closing quote on, as they were when the value ended there: a
+   * label in the glued part names a value of its own (`"Bearer a"--password "v"`).
    */
   const valueAfter = (after) => {
     const from = skipScheme(after, original.length);
@@ -901,7 +906,7 @@ function collectLabelSpans(original, kind, vocabulary) {
         const joined = joinedEnd(segment);
         const start = from < segment.close ? from : segment.close + 1;
         const end = joined > segment.close + 1 ? joined : segment.close;
-        return end > start ? { start, end, next: Math.max(end, segment.close + 1) } : null;
+        return end > start ? { start, end, next: segment.close + 1 } : null;
       }
     }
     return valueAt(from);
@@ -961,7 +966,11 @@ function collectLabelSpans(original, kind, vocabulary) {
       const closingTag = original[start - 1] === "/" && original[start - 2] === "<";
       const tag = (original[start - 1] === "<" && original[end] === ">") || closingTag;
       if (element) {
-        value = elementValue(element);
+        const values = elementValues(element).filter(Boolean);
+        for (const before of values.slice(0, -1)) {
+          spans.push({ start: before.start, end: before.end, kind: "credential:label" });
+        }
+        value = values.at(-1) ?? null;
       } else if (tag) {
         // A tag that opens no element on this line, or a closing tag: what is glued
         // after its `>` is a value (`<password>v`, `<token>=v`, `Enter <password>:

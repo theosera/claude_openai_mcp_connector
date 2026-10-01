@@ -702,3 +702,70 @@ describe("the core on the sixth review's shapes", () => {
     expect(redactFragment({ text: input, kind })).toEqual({ text: expected, status: "ok" });
   });
 });
+
+// A seventh independent review, of the sixth review's fixes (#249, 2026-10-02),
+// found two values those fixes left readable that step 2-3 masked, and a guard
+// no test held.
+describe("the core on the seventh review's shapes", () => {
+  const both = ["command", "text"] as const;
+  const header = ["Author", "ization"].join("");
+  const bearer = ["Bea", "rer"].join("");
+  const basic = ["Ba", "sic"].join("");
+  const password = ["pass", "word"].join("");
+  const cases: readonly (readonly [string, readonly ("command" | "text")[], string, string])[] = [
+    [
+      "a key element with an attribute that holds a label, before another element",
+      both,
+      '<key id="x">token</key><string>FKRV0160</string> KEEPRW60',
+      `<key id="x">${MASK}</key><string>${MASK}</string> KEEPRW60`
+    ],
+    [
+      "a key element with a blank before > that holds a label, before another element",
+      both,
+      "<key >token</key><string>FKRV0161</string> KEEPRW61",
+      `<key >${MASK}</key><string>${MASK}</string> KEEPRW61`
+    ],
+    [
+      "a Key element with an attribute that holds a label, before another element",
+      both,
+      `<Key name="a">${password}</Key><string>FKRV0162</string> KEEPRW62`,
+      `<Key name="a">${MASK}</Key><string>${MASK}</string> KEEPRW62`
+    ],
+    [
+      "a plist key before an element with an attribute",
+      both,
+      '<key>FKRV0163</key><string type="x">KEEPRW63</string>',
+      `<key>${MASK}</key><string type="x">KEEPRW63</string>`
+    ],
+    [
+      "an option glued after a quoted scheme value",
+      both,
+      `${header}: "${bearer} FKRV0164"--${password} "FKRV0165" KEEPRW64`,
+      `${header}: "${bearer} ${MASK} "${MASK}" KEEPRW64`
+    ],
+    [
+      "a word ending in a label glued after a quoted scheme value",
+      both,
+      `${header}: "${bearer} FKRV0166"x${password} "FKRV0167" KEEPRW66`,
+      `${header}: "${bearer} ${MASK} "${MASK}" KEEPRW66`
+    ],
+    [
+      "an option glued after a quote that holds only the scheme word",
+      both,
+      `${header}: '${basic} 'x--${password} 'FKRV0168' KEEPRW68`,
+      `${header}: '${basic} '${MASK} '${MASK}' KEEPRW68`
+    ],
+    [
+      "an option and an unquoted value glued after a quoted scheme value",
+      both,
+      `${header}: "${bearer} FKRV0169"--token FKRV0170 KEEPRW69`,
+      `${header}: "${bearer} ${MASK} ${MASK} KEEPRW69`
+    ]
+  ];
+
+  it.each(
+    cases.flatMap(([name, kinds, input, expected]) => kinds.map((kind) => [name, kind, input, expected] as const))
+  )("%s, as %s", (_name, kind, input, expected) => {
+    expect(redactFragment({ text: input, kind })).toEqual({ text: expected, status: "ok" });
+  });
+});
