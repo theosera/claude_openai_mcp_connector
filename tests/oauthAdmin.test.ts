@@ -153,19 +153,54 @@ describe("oauth:registrations (#184)", () => {
     expect(lineOf(carried.clientId)).not.toContain("expires=");
   }, 30_000);
 
+  // The listing is the operator's view of what an anonymous caller sent, so
+  // nothing in a name or a redirect URI may act on the terminal, hide, or pose
+  // as one of the line's own fields — and `list` writes nothing, even when
+  // loading promotes a registration (`doomed` is pending with live tokens).
+  //
+  // Reverse-verified: escaping no C1, no format characters, or no backslash,
+  // leaving redirect URIs unquoted, and letting `list` write at load each
+  // redden this test.
   it("lists every registration as a snapshot, with what a caller sent made printable", async () => {
+    const hidden = [0x9b, 0x85, 0x200e, 0x2066, 0x061c, 0x2028, 0x200b, 0xfeff, 0xe0041].map((code) =>
+      String.fromCodePoint(code)
+    );
+    const disguised = reload().registerClient(
+      ["https://evil.example/cb,https://claude.ai/api/mcp/auth_callback  state=given  tokens=access:1,refresh:1"],
+      `x${hidden.join("")}\\x1b"y`
+    )!;
+    // Seeded last: a store that loads `doomed` with its live tokens promotes it
+    // and writes that at once, and then `list` would have nothing to write.
     const { kept, doomed } = seed();
+    const before = await fs.readFile(stateFile);
+    const onDisk = JSON.parse(JSON.parse(before.toString("utf8")).payload as string) as {
+      clients: { clientId: string; consent: string }[];
+    };
+    expect(onDisk.clients.find((client) => client.clientId === doomed.clientId)?.consent).toBe("pending");
+
     const listed = await run(["list"]);
     expect(listed.code).toBe(0);
     expect(listed.stdout.split("\n")[0]).toMatch(/^Snapshot of the state file at .* A running server may hold changes/);
-    const doomedLine = listed.stdout.split("\n").find((line) => line.startsWith(doomed.clientId))!;
+    const lineOf = (clientId: string) => listed.stdout.split("\n").find((line) => line.startsWith(clientId))!;
+    const doomedLine = lineOf(doomed.clientId);
     expect(doomedLine).toContain("tokens=access:2,refresh:2");
-    expect(doomedLine).toContain("\\x1b]0;owned\\x07\\u202ename");
-    expect(doomedLine).toContain("https://doomed.example/cb\\x1b[2J");
+    expect(doomedLine).toContain('name="evil\\x1b]0;owned\\x07\\u202ename"');
+    expect(doomedLine).toContain('redirect="https://doomed.example/cb\\x1b[2J"');
     expect(listed.stdout).toContain(kept.clientId);
-    for (const raw of [ESC, BEL, RLO]) {
+
+    const disguisedLine = lineOf(disguised.clientId);
+    expect(disguisedLine).toContain(
+      'name="x\\x9b\\x85\\u200e\\u2066\\u061c\\u2028\\u200b\\ufeff\\u{e0041}\\\\x1b\\"y"'
+    );
+    // Outside the quoted fields the line has exactly one state and one tokens.
+    const unquoted = disguisedLine.replace(/"(?:\\.|[^"\\])*"/g, '""');
+    expect(unquoted.match(/state=/g)).toHaveLength(1);
+    expect(unquoted.match(/tokens=/g)).toHaveLength(1);
+
+    for (const raw of [ESC, BEL, RLO, ...hidden]) {
       expect(listed.stdout).not.toContain(raw);
     }
+    expect((await fs.readFile(stateFile)).equals(before)).toBe(true);
   }, 30_000);
 
   it("writes nothing on a remove without --apply", async () => {
@@ -246,6 +281,85 @@ describe("oauth:registrations (#184)", () => {
     expect((await fs.readFile(stateFile)).equals(before)).toBe(true);
   }, 30_000);
 
+  // When the probe can neither connect nor be refused, the safe reading is
+  // "maybe running". An unresolvable host is such a case.
+  //
+  // Reverse-verified: treating every probe error as "nothing listens" reddens
+  // this test (the write goes through).
+  it("refuses --apply when it cannot tell whether a server answers", async () => {
+    const { doomed } = seed();
+    const before = await fs.readFile(stateFile);
+    const refused = await run(["remove", doomed.clientId, "--apply"], { MCP_HTTP_HOST: "nonexistent.invalid" });
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain("something answers on nonexistent.invalid");
+    expect((await fs.readFile(stateFile)).equals(before)).toBe(true);
+  }, 30_000);
+
+  // Reverse-verified: ignoring the store's save result in the command reddens
+  // the status and message asserts (it says "Removed").
+  it("reports a removal it could not write, and leaves the registration", async () => {
+    const { doomed } = seed();
+    await fs.mkdir(`${stateFile}.tmp`);
+    try {
+      const failed = await run(["remove", doomed.clientId, "--apply"]);
+      expect(failed.code).toBe(1);
+      expect(failed.stderr).toContain("could not be written");
+      expect(failed.stdout).not.toContain("Removed");
+    } finally {
+      await fs.rmdir(`${stateFile}.tmp`);
+    }
+    expect(reload().getClient(doomed.clientId)).toBeDefined();
+  }, 30_000);
+
+  // A file this account cannot read is not "no file yet": saying so sends the
+  // operator to re-run as someone who can, and that run writes the file back
+  // owned by them.
+  //
+  // Reverse-verified: treating every read error as a missing file reddens this
+  // test (exit 0, "No state file yet").
+  it.skipIf(process.getuid?.() === 0)(
+    "refuses a state file it cannot read, instead of calling it absent",
+    async () => {
+      seed();
+      await fs.chmod(stateFile, 0o000);
+      try {
+        const listed = await run(["list"]);
+        expect(listed.code).toBe(1);
+        expect(listed.stderr).toContain("the state file cannot be read (EACCES)");
+        expect(listed.stdout).not.toContain("No state file yet");
+      } finally {
+        await fs.chmod(stateFile, 0o600);
+      }
+    },
+    30_000
+  );
+
+  // In process: a file owned by another account cannot be made without root,
+  // so the account this runs as is what the test changes.
+  //
+  // Reverse-verified: removing the owner check reddens this test.
+  it("refuses --apply on a state file another account owns", async () => {
+    const { doomed } = seed();
+    const before = await fs.readFile(stateFile);
+    for (const [key, value] of Object.entries(configEnv())) {
+      vi.stubEnv(key, value);
+    }
+    vi.stubEnv("MCP_ENV_FILE", "");
+    const errors: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      errors.push(String(chunk));
+      return true;
+    });
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const owner = (await fs.stat(stateFile)).uid;
+    vi.spyOn(process, "geteuid").mockReturnValue(owner + 1);
+
+    const code = await main(["remove", doomed.clientId, "--apply"]);
+    expect(code).toBe(1);
+    expect(errors.join("")).toContain(`the state file belongs to uid ${owner}`);
+    expect((await fs.readFile(stateFile)).equals(before)).toBe(true);
+  }, 30_000);
+
   // In process, because the window this pins — after every check, before the
   // write — cannot be reached from outside a spawned command.
   it("refuses --apply when the state file changes after it was read", async () => {
@@ -280,17 +394,22 @@ describe("oauth:registrations (#184)", () => {
     const { keptTokens, doomed, doomedTokens, rotated } = seed();
     const salt = Buffer.from(JSON.parse(await fs.readFile(stateFile, "utf8")).salt as string, "hex");
     const derivedKey = crypto.scryptSync(PASSWORD, salt, 32);
-    const secrets = [
-      PASSWORD,
-      AUTH_TOKEN,
-      derivedKey.toString("hex"),
-      derivedKey.toString("base64"),
+    const tokenValues = [
       keptTokens.accessToken,
       keptTokens.refreshToken,
       doomedTokens.accessToken,
       doomedTokens.refreshToken,
       rotated.accessToken,
       rotated.refreshToken
+    ];
+    const secrets = [
+      PASSWORD,
+      AUTH_TOKEN,
+      derivedKey.toString("hex"),
+      derivedKey.toString("base64"),
+      ...tokenValues,
+      // The store keys tokens by these, so they are what a careless listing would print.
+      ...tokenValues.map((token) => crypto.createHash("sha256").update(token).digest("hex"))
     ];
     const outputs = [
       await run(["--help"]),

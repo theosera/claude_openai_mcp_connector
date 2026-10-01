@@ -226,20 +226,26 @@ so the file keeps its HMAC.
      `client_id`, its state (`given`, `pending` with the time it will be
      removed, or `unknown`), when it was created, how many live tokens it
      holds, its name and its redirect URIs. The first line says it is a
-     snapshot of the file.
+     snapshot of the file. A registration the file holds as `pending` but
+     that has live tokens is shown as `given`, the way the server reads it.
      The name and the redirect URIs are whatever the caller of `/register`
-     sent; control characters in them are printed as escapes.
+     sent, so each is quoted, and characters a terminal would act on or hide
+     (control and format characters, and `\` itself) are printed as escapes.
   3. `pnpm oauth:registrations remove <client_id>...` — shows what would be
      removed and writes nothing.
   4. The same with `--apply` — removes the named registrations together with
      their access and refresh tokens and rotation records.
   5. Start the server again.
-- It reads its configuration the way the server does (`MCP_ENV_FILE`, then the
-  environment), so it finds the same file with the same password.
+- **Run it as the account the server runs as.** It reads its configuration the
+  way the server does (`MCP_ENV_FILE`, then the environment), so it finds the
+  same file with the same password. A write replaces the file with one owned
+  by whoever ran the command, so `--apply` refuses a file another account
+  owns, and a file it cannot read is reported as unreadable, not as missing.
 - It refuses, and writes nothing, when the state file does not verify (writing
   would replace it with an empty state and lose every registration), when a
-  named `client_id` is not registered, and when no `client_id` is named. There
-  is no option to remove everything, or everything in some state.
+  named `client_id` is not registered, when no `client_id` is named, and when
+  it cannot tell whether something answers on the server's address. There is
+  no option to remove everything, or everything in some state.
 - Loading applies what the server applies at start, so it can drop entries the
   file still holds. The dry run says how many, and `--apply` writes that too.
 - Removing a registration ends that registration and its sessions, not the

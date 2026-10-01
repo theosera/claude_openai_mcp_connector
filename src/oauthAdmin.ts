@@ -39,29 +39,42 @@ environment).
 `;
 
 /**
+ * Every character a terminal acts on or hides instead of showing: controls
+ * (Cc: C0, DEL, C1), format characters (Cf: the bidirectional controls, U+061C,
+ * zero-width characters, U+FEFF, TAG characters) and the line and paragraph
+ * separators (Zl, Zp). Named by Unicode category rather than listed by hand —
+ * a hand-made list missed U+061C and the C1 range was left untested.
+ */
+const UNPRINTABLE = /^[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]$/u;
+
+/**
  * Make a string safe to print on a terminal. `client_name` and `redirect_uris`
- * are whatever an anonymous caller of `/register` chose, so control characters
- * (ESC and the rest of C0, DEL, C1) and the bidirectional overrides that can
- * reorder what an operator reads are shown as escapes instead of acting.
+ * are whatever an anonymous caller of `/register` chose, so every unprintable
+ * character is shown as an escape instead of acting, and `\` itself is escaped
+ * so that a literal `\x1b` in the input cannot pass for an escaped ESC.
  */
 export function printable(value: string): string {
-  // Compared by code point rather than with a regex, for the reason
-  // pathSafety.ts gives: it keeps control bytes out of the source.
   let out = "";
   for (const char of value) {
     const code = char.codePointAt(0)!;
-    const control = code <= 0x1f || (code >= 0x7f && code <= 0x9f);
-    const bidi =
-      code === 0x200e || code === 0x200f || (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069);
-    if (control) {
+    if (char === "\\") {
+      out += "\\\\";
+    } else if (!UNPRINTABLE.test(char)) {
+      out += char;
+    } else if (code <= 0xff) {
       out += `\\x${code.toString(16).padStart(2, "0")}`;
-    } else if (bidi) {
+    } else if (code <= 0xffff) {
       out += `\\u${code.toString(16).padStart(4, "0")}`;
     } else {
-      out += char;
+      out += `\\u{${code.toString(16)}}`;
     }
   }
   return out;
+}
+
+/** One field an anonymous caller chose, quoted so it cannot pose as other fields. */
+function quoted(value: string): string {
+  return `"${printable(value).replaceAll('"', '\\"')}"`;
 }
 
 function describe(listing: RegistrationListing): string {
@@ -75,11 +88,12 @@ function describe(listing: RegistrationListing): string {
       : []),
     `created=${new Date(listing.createdAt).toISOString()}`,
     `tokens=access:${listing.liveAccessTokens},refresh:${listing.liveRefreshTokens}`,
-    // Quoted so a name with spaces stays one field. Not JSON.stringify: it would
-    // double the backslashes `printable` adds, and it leaves C1 and the bidi
-    // overrides alone.
-    `name=${listing.clientName === undefined ? "-" : `"${printable(listing.clientName).replaceAll('"', '\\"')}"`}`,
-    `redirect=${listing.redirectUris.map(printable).join(",")}`
+    // The name and each redirect URI are quoted one by one: unquoted, a redirect
+    // could carry "  state=given  tokens=…" and pass for this line's own
+    // fields. Not JSON.stringify: it would double the backslashes `printable`
+    // adds, and it leaves C1 and the format characters alone.
+    `name=${listing.clientName === undefined ? "-" : quoted(listing.clientName)}`,
+    `redirect=${listing.redirectUris.map(quoted).join(",")}`
   ].join("  ");
 }
 
@@ -149,7 +163,18 @@ export async function main(args: string[], hooks: { beforeWrite?: () => void } =
   let raw: Buffer;
   try {
     raw = fs.readFileSync(oauth.stateFile);
-  } catch {
+  } catch (error) {
+    // Only a missing file means "no registrations yet". Anything else (most
+    // often EACCES: run as another account than the server) is a file this
+    // command cannot read, and calling it absent would send an operator to
+    // re-run it as someone who can — and that run would write the file back
+    // owned by them, where the server may no longer read it.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") {
+      return fail(
+        `the state file cannot be read (${code ?? "unknown error"}). Run this as the account the server runs as. Nothing was read and nothing was written.`
+      );
+    }
     if (command === "list") {
       process.stdout.write("No state file yet at the configured path, so there are no registrations.\n");
       return 0;
@@ -179,7 +204,15 @@ export async function main(args: string[], hooks: { beforeWrite?: () => void } =
   const listings = store.listRegistrations();
   // Loading applies what the server applies at start, so it can drop entries
   // the file still holds. Say so, because --apply writes that out as well.
-  const inFile = (JSON.parse(JSON.parse(raw.toString("utf8")).payload as string).clients ?? []).length as number;
+  // `raw` is the bytes the sha was taken over, not the bytes the store
+  // verified, so this parse is only for the count and must not throw.
+  let inFile = listings.length;
+  try {
+    inFile = (JSON.parse(JSON.parse(raw.toString("utf8")).payload as string).clients ?? []).length as number;
+  } catch {
+    // The count is a courtesy; the sha check before any write catches a file
+    // that changed between the two reads.
+  }
   const droppedAtLoad = Math.max(0, inFile - listings.length);
   const dropNote = `${droppedAtLoad} registration(s) in the file are dropped on loading, as the server drops them at its next start; --apply writes that too.\n`;
 
@@ -205,6 +238,27 @@ export async function main(args: string[], hooks: { beforeWrite?: () => void } =
   if (unknown.length > 0) {
     return fail(`not registered: ${unknown.map(printable).join(", ")}. Nothing was written.`);
   }
+  // Checked before anything is announced, so a refused --apply never prints a
+  // "remove" line first.
+  if (apply) {
+    if (await somethingListens(config.host, config.port)) {
+      return fail(
+        `something answers on ${config.host}:${config.port}, so the server looks to be running. Stop it first: it would write the removed registrations back. Nothing was written.`
+      );
+    }
+    // The write replaces the file with one owned by whoever runs this, so
+    // running it as another account would leave the server a file it may not
+    // be able to read.
+    const owner = fs.statSync(oauth.stateFile).uid;
+    if (typeof process.geteuid === "function" && owner !== process.geteuid()) {
+      return fail(
+        `the state file belongs to uid ${owner}, not to this account (uid ${process.geteuid()}). Run this as the account the server runs as. Nothing was written.`
+      );
+    }
+    process.stdout.write(
+      `Nothing answers on ${config.host}:${config.port} (the server's configured address; a server on another address is not seen).\n`
+    );
+  }
   const byId = new Map(listings.map((listing) => [listing.clientId, listing]));
   for (const clientId of clientIds) {
     const removal = store.removalFor(clientId)!;
@@ -219,11 +273,6 @@ export async function main(args: string[], hooks: { beforeWrite?: () => void } =
     return 0;
   }
 
-  if (await somethingListens(config.host, config.port)) {
-    return fail(
-      `something answers on ${config.host}:${config.port}, so the server looks to be running. Stop it first: it would write the removed registrations back. Nothing was written.`
-    );
-  }
   hooks.beforeWrite?.();
   let current: Buffer;
   try {
