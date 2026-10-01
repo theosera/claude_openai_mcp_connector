@@ -223,8 +223,10 @@ so the file keeps its HMAC.
 - Steps, after `pnpm build`:
   1. Stop the server.
   2. `pnpm oauth:registrations list` — one line per registration: its
-     `client_id`, when it was created, how many live tokens it holds, its name
-     and its redirect URIs. The first line says it is a snapshot of the file.
+     `client_id`, its state (`given`, `pending` with the time it will be
+     removed, or `unknown`), when it was created, how many live tokens it
+     holds, its name and its redirect URIs. The first line says it is a
+     snapshot of the file.
      The name and the redirect URIs are whatever the caller of `/register`
      sent; control characters in them are printed as escapes.
   3. `pnpm oauth:registrations remove <client_id>...` — shows what would be

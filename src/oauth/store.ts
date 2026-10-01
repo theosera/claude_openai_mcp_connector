@@ -115,6 +115,7 @@ export type LoadOutcome = "absent" | "loaded" | "failed";
 /** One registration as the operator command shows it. Carries no credential. */
 export interface RegistrationListing {
   clientId: string;
+  consent: ClientConsent;
   clientName?: string;
   redirectUris: string[];
   createdAt: number;
@@ -594,6 +595,7 @@ export class OAuthStore {
     };
     return [...this.clients.values()].map((client) => ({
       clientId: client.clientId,
+      consent: client.consent,
       clientName: client.clientName,
       redirectUris: [...client.redirectUris],
       createdAt: client.createdAt,

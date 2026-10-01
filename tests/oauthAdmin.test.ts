@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { OAuthStore } from "../src/oauth/store.js";
+import { OAuthStore, REGISTRATION_CONSENT_DEADLINE_MS } from "../src/oauth/store.js";
 import { main } from "../src/oauthAdmin.js";
 
 // The operator command for OAuth registrations (#184). Most cases spawn the
@@ -121,6 +121,37 @@ describe("oauth:registrations (#184)", () => {
   }
 
   const reload = () => new OAuthStore({ ...TTL, persistPath: stateFile, persistSecret: PASSWORD });
+
+  // One registration in each state. `kept` holds live tokens, so load reads it
+  // as given; `waiting` never consented; `carried` lost its `consent` field the
+  // way a state file written before the field existed holds it.
+  it("shows each registration's state, and when a pending one expires", async () => {
+    const { kept } = seed();
+    const store = new OAuthStore({ ...TTL, persistPath: stateFile, persistSecret: PASSWORD });
+    const waiting = store.registerClient(["https://waiting.example/cb"])!;
+    const carried = store.registerClient(["https://carried.example/cb"])!;
+    const envelope = JSON.parse(await fs.readFile(stateFile, "utf8"));
+    const payload = JSON.parse(envelope.payload as string);
+    for (const record of payload.clients as { clientId: string; consent?: string }[]) {
+      if (record.clientId === carried.clientId) delete record.consent;
+    }
+    envelope.payload = JSON.stringify(payload);
+    envelope.mac = crypto
+      .createHmac("sha256", crypto.scryptSync(PASSWORD, Buffer.from(envelope.salt as string, "hex"), 32))
+      .update(envelope.payload as string)
+      .digest("hex");
+    await fs.writeFile(stateFile, JSON.stringify(envelope));
+
+    const listed = await run(["list"]);
+    expect(listed.code).toBe(0);
+    const lineOf = (clientId: string) => listed.stdout.split("\n").find((line) => line.startsWith(clientId))!;
+    expect(lineOf(kept.clientId)).toContain("state=given");
+    expect(lineOf(waiting.clientId)).toContain(
+      `state=pending  expires=${new Date(waiting.createdAt + REGISTRATION_CONSENT_DEADLINE_MS).toISOString()}`
+    );
+    expect(lineOf(carried.clientId)).toContain("state=unknown");
+    expect(lineOf(carried.clientId)).not.toContain("expires=");
+  }, 30_000);
 
   it("lists every registration as a snapshot, with what a caller sent made printable", async () => {
     const { kept, doomed } = seed();

@@ -1573,6 +1573,7 @@ describe("OAuthStore persistence", () => {
     expect(listed).toEqual([
       {
         clientId: client.clientId,
+        consent: "pending",
         clientName: "ChatGPT",
         redirectUris: ["https://chatgpt.com/cb"],
         createdAt: client.createdAt,

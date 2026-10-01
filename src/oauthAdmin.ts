@@ -22,7 +22,7 @@ import fs from "node:fs";
 import net from "node:net";
 import { pathToFileURL } from "node:url";
 import { loadEnvFile, loadHttpConfig } from "./config.js";
-import { OAuthStore, type RegistrationListing } from "./oauth/store.js";
+import { OAuthStore, REGISTRATION_CONSENT_DEADLINE_MS, type RegistrationListing } from "./oauth/store.js";
 
 const USAGE = `Usage:
   oauth:registrations list
@@ -67,6 +67,12 @@ export function printable(value: string): string {
 function describe(listing: RegistrationListing): string {
   return [
     listing.clientId,
+    // given: the owner consented; pending: waiting for a first consent, and
+    // reclaimed at `expires`; unknown: carried over from an older state file.
+    `state=${listing.consent}`,
+    ...(listing.consent === "pending"
+      ? [`expires=${new Date(listing.createdAt + REGISTRATION_CONSENT_DEADLINE_MS).toISOString()}`]
+      : []),
     `created=${new Date(listing.createdAt).toISOString()}`,
     `tokens=access:${listing.liveAccessTokens},refresh:${listing.liveRefreshTokens}`,
     // Quoted so a name with spaces stays one field. Not JSON.stringify: it would
