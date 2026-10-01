@@ -6,7 +6,17 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { afterAll, describe, expect, it } from "vitest";
 
-import { compare, type FuzzCase, generate, SED_COPIES, sedEngine, shippedMask } from "./tools/redactionFuzz.js";
+import { SECRET_LABELS } from "../packages/log-redaction/src/policy.mjs";
+import {
+  compare,
+  FAMILY_NAMES,
+  type FuzzCase,
+  generate,
+  parseArgs,
+  SED_COPIES,
+  sedEngine,
+  shippedMask
+} from "./tools/redactionFuzz.js";
 import { broken, type Engine, type EngineResult, readable } from "./tools/redactionJudge.js";
 
 /**
@@ -17,6 +27,8 @@ import { broken, type Engine, type EngineResult, readable } from "./tools/redact
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SAMPLE = join(HERE, "fixtures", "redaction-fuzz", "seed-1.jsonl");
+/** The count that puts every family through the command line once. */
+const ONE_EACH = String(FAMILY_NAMES.length);
 
 const sample: FuzzCase[] = readFileSync(SAMPLE, "utf8")
   .split("\n")
@@ -49,8 +61,62 @@ describe("the fuzz generator", () => {
     expect(`${text}\n`).toBe(readFileSync(SAMPLE, "utf8"));
   });
 
+  // As many cases as there are families hold one of each, so the runs below that
+  // use that count put every family through the command line.
+  it("takes every family once in as many cases as there are families", () => {
+    expect(generate(1, FAMILY_NAMES.length).map((c) => c.family)).toEqual(FAMILY_NAMES);
+  });
+
   it("gives other seeds other cases", () => {
-    expect(generate(2, 17).map((c) => c.input)).not.toEqual(generate(1, 17).map((c) => c.input));
+    const n = FAMILY_NAMES.length;
+    expect(generate(2, n).map((c) => c.input)).not.toEqual(generate(1, n).map((c) => c.input));
+  });
+
+  // The core reads a label anywhere in a word. Before the generator drew such words
+  // again, these seeds ended a marker with KEY or PAT, and the core masked the
+  // preserve word after it: FZ-s24-000910, FZ-s19-006249 and FZ-s16-015730 (a user
+  // name before `:`), FZ-s19-006460 and FZ-s7-013827 (a secret before a blank).
+  it("never ends a marker with a label the core reads", () => {
+    const labels = SECRET_LABELS.map((label) => label.toUpperCase());
+    const endsWithLabel = (w: string) => labels.some((label) => w.endsWith(label));
+    // The check itself finds a word that does.
+    expect(["KEEP12KEY", "FK0ABCDPAT"].filter(endsWithLabel)).toEqual(["KEEP12KEY", "FK0ABCDPAT"]);
+    const markers = [24, 19, 16, 7]
+      .flatMap((seed) => generate(seed, 16_000))
+      .flatMap((c) => [...c.secrets, ...c.preserve]);
+    expect(markers.length).toBeGreaterThan(64_000);
+    expect(markers.filter(endsWithLabel)).toEqual([]);
+  });
+});
+
+describe("the fuzz runner's argument reader", () => {
+  const E = ["--engine", "node x.mjs"];
+
+  it("accepts the whole range of --count, up to the largest safe integer", () => {
+    expect(parseArgs(["--seed", "1", ...E]).count).toBe(16_000);
+    expect(parseArgs(["--seed", "1", "--count", "16000", ...E]).count).toBe(16_000);
+    const max = String(Number.MAX_SAFE_INTEGER);
+    expect(parseArgs(["--seed", "1", "--count", max, ...E]).count).toBe(Number.MAX_SAFE_INTEGER);
+    expect(() => parseArgs(["--seed", "1", "--count", "9007199254740992", ...E])).toThrow("must be between");
+  });
+
+  it("refuses an argument it does not read, and an option given twice", () => {
+    const refusal = (argv: string[]) => {
+      try {
+        parseArgs(argv);
+        return "accepted";
+      } catch (error) {
+        return (error as Error).message;
+      }
+    };
+    expect(refusal(["--seed", "1", "--count=typo", ...E])).toBe('unknown argument "--count=typo"');
+    expect(refusal(["--seed", "1", "--cuont", "3", ...E])).toBe('unknown argument "--cuont"');
+    expect(refusal(["--seed", "1", "3", ...E])).toBe('unknown argument "3"');
+    expect(refusal(["--seed", "1", "--count", "17", "--count", "3", ...E])).toBe("--count is given twice");
+    expect(refusal(["--seed", "1", "--seed", "1", ...E])).toBe("--seed is given twice");
+    expect(refusal(["--seed", "1", ...E, ...E])).toBe("--engine is given twice");
+    // Positive control: the same reader takes the options in any order.
+    expect(refusal(["--count", "17", ...E, "--seed", "1"])).toBe("accepted");
   });
 });
 
@@ -145,7 +211,7 @@ describe("the fuzz runner's exit status", { timeout: 120_000 }, () => {
   const run = (engine: string) =>
     spawnSync(
       "pnpm",
-      ["exec", "tsx", "tests/tools/redactionFuzz.ts", "--seed", "1", "--count", "17", "--engine", engine],
+      ["exec", "tsx", "tests/tools/redactionFuzz.ts", "--seed", "1", "--count", ONE_EACH, "--engine", engine],
       { cwd: ROOT, encoding: "utf8" }
     );
 
@@ -153,6 +219,15 @@ describe("the fuzz runner's exit status", { timeout: 120_000 }, () => {
     const r = run("node tests/tools/echoEngine.mjs");
     expect(r.status).toBe(1);
     expect(r.stdout).toContain('"new_leaked"');
+    // The last two families reach the command line too: a count of 17, from when
+    // there were 17 families, stopped before them.
+    const rows = r.stdout
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as { new_leaked_by_family: Record<string, number> });
+    expect(rows).toHaveLength(2);
+    for (const row of rows)
+      expect(Object.keys(row.new_leaked_by_family)).toEqual(expect.arrayContaining(["url-userinfo", "dash-armor"]));
   });
 
   it("exits 2 when the engine cannot run at all", () => {
@@ -209,28 +284,37 @@ describe("the fuzz runner's command line", { timeout: 300_000 }, () => {
       .filter((line) => line.length > 0)
       .map((line) => JSON.parse(line) as Report);
 
-  it("rejects invalid numeric arguments before running the engine", async () => {
+  it("rejects invalid arguments before running the engine", async () => {
     expect(dir).not.toContain(" ");
     const E = SENTINEL_ENGINE;
     // Each row names the check that must refuse it, so taking one check out shows
     // on its own rows even where the other check would still refuse the value:
     // "range" for a value Number() reads outside the range, "digits" for one it
-    // reads inside the range but spelled otherwise, "value" for a missing value.
-    type Why = "range" | "digits" | "value";
+    // reads inside the range but spelled otherwise, "value" for a missing value,
+    // "unknown" for an argument the runner does not read, "twice" for a repeat.
+    type Why = "range" | "digits" | "value" | "unknown" | "twice";
     type Bad = [option: string, why: Why, args: string[]];
     const count = (v: string, why: Why): Bad => ["count", why, ["--seed", "1", "--count", v, "--engine", E]];
-    const seed = (v: string, why: Why): Bad => ["seed", why, ["--seed", v, "--count", "17", "--engine", E]];
+    const seed = (v: string, why: Why): Bad => ["seed", why, ["--seed", v, "--count", ONE_EACH, "--engine", E]];
     const bad: Bad[] = [
       ...["typo", "NaN", "Infinity", "-Infinity", "0", "-1", "9007199254740992", "", " "].map((v) => count(v, "range")),
       ...["1.5", "1e3", "0x10", "+17", " 17"].map((v) => count(v, "digits")),
       ...["typo", "NaN", "Infinity", "-1", "4294967296"].map((v) => seed(v, "range")),
       ...["1.5", "", " ", "-0"].map((v) => seed(v, "digits")),
       ["count", "value", ["--seed", "1", "--engine", E, "--count"]],
-      ["seed", "value", ["--count", "17", "--engine", E, "--seed"]],
+      ["seed", "value", ["--count", ONE_EACH, "--engine", E, "--seed"]],
       ["count", "value", ["--seed", "1", "--count", "--engine", E]],
-      ["seed", "value", ["--seed", "--count", "17", "--engine", E]],
-      ["engine", "value", ["--seed", "1", "--count", "17", "--engine"]],
-      ["engine", "value", ["--seed", "1", "--count", "17", "--engine", "--count"]]
+      ["seed", "value", ["--seed", "--count", ONE_EACH, "--engine", E]],
+      ["engine", "value", ["--seed", "1", "--count", ONE_EACH, "--engine"]],
+      ["engine", "value", ["--seed", "1", "--count", ONE_EACH, "--engine", "--count"]],
+      // Read by name, an argument like these was "not given", and `--count=typo`
+      // alone ran the default 16000 cases (the argument reader's own test has that
+      // shape). Here --count is given as well, so a runner that skipped the unknown
+      // argument would start a short run, and the row would show the engine start.
+      ["count", "unknown", ["--seed", "1", "--count", ONE_EACH, "--count=3", "--engine", E]],
+      ["count", "unknown", ["--seed", "1", "--count", ONE_EACH, "--cuont", "3", "--engine", E]],
+      ["count", "twice", ["--seed", "1", "--count", ONE_EACH, "--count", "3", "--engine", E]],
+      ["seed", "twice", ["--seed", "1", "--seed", "2", "--count", ONE_EACH, "--engine", E]]
     ];
     const results: Run[] = [];
     for (let i = 0; i < bad.length; i += 6) {
@@ -238,10 +322,12 @@ describe("the fuzz runner's command line", { timeout: 300_000 }, () => {
     }
     const refusal = (option: string, stderr: string) => {
       const line = stderr.split("\n")[0]!;
+      if (line.startsWith("Error: unknown argument ")) return "unknown";
       if (!line.startsWith(`Error: --${option} `)) return line;
       if (line.includes(" must be between ")) return "range";
       if (line.includes(" must be written in decimal digits")) return "digits";
       if (line.endsWith(" needs a value")) return "value";
+      if (line.endsWith(" is given twice")) return "twice";
       return line;
     };
     const seen = results.map((r, i) => ({
@@ -267,13 +353,13 @@ describe("the fuzz runner's command line", { timeout: 300_000 }, () => {
   // The positive control for the sentinel: a valid run does start the engine.
   it("accepts boundary seeds and reports the requested case count", async () => {
     for (const seed of ["0", "4294967295"]) {
-      const r = await run(SCRIPT, ["--seed", seed, "--count", "17", "--engine", SENTINEL_ENGINE]);
+      const r = await run(SCRIPT, ["--seed", seed, "--count", ONE_EACH, "--engine", SENTINEL_ENGINE]);
       expect(r.status, r.stderr).toBe(1);
       expect(r.started).toBe(true);
       const rows = reports(r);
       expect(rows.map((x) => [x.reference, x.seed, x.cases])).toEqual([
-        ["capture", Number(seed), 17],
-        ["archive", Number(seed), 17]
+        ["capture", Number(seed), FAMILY_NAMES.length],
+        ["archive", Number(seed), FAMILY_NAMES.length]
       ]);
       expect(rows.every((x) => x.new_leaked > 0)).toBe(true);
     }
@@ -282,12 +368,12 @@ describe("the fuzz runner's command line", { timeout: 300_000 }, () => {
   it("runs the fuzz through a symlinked entrypoint", async () => {
     const link = join(dir, "redactionFuzz.ts");
     symlinkSync(SCRIPT, link);
-    const args = ["--seed", "1", "--count", "17", "--engine", ECHO];
+    const args = ["--seed", "1", "--count", ONE_EACH, "--engine", ECHO];
     const [direct, linked] = await Promise.all([run(SCRIPT, args), run(link, args)]);
     expect(direct.status, direct.stderr).toBe(1);
     expect(reports(direct).map((x) => [x.reference, x.cases])).toEqual([
-      ["capture", 17],
-      ["archive", 17]
+      ["capture", FAMILY_NAMES.length],
+      ["archive", FAMILY_NAMES.length]
     ]);
     expect({ status: linked.status, stdout: linked.stdout }).toEqual({ status: 1, stdout: direct.stdout });
   });
@@ -296,8 +382,8 @@ describe("the fuzz runner's command line", { timeout: 300_000 }, () => {
     const importer = join(dir, "importer.mjs");
     writeFileSync(importer, `import ${JSON.stringify(pathToFileURL(SCRIPT).href)};\n`);
     // The importer is given the runner's own arguments, so a main() that ran on
-    // import would judge 17 cases and start the engine.
-    const r = await run(importer, ["--seed", "1", "--count", "17", "--engine", SENTINEL_ENGINE]);
+    // import would judge one case of each family and start the engine.
+    const r = await run(importer, ["--seed", "1", "--count", ONE_EACH, "--engine", SENTINEL_ENGINE]);
     expect(r).toEqual({ status: 0, signal: null, stdout: "", stderr: "", started: false });
   });
 });

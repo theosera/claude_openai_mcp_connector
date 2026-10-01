@@ -8,7 +8,11 @@
  * Every case carries marker words: a secret is `FK` + 8 characters with at least
  * one digit, a preserve word is `KEEP` + 6. No marker is part of another or of the
  * mask token, and every marker is in the input; the generator refuses a case that
- * breaks either rule instead of dropping it.
+ * breaks either rule instead of dropping it. No marker ends with a label the core
+ * reads (`SECRET_LABELS`): the core finds a label anywhere in a word, so a user
+ * name ending in KEY before `:`, or a secret ending in PAT before a blank, would be
+ * read as a label and the preserve word after it masked as its value. The
+ * generator draws such a word again, as it does a word without a digit.
  *
  * The runner compares the candidate with BOTH shipped copies of `mask()` (the
  * capture hook and the archive hook) and sorts each case into columns:
@@ -26,8 +30,9 @@
  * The run exits 1 when any red column is non-empty for either reference, and 2
  * when the run itself fails or an argument is invalid, so a broken run is never
  * read as a red result and a run that judged nothing is never read as a pass.
- * `--seed` (0 to 4294967295) and `--count` (at least 1, default 16000) take
- * decimal digits only.
+ * `--seed` (0 to 4294967295) and `--count` (1 to 2^53 - 1, default 16000) take
+ * decimal digits only. Each option is written `--name value`, at most once; any
+ * other argument, such as `--count=16000` or a misspelt name, is invalid.
  */
 
 import { execFileSync } from "node:child_process";
@@ -35,6 +40,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { SECRET_LABELS } from "../../packages/log-redaction/src/policy.mjs";
 import { commandEngine, type Engine, judgeCase, MASK, readable } from "./redactionJudge.js";
 
 export type FuzzCase = {
@@ -154,11 +160,17 @@ const FAMILIES: readonly Family[] = [
   }
 ];
 
+/** The family names in the order `generate` takes them: that many cases hold one of each. */
+export const FAMILY_NAMES: readonly string[] = FAMILIES.map((f) => f.name);
+
+/** Upper case, as the markers are: of these, ALNUM can spell KEY, PAT and BEARER. */
+const LABEL_WORDS = SECRET_LABELS.map((label) => label.toUpperCase());
+
 function word(r: () => number, prefix: string, length: number): string {
   for (;;) {
     let w = prefix;
     for (let i = 0; i < length; i++) w += ALNUM[Math.floor(r() * ALNUM.length)];
-    if (/[0-9]/.test(w.slice(prefix.length))) return w;
+    if (/[0-9]/.test(w.slice(prefix.length)) && !LABEL_WORDS.some((label) => w.endsWith(label))) return w;
   }
 }
 
@@ -295,16 +307,30 @@ export function compare(cases: FuzzCase[], reference: Engine, other: Engine, can
 
 export { commandEngine, readable };
 
-function main(argv: string[]): void {
-  const arg = (name: string, fallback?: string) => {
-    const i = argv.indexOf(`--${name}`);
-    if (i === -1) {
-      if (fallback === undefined) throw new Error(`--${name} is required`);
-      return fallback;
-    }
+const OPTIONS = ["seed", "count", "engine"] as const;
+
+/**
+ * Reads the command line, refusing anything it does not read: an argument that is
+ * not `--seed`, `--count` or `--engine` followed by its value, and an option given
+ * twice. Looking the options up by name instead let `--count=typo` and `--cuont 3`
+ * through as "not given", and the run went on with the default 16000 cases.
+ */
+export function parseArgs(argv: readonly string[]): { seed: number; count: number; engine: string } {
+  const given = new Map<string, string>();
+  for (let i = 0; i < argv.length; i += 2) {
+    const token = argv[i]!;
+    const name = OPTIONS.find((option) => token === `--${option}`);
+    if (name === undefined) throw new Error(`unknown argument ${JSON.stringify(token)}`);
+    if (given.has(name)) throw new Error(`--${name} is given twice`);
     const value = argv[i + 1];
     if (value === undefined || value.startsWith("--")) throw new Error(`--${name} needs a value`);
-    return value;
+    given.set(name, value);
+  }
+  const arg = (name: string, fallback?: string) => {
+    const value = given.get(name);
+    if (value !== undefined) return value;
+    if (fallback === undefined) throw new Error(`--${name} is required`);
+    return fallback;
   };
   // Number() reads "typo" as NaN and "" as 0, and a count of NaN or 0 generates no
   // cases, so the run would report nothing wrong without judging anything. The
@@ -323,7 +349,12 @@ function main(argv: string[]): void {
   // The seed's upper bound is the generator's 32-bit state.
   const seed = whole("seed", 0, 0xffffffff);
   const count = whole("count", 1, Number.MAX_SAFE_INTEGER, "16000");
-  const engine = commandEngine(arg("engine").split(" "), ROOT);
+  return { seed, count, engine: arg("engine") };
+}
+
+function main(argv: string[]): void {
+  const { seed, count, engine: engineCommand } = parseArgs(argv);
+  const engine = commandEngine(engineCommand.split(" "), ROOT);
   const cases = generate(seed, count);
   const capture = sedEngine(shippedMask(SED_COPIES.capture));
   const archive = sedEngine(shippedMask(SED_COPIES.archive));

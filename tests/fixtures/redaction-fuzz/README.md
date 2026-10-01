@@ -18,6 +18,8 @@ Each line has the corpus fields a judge reads, plus the case's origin:
 
 Every marker is in its input, none is part of another marker, and none is part of the mask token `***MASKED***`. The generator refuses a case that breaks one of these rules, and the judge refuses it again.
 
+No marker ends with a label the core reads (`SECRET_LABELS` in `packages/log-redaction/src/policy.mjs`; with the markers' alphabet that means KEY, PAT or BEARER). The core finds a label anywhere in a word, so a user name ending in KEY before `:`, or a secret ending in PAT before a blank, is read as a label, and the preserve word after it is masked as its value. That is a property of the core, not of the case, so the generator draws such a word again, the way it draws again a word without a digit.
+
 ## How cases are judged
 
 `tests/tools/redactionJudge.ts` judges one case on three axes:
@@ -35,7 +37,7 @@ pnpm exec tsx tests/tools/redactionFuzz.ts --seed 13 --count 16000 \
   --engine "node packages/log-redaction/src/cli.mjs"
 ```
 
-`--seed` is required and takes 0 to 4294967295, the generator's 32-bit state. `--count` takes a positive whole number and defaults to 16000. Both are read as decimal digits only, and `--engine` needs a value. The runner checks all three before it starts any engine. An invalid argument exits 2 with nothing on stdout, because a run that generated no cases would otherwise report no red columns and exit 0.
+`--seed` is required and takes 0 to 4294967295, the generator's 32-bit state. `--count` takes 1 to 9007199254740991 (the largest safe integer) and defaults to 16000. Both are read as decimal digits only, and `--engine` needs a value. Each option is written `--name value` and at most once; any other argument, such as `--count=16000` or a misspelt name, is invalid. The runner checks all of this before it starts any engine. An invalid argument exits 2 with nothing on stdout, because a run that generated no cases would otherwise report no red columns and exit 0.
 
 The runner compares the candidate engine with both shipped copies of `mask()` (the capture hook and the archive hook), one as the reference and then the other. For each reference it prints one JSON line with these counts:
 
