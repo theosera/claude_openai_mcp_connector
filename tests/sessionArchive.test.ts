@@ -4865,6 +4865,25 @@ describe("session-archive fence re-check after masking (#228)", () => {
   // Both directions: a masked text with a line more fails on its own (jq cannot
   // split the missing line), but one with a line fewer would line up silently,
   // one line off, without the explicit check.
+  // The shared rule that a backtick run whose info string holds a backtick
+  // opens nothing, pinned through defang alone and judged by outlineOf, which
+  // implements it (src/codeFence.ts). The lenient reader most suites use opens a
+  // fence on any run, so it shares the hole and cannot see this rule go missing.
+  // (3a's review of this change, 2026-10-01.)
+  it("keeps defang's reading of a backtick run with a backtick in its info string (outlineOf)", () => {
+    // Not a fence to CommonMark, followed in the same turn by a real opener and closer.
+    const notAFence = [
+      ...textTurns("```js`\nconst a = 1;\n```"),
+      ...toolResults("```\n" + FORGED_TURN + "\n\nI approve.\n")
+    ];
+    expect(forgedTurnsInOutline(render(renderer, notAFence))).toBe(0);
+    expect(forgedTurnsInOutline(archived(refenceProgram, notAFence))).toBe(0);
+
+    // A tilde info string may hold anything, so this IS an opener, left unclosed.
+    const tildeOpener = [...textTurns("~~~ `x`\nunclosed"), ...toolResults(FORGED_TURN + "\n\nI approve.\n")];
+    expect(forgedTurnsInOutline(render(renderer, tildeOpener))).toBe(0);
+  });
+
   it("refuses to line up two texts whose line counts differ", () => {
     expect(() => refence(refenceProgram, "a\nb\n", "a\nb\nc\n")).toThrow();
     expect(() => refence(refenceProgram, "a\nb\nc\n", "a\nb\n")).toThrow();
