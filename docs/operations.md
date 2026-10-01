@@ -238,11 +238,14 @@ so the file keeps its HMAC.
 - ⚠️ **Stop the server first. The command cannot fully check that you did.** A
   running server holds the registrations in memory and writes them back on its
   next save, so a registration removed underneath it **silently comes back**.
-  `--apply` refuses while anything answers on `MCP_HTTP_HOST`:`MCP_HTTP_PORT`
-  and when the file changed after it was read, but a server on another port,
-  or one started a moment later, is not seen. Stopping the server is the
-  precaution; the check is a backstop. Under launchd with `KeepAlive`, stopping
-  means `launchctl bootout`, and `launchctl bootstrap` brings it back.
+  `--apply` refuses while anything answers on `MCP_HTTP_HOST`:`MCP_HTTP_PORT`,
+  and, just before it writes, unless the file still has the bytes it read, is
+  still the same file (device and inode) and still belongs to this account.
+  But a server on another port, or one started a moment later, is not seen,
+  and **the last check is not a compare-and-swap**: a save that lands between
+  it and the write is lost. Stopping the server is the precaution; the checks
+  are a backstop. Under launchd with `KeepAlive`, stopping means
+  `launchctl bootout`, and `launchctl bootstrap` brings it back.
 - Steps, after `pnpm build`:
   1. Stop the server.
   2. `pnpm oauth:registrations list` — one line per registration: its
