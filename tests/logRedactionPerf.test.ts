@@ -77,7 +77,12 @@ const SHAPES: readonly (readonly [string, string, (length: number) => string])[]
     "quoted-labels-arrow",
     "FKPERFQA1",
     (n) => 'token=FKPERFQA1 echo "' + "token>".repeat(Math.floor((n - 30) / 6)) + 'x="'
-  ]
+  ],
+  // Escaped quotes before a blank inside one text quote, each looking ahead for a
+  // label before the next quote, and elements that never close, each looking
+  // ahead for its closing tag. Each looks only as far as the next quote or `<`.
+  ["escaped-quotes-blank", "FKPERFEB1", (n) => fill("passphrase: 'FKPERFEB1 ", "n\\' x ", n)],
+  ["unclosed-elements", "FKPERFUN1", (n) => fill("token=FKPERFUN1 ", "<password>x", n)]
 ];
 
 function median(values: readonly number[]): number {

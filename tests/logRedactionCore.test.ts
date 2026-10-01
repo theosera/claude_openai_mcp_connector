@@ -234,7 +234,7 @@ describe("the core on the step 2-3 review's shapes", () => {
       "a scheme word behind a bracket",
       "text",
       "{Authorization=[Bearer FKRV0012], Accept=[KEEPRV12]}",
-      `{Authorization=[Bearer ${MASK}, Accept=[KEEPRV12]}`
+      `{Authorization=[Bearer ${MASK} Accept=[KEEPRV12]}`
     ],
     [
       "an option that is itself a label",
@@ -426,6 +426,107 @@ describe("the core on a value that starts with a word-ending character", () => {
     (["command", "text"] as const).flatMap((kind) =>
       cases.map(([name, input, expected]) => [name, kind, input, expected] as const)
     )
+  )("%s, as %s", (_name, kind, input, expected) => {
+    expect(redactFragment({ text: input, kind })).toEqual({ text: expected, status: "ok" });
+  });
+});
+
+// A fourth independent review, of the third review's fixes (#249, 2026-10-01),
+// found values those fixes cut short, words they took, and a guard no test held.
+describe("the core on the fourth review's shapes", () => {
+  const tick = "`";
+  const fernet = (id: string) => `${id}${"Q7-_aZ".repeat(6)}a=`;
+  const both = ["command", "text"] as const;
+  const cases: readonly (readonly [string, readonly ("command" | "text")[], string, string])[] = [
+    // A list of keys, as Airflow rotates its Fernet key: each key ends in `=`.
+    [
+      "a key list whose second key ends in =",
+      both,
+      `export AIRFLOW__CORE__FERNET_KEY=${fernet("FKRV0070")},${fernet("FKRV0071")} KEEPRV70`,
+      `export AIRFLOW__CORE__FERNET_KEY=${MASK} KEEPRV70`
+    ],
+    [
+      "a key list whose second key starts with a label word",
+      both,
+      "NOTION_TOKEN=secret_FKRV0072x,secret_FKRV0073y KEEPRV72",
+      `NOTION_TOKEN=${MASK} KEEPRV72`
+    ],
+    [
+      "a label inside a longer word after a comma",
+      both,
+      "export PASSWORD=FKRV0074,patFKRV0075 KEEPRV74",
+      `export PASSWORD=${MASK} KEEPRV74`
+    ],
+    [
+      "a key that starts with a label word after a comma",
+      ["text"],
+      "password: FKRV0076,keychain=FKRV0077 KEEPRV76",
+      `password: ${MASK} KEEPRV76`
+    ],
+    [
+      "a key that is no label after a comma",
+      both,
+      "export password=,x=FKRV0078 KEEPRV78",
+      `export password=${MASK} KEEPRV78`
+    ],
+    [
+      "an escaped quote before a blank and no label",
+      ["text"],
+      "passphrase: 'rock n\\' FKRV0079' KEEPRV79",
+      `passphrase: '${MASK}' KEEPRV79`
+    ],
+    [
+      "an option that is no label glued after a quoted value",
+      both,
+      "password='FKRV0080'-my_token KEEPRV80",
+      `password='${MASK} KEEPRV80`
+    ],
+    [
+      "a label in angle brackets with no closing tag",
+      ["command"],
+      "mysql -p<password> -h KEEPRV81",
+      "mysql -p<password> -h KEEPRV81"
+    ],
+    [
+      "a label as a type argument",
+      ["text"],
+      "Optional<Secret> s = vault.get(KEEPRV82)",
+      "Optional<Secret> s = vault.get(KEEPRV82)"
+    ],
+    [
+      "a label in a path before a redirection",
+      ["command"],
+      "cat /etc/password> KEEPRV83",
+      "cat /etc/password> KEEPRV83"
+    ],
+    [
+      "a label glued after ] and a closing quote",
+      ["command"],
+      "export PASSWORD='a']token FKRV0084 KEEPRV84",
+      `export PASSWORD='${MASK}']token ${MASK} KEEPRV84`
+    ],
+    [
+      "a label glued after } and a closing quote",
+      ["command"],
+      "export PASSWORD='a'}token FKRV0085 KEEPRV85",
+      `export PASSWORD='${MASK}'}token ${MASK} KEEPRV85`
+    ],
+    [
+      "a scheme word behind <",
+      both,
+      "access_token:<Bearer FKRV0086> KEEPRV86",
+      `access_token:<Bearer ${MASK} KEEPRV86`
+    ],
+    [
+      "a scheme word behind a backtick",
+      both,
+      `api_key => ${tick}Token FKRV0087${tick} KEEPRV87`,
+      `api_key => ${tick}Token ${MASK} KEEPRV87`
+    ]
+  ];
+
+  it.each(
+    cases.flatMap(([name, kinds, input, expected]) => kinds.map((kind) => [name, kind, input, expected] as const))
   )("%s, as %s", (_name, kind, input, expected) => {
     expect(redactFragment({ text: input, kind })).toEqual({ text: expected, status: "ok" });
   });
