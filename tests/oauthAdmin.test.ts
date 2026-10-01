@@ -334,72 +334,140 @@ describe("oauth:registrations (#184)", () => {
     30_000
   );
 
+  /**
+   * A file's identity and bytes from one handle, so both describe the same
+   * file; read through the path twice, they could describe two.
+   */
+  async function snapshotOf(file: string) {
+    const handle = await fs.open(file, "r");
+    try {
+      return { stat: await handle.stat(), bytes: await handle.readFile() };
+    } finally {
+      await handle.close();
+    }
+  }
+
+  /**
+   * Run the command in this process, for what a spawned one cannot reach: an
+   * account the test pretends to be, or a change made after every check and
+   * before the write (`beforeWrite`).
+   */
+  async function runInProcess(args: string[], beforeWrite?: () => void) {
+    for (const [key, value] of Object.entries(configEnv())) {
+      vi.stubEnv(key, value);
+    }
+    vi.stubEnv("MCP_ENV_FILE", "");
+    const errors: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      errors.push(String(chunk));
+      return true;
+    });
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const code = await main(args, { beforeWrite });
+    return { code, stderr: errors.join("") };
+  }
+
   // In process: a file owned by another account cannot be made without root,
   // so the account this runs as is what the test changes.
   //
   // Reverse-verified: removing the owner check reddens this test.
   it("refuses --apply on a state file another account owns", async () => {
     const { doomed } = seed();
-    // The owner and the bytes come from one handle, so both describe the same
-    // file; read through the path twice, they could describe two.
-    const snapshot = async () => {
-      const handle = await fs.open(stateFile, "r");
-      try {
-        return { stat: await handle.stat(), bytes: await handle.readFile() };
-      } finally {
-        await handle.close();
-      }
-    };
-    const before = await snapshot();
-    for (const [key, value] of Object.entries(configEnv())) {
-      vi.stubEnv(key, value);
-    }
-    vi.stubEnv("MCP_ENV_FILE", "");
-    const errors: string[] = [];
-    vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
-      errors.push(String(chunk));
-      return true;
-    });
-    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const before = await snapshotOf(stateFile);
     const owner = before.stat.uid;
     vi.spyOn(process, "geteuid").mockReturnValue(owner + 1);
 
-    const code = await main(["remove", doomed.clientId, "--apply"]);
-    expect(code).toBe(1);
-    expect(errors.join("")).toContain(`the state file belongs to uid ${owner}`);
-    const after = await snapshot();
+    const refused = await runInProcess(["remove", doomed.clientId, "--apply"]);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain(`the state file belongs to uid ${owner}`);
+    const after = await snapshotOf(stateFile);
     expect(after.stat.ino).toBe(before.stat.ino); // not replaced by a write
     expect(after.bytes.equals(before.bytes)).toBe(true);
   }, 30_000);
 
-  // In process, because the window this pins — after every check, before the
-  // write — cannot be reached from outside a spawned command.
+  // The last look before the write checks three things, and each test below is
+  // the one only its own check can catch: new bytes in the same file, the same
+  // bytes in another file, and the same file under another owner. A server's
+  // save is the first test: new bytes, and a new file too (it renames), so the
+  // byte check sees it first.
+  //
+  // Reverse-verified: removing the byte check reddens the first two, removing
+  // the file check the third, removing the owner check the fourth, and letting
+  // a failed re-read through the fifth.
   it("refuses --apply when the state file changes after it was read", async () => {
     const { doomed } = seed();
-    for (const [key, value] of Object.entries(configEnv())) {
-      vi.stubEnv(key, value);
-    }
-    vi.stubEnv("MCP_ENV_FILE", "");
-    const errors: string[] = [];
-    vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
-      errors.push(String(chunk));
-      return true;
-    });
-    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     let changedTo = "";
-    const code = await main(["remove", doomed.clientId, "--apply"], {
-      beforeWrite: () => {
-        // What a server saving underneath the command looks like: same file,
-        // new bytes.
-        const store = reload();
-        store.registerClient(["https://late.example/cb"]);
-        changedTo = fsSync.readFileSync(stateFile, "utf8");
-      }
+    const refused = await runInProcess(["remove", doomed.clientId, "--apply"], () => {
+      // What a server saving underneath the command looks like.
+      reload().registerClient(["https://late.example/cb"]);
+      changedTo = fsSync.readFileSync(stateFile, "utf8");
     });
-    expect(code).toBe(1);
-    expect(errors.join("")).toContain("the state file changed after it was read");
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain("the state file changed after it was read");
     expect(changedTo).not.toBe("");
     expect(fsSync.readFileSync(stateFile, "utf8")).toBe(changedTo); // nothing was written over it
+  }, 30_000);
+
+  it("refuses --apply when the state file's bytes change in place after it was read", async () => {
+    const { doomed } = seed();
+    const before = await snapshotOf(stateFile);
+    const changed = Buffer.concat([before.bytes, Buffer.from("\n")]);
+    const refused = await runInProcess(["remove", doomed.clientId, "--apply"], () => {
+      fsSync.writeFileSync(stateFile, changed); // truncates and rewrites the same file
+    });
+    const after = await snapshotOf(stateFile);
+    expect(after.stat.ino).toBe(before.stat.ino); // the change reached the same file, as intended
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain("the state file changed after it was read");
+    expect(after.bytes.equals(changed)).toBe(true); // nothing was written over it
+  }, 30_000);
+
+  it("refuses --apply when the state file is replaced by a copy of itself after it was read", async () => {
+    const { doomed } = seed();
+    const before = await snapshotOf(stateFile);
+    const refused = await runInProcess(["remove", doomed.clientId, "--apply"], () => {
+      fsSync.writeFileSync(`${stateFile}.copy`, before.bytes);
+      fsSync.renameSync(`${stateFile}.copy`, stateFile);
+    });
+    const after = await snapshotOf(stateFile);
+    expect(after.stat.ino).not.toBe(before.stat.ino); // the copy is in place, as intended
+    expect(after.bytes.equals(before.bytes)).toBe(true);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain("the state file was replaced after it was read");
+    const unchanged = await snapshotOf(stateFile);
+    expect(unchanged.stat.ino).toBe(after.stat.ino); // nothing was written over the copy
+  }, 30_000);
+
+  // A chown needs root, so the owner the last read reports is what changes.
+  it("refuses --apply when the state file's owner changes after it was read", async () => {
+    const { doomed } = seed();
+    const before = await snapshotOf(stateFile);
+    const realFstat = fsSync.fstatSync;
+    let ownerChanges = 0;
+    const refused = await runInProcess(["remove", doomed.clientId, "--apply"], () => {
+      vi.spyOn(fsSync, "fstatSync").mockImplementation(((fd: number) => {
+        ownerChanges += 1;
+        return { ...realFstat(fd), uid: before.stat.uid + 1 };
+      }) as typeof fsSync.fstatSync);
+    });
+    expect(ownerChanges).toBe(1); // the last read saw the new owner, as intended
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain(`the state file now belongs to uid ${before.stat.uid + 1}`);
+    const after = await snapshotOf(stateFile);
+    expect(after.stat.ino).toBe(before.stat.ino); // not replaced by a write
+    expect(after.bytes.equals(before.bytes)).toBe(true);
+  }, 30_000);
+
+  it("refuses --apply when the state file cannot be read again before the write", async () => {
+    const { doomed } = seed();
+    const before = await snapshotOf(stateFile);
+    const refused = await runInProcess(["remove", doomed.clientId, "--apply"], () => {
+      fsSync.renameSync(stateFile, `${stateFile}.moved`);
+    });
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain("the state file could not be read again (ENOENT)");
+    expect(fsSync.existsSync(stateFile)).toBe(false); // nothing was written in its place
+    expect((await fs.readFile(`${stateFile}.moved`)).equals(before.bytes)).toBe(true);
   }, 30_000);
 
   it("never prints the password, the key derived from it, the bearer or a token", async () => {
