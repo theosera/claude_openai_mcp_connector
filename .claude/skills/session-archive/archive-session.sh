@@ -818,7 +818,19 @@ fi
 # Full raw log: user/assistant text verbatim, thinking blocks, tool calls with
 # inputs, tool results with outputs. Fences are sized to their own content (see
 # fence below) so embedded ``` / ~~~ cannot break out of a block.
-body_jq='
+#
+# fence_jq holds what a fence run is, what is not one, and how a line is
+# escaped. Both jq programs read it: defang in the renderer, which decides each
+# text turn's fence parity, and refence_jq below, which re-checks the note
+# after mask(). One definition, so the two cannot disagree about it (#228).
+fence_jq='
+  def fence_m: if test("^ {0,3}(~{3,}|`{3,})") then capture("^(?<pad> {0,3})(?<run>~{3,}|`{3,})(?<info>.*)$") else null end;
+  # A backtick fence info string cannot hold a backtick (CommonMark), so such a
+  # line opens nothing.
+  def not_a_fence($m): ($m.run[0:1]) == "`" and ($m.info | test("`"));
+  def esc_bs: sub("^(?<s> {0,3})"; "\(.s)\\");
+'
+body_jq="$fence_jq"'
   def ts: (.timestamp // "") | sub("T"; " ") | .[0:19];
   # Remove `ESC[...m` / `ESC[...K` -- the same sequences strip_ansi removes, and
   # the same non-rescanning result as gsub("\u001b\\[[0-9;]*[mK]"; ""): a
@@ -1183,8 +1195,7 @@ body_jq='
     # finished, and both sentences were false, the second one measured over a
     # corpus in which every line had exactly one match. So: no such sentence
     # here. If you add a pass, vary an axis this list does not name.
-    def fence_m: if test("^ {0,3}(~{3,}|`{3,})") then capture("^(?<pad> {0,3})(?<run>~{3,}|`{3,})(?<info>.*)$") else null end;
-    def esc_bs: sub("^(?<s> {0,3})"; "\(.s)\\");
+    # fence_m, not_a_fence and esc_bs come from fence_jq above.
     # WHICH runs close is reader-dependent, and closing TOGGLES parity, so the
     # question cannot be settled on the rule of any one reader. CommonMark ends a
     # fence on spaces and tabs after the closing run and nothing else, while the
@@ -1237,7 +1248,7 @@ body_jq='
           | if $m == null then .
             elif $crL[$i] or ($m.info | test("[\u2028\u2029]")) then {o:"?", n:0}
             elif .o == null then
-              (if ($m.run[0:1]) == "`" and ($m.info | test("`")) then .
+              (if not_a_fence($m) then .
                elif ($m.pad | length) > 0 then {o:"?", n:0}
                else {o:($m.run[0:1]), n:($m.run|length)} end)
             elif ($m.run[0:1]) == .o and (($m.run|length) >= .n) and ($m.info | may_end_fence) then
@@ -1333,12 +1344,42 @@ yaml_seq() {
 }
 # ANSI escape sequences (colors, line clears) leak into raw tool output and
 # make the note unreadable in Obsidian — strip them everywhere.
+# mask() runs on the assembled note AFTER defang has decided each text turn's
+# fence parity, and it can delete a backtick from a run's info string: a line
+# at column 0 that opened nothing becomes an opener, the note's parity flips,
+# and the next tool result's body lands at top level (#228). mask() itself is
+# not changed. This pass compares each line before and after mask() and
+# escapes, with defang's own backslash, only a run that counts as a fence after
+# masking and did not before. A line that already counted is left alone: the
+# renderer's own fences are such lines, and escaping them would break the
+# structure this pass protects. Segments split on CR are compared the way
+# defang reads them; if their number differs, every counting segment is
+# escaped. Lines are emitted one at a time, not joined: a join over every
+# line of a note is quadratic in jq 1.8.2 (0.30 / 0.98 / 4.30 s for 20,000 /
+# 40,000 / 80,000 lines). mask() never adds or removes a line; if the counts
+# differ, the program fails and the note is not written (below).
+refence_jq="$fence_jq"'
+  def counts: fence_m as $m | $m != null and (not_a_fence($m) | not);
+  ($a | split("\n")) as $A | ($b | split("\n")) as $B | ($B | length) as $n
+  | if ($A | length) != $n then error("mask() changed the line count")
+    else range(0; $n) as $i
+      | (($A[$i] | split("\r")) as $x | ($B[$i] | split("\r")) as $y
+         | [ range(0; $y | length) as $j
+             | $y[$j]
+             | if counts and ((($x | length) != ($y | length)) or (($x[$j] | counts) | not)) then esc_bs else . end ]
+         | join("\r"))
+        + (if $i < $n - 1 then "\n" else "" end)
+    end
+'
+
 ESC_CHAR="$(printf '\033')"
 strip_ansi() { sed -E "s/${ESC_CHAR}\[[0-9;]*[mK]//g"; }
 now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 tmp="$(mktemp)"
 body_tmp="$(mktemp)"
-trap 'rm -f "$tmp" "$body_tmp"' EXIT
+masked_tmp="$(mktemp)"
+fenced_tmp="$(mktemp)"
+trap 'rm -f "$tmp" "$body_tmp" "$masked_tmp" "$fenced_tmp"' EXIT
 
 jq -rs "$body_jq" "$transcript" > "$body_tmp"
 # No real conversation turns -> write nothing (no orphan stubs, and never
@@ -1355,6 +1396,17 @@ grep -q '[^[:space:]]' "$body_tmp" || exit 0
 # checkout literally named `token=…` must still be masked) while leaving the YAML
 # quotes intact. The remaining fields are a literal, a UUID, and timestamps,
 # which cannot carry secrets.
+# The hook masks the body plus one newline, and refence_jq compares exactly
+# that input with mask()'s output. A note whose lines no longer line up cannot
+# be re-checked, so it is not written: the previous note stays, and the hook
+# still exits 0 so the turn is not blocked.
+printf '\n' >> "$body_tmp"
+mask < "$body_tmp" > "$masked_tmp"
+if ! jq -jn --rawfile a "$body_tmp" --rawfile b "$masked_tmp" "$refence_jq" > "$fenced_tmp" 2>/dev/null; then
+  printf 'session-archive: masking changed the line count of the note, so its fences could not be re-checked. Not archiving this turn.\n' >&2
+  exit 0
+fi
+
 title_masked="$(printf '%s' "$title" | mask)"
 branch_masked="$(printf '%s' "$branch" | mask)"
 project_masked="$(printf '%s' "$repo" | mask)"
@@ -1375,7 +1427,7 @@ repos_masked="$(printf '%s' "$repos" | mask)"
     printf -- '---\n\n'
     printf '# %s\n\n' "$title_masked"
   } | strip_ansi
-  { cat "$body_tmp"; printf '\n'; } | mask
+  cat "$fenced_tmp"
 } > "$tmp"
 
 # Idempotence: skip the rewrite if nothing changed apart from the updated_at
@@ -1387,7 +1439,7 @@ if [ -f "$dest" ] && diff -q \
 else
   mv "$tmp" "$dest"
 fi
-rm -f "$body_tmp"
+rm -f "$body_tmp" "$masked_tmp" "$fenced_tmp"
 trap - EXIT
 
 # --- commit & push (only the generated note; never `git add -A`) -----------
