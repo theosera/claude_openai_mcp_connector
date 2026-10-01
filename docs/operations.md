@@ -149,7 +149,15 @@ same store, so one file covers every web client). Security properties:
   2. Check which environment file and which `MCP_OAUTH_STATE_FILE` it uses.
   3. Move the state file aside, outside the vault (a knowledge root is a read
      surface), to a name that does not exist yet; do not overwrite an earlier
-     one. If the move fails, stop here.
+     one. If the move fails, stop here. For example, with the variable set to
+     the path from step 2 and a directory of your own outside the vault:
+
+     ```bash
+     aside="$HOME/oauth-state-backups/oauth-state.$(date +%Y%m%d-%H%M%S).json"
+     mkdir -p -m 700 "$(dirname "$aside")"
+     mv -n "$MCP_OAUTH_STATE_FILE" "$aside"   # -n: never replace an existing file
+     test ! -e "$MCP_OAUTH_STATE_FILE" && test -f "$aside" && echo moved || echo "NOT moved: stop"
+     ```
   4. Change the password and start the server. It starts as a first run.
   5. Connect a client, restart, and check that its registration is still
      there.

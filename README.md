@@ -307,8 +307,11 @@ the MCP protocol sessions removed above: those are gone entirely, this is the
 OAuth authorization a web client already completed.) Tokens are stored
 **as sha256 hashes** (the file contains nothing
 recoverable), it is written `0600` with an integrity MAC keyed from
-`MCP_OAUTH_PASSWORD`, and any tampering — or a rotated password — fails closed
-by discarding the state (everyone simply re-authorizes).
+`MCP_OAUTH_PASSWORD`. A file that does not verify — tampered, damaged, or
+written under another password — or a symbolic link at the path stops the
+server, and the file is never written over (#263). Changing the password on
+purpose means stopping the server and moving the old file aside first (see
+`docs/operations.md`), and then everyone re-authorizes.
 
 > Verify before registering: `GET /.well-known/oauth-protected-resource` returns
 > JSON, and an unauthenticated `POST /mcp` returns `401` with a

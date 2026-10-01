@@ -150,6 +150,18 @@ function fail(message: string, code = 1): number {
   return code;
 }
 
+const LINKED =
+  "MCP_OAUTH_STATE_FILE is a symbolic link, and the server refuses to start on one: a save would replace " +
+  "the link with a regular file. Set it to the path of the file itself. Nothing was read and nothing was written.";
+
+function isSymbolicLink(file: string): boolean {
+  try {
+    return fs.lstatSync(file).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Run the command. `hooks.beforeWrite` exists for one test only: it runs after
  * every check and before the state file is re-read and written, so the test
@@ -193,6 +205,12 @@ export async function main(args: string[], hooks: { beforeWrite?: () => void } =
     // command cannot read, and calling it absent would send an operator to
     // re-run it as someone who can — and that run would write the file back
     // owned by them, where the server may no longer read it.
+    // A link, with its target or without, is what the server refuses too
+    // (#263). Without this, a link with no target read as "no state file
+    // yet" and the command exited 0 while the server would not start.
+    if (isSymbolicLink(oauth.stateFile)) {
+      return fail(LINKED);
+    }
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== "ENOENT") {
       return fail(
@@ -220,10 +238,16 @@ export async function main(args: string[], hooks: { beforeWrite?: () => void } =
     writeAtLoad: false
   });
   if (store.loadOutcome !== "loaded") {
-    // Never go on to write: the store fell back to an empty state, and saving
-    // it would replace every registration and token in the file.
+    // Never go on to write: the store holds nothing from the file, and saving
+    // would replace every registration and token in it. The store read the
+    // path again, so name what it found, not only the usual cause.
+    const kind = store.loadFailureKind;
     return fail(
-      "the state file did not verify (it was changed, is damaged, or MCP_OAUTH_PASSWORD differs from the one that wrote it). Nothing was read and nothing was written."
+      kind === "symlink"
+        ? LINKED
+        : kind === "unreadable"
+          ? "the state file cannot be read. Run this as the account the server runs as. Nothing was read and nothing was written."
+          : "the state file did not verify (it was changed, is damaged, or MCP_OAUTH_PASSWORD differs from the one that wrote it). Nothing was read and nothing was written."
     );
   }
   const listings = store.listRegistrations();

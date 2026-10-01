@@ -13,8 +13,10 @@ import path from "node:path";
 //    the state file never contains a recoverable credential (hash-at-rest —
 //    stronger than encryption here because raw tokens never need recovery),
 //  - the state file is integrity-protected by an HMAC keyed from the login
-//    password (scrypt-derived): tampering, corruption, or a rotated password
-//    fails CLOSED — the store starts empty and every session must re-auth,
+//    password (scrypt-derived): tampering, corruption, or another password
+//    fails CLOSED — the store holds nothing from the file, never writes it,
+//    and the server refuses to start (#263); rotating the password means
+//    moving the old file aside first,
 //  - authorization codes are single-use and short-lived, and are deliberately
 //    NEVER persisted (a restart mid-flow just restarts the flow),
 //  - refresh-token rotation invalidates the presented token, with a short
@@ -364,8 +366,9 @@ interface PersistedPayload {
   refreshTokens: PersistedTokenRecord[];
   /**
    * Added after STATE_VERSION 1 shipped, and deliberately WITHOUT bumping it: a
-   * bump fails closed, so every live session would re-authorize to gain a field
-   * that is additive in both directions. An older file loads it as absent (`??
+   * bump fails closed — since #263 every deployment would refuse to start on
+   * its old file until it was moved aside, and every live session would then
+   * re-authorize — to gain a field that is additive in both directions. An older file loads it as absent (`??
    * []`, like `clients`); an older binary reading a newer file ignores the key,
    * and the MAC is taken over the payload string either way.
    *
@@ -374,7 +377,8 @@ interface PersistedPayload {
    * The state file still loads, the key is ignored, and nothing is logged,
    * so an operator cannot tell "the mitigation is running" from "the
    * mitigation is gone" - #170 simply returns, and nothing gets worse. The
-   * alternative costs every live session a re-authorization, which is the
+   * alternative stops every deployment until an operator moves its state file
+   * aside, and costs every live session a re-authorization, which is the
    * higher price; this is the trade, not an oversight.
    */
   rotatedTombstones?: PersistedTombstone[];
@@ -587,6 +591,15 @@ export class OAuthStore {
    */
   get loadOutcome(): LoadOutcome {
     return this.loadResult;
+  }
+
+  /**
+   * Why the state file did not load — `unreadable`, `symlink` or `unverified`
+   * — or undefined when it loaded or there was none. Nothing read from the
+   * file or the error. The operator command picks its message by it.
+   */
+  get loadFailureKind(): LoadFailure["kind"] | undefined {
+    return this.loadFailure?.kind;
   }
 
   /**
