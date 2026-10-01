@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -6,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig, loadEnvFile, loadHttpConfig, selectedTransport } from "../src/config.js";
+import { OAuthStore } from "../src/oauth/store.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -199,7 +201,9 @@ describe("startup env boundary (spawned entrypoint)", () => {
       child.stderr.setEncoding("utf8");
       child.stderr.on("data", (chunk: string) => {
         stderr += chunk;
-        if (stderr.includes("HTTP transport listening")) {
+        // The whole line, not just its start: the fields asserted on sit at
+        // its end, and a chunk boundary could otherwise cut them off.
+        if (/HTTP transport listening[^\n]*\n/.test(stderr)) {
           finish(() => resolve(stderr));
         }
       });
@@ -383,6 +387,75 @@ describe("startup env boundary (spawned entrypoint)", () => {
     // `on` without MCP_HTTP_ALLOW_WRITE: the write surfaces are independent, so
     // documents stays off while the two constrained ones are registered.
     expect(on).toContain("(write=on, documents=off,");
+  }, 60_000);
+
+  // #184: with OAuth on, the startup line counts client registrations by
+  // state. Registrations carried over from a state file written before consent
+  // was recorded load as `unknown` and are never reclaimed, so this count is
+  // how an operator sees them filling the registry. It must carry counts and
+  // nothing else: no client_id, no redirect URI, no password, no token.
+  //
+  // Reverse-verified: dropping the registrations field from src/index.ts
+  // reddens the count assert; adding the client ids to the line reddens the
+  // leak loop.
+  it("counts OAuth registrations by state in the HTTP startup line, and says nothing else about them (#184)", async () => {
+    const password = "startup-line-oauth-password";
+    const stateFile = path.join(stateDir, "oauth-state.json");
+    const store = new OAuthStore({
+      accessTokenTtlSec: 3600,
+      refreshTokenTtlSec: 86_400,
+      codeTtlSec: 60,
+      persistPath: stateFile,
+      persistSecret: password
+    });
+    const given = store.registerClient(["https://given.example/cb"])!;
+    store.recordConsent(given.clientId);
+    const pending = store.registerClient(["https://pending.example/cb"])!;
+    const carried = [
+      store.registerClient(["https://carried-one.example/cb"])!,
+      store.registerClient(["https://carried-two.example/cb"])!
+    ];
+    // What a state file written before `consent` existed holds for these two,
+    // signed again with the key the store derives, so that it verifies.
+    const envelope = JSON.parse(await fs.readFile(stateFile, "utf8"));
+    const payload = JSON.parse(envelope.payload as string);
+    for (const record of payload.clients as { clientId: string; consent?: string }[]) {
+      if (carried.some((client) => client.clientId === record.clientId)) delete record.consent;
+    }
+    envelope.payload = JSON.stringify(payload);
+    envelope.mac = crypto
+      .createHmac("sha256", crypto.scryptSync(password, Buffer.from(envelope.salt as string, "hex"), 32))
+      .update(envelope.payload as string)
+      .digest("hex");
+    await fs.writeFile(stateFile, JSON.stringify(envelope));
+
+    const base = { KNOWLEDGE_ROOT: vault, MCP_PATCH_STATE_DIR: path.join(stateDir, "patches") };
+    const on = await runHttpServer({
+      ...base,
+      MCP_HTTP_PORT: String(await freePort()),
+      MCP_OAUTH_ENABLED: "1",
+      MCP_HTTP_PUBLIC_URL: "https://vault.example",
+      MCP_OAUTH_PASSWORD: password,
+      MCP_OAUTH_STATE_FILE: stateFile
+    });
+    expect(on).toContain("oauth=on, registrations=given:1,pending:1,unknown:2)\n");
+    for (const leaked of [
+      given.clientId,
+      pending.clientId,
+      ...carried.map((client) => client.clientId),
+      "given.example",
+      "pending.example",
+      "carried-",
+      password,
+      "startup-line-test-token"
+    ]) {
+      expect(on).not.toContain(leaked);
+    }
+
+    // OAuth off: the line is what it was, with no registrations field at all.
+    const off = await runHttpServer({ ...base, MCP_HTTP_PORT: String(await freePort()) });
+    expect(off).toContain("oauth=off)\n");
+    expect(off).not.toContain("registrations=");
   }, 60_000);
 
   it("refuses to start on a relative or unreadable MCP_ENV_FILE", async () => {
