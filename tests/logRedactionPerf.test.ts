@@ -28,8 +28,12 @@ import { MASK, redactFragment } from "../packages/log-redaction/src/core.mjs";
  * run on its own. A pair shares its moment, so load that comes and goes cancels
  * out of its ratio, while a quadratic walk is over the limit in every pair.
  *
- * `logRedactionPerf` carries no speed floor: the core is judged on how its time
- * grows, not on how fast this machine is.
+ * The core is judged on how its time grows, not on how fast this machine is,
+ * with one exception: the first call at each size must take under a second per
+ * 64 KiB. A linear core takes milliseconds; a quadratic one takes seconds at
+ * 64 KiB, and vitest's timeout cannot stop a synchronous loop -- a quadratic
+ * mutation once kept this file running for 22 minutes. The ceiling fails it in
+ * one call instead.
  */
 
 const KiB = 1024;
@@ -38,6 +42,7 @@ const LIMIT = 3.0;
 const REPEAT = 4;
 const PAIRS = 7;
 const ATTEMPTS = 3;
+const CEILING_MS_PER_64_KIB = 1000;
 
 function fill(head: string, unit: string, length: number): string {
   const body = unit.repeat(Math.ceil((length - head.length) / unit.length));
@@ -59,7 +64,20 @@ const SHAPES: readonly (readonly [string, string, (length: number) => string])[]
   // A long run of digits that fails a base64 line at its last character. A line
   // number prefix that could end anywhere inside the digits made this quadratic
   // (3.6 s at 32,000 characters).
-  ["digits-bang", "FKPERFDG1", (n) => "token=FKPERFDG1\n" + "7".repeat(n - 17) + "!"]
+  ["digits-bang", "FKPERFDG1", (n) => "token=FKPERFDG1\n" + "7".repeat(n - 17) + "!"],
+  // Many labels inside one quoted string, each asking for the word joined after
+  // its closing quote (`echo "k=k=k=…"X=`), and many labels whose blank-free value
+  // is read again inside the string (`echo "k>k>k>…x="`). Both were quadratic.
+  [
+    "quoted-labels-joined",
+    "FKPERFQJ1",
+    (n) => 'token=FKPERFQJ1 echo "' + "token=".repeat(Math.floor(n / 12)) + '"' + "X".repeat(Math.floor(n / 2)) + "="
+  ],
+  [
+    "quoted-labels-arrow",
+    "FKPERFQA1",
+    (n) => 'token=FKPERFQA1 echo "' + "token>".repeat(Math.floor((n - 30) / 6)) + 'x="'
+  ]
 ];
 
 function median(values: readonly number[]): number {
@@ -132,7 +150,13 @@ describe("the core's time per doubling", { timeout: 180_000 }, () => {
     let previous: string | null = null;
     for (const size of SIZES) {
       const text = make(size);
+      const first = performance.now();
       const result = redactFragment({ text, kind });
+      const firstMs = performance.now() - first;
+      expect({ size, firstMs: firstMs < (CEILING_MS_PER_64_KIB * size) / (64 * KiB) ? "under" : firstMs }).toEqual({
+        size,
+        firstMs: "under"
+      });
       expect(result.status).toBe("ok");
       expect(result.text).not.toContain(secret);
       if (previous) {

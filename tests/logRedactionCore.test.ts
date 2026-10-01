@@ -234,7 +234,7 @@ describe("the core on the step 2-3 review's shapes", () => {
       "a scheme word behind a bracket",
       "text",
       "{Authorization=[Bearer FKRV0012], Accept=[KEEPRV12]}",
-      `{Authorization=[Bearer ${MASK} Accept=[KEEPRV12]}`
+      `{Authorization=[Bearer ${MASK}, Accept=[KEEPRV12]}`
     ],
     [
       "an option that is itself a label",
@@ -299,10 +299,10 @@ describe("the core on the second review's shapes", () => {
     ["a value that ends in a label word", "command", "TOKEN=my_token KEEPRV34", `TOKEN=${MASK} KEEPRV34`],
     ["a prompt's > right after the label", "text", "password> FKRV0035", `password> ${MASK}`],
     [
-      "a label as a tag name",
+      "a label as a tag name keeps the next element",
       "text",
       "<key>token</key><string>KEEPRV36</string>",
-      "<key>token</key><string>KEEPRV36</string>"
+      `<key>${MASK}</key><string>KEEPRV36</string>`
     ],
     [
       "a prefixed string in text",
@@ -352,6 +352,81 @@ describe("the core on the second review's shapes", () => {
   ];
 
   it.each(cases)("%s", (_name, kind, input, expected) => {
+    expect(redactFragment({ text: input, kind })).toEqual({ text: expected, status: "ok" });
+  });
+});
+
+// A third independent review, of the fixes above (#249, 2026-10-01), found values
+// the core read before those fixes and stopped reading after them. One case each.
+describe("the core on the third review's shapes", () => {
+  const cases: readonly (readonly [string, "command" | "text", string, string])[] = [
+    [
+      "an option glued after a quoted value",
+      "text",
+      "password='x'--token FKRV0050 KEEPRV50",
+      `password='${MASK} ${MASK} KEEPRV50`
+    ],
+    ["a label as an element name", "text", "<password>FKRV0051</password>", `<password>${MASK}</password>`],
+    [
+      "a label as an element name in a command",
+      "command",
+      "cat settings.xml: <password>FKRV0052</password> KEEPRV52",
+      `cat settings.xml: <password>${MASK}</password> KEEPRV52`
+    ],
+    [
+      "a label after a comma in a text value",
+      "text",
+      "password: a,token FKRV0053 KEEPRV53",
+      `password: ${MASK},token ${MASK} KEEPRV53`
+    ],
+    [
+      "a label after a semicolon in a text value",
+      "text",
+      "password=x;token FKRV0054 KEEPRV54",
+      `password=${MASK};token ${MASK} KEEPRV54`
+    ],
+    [
+      "a label after a comma in a command value",
+      "command",
+      "export PASSWORD=a,token=FKRV0055 KEEPRV55",
+      `export PASSWORD=${MASK},token=${MASK} KEEPRV55`
+    ],
+    [
+      "a text scalar ending in a backslash before a blank",
+      "text",
+      "password: 'v\\' KEEPRV56 token: 'FKRV0056'",
+      `password: '${MASK}' KEEPRV56 token: '${MASK}'`
+    ],
+    // The second review's escaped backslash is followed by a blank, where the
+    // case above closes the value on its own; a non-blank keeps `\\` needed.
+    [
+      "a text scalar ending in an escaped backslash before a comma",
+      "text",
+      "password: 'FKRV0057\\\\',token: 'FKRV0058'",
+      `password: '${MASK}',token: '${MASK}'`
+    ]
+  ];
+
+  it.each(cases)("%s", (_name, kind, input, expected) => {
+    expect(redactFragment({ text: input, kind })).toEqual({ text: expected, status: "ok" });
+  });
+});
+
+// Codex on #257: at step 2-3 a value that starts with a character that ended a
+// word there (`,` `]` or a backtick) was read as empty and left in the clear.
+describe("the core on a value that starts with a word-ending character", () => {
+  const tick = "`";
+  const cases: readonly (readonly [string, string, string])[] = [
+    ["a comma", "export password=,FKRV0060 KEEPRV60", `export password=${MASK} KEEPRV60`],
+    ["a closing bracket", "export password=]FKRV0061 KEEPRV61", `export password=${MASK} KEEPRV61`],
+    ["a backtick", `export password=${tick}FKRV0062${tick} KEEPRV62`, `export password=${MASK} KEEPRV62`]
+  ];
+
+  it.each(
+    (["command", "text"] as const).flatMap((kind) =>
+      cases.map(([name, input, expected]) => [name, kind, input, expected] as const)
+    )
+  )("%s, as %s", (_name, kind, input, expected) => {
     expect(redactFragment({ text: input, kind })).toEqual({ text: expected, status: "ok" });
   });
 });
