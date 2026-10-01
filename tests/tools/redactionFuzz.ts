@@ -73,7 +73,9 @@ const LABELS = ["password", "token", "secret", "api_key", "pat"] as const;
  * first, dash runs of 4 to 8, an unclosed quote from prose, the shell's `'\''` and
  * YAML's `''`, argument-position secrets, adjacent keywords, and a preserve word on
  * the next line. Preserve words sit at the edges of the secret's range, where an
- * over-reaching rule eats them first.
+ * over-reaching rule eats them first. The last two families come from sections L
+ * and M of the redaction corpus: a password in a URL's userinfo between a kept user
+ * name and host, and a passwd value joined by five dashes just before a key's armor.
  */
 const FAMILIES: readonly Family[] = [
   { name: "mysql-p", kind: "command", make: (p) => `mysql -u app -p${p.S()} ${p.K()}` },
@@ -128,7 +130,28 @@ const FAMILIES: readonly Family[] = [
     make: (p) => `the mysql client won't prompt if you pass -p${p.S()} ${p.K()}`
   },
   { name: "next-line", kind: "text", make: (p) => `token=${p.S()}\n${p.K()} stays` },
-  { name: "preserve-only", kind: "command", make: (p) => `grep -rn "password" docs/${p.K()} | head -n 3` }
+  { name: "preserve-only", kind: "command", make: (p) => `grep -rn "password" docs/${p.K()} | head -n 3` },
+  {
+    name: "url-userinfo",
+    kind: "command",
+    make: (p) => {
+      const [command, scheme] = p.pick([
+        ["git clone", "https"],
+        ["curl", "http"],
+        ["psql", "postgres"]
+      ] as const);
+      return `${command} ${scheme}://${p.K()}:${p.S()}@${p.K()}.example.test/app`;
+    }
+  },
+  {
+    name: "dash-armor",
+    kind: "text",
+    make: (p) => {
+      const q = p.pick(Q);
+      const block = p.pick(["RSA PRIVATE KEY", "OPENSSH PRIVATE KEY", "PGP PRIVATE KEY BLOCK"]);
+      return `passwd=${q}${p.S()}-----${p.S()}${q}\n-----BEGIN ${block}-----\n${p.S()}\n-----END ${block}-----\n${p.K()} after`;
+    }
+  }
 ];
 
 function word(r: () => number, prefix: string, length: number): string {
@@ -284,20 +307,22 @@ function main(argv: string[]): void {
     return value;
   };
   // Number() reads "typo" as NaN and "" as 0, and a count of NaN or 0 generates no
-  // cases, so the run would report nothing wrong without judging anything. Only
-  // decimal digits are read, and the value is checked before any engine starts.
-  const whole = (name: string, fallback?: string) => {
+  // cases, so the run would report nothing wrong without judging anything. The
+  // number is checked against its range and the text against decimal digits, each
+  // on its own, so neither check relies on the other to refuse a value. Both run
+  // before any engine starts.
+  const whole = (name: string, min: number, max: number, fallback?: string) => {
     const value = arg(name, fallback);
+    const n = Number(value);
+    if (!(n >= min && n <= max))
+      throw new Error(`--${name} must be between ${min} and ${max}, got ${JSON.stringify(value)}`);
     if (!/^[0-9]+$/.test(value))
       throw new Error(`--${name} must be written in decimal digits, got ${JSON.stringify(value)}`);
-    return Number(value);
+    return n;
   };
-  const seed = whole("seed");
-  if (seed > 0xffffffff)
-    throw new Error(`--seed must be at most 4294967295, the generator's 32-bit state, got ${seed}`);
-  const count = whole("count", "16000");
-  if (!Number.isSafeInteger(count) || count === 0)
-    throw new Error(`--count must be a positive safe integer, got ${count}`);
+  // The seed's upper bound is the generator's 32-bit state.
+  const seed = whole("seed", 0, 0xffffffff);
+  const count = whole("count", 1, Number.MAX_SAFE_INTEGER, "16000");
   const engine = commandEngine(arg("engine").split(" "), ROOT);
   const cases = generate(seed, count);
   const capture = sedEngine(shippedMask(SED_COPIES.capture));
