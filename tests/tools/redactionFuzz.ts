@@ -284,20 +284,22 @@ function main(argv: string[]): void {
     return value;
   };
   // Number() reads "typo" as NaN and "" as 0, and a count of NaN or 0 generates no
-  // cases, so the run would report nothing wrong without judging anything. Only
-  // decimal digits are read, and the value is checked before any engine starts.
-  const whole = (name: string, fallback?: string) => {
+  // cases, so the run would report nothing wrong without judging anything. The
+  // number is checked against its range and the text against decimal digits, each
+  // on its own, so neither check relies on the other to refuse a value. Both run
+  // before any engine starts.
+  const whole = (name: string, min: number, max: number, fallback?: string) => {
     const value = arg(name, fallback);
+    const n = Number(value);
+    if (!(n >= min && n <= max))
+      throw new Error(`--${name} must be between ${min} and ${max}, got ${JSON.stringify(value)}`);
     if (!/^[0-9]+$/.test(value))
       throw new Error(`--${name} must be written in decimal digits, got ${JSON.stringify(value)}`);
-    return Number(value);
+    return n;
   };
-  const seed = whole("seed");
-  if (seed > 0xffffffff)
-    throw new Error(`--seed must be at most 4294967295, the generator's 32-bit state, got ${seed}`);
-  const count = whole("count", "16000");
-  if (!Number.isSafeInteger(count) || count === 0)
-    throw new Error(`--count must be a positive safe integer, got ${count}`);
+  // The seed's upper bound is the generator's 32-bit state.
+  const seed = whole("seed", 0, 0xffffffff);
+  const count = whole("count", 1, Number.MAX_SAFE_INTEGER, "16000");
   const engine = commandEngine(arg("engine").split(" "), ROOT);
   const cases = generate(seed, count);
   const capture = sedEngine(shippedMask(SED_COPIES.capture));
