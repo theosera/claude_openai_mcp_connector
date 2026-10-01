@@ -266,6 +266,40 @@ describe("oauth:registrations (#184)", () => {
     expect(await fs.readFile(stateFile, "utf8")).toBe(tampered);
   }, 30_000);
 
+  // #263: the server refuses a symbolic link at the state path, with or
+  // without its target, so the command does too, and says why. Before, a link
+  // to a file read as "did not verify" (a password to suspect), and a link
+  // with no target read as "no state file yet" and exited 0.
+  it("refuses a state path that is a symbolic link, with or without its target, and writes nothing (#263)", async () => {
+    const { doomed } = seed();
+    const target = path.join(stateDir, "volume", "oauth-state.json");
+    await fs.mkdir(path.dirname(target));
+    await fs.rename(stateFile, target);
+    await fs.symlink(target, stateFile);
+    const before = await fs.readFile(target);
+
+    for (const args of [["list"], ["remove", doomed.clientId, "--apply"]]) {
+      const refused = await run(args);
+      expect(refused.code, args.join(" ")).toBe(1);
+      expect(refused.stderr).toContain("MCP_OAUTH_STATE_FILE is a symbolic link");
+      expect(refused.stderr).not.toContain("did not verify");
+    }
+    expect((await fs.readFile(target)).equals(before)).toBe(true);
+    expect((await fs.lstat(stateFile)).isSymbolicLink()).toBe(true);
+
+    // The target gone (an unmounted volume): still a link, not "no state file yet".
+    await fs.rename(path.dirname(target), path.join(stateDir, "unmounted"));
+    const dangling = await run(["list"]);
+    expect(dangling.code).toBe(1);
+    expect(dangling.stderr).toContain("MCP_OAUTH_STATE_FILE is a symbolic link");
+    expect(dangling.stdout).not.toContain("No state file yet");
+
+    // The control: the file itself, named directly, lists.
+    const direct = await run(["list"], { MCP_OAUTH_STATE_FILE: path.join(stateDir, "unmounted", "oauth-state.json") });
+    expect(direct.code).toBe(0);
+    expect(direct.stdout).toContain(doomed.clientId);
+  }, 60_000);
+
   it("refuses --apply while something answers on the server's port", async () => {
     const { doomed } = seed();
     const before = await fs.readFile(stateFile);
