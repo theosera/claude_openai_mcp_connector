@@ -62,9 +62,9 @@ describe("the redaction corpus fixture", () => {
     .filter((line) => line.length > 0)
     .map((line) => JSON.parse(line) as CorpusCase);
 
-  it("holds all 145 cases, each with a distinct id", () => {
-    expect(cases).toHaveLength(145);
-    expect(new Set(cases.map((c) => c.id)).size).toBe(145);
+  it("holds all 147 cases, each with a distinct id", () => {
+    expect(cases).toHaveLength(147);
+    expect(new Set(cases.map((c) => c.id)).size).toBe(147);
   });
 
   it("uses only the kinds policy.mjs declares", () => {

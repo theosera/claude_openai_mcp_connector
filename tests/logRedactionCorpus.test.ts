@@ -14,7 +14,7 @@ import { ARGUMENT_POSITION_CASES, ARGUMENT_POSITION_FAMILIES } from "./tools/red
  * The migration gate asks whether the core is worse than the sed `mask()`. This
  * asks whether it is right: in every case outside the argument-position list,
  * no secret word is readable and no preserve word is lost. The sed `mask()`'s own
- * leaks are not an allowance -- sections E, K and M are here because it leaves
+ * leaks are not an allowance -- sections E, K, M and O are here because it leaves
  * them readable.
  */
 
@@ -53,7 +53,7 @@ describe("the core on the corpus", () => {
 
   it("masks every secret and keeps every preserve word outside argument position", () => {
     const inScope = corpus.filter((c) => !ARGUMENT_POSITION_CASES.has(c.id));
-    expect(inScope).toHaveLength(106);
+    expect(inScope).toHaveLength(108);
     const failures = inScope
       .map((c) => ({ id: c.id, ...verdict(c) }))
       .filter((v) => v.result.status !== "ok" || v.leaked.length > 0 || v.broken.length > 0)
