@@ -3,7 +3,7 @@
  * that judges an engine against the sed `mask()` on every one of them.
  *
  *   pnpm exec tsx tests/tools/redactionFuzz.ts --seed 13 --count 16000 \
- *     --engine "node .claude/skills/_shared/redact-log.mjs"
+ *     --engine "node packages/log-redaction/src/cli.mjs"
  *
  * Every case carries marker words: a secret is `FK` + 8 characters with at least
  * one digit, a preserve word is `KEEP` + 6. No marker is part of another or of the

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { commandEngine, type Engine, type EngineResult, MASK, readable } from "./tools/redactionJudge.js";
+import { ARGUMENT_POSITION_CASES } from "./tools/redactionScope.js";
 
 /**
  * Step ②-2 of #249: the migration gate's judge.
@@ -14,9 +15,13 @@ import { commandEngine, type Engine, type EngineResult, MASK, readable } from ".
  * as it ships. The other is the engine, and the gate only watches one direction:
  * a secret word that the sed `mask()` hides but the engine leaves in the clear.
  *
- * The engine is reached through its command line only: NDJSON strings on stdin,
- * one `{text, status}` per line on stdout. The judge does not import it, so it
- * does not depend on the language the engine is written in.
+ * The engine is reached through its command line only: one `{text, kind}` per
+ * line on stdin, one `{text, status}` per line on stdout. The judge does not
+ * import it, so it does not depend on the language the engine is written in.
+ *
+ * Step ②-3 points the gate at the core's command line and gives it a
+ * threshold: a gap may appear only in a case whose secret sits in argument
+ * position, which step ②-4 takes on (`tools/redactionScope.ts`).
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -126,11 +131,17 @@ describe("the migration gate's judge", () => {
   });
 });
 
-describe("the current engine, through its command line", () => {
-  const engine = commandEngine(["node", ".claude/skills/_shared/redact-log.mjs"], ROOT);
+describe("the core, through its command line", () => {
+  const engine = commandEngine(["node", "packages/log-redaction/src/cli.mjs"], ROOT);
+  const { gaps, results } = judge(engine);
 
-  it("answers every corpus case with ok or omitted", () => {
-    const { results } = judge(engine);
-    expect(results.filter((r) => r.status !== "ok" && r.status !== "omitted")).toEqual([]);
+  it("answers every corpus case with ok", () => {
+    expect(results.filter((r) => r.status !== "ok")).toEqual([]);
+  });
+
+  // The gate's threshold for step ②-3. Measured against the shared engine before
+  // this step, 73 cases had a gap, 40 of them outside the argument-position list.
+  it("leaves readable no secret the sed mask() hides, except in argument position", () => {
+    expect(gaps.filter((gap) => !ARGUMENT_POSITION_CASES.has(gap.id))).toEqual([]);
   });
 });

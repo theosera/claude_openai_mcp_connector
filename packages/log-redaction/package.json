@@ -9,6 +9,10 @@
     "./policy": {
       "types": "./src/policy.d.mts",
       "default": "./src/policy.mjs"
+    },
+    "./core": {
+      "types": "./src/core.d.mts",
+      "default": "./src/core.mjs"
     }
   }
 }

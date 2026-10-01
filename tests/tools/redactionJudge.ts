@@ -72,15 +72,18 @@ export function judgeCase(input: string, result: EngineResult, secrets: string[]
 }
 
 /**
- * Runs an engine through its command line: NDJSON in, NDJSON results out. The
- * shipped CLI reads one JSON string per line, so only the text is written; the
- * engine that reads `{text, kind}` per line changes the one line marked below.
+ * Runs an engine through its command line: one `{text, kind}` per line in, one
+ * result per line out. The kind is written on the wire: an engine that reads a
+ * `text` line and a `command` line differently can only be judged if the line
+ * says which it is. The core's CLI (`packages/log-redaction/src/cli.mjs`) reads
+ * this form; the shared engine's CLI reads bare JSON strings and cannot be run
+ * here.
  */
 export function commandEngine(argv: string[], cwd: string): Engine {
   return (fragments) => {
     const stdout = execFileSync(argv[0]!, argv.slice(1), {
       cwd,
-      input: fragments.map((f) => `${JSON.stringify(f.text)}\n`).join(""), // the line that sends the kind
+      input: fragments.map((f) => `${JSON.stringify({ text: f.text, kind: f.kind })}\n`).join(""),
       encoding: "utf8",
       // The default 1 MiB fails a fuzz run of 16,000 cases with ENOBUFS.
       maxBuffer: 1 << 30

@@ -120,3 +120,20 @@ describe("the command-line engine at fuzz scale", { timeout: 60_000 }, () => {
     expect(results.at(-1)!.text).toBe(fragments.at(-1)!.text);
   });
 });
+
+// The judge's own tests pass fragments to in-process engines, so they cannot see
+// what crosses the process boundary. This one reads the kind back from the other
+// side: a judge that wrote only the text would get none.
+describe("the command-line engine's input", () => {
+  it("carries each fragment's kind to the engine", () => {
+    const fragments = [
+      { text: "a", kind: "command" },
+      { text: "b", kind: "text" },
+      { text: "c", kind: "command" }
+    ];
+    const results = commandEngine(["node", "tests/tools/echoEngine.mjs"], ROOT)(fragments) as unknown as {
+      kind?: string;
+    }[];
+    expect(results.map((r) => r.kind)).toEqual(["command", "text", "command"]);
+  });
+});
