@@ -340,7 +340,17 @@ describe("oauth:registrations (#184)", () => {
   // Reverse-verified: removing the owner check reddens this test.
   it("refuses --apply on a state file another account owns", async () => {
     const { doomed } = seed();
-    const before = await fs.readFile(stateFile);
+    // The owner and the bytes come from one handle, so both describe the same
+    // file; read through the path twice, they could describe two.
+    const snapshot = async () => {
+      const handle = await fs.open(stateFile, "r");
+      try {
+        return { stat: await handle.stat(), bytes: await handle.readFile() };
+      } finally {
+        await handle.close();
+      }
+    };
+    const before = await snapshot();
     for (const [key, value] of Object.entries(configEnv())) {
       vi.stubEnv(key, value);
     }
@@ -351,13 +361,15 @@ describe("oauth:registrations (#184)", () => {
       return true;
     });
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-    const owner = (await fs.stat(stateFile)).uid;
+    const owner = before.stat.uid;
     vi.spyOn(process, "geteuid").mockReturnValue(owner + 1);
 
     const code = await main(["remove", doomed.clientId, "--apply"]);
     expect(code).toBe(1);
     expect(errors.join("")).toContain(`the state file belongs to uid ${owner}`);
-    expect((await fs.readFile(stateFile)).equals(before)).toBe(true);
+    const after = await snapshot();
+    expect(after.stat.ino).toBe(before.stat.ino); // not replaced by a write
+    expect(after.bytes.equals(before.bytes)).toBe(true);
   }, 30_000);
 
   // In process, because the window this pins — after every check, before the
