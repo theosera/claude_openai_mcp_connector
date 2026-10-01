@@ -72,11 +72,14 @@ describe("the fuzz generator", () => {
     expect(generate(2, n).map((c) => c.input)).not.toEqual(generate(1, n).map((c) => c.input));
   });
 
-  // The core reads a label anywhere in a word. Before the generator drew such words
-  // again, these seeds ended a marker with KEY or PAT, and the core masked the
-  // preserve word after it: FZ-s24-000910, FZ-s19-006249 and FZ-s16-015730 (a user
-  // name before `:`), FZ-s19-006460 and FZ-s7-013827 (a secret before a blank).
-  it("never ends a marker with a label the core reads", () => {
+  // The core and the sed mask() both read a label anywhere in a word. Before the
+  // generator drew such words again, these seeds ended a marker with KEY or PAT, and
+  // the preserve word after it was masked: FZ-s24-000910, FZ-s19-006249 and
+  // FZ-s16-015730 (a user name before `:`), FZ-s19-006460 and FZ-s7-013827 (a secret
+  // before a blank). The runner's red columns do not move on such a case; the
+  // core-only test on the committed sample would. The seeds here reach KEY and PAT,
+  // not BEARER.
+  it("never ends a marker with a label", () => {
     const labels = SECRET_LABELS.map((label) => label.toUpperCase());
     const endsWithLabel = (w: string) => labels.some((label) => w.endsWith(label));
     // The check itself finds a word that does.
@@ -100,7 +103,7 @@ describe("the fuzz runner's argument reader", () => {
     expect(() => parseArgs(["--seed", "1", "--count", "9007199254740992", ...E])).toThrow("must be between");
   });
 
-  it("refuses an argument it does not read, and an option given twice", () => {
+  it("refuses an argument it does not read, an option given twice, and a missing or blank value", () => {
     const refusal = (argv: string[]) => {
       try {
         parseArgs(argv);
@@ -115,6 +118,10 @@ describe("the fuzz runner's argument reader", () => {
     expect(refusal(["--seed", "1", "--count", "17", "--count", "3", ...E])).toBe("--count is given twice");
     expect(refusal(["--seed", "1", "--seed", "1", ...E])).toBe("--seed is given twice");
     expect(refusal(["--seed", "1", ...E, ...E])).toBe("--engine is given twice");
+    expect(refusal(["--count", "17", ...E])).toBe("--seed is required");
+    // A blank engine would otherwise fail only after the sed references had run.
+    expect(refusal(["--seed", "1", "--engine", ""])).toBe("--engine needs a value");
+    expect(refusal(["--seed", "1", "--engine", " "])).toBe("--engine needs a value");
     // Positive control: the same reader takes the options in any order.
     expect(refusal(["--count", "17", ...E, "--seed", "1"])).toBe("accepted");
   });
@@ -307,6 +314,8 @@ describe("the fuzz runner's command line", { timeout: 300_000 }, () => {
       ["seed", "value", ["--seed", "--count", ONE_EACH, "--engine", E]],
       ["engine", "value", ["--seed", "1", "--count", ONE_EACH, "--engine"]],
       ["engine", "value", ["--seed", "1", "--count", ONE_EACH, "--engine", "--count"]],
+      ["engine", "value", ["--seed", "1", "--count", ONE_EACH, "--engine", ""]],
+      ["engine", "value", ["--seed", "1", "--count", ONE_EACH, "--engine", " "]],
       // Read by name, an argument like these was "not given", and `--count=typo`
       // alone ran the default 16000 cases (the argument reader's own test has that
       // shape). Here --count is given as well, so a runner that skipped the unknown

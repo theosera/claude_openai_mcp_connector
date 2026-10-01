@@ -4,7 +4,7 @@ Generated inputs for the differential fuzz of the log redactor (#249). The gener
 
 ## `seed-1.jsonl`
 
-190 cases from `generate(1, 190)`: ten of each of the 19 families, in turn. `tests/redactionFuzz.test.ts` regenerates it and requires the same bytes, so a change to the generator shows up as a change to this file.
+190 cases from `generate(1, 190)`: ten of each of the 19 families, in turn. `tests/redactionFuzz.test.ts` regenerates it and requires the same bytes, so a change to the generator that changes these 190 cases shows up as a change to this file. A change that only reaches later cases does not: the label redraw below leaves this file as it was, while seed 1's cases differ from case 5139 on (seed 13's from case 8216), so a full run from before it is not reproduced case by case after that point.
 
 Each line has the corpus fields a judge reads, plus the case's origin:
 
@@ -18,7 +18,12 @@ Each line has the corpus fields a judge reads, plus the case's origin:
 
 Every marker is in its input, none is part of another marker, and none is part of the mask token `***MASKED***`. The generator refuses a case that breaks one of these rules, and the judge refuses it again.
 
-No marker ends with a label the core reads (`SECRET_LABELS` in `packages/log-redaction/src/policy.mjs`; with the markers' alphabet that means KEY, PAT or BEARER). The core finds a label anywhere in a word, so a user name ending in KEY before `:`, or a secret ending in PAT before a blank, is read as a label, and the preserve word after it is masked as its value. That is a property of the core, not of the case, so the generator draws such a word again, the way it draws again a word without a digit.
+No marker ends with a label (`SECRET_LABELS` in `packages/log-redaction/src/policy.mjs`; with the markers' alphabet that means KEY, PAT or BEARER): the generator draws such a word again, the way it draws again a word without a digit. Neither the core nor the sed `mask()` needs a word boundary before a label, so a user name ending in KEY before `:`, or a secret ending in PAT before a blank, is read as a label by both, and the preserve word after it is masked as its value.
+
+- Such a case changes no column that fails the run, since the reference does the same. It only moves cases in and out of `main_broken` and `fixed`.
+- The redraw is there for this sample: `tests/logRedactionCorpus.test.ts` judges it against the core alone, so a regenerated sample must not go red for this reason.
+- The shapes the redraw takes out of the fuzz, including one in which the sed `mask()` leaks a secret, belong in the corpus as fixed cases instead (#261).
+- The tests check KEY and PAT endings. No seed they run makes a word ending in BEARER, so that part of the redraw is not reached by them.
 
 ## How cases are judged
 

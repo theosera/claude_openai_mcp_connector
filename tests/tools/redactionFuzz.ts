@@ -8,11 +8,16 @@
  * Every case carries marker words: a secret is `FK` + 8 characters with at least
  * one digit, a preserve word is `KEEP` + 6. No marker is part of another or of the
  * mask token, and every marker is in the input; the generator refuses a case that
- * breaks either rule instead of dropping it. No marker ends with a label the core
- * reads (`SECRET_LABELS`): the core finds a label anywhere in a word, so a user
- * name ending in KEY before `:`, or a secret ending in PAT before a blank, would be
- * read as a label and the preserve word after it masked as its value. The
- * generator draws such a word again, as it does a word without a digit.
+ * breaks either rule instead of dropping it. No marker ends with a label
+ * (`SECRET_LABELS`), and the generator draws such a word again, as it does a word
+ * without a digit. Neither the core nor the sed mask() needs a word boundary
+ * before a label, so a user name ending in KEY before `:`, or a secret ending in
+ * PAT before a blank, is read as a label by both, and the preserve word after it
+ * is masked as its value. Such a case changes no red column: it only moves cases
+ * in and out of `main_broken` and `fixed`. The redraw is there for the committed
+ * sample, which `tests/logRedactionCorpus.test.ts` judges against the core alone,
+ * so that regenerating it cannot turn that test red for this reason. The shapes
+ * the redraw takes out of the fuzz belong in the corpus as fixed cases (#261).
  *
  * The runner compares the candidate with BOTH shipped copies of `mask()` (the
  * capture hook and the archive hook) and sorts each case into columns:
@@ -323,7 +328,11 @@ export function parseArgs(argv: readonly string[]): { seed: number; count: numbe
     if (name === undefined) throw new Error(`unknown argument ${JSON.stringify(token)}`);
     if (given.has(name)) throw new Error(`--${name} is given twice`);
     const value = argv[i + 1];
-    if (value === undefined || value.startsWith("--")) throw new Error(`--${name} needs a value`);
+    // A blank --engine would pass here and fail only when the engine is spawned,
+    // after the sed references have run over every case. A blank number is left to
+    // the range and digit checks below, which each refuse it on their own.
+    if (value === undefined || value.startsWith("--") || (name === "engine" && value.trim() === ""))
+      throw new Error(`--${name} needs a value`);
     given.set(name, value);
   }
   const arg = (name: string, fallback?: string) => {
