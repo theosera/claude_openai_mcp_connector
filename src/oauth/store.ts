@@ -112,6 +112,13 @@ export interface RegisteredClient {
 
 export type LoadOutcome = "absent" | "loaded" | "failed";
 
+/**
+ * Why a state file did not load. Fixed values only: an errno-shaped read code,
+ * a symbolic link at the path, or that the file did not verify. Nothing read
+ * from the file or the error.
+ */
+type LoadFailure = { kind: "unreadable"; code: string } | { kind: "symlink" } | { kind: "unverified" };
+
 /** One registration as the operator command shows it. Carries no credential. */
 export interface RegistrationListing {
   clientId: string;
@@ -222,7 +229,9 @@ export interface OAuthStoreOptions {
   persistPath?: string;
   /**
    * Secret the state-file HMAC key is derived from (the OAuth login password).
-   * Rotating it invalidates the persisted state — every session re-auths.
+   * A file written under another secret does not verify, and the store will
+   * not start on it (#263): rotating the secret means moving the old file
+   * aside first, which is what revokes every persisted session.
    */
   persistSecret?: string;
   /**
@@ -404,6 +413,7 @@ export class OAuthStore {
   private hmacKey?: Buffer;
   private hmacSalt?: Buffer;
   private loadResult: LoadOutcome = "absent";
+  private loadFailure?: LoadFailure;
 
   constructor(private readonly options: OAuthStoreOptions) {
     this.now = options.now ?? Date.now;
@@ -568,14 +578,54 @@ export class OAuthStore {
   }
 
   /**
-   * How the state file read went: `absent` (none configured, or none on disk
-   * yet), `loaded` (verified), or `failed` (it did not verify, and this store
-   * started empty). The server carries on either way. A tool that writes the
-   * file back must not: saving after `failed` would replace the file it could
-   * not read with the empty state, and every registration and token with it.
+   * How the state file read went: `absent` (none configured, or nothing at the
+   * path yet), `loaded` (verified), or `failed` (it could not be read, or it
+   * did not verify, and this store holds nothing from it). A store that
+   * `failed` never writes the file (`persist`), and the server does not start
+   * on one (`assertUsable`): saving would replace the file it could not use
+   * with the empty state, and every registration and token with it.
    */
   get loadOutcome(): LoadOutcome {
     return this.loadResult;
+  }
+
+  /**
+   * Throw unless the state file loaded, or there was none to load. The server
+   * calls this before it serves anything (#258, #263), on a store it built or
+   * one it was given. The message names the variable and a fixed reason only:
+   * no path, nothing read from the file, and not the error that was caught,
+   * whose message carries the path.
+   */
+  assertUsable(): void {
+    const failure = this.loadFailure;
+    if (!failure) {
+      return;
+    }
+    const refusing =
+      "Refusing to start: running on an empty OAuth state would replace the file at the next save " +
+      "and lose every client registration.";
+    if (failure.kind === "unreadable") {
+      throw new Error(
+        `MCP_OAUTH_STATE_FILE is set but the state file could not be read (${failure.code}). ${refusing} ` +
+          "Make the path a file this account can read (check its owner, its mode, and that it is not a " +
+          "directory), then start again."
+      );
+    }
+    if (failure.kind === "symlink") {
+      throw new Error(
+        "MCP_OAUTH_STATE_FILE is set but the path is a symbolic link. Refusing to start: a save replaces " +
+          "the link with a regular file, and the file it points to is left with the old state. Set " +
+          "MCP_OAUTH_STATE_FILE to the path of the file itself (if it is on a volume that is not mounted, " +
+          "mount it first), then start again."
+      );
+    }
+    throw new Error(
+      "MCP_OAUTH_STATE_FILE is set but the state file did not verify: it was changed or damaged, was " +
+        "written by another version, or MCP_OAUTH_PASSWORD is not the password that wrote it. " +
+        `${refusing} If the password is wrong, set the one that wrote the file and start again; the ` +
+        "registrations come back. To change the password on purpose, stop the server, move the state " +
+        "file aside (outside the vault), and start with the new password."
+    );
   }
 
   /**
@@ -1091,58 +1141,72 @@ export class OAuthStore {
   // File layout: { version, salt, mac, payload } where `payload` is the JSON
   // *string* of PersistedPayload and `mac` = HMAC-SHA256(key, payload). Keeping
   // the payload as an opaque string makes the MAC byte-exact (no re-serialize
-  // ambiguity). Any failure to verify/parse fails CLOSED: start empty. A file
-  // that cannot be READ is different, and refuses to start (#258).
+  // ambiguity). Only nothing at the path is a first run. A file that cannot be
+  // read (#258), a symbolic link at the path, or a file that does not verify or
+  // parse (#263) leaves the store empty and `failed`: it never writes the file,
+  // and the server does not start.
 
   /**
-   * Fail-closed load: on any corruption/tamper/version/secret mismatch → empty.
-   * A read error other than a missing file throws, which stops the server.
+   * Fail-closed load: a read error other than nothing at the path, or any
+   * corruption / tamper / version / secret mismatch, holds nothing from the
+   * file and records why, for `assertUsable`.
    */
   private load(secret: string): void {
     const file = this.persistPath;
     if (!file) {
       return;
     }
-    let read: { raw: string } | { unreadable: string };
+    let read: { raw: string } | { failure: LoadFailure };
     try {
-      read = { raw: fs.readFileSync(file, "utf8") };
+      // O_NOFOLLOW: a symbolic link at the path fails to open instead of being
+      // followed, in the same call that opens a regular file, so no link can
+      // be swapped in between a check and the read.
+      const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+      try {
+        read = { raw: fs.readFileSync(fd, "utf8") };
+      } finally {
+        fs.closeSync(fd);
+      }
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      // A symlink whose target is missing reads as ENOENT too. Taken for a
-      // first run, the first save would rename a file over the LINK, and the
-      // store would never read the target again once it came back. So only
-      // nothing at the path at all is a first run.
-      const nothingThere = (() => {
+      // What is at the path itself: a Stats, null for nothing at all, or
+      // undefined when that cannot be told either.
+      const there = (() => {
         try {
-          fs.lstatSync(file);
-          return false;
+          return fs.lstatSync(file);
         } catch (inner) {
-          return (inner as NodeJS.ErrnoException).code === "ENOENT";
+          return (inner as NodeJS.ErrnoException).code === "ENOENT" ? null : undefined;
         }
       })();
-      if (code === "ENOENT" && nothingThere) {
+      if (code === "ENOENT" && there === null) {
         // Missing file is the normal first run; derive a fresh salt lazily on save.
         return;
       }
-      read = { unreadable: typeof code === "string" && /^[A-Z][A-Z0-9_]*$/.test(code) ? code : "an unknown error" };
+      read = {
+        failure: there?.isSymbolicLink()
+          ? { kind: "symlink" }
+          : {
+              kind: "unreadable",
+              code: typeof code === "string" && /^[A-Z][A-Z0-9_]*$/.test(code) ? code : "an unknown error"
+            }
+      };
     }
-    if ("unreadable" in read) {
-      // Anything but a missing file (EACCES from another account, EISDIR, EIO,
-      // a symlink whose target is missing) is a state file that exists and was
-      // not read. Starting empty would be
-      // silent, and the next save renames over the file, which needs write
-      // permission on the directory only: every registration in it would be
-      // lost, and ChatGPT does not register again (#184). So the server does
-      // not start. The message names the variable and the error code only.
-      // The caught error is deliberately not attached as `cause`: its message
-      // carries the path, and Node prints the cause of an uncaught error.
-      throw new Error(
-        `MCP_OAUTH_STATE_FILE is set but the state file could not be read (${read.unreadable}). ` +
-          "Refusing to start: running on an empty OAuth state would replace the file at the next save " +
-          "and lose every client registration. Make the path a file this account can read (check its owner, " +
-          "its mode, that it is not a directory, and, if it is a symbolic link, that its target is there), " +
-          "then start again."
-      );
+    if ("failure" in read) {
+      // Anything but nothing at the path (EACCES from another account, EISDIR,
+      // EIO) is a state file that exists and was not read (#258). Starting
+      // empty would be silent, and the next save renames over the file, which
+      // needs write permission on the directory only: every registration in
+      // it would be lost, and ChatGPT does not register again (#184).
+      // A symbolic link is refused whether or not its target is there (#263):
+      // a save renames a regular file over the LINK, so the server would read
+      // the target once and from then on write beside it, leaving the target
+      // with the old state; with the target missing, the first save would lose
+      // it outright. So the store records why and never writes, and the server
+      // does not start (`assertUsable`). Only the error code is kept: the
+      // caught error's message carries the path.
+      this.loadResult = "failed";
+      this.loadFailure = read.failure;
+      return;
     }
     const raw = read.raw;
     try {
@@ -1268,17 +1332,20 @@ export class OAuthStore {
         this.persist();
       }
     } catch {
-      // Never trust a state file that does not verify. No detail is logged (it
-      // could echo attacker-controlled bytes). The operator symptom is that
-      // every client must connect again, and that includes rotating the
-      // password. Claude.ai registers again on its own; ChatGPT does not, and
-      // recovers only by deleting and recreating its app (#184).
+      // Never trust a state file that does not verify, and never write over
+      // it either (#263). A wrong password, a damaged file and a tampered one
+      // look the same here, and starting empty used to replace the file at the
+      // next save: every registration was lost, and ChatGPT recovers only by
+      // deleting and recreating its app (#184). So nothing from the file is
+      // kept, not even what was read before the check failed, the store never
+      // writes, and the server does not start (`assertUsable`). No detail is
+      // kept: it could echo attacker-controlled bytes.
       this.clients.clear();
       this.accessTokens.clear();
       this.refreshTokens.clear();
       this.rotatedTombstones.clear();
       this.loadResult = "failed";
-      console.error("[oauth] state file failed verification; starting with empty OAuth state");
+      this.loadFailure = { kind: "unverified" };
     }
   }
 
@@ -1298,6 +1365,14 @@ export class OAuthStore {
   private persist(): boolean {
     if (!this.persistPath) {
       return true;
+    }
+    // A store whose state file did not load holds an empty state that is not
+    // the file's, and writing it would replace the file and every registration
+    // in it (#258, #263). Checked here, before any directory or temporary file
+    // is made, and not only at start: a store used without `assertUsable`
+    // cannot write either. A first run (`absent`) saves as before.
+    if (this.loadResult === "failed") {
+      return false;
     }
     try {
       if (!this.hmacKey || !this.hmacSalt) {

@@ -295,8 +295,16 @@ DCR + metadata discovery 必須**。`src/oauth/` の最小単一ユーザ AS。*
    token は memory/disk とも **sha256(token) をキー**に保持 (state file に復元可能な secret を
    置かない)。file は atomic write (tmp+rename)・mode `0600`・dir `0700`。**HMAC-SHA256**
    (`MCP_OAUTH_PASSWORD` から scrypt 導出、per-file salt) で完全性を守り、改ざん/破損/version
-   不一致/password 変更は**空 state で fail-closed** (詳細をログに echo しない)。**読めない file
-   (ENOENT 以外の読み取りエラー: EACCES / EISDIR / EIO) は空で始めず、起動を拒む** (#258) —
+   不一致/password 違いは**起動を拒む** (#263。詳細をログに echo しない)。store は `failed` の空のまま持ち
+   (途中まで読んだ分も捨てる)、**`assertUsable()` が provider で throw** (自分で作った store にも渡された
+   store にも)、**`persist()` は `failed` なら dir も temp も作る前に false** — **2 つは独立**で、片方を外しても
+   他方が file を守る (試験も別々: 起動の拒否 = `refusal` / 保存の拒否 = `writeAnyway`)。absent (パスに何も無い)
+   は従来どおり保存する。⛔ **#263 より前は「空 state で fail-closed」で起動し、次の save が file を置き換えて
+   登録が全部消えた** — fail-closed は「不正な state を使わない」だけで「元の state を壊さない」を保証して
+   いなかった。意図的な password 交換は「止める → 旧 state を vault の外へ退避 → 新 password で起動」で、
+   検証の失敗を無視する常設の env は足さない (owner 決定 2026-10-02)。**読めない file
+   (ENOENT 以外の読み取りエラー: EACCES / EISDIR / EIO) も空で始めず、起動を拒む** (#258。拒否は
+   #263 で同じ `failed` + `assertUsable()` に寄せた) —
    読めない file (EACCES) で空で始めると、次の save の rename が file を置き換え (要るのは dir の write 権限だけ)、
    登録が全部消える。EISDIR は rename できないので消えないが、黙って空で動く点は同じ。
    親ディレクトリに入れない場合 (EACCES / ENOTDIR / ELOOP) は、store より先に `loadOAuthConfig` の path 照合が止める。
@@ -305,7 +313,11 @@ DCR + metadata discovery 必須**。`src/oauth/` の最小単一ユーザ AS。*
    symlink そのものを置き換え、行き先が戻っても二度と読まない)。⚠️ **行き先が在っても、save は link を
    通常の file に置き換える** (temp を path の隣に書いて rename で被せるため) — 運用者への案内は
    「`MCP_OAUTH_STATE_FILE` に実体の file の path を指す」であって「行き先を戻せ」ではない
-   (#265 の Codex P2。link を保つ直しは #263 の範囲)。auth code は
+   (#265 の Codex P2)。⇒ **state の path の最後の component が symlink なら、行き先の有無に関わらず
+   起動を拒む** (#263・owner 決定 2026-10-02 の案 (a))。`O_NOFOLLOW` で開くので、確かめてから読むまでの
+   間に link を差し込めない。⛔ **「link の先に書く」(案 b) を採らない** — 解いてから書くまでの窓を
+   新しく開く (INV-1 と同じ種類)。代償: link で運用していた配置は更新後に起動しない (データは失わない)。
+   親ディレクトリの link は従来どおり通る。auth code は
    **永続化しない** (60s 単回)。**`rotateRefreshToken` の 3 アーム** (期限切れ / 未 rotate の
    client_id 不一致 / 回転成功) は**除去・遷移を即 disk 反映**する。⛔ **全 write 経路の話ではない** —
    例えば `validateAccessToken` の期限切れ除去は save しない。

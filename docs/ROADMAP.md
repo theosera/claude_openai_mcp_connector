@@ -52,9 +52,13 @@ was outstanding:
   disk, so the state file holds no recoverable credential (no encryption key to
   manage; stronger than encryption here because raw tokens never need recovery).
 - **Integrity + fail-closed** — the file carries an HMAC-SHA256 tag keyed from
-  `MCP_OAUTH_PASSWORD` (scrypt-derived, per-file salt); tamper / corruption /
-  version-mismatch / password-rotation loads to empty state (so rotating the
-  password also revokes all persisted sessions). Atomic write, `0600`.
+  `MCP_OAUTH_PASSWORD` (scrypt-derived, per-file salt). Atomic write, `0600`.
+  A file that does not verify (tamper / corruption / version mismatch / another
+  password) or cannot be read **stops the server and is never written over**
+  (#258, #263). Until #263 such a file loaded to empty state and the next save
+  replaced it, losing every registration; rotating the password now means
+  stopping the server and moving the old state file aside first, which is what
+  revokes all persisted sessions.
 - **Outside the vault, enforced at boot** — the state file holds the
   registered-client list, the per-file salt and the HMAC tag. A knowledge root is
   a read surface (walked, indexed, reachable through search / fetch), so a state
@@ -2139,7 +2143,9 @@ Use cases, roughly by how real/soon they are:
    durable one.
 2. **Selective revocation (grew in value with token persistence).** The only
    _explicit_ revocation lever today is rotating the password (nukes _all_
-   sessions). The automatic slice that used to stand here was narrowed on
+   sessions; since #263 that means stopping the server and moving the old state
+   file aside, because a file written under another password stops the server
+   instead of loading empty). The automatic slice that used to stand here was narrowed on
    2026-10-01 (#184). Registrations holding no live token used to be pruned
    after a one-hour grace window, and that stranded ChatGPT, which never
    registers again on its own. Only registrations nobody consented to are

@@ -1580,15 +1580,15 @@ describe("OAuthStore persistence", () => {
     }
   }
 
-  /** Starts a store on `file`: the refusal message, or null when it started. */
-  //
-  // A store that starts anyway is given one registration, as a running server
-  // would be: that save is what replaces the file, so the file checks below can
-  // see a regression that starts empty.
-  function refusal(file: string): string | null {
-    let store: OAuthStore;
+  /**
+   * Starts a store on `file` the way the server does: the refusal message from
+   * `assertUsable`, or null when it would start. A store that would start is
+   * given one registration, as a running server would be.
+   */
+  function refusal(file: string, password = secret): string | null {
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: password });
     try {
-      store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+      store.assertUsable();
     } catch (error) {
       return error instanceof Error ? error.message : String(error);
     }
@@ -1598,6 +1598,26 @@ describe("OAuthStore persistence", () => {
       // A save that fails is not what these tests are about.
     }
     return null;
+  }
+
+  /**
+   * Uses a store on `file` WITHOUT asking whether it may start, as a caller that
+   * skips `assertUsable` would, through every kind of saving call: a
+   * registration (which must land), a token (whose save only warns) and a
+   * removal (which reports). On a store that did not load, none of them may
+   * write the file (#258, #263). This is what tells the save guard apart from
+   * the start check.
+   */
+  function writeAnyway(file: string, password = secret): { registration: string; removal: boolean } {
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: password });
+    let registration = "saved";
+    try {
+      store.registerClient(["https://claude.ai/cb"]);
+    } catch (error) {
+      registration = error instanceof Error ? error.message : String(error);
+    }
+    store.issueTokens("c", "vault.read", "r");
+    return { registration, removal: store.removeRegistrations([]) };
   }
 
   /** A refusal names the variable and the error code, and not the path or the password. */
@@ -1626,6 +1646,9 @@ describe("OAuthStore persistence", () => {
       );
       if (denied !== "EACCES") ctx.skip(); // run as root: the file is still readable
       message = refusal(file);
+      // The rename that would replace the file needs only the directory, so
+      // this is where a store that saves anyway loses the registrations.
+      expect(writeAnyway(file)).toEqual({ registration: "registration_not_persisted", removal: false });
     } finally {
       await fs.chmod(file, 0o600);
     }
@@ -1644,26 +1667,55 @@ describe("OAuthStore persistence", () => {
     expectRefusal(refusal(file), "EISDIR", file);
   });
 
-  // A symlink whose target is missing (an unmounted volume) reads as ENOENT,
-  // like a missing file. Taken for a first run, the first save would rename a
-  // file over the link, and the target would never be read again once it came
-  // back. So it refuses, and the link stays a link.
-  it("refuses to start on a symlink whose target is missing, and keeps the link (#258)", async () => {
+  // A symbolic link at the state path is refused whether or not its target is
+  // there (#263). A save renames a regular file over the LINK: with the target
+  // there, the server would read it once and from then on write beside it,
+  // leaving the target with the old state (Codex on #265); with the target
+  // missing (an unmounted volume), a first run's save would take the link's
+  // place and the target would never be read again (#258). Either way it
+  // refuses, the link stays a link, and the target keeps its bytes.
+  it("refuses to start on a symbolic link at the state path, with or without its target, and keeps both (#263)", async () => {
     const file = await stateFilePath();
-    const target = path.join(path.dirname(file), "unmounted", "oauth-state.json");
+    const target = path.join(path.dirname(file), "volume", "oauth-state.json");
     await fs.symlink(target, file);
-    const message = refusal(file);
+    const expectLinkRefusal = (message: string | null): void => {
+      expect(message, "the store started instead of refusing").not.toBeNull();
+      expect(message).toMatch(/^MCP_OAUTH_STATE_FILE is set but the path is a symbolic link\. /);
+      for (const leak of [path.dirname(file), path.basename(file), target, secret]) {
+        expect(message).not.toContain(leak);
+      }
+    };
+
+    // The target missing.
+    expectLinkRefusal(refusal(file));
+    expect(writeAnyway(file)).toEqual({ registration: "registration_not_persisted", removal: false });
     expect((await fs.lstat(file)).isSymbolicLink()).toBe(true);
     expect(await fs.readlink(file)).toBe(target);
-    expectRefusal(message, "ENOENT", file);
-    expect(message).not.toContain(target);
+
+    // The target there, and a genuine state file under the right password.
+    await fs.mkdir(path.dirname(target));
+    const genuine = new OAuthStore({ ...opts, persistPath: target, persistSecret: secret });
+    const kept = mustRegister(genuine, ["https://chatgpt.com/cb"], "ChatGPT");
+    const before = await snapshot(target);
+    expectLinkRefusal(refusal(file));
+    expect(writeAnyway(file)).toEqual({ registration: "registration_not_persisted", removal: false });
+    expect((await fs.lstat(file)).isSymbolicLink()).toBe(true);
+    expect(await snapshot(target)).toEqual(before);
+
+    // The control: the file itself, named directly, starts with what it holds.
+    expect(refusal(target)).toBeNull();
+    expect(
+      new OAuthStore({ ...opts, persistPath: target, persistSecret: secret }).getClient(kept.clientId)
+    ).toBeDefined();
   });
 
   // The code is printed only when it has the shape of an errno code. An error
   // with no code, or a code that is not one, reads "an unknown error", and
-  // nothing the error carried reaches the message.
+  // nothing the error carried reaches the message. The file is there, so the
+  // error comes from the read itself.
   it("names a read error without a usable code as unknown, and echoes nothing from it (#258)", async () => {
     const file = await stateFilePath();
+    await fs.writeFile(file, "{}", { mode: 0o600 });
     for (const thrown of [
       new Error("no code at all"),
       Object.assign(new Error("odd code"), { code: "not a code /tmp/elsewhere" })
@@ -1697,6 +1749,133 @@ describe("OAuthStore persistence", () => {
       logged.mockRestore();
     }
     expect(new OAuthStore({ ...opts, persistPath: file, persistSecret: secret }).loadOutcome).toBe("loaded");
+  });
+
+  // #263: a state file that reads but does not verify used to start empty, and
+  // the next save replaced it. A wrong password, a damaged file and a tampered
+  // one look the same to the loader, so each of them now refuses to start, and
+  // a store used anyway writes nothing over the file. The message is fixed:
+  // no path, no password (right or wrong), nothing from the file.
+  async function verifiedFile(): Promise<{ file: string; clientId: string; accessToken: string }> {
+    const file = await stateFilePath();
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    const client = mustRegister(store, ["https://chatgpt.com/cb"], "ChatGPT");
+    store.recordConsent(client.clientId);
+    const tokens = store.issueTokens(client.clientId, "vault.read", "r");
+    return { file, clientId: client.clientId, accessToken: tokens.accessToken };
+  }
+
+  function expectUnverifiedRefusal(message: string | null, file: string, password: string): void {
+    expect(message, "the store started instead of refusing").not.toBeNull();
+    expect(message).toMatch(/^MCP_OAUTH_STATE_FILE is set but the state file did not verify: /);
+    expect(message).not.toContain(path.dirname(file));
+    expect(message).not.toContain(path.basename(file));
+    expect(message).not.toContain(secret);
+    expect(message).not.toContain(password);
+  }
+
+  it("refuses to start on a state file that does not verify, however it fails, and writes nothing over it (#263)", async () => {
+    const { file } = await verifiedFile();
+    const original = JSON.parse(await fs.readFile(file, "utf8")) as Record<string, unknown>;
+    const genuine = JSON.stringify(original);
+    const cases: [string, string, string][] = [
+      ["another password", genuine, "a password that did not write it"],
+      [
+        "a tampered payload",
+        JSON.stringify({ ...original, payload: (original.payload as string).replaceAll("vault.read", "vault.write") }),
+        secret
+      ],
+      ["bytes that are not JSON", "not json {{{", secret],
+      ["an unknown version", JSON.stringify({ ...original, version: 2 }), secret],
+      [
+        "a malformed salt",
+        JSON.stringify(signedEnvelope(original, original.payload as string, crypto.randomBytes(8))),
+        secret
+      ],
+      ["an envelope with no payload", JSON.stringify({ ...original, payload: undefined }), secret]
+    ];
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      for (const [label, bytes, password] of cases) {
+        await fs.writeFile(file, bytes);
+        const before = await snapshot(file);
+        const message = refusal(file, password);
+        expectUnverifiedRefusal(message, file, password);
+        expect(writeAnyway(file, password), label).toEqual({
+          registration: "registration_not_persisted",
+          removal: false
+        });
+        expect(await snapshot(file), label).toEqual(before);
+        await expect(fs.lstat(`${file}.tmp`), label).rejects.toMatchObject({ code: "ENOENT" });
+      }
+      // Nothing logged carries the path, a password, or a byte of the file.
+      const lines = logged.mock.calls.flat().map(String).join("\n");
+      for (const leak of [path.dirname(file), secret, "a password that did not write it", original.mac as string]) {
+        expect(lines).not.toContain(leak);
+      }
+    } finally {
+      logged.mockRestore();
+    }
+
+    // The control: the genuine file, with its own password, starts.
+    await fs.writeFile(file, genuine);
+    expect(refusal(file)).toBeNull();
+  });
+
+  // Refusing loses nothing: the file is as it was, so setting the password that
+  // wrote it brings every registration and token back.
+  it("brings every registration back once the password that wrote the file is set again (#263)", async () => {
+    const { file, clientId, accessToken } = await verifiedFile();
+    expect(refusal(file, "a mistyped password")).not.toBeNull();
+    writeAnyway(file, "a mistyped password");
+
+    const recovered = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    expect(() => recovered.assertUsable()).not.toThrow();
+    expect(recovered.getClient(clientId)?.consent).toBe("given");
+    expect(recovered.validateAccessToken(accessToken)?.clientId).toBe(clientId);
+  });
+
+  // Changing the password on purpose: stop, move the old state file aside, and
+  // start with the new password. The new store starts as a first run, saves
+  // and reloads under the new password, and holds nothing of the old file, so
+  // every old token is refused. The file moved aside is never touched.
+  it("changes the password by moving the old state file aside first (#263)", async () => {
+    const { file, clientId, accessToken } = await verifiedFile();
+    const aside = path.join(path.dirname(file), "oauth-state.before-rotation.json");
+    await fs.rename(file, aside);
+    const kept = await snapshot(aside);
+
+    const rotated = "a new password";
+    const fresh = new OAuthStore({ ...opts, persistPath: file, persistSecret: rotated });
+    expect(fresh.loadOutcome).toBe("absent");
+    expect(() => fresh.assertUsable()).not.toThrow();
+    const newcomer = mustRegister(fresh, ["https://claude.ai/cb"]);
+
+    const reloaded = new OAuthStore({ ...opts, persistPath: file, persistSecret: rotated });
+    expect(reloaded.loadOutcome).toBe("loaded");
+    expect(reloaded.getClient(newcomer.clientId)).toBeDefined();
+    expect(reloaded.getClient(clientId)).toBeUndefined();
+    expect(reloaded.validateAccessToken(accessToken)).toBeNull();
+    expect(await snapshot(aside)).toEqual(kept);
+  });
+
+  // The server checks a store it was given as well as one it built.
+  it("stops a provider on a store that did not load, whether it built the store or was given it (#263)", async () => {
+    const { file } = await verifiedFile();
+    const config = {
+      issuer: "https://vault.example.com",
+      loginPassword: "a password that did not write it",
+      accessTokenTtlSec: 60,
+      refreshTokenTtlSec: 600,
+      codeTtlSec: 60,
+      allowWrite: false,
+      stateFile: file
+    };
+    expect(() => new OAuthProvider(config)).toThrow(/did not verify/);
+    const given = new OAuthStore({ ...opts, persistPath: file, persistSecret: "a password that did not write it" });
+    expect(() => new OAuthProvider({ ...config, stateFile: undefined }, given)).toThrow(/did not verify/);
+    // The control: the right password starts.
+    expect(() => new OAuthProvider({ ...config, loginPassword: secret })).not.toThrow();
   });
 
   // What the operator command shows carries nothing that authenticates.
@@ -2195,15 +2374,17 @@ describe("OAuthStore persistence", () => {
     expect((after.clients as unknown[]).length).toBe(2);
   });
 
-  it("fails closed on a corrupt state file instead of throwing", async () => {
+  // A corrupt state file used to be overwritten by the next save (#263). The
+  // store still loads without throwing and holds nothing from it, but it does
+  // not write over it: the bytes are there for whoever repairs or replaces them.
+  it("fails closed on a corrupt state file without throwing, and leaves it in place (#263)", async () => {
     const file = await stateFilePath();
     await fs.writeFile(file, "not json {{{", "utf8");
     const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    expect(store.loadOutcome).toBe("failed");
     expect(store.validateAccessToken("anything")).toBeNull();
-    // The store must still be fully usable (and able to overwrite the bad file).
-    const tokens = store.issueTokens("c", "vault.read", "r");
-    const reloaded = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
-    expect(reloaded.validateAccessToken(tokens.accessToken)?.clientId).toBe("c");
+    store.issueTokens("c", "vault.read", "r");
+    expect(await fs.readFile(file, "utf8")).toBe("not json {{{");
   });
 
   it("drops expired tokens at load time but keeps live ones", async () => {
