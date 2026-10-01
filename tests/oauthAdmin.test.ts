@@ -385,15 +385,32 @@ describe("oauth:registrations (#184)", () => {
     expect(after.bytes.equals(before.bytes)).toBe(true);
   }, 30_000);
 
+  /**
+   * From the next call on, fstat reports `changes` on top of what the file
+   * says: what a chown or a move to another device would look like to the last
+   * read, without root. Returns how many calls it has answered, so a test can
+   * assert the last read was the one that saw it.
+   */
+  function fstatReports(changes: { uid?: number; dev?: number }): () => number {
+    const realFstat = fsSync.fstatSync;
+    let calls = 0;
+    vi.spyOn(fsSync, "fstatSync").mockImplementation(((...args: Parameters<typeof fsSync.fstatSync>) => {
+      calls += 1;
+      return { ...realFstat(...args), ...changes };
+    }) as typeof fsSync.fstatSync);
+    return () => calls;
+  }
+
   // The last look before the write checks three things, and each test below is
   // the one only its own check can catch: new bytes in the same file, the same
-  // bytes in another file, and the same file under another owner. A server's
-  // save is the first test: new bytes, and a new file too (it renames), so the
-  // byte check sees it first.
+  // bytes in another file (another inode, or another device), and the same file
+  // under another owner. A server's save is the first test: new bytes, and a
+  // new file too (it renames), so the byte check sees it first.
   //
   // Reverse-verified: removing the byte check reddens the first two, removing
-  // the file check the third, removing the owner check the fourth, and letting
-  // a failed re-read through the fifth.
+  // the inode side of the file check the third and the device side the fourth,
+  // removing the owner check the fifth, letting any failed re-read through the
+  // last two, and letting only a failure other than ENOENT through the last.
   it("refuses --apply when the state file changes after it was read", async () => {
     const { doomed } = seed();
     let changedTo = "";
@@ -425,32 +442,52 @@ describe("oauth:registrations (#184)", () => {
   it("refuses --apply when the state file is replaced by a copy of itself after it was read", async () => {
     const { doomed } = seed();
     const before = await snapshotOf(stateFile);
+    let copyIno = -1;
     const refused = await runInProcess(["remove", doomed.clientId, "--apply"], () => {
-      fsSync.writeFileSync(`${stateFile}.copy`, before.bytes);
+      const fd = fsSync.openSync(`${stateFile}.copy`, "w", 0o600);
+      try {
+        fsSync.writeSync(fd, before.bytes);
+        copyIno = fsSync.fstatSync(fd).ino;
+      } finally {
+        fsSync.closeSync(fd);
+      }
       fsSync.renameSync(`${stateFile}.copy`, stateFile);
     });
-    const after = await snapshotOf(stateFile);
-    expect(after.stat.ino).not.toBe(before.stat.ino); // the copy is in place, as intended
-    expect(after.bytes.equals(before.bytes)).toBe(true);
+    expect(copyIno).not.toBe(before.stat.ino); // the copy is another file, as intended
     expect(refused.code).toBe(1);
     expect(refused.stderr).toContain("the state file was replaced after it was read");
-    const unchanged = await snapshotOf(stateFile);
-    expect(unchanged.stat.ino).toBe(after.stat.ino); // nothing was written over the copy
+    const after = await snapshotOf(stateFile);
+    expect(after.stat.ino).toBe(copyIno); // nothing was written over the copy
+    expect(after.bytes.equals(before.bytes)).toBe(true);
+  }, 30_000);
+
+  // The same inode number on another device is another file: an inode number
+  // is unique only within one device. Moving the file there needs a second
+  // filesystem, so the device the last read reports is what changes.
+  it("refuses --apply when the state file turns out to be on another device after it was read", async () => {
+    const { doomed } = seed();
+    const before = await snapshotOf(stateFile);
+    let calls = () => 0;
+    const refused = await runInProcess(["remove", doomed.clientId, "--apply"], () => {
+      calls = fstatReports({ dev: before.stat.dev + 1 });
+    });
+    expect(calls()).toBe(1); // the last read saw the other device, as intended
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain("the state file was replaced after it was read");
+    const after = await snapshotOf(stateFile);
+    expect(after.stat.ino).toBe(before.stat.ino); // not replaced by a write
+    expect(after.bytes.equals(before.bytes)).toBe(true);
   }, 30_000);
 
   // A chown needs root, so the owner the last read reports is what changes.
   it("refuses --apply when the state file's owner changes after it was read", async () => {
     const { doomed } = seed();
     const before = await snapshotOf(stateFile);
-    const realFstat = fsSync.fstatSync;
-    let ownerChanges = 0;
+    let calls = () => 0;
     const refused = await runInProcess(["remove", doomed.clientId, "--apply"], () => {
-      vi.spyOn(fsSync, "fstatSync").mockImplementation(((fd: number) => {
-        ownerChanges += 1;
-        return { ...realFstat(fd), uid: before.stat.uid + 1 };
-      }) as typeof fsSync.fstatSync);
+      calls = fstatReports({ uid: before.stat.uid + 1 });
     });
-    expect(ownerChanges).toBe(1); // the last read saw the new owner, as intended
+    expect(calls()).toBe(1); // the last read saw the new owner, as intended
     expect(refused.code).toBe(1);
     expect(refused.stderr).toContain(`the state file now belongs to uid ${before.stat.uid + 1}`);
     const after = await snapshotOf(stateFile);
@@ -469,6 +506,31 @@ describe("oauth:registrations (#184)", () => {
     expect(fsSync.existsSync(stateFile)).toBe(false); // nothing was written in its place
     expect((await fs.readFile(`${stateFile}.moved`)).equals(before.bytes)).toBe(true);
   }, 30_000);
+
+  // Not only a missing file: any error on the re-read refuses. The rename the
+  // write ends in needs only the directory, so a file this account can no
+  // longer read would otherwise be replaced.
+  it.skipIf(process.getuid?.() === 0)(
+    "refuses --apply when the state file can no longer be read before the write",
+    async () => {
+      const { doomed } = seed();
+      const before = await snapshotOf(stateFile);
+      let refused: { code: number; stderr: string };
+      try {
+        refused = await runInProcess(["remove", doomed.clientId, "--apply"], () => {
+          fsSync.chmodSync(stateFile, 0o000);
+        });
+      } finally {
+        await fs.chmod(stateFile, 0o600);
+      }
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain("the state file could not be read again (EACCES)");
+      const after = await snapshotOf(stateFile);
+      expect(after.stat.ino).toBe(before.stat.ino); // not replaced by a write
+      expect(after.bytes.equals(before.bytes)).toBe(true);
+    },
+    30_000
+  );
 
   it("never prints the password, the key derived from it, the bearer or a token", async () => {
     const { keptTokens, doomed, doomedTokens, rotated } = seed();
