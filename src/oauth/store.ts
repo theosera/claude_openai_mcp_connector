@@ -1140,7 +1140,8 @@ export class OAuthStore {
         `MCP_OAUTH_STATE_FILE is set but the state file could not be read (${read.unreadable}). ` +
           "Refusing to start: running on an empty OAuth state would replace the file at the next save " +
           "and lose every client registration. Make the path a file this account can read (check its owner, " +
-          "its mode, and that it is not a directory), then start again."
+          "its mode, that it is not a directory, and, if it is a symbolic link, that its target is there), " +
+          "then start again."
       );
     }
     const raw = read.raw;
