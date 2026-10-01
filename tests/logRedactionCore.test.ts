@@ -760,6 +760,12 @@ describe("the core on the seventh review's shapes", () => {
       both,
       `${header}: "${bearer} FKRV0169"--token FKRV0170 KEEPRW69`,
       `${header}: "${bearer} ${MASK} ${MASK} KEEPRW69`
+    ],
+    [
+      "a label inside a quoted scheme value, before a quoted word",
+      both,
+      `${header}: "${bearer} FKRV0180 token" "KEEPRW80"`,
+      `${header}: "${bearer} ${MASK}" "KEEPRW80"`
     ]
   ];
 
