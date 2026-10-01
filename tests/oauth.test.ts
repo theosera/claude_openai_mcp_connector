@@ -1548,6 +1548,97 @@ describe("OAuthStore persistence", () => {
     expect(() => new OAuthStore({ ...opts, persistPath: file })).toThrow(/persistSecret/);
   });
 
+  // The operator command must not write after a load that failed: the store
+  // fell back to empty, and saving would replace every registration (#184).
+  // So the outcome has to be visible from outside.
+  //
+  // Reverse-verified: never setting `failed` in the load's catch reddens the
+  // last assert.
+  it("reports whether the state file was absent, loaded or failed verification (#184)", async () => {
+    const file = await stateFilePath();
+    expect(new OAuthStore({ ...opts, persistPath: file, persistSecret: secret }).loadOutcome).toBe("absent");
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    store.registerClient(["https://chatgpt.com/cb"]);
+    expect(new OAuthStore({ ...opts, persistPath: file, persistSecret: secret }).loadOutcome).toBe("loaded");
+    expect(new OAuthStore({ ...opts, persistPath: file, persistSecret: "another" }).loadOutcome).toBe("failed");
+  });
+
+  // What the operator command shows carries nothing that authenticates.
+  it("lists registrations without any token value or hash (#184)", async () => {
+    const file = await stateFilePath();
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    const client = mustRegister(store, ["https://chatgpt.com/cb"], "ChatGPT");
+    const tokens = store.issueTokens(client.clientId, "vault.read", "r");
+    const listed = store.listRegistrations();
+    expect(listed).toEqual([
+      {
+        clientId: client.clientId,
+        clientName: "ChatGPT",
+        redirectUris: ["https://chatgpt.com/cb"],
+        createdAt: client.createdAt,
+        liveAccessTokens: 1,
+        liveRefreshTokens: 1
+      }
+    ]);
+    const shown = JSON.stringify(listed);
+    const hash = (token: string) => crypto.createHash("sha256").update(token).digest("hex");
+    for (const secretValue of [
+      tokens.accessToken,
+      tokens.refreshToken,
+      hash(tokens.accessToken),
+      hash(tokens.refreshToken)
+    ]) {
+      expect(shown).not.toContain(secretValue);
+    }
+  });
+
+  // All or nothing, and everything bound to the removed registration goes with
+  // it, pending codes included.
+  //
+  // Reverse-verified: dropping the unknown-id check reddens the first block
+  // (the known id is removed); dropping the code sweep reddens the code assert.
+  it("removes registrations all or nothing, with their tokens and pending codes (#184)", async () => {
+    const file = await stateFilePath();
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    const doomed = mustRegister(store, ["https://doomed.example/cb"]);
+    const kept = mustRegister(store, ["https://kept.example/cb"]);
+    const doomedTokens = store.issueTokens(doomed.clientId, "vault.read", "r");
+    const keptTokens = store.issueTokens(kept.clientId, "vault.read", "r");
+    const code = store.createAuthorizationCode({
+      clientId: doomed.clientId,
+      redirectUri: "https://doomed.example/cb",
+      codeChallenge: "challenge",
+      scope: "vault.read",
+      resource: "r"
+    });
+
+    expect(() => store.removeRegistrations([doomed.clientId, "client_not-there"])).toThrow("unknown_client");
+    expect(store.getClient(doomed.clientId)).toBeDefined(); // nothing was removed
+
+    expect(store.removeRegistrations([doomed.clientId])).toBe(true);
+    expect(store.getClient(doomed.clientId)).toBeUndefined();
+    expect(store.validateAccessToken(doomedTokens.accessToken)).toBeNull();
+    expect(store.consumeAuthorizationCode(code)).toBeUndefined();
+    expect(store.validateAccessToken(keptTokens.accessToken)?.clientId).toBe(kept.clientId); // control
+  });
+
+  // An operator must not be told it worked when the file was not written.
+  //
+  // Reverse-verified: returning true regardless of the save reddens the first
+  // assert.
+  it("reports a removal that could not be saved (#184)", async () => {
+    const file = await stateFilePath();
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    const client = mustRegister(store, ["https://chatgpt.com/cb"]);
+    await fs.mkdir(`${file}.tmp`);
+    expect(store.removeRegistrations([client.clientId])).toBe(false);
+    await fs.rmdir(`${file}.tmp`);
+    // The file still holds it, so the operator can try again.
+    expect(
+      new OAuthStore({ ...opts, persistPath: file, persistSecret: secret }).getClient(client.clientId)
+    ).toBeDefined();
+  });
+
   it("persists clients and tokens across a restart without raw secrets on disk", async () => {
     const file = await stateFilePath();
     const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });

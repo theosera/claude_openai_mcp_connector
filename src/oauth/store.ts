@@ -110,6 +110,25 @@ export interface RegisteredClient {
   consent: ClientConsent;
 }
 
+export type LoadOutcome = "absent" | "loaded" | "failed";
+
+/** One registration as the operator command shows it. Carries no credential. */
+export interface RegistrationListing {
+  clientId: string;
+  clientName?: string;
+  redirectUris: string[];
+  createdAt: number;
+  liveAccessTokens: number;
+  liveRefreshTokens: number;
+}
+
+/** What removing one registration takes with it. */
+export interface RegistrationRemoval {
+  accessTokens: number;
+  refreshTokens: number;
+  tombstones: number;
+}
+
 export interface AuthorizationCode {
   code: string;
   clientId: string;
@@ -205,6 +224,14 @@ export interface OAuthStoreOptions {
    * Rotating it invalidates the persisted state — every session re-auths.
    */
   persistSecret?: string;
+  /**
+   * `false` keeps loading from writing the state file. The server leaves this
+   * on, so a consent read from live tokens is written while its proof exists.
+   * The operator command turns it off: it reads a file a running server may
+   * own, its `list` and dry run must write nothing, and an `--apply` writes
+   * the promotion together with the removal (#184).
+   */
+  writeAtLoad?: boolean;
   now?: () => number;
 }
 
@@ -375,6 +402,7 @@ export class OAuthStore {
   /** scrypt(persistSecret, salt) — derived once per store, cached for saves. */
   private hmacKey?: Buffer;
   private hmacSalt?: Buffer;
+  private loadResult: LoadOutcome = "absent";
 
   constructor(private readonly options: OAuthStoreOptions) {
     this.now = options.now ?? Date.now;
@@ -536,6 +564,90 @@ export class OAuthStore {
 
   getClient(clientId: string): RegisteredClient | undefined {
     return this.clients.get(clientId);
+  }
+
+  /**
+   * How the state file read went: `absent` (none configured, or none on disk
+   * yet), `loaded` (verified), or `failed` (it did not verify, and this store
+   * started empty). The server carries on either way. A tool that writes the
+   * file back must not: saving after `failed` would replace the file it could
+   * not read with the empty state, and every registration and token with it.
+   */
+  get loadOutcome(): LoadOutcome {
+    return this.loadResult;
+  }
+
+  /**
+   * What an operator needs to see about each registration (the
+   * `oauth:registrations` command), and nothing that authenticates: no token
+   * value or hash leaves the store this way. `clientName` and `redirectUris`
+   * are whatever the caller of `/register` sent.
+   */
+  listRegistrations(): RegistrationListing[] {
+    const t = this.now();
+    const liveFor = (map: Map<string, TokenRecord>, clientId: string): number => {
+      let live = 0;
+      for (const record of map.values()) {
+        if (record.clientId === clientId && record.expiresAt > t) live++;
+      }
+      return live;
+    };
+    return [...this.clients.values()].map((client) => ({
+      clientId: client.clientId,
+      clientName: client.clientName,
+      redirectUris: [...client.redirectUris],
+      createdAt: client.createdAt,
+      liveAccessTokens: liveFor(this.accessTokens, client.clientId),
+      liveRefreshTokens: liveFor(this.refreshTokens, client.clientId)
+    }));
+  }
+
+  /**
+   * What removing this registration would take with it, without removing
+   * anything; `undefined` if there is no such registration.
+   */
+  removalFor(clientId: string): RegistrationRemoval | undefined {
+    if (!this.clients.has(clientId)) {
+      return undefined;
+    }
+    const count = <V extends { clientId: string }>(map: Map<string, V>): number =>
+      [...map.values()].filter((value) => value.clientId === clientId).length;
+    return {
+      accessTokens: count(this.accessTokens),
+      refreshTokens: count(this.refreshTokens),
+      tombstones: count(this.rotatedTombstones)
+    };
+  }
+
+  /**
+   * Remove these registrations together with every token, pending code and
+   * rotation tombstone bound to them, and report whether that reached the
+   * state file (always true without one). All or nothing: if any id is not
+   * registered, nothing is removed and this throws.
+   *
+   * A removed client is not barred. Under dynamic registration it can register
+   * again and come back under a new id, so this ends a registration and its
+   * sessions, not a client.
+   */
+  removeRegistrations(clientIds: string[]): boolean {
+    const unknown = clientIds.filter((clientId) => !this.clients.has(clientId));
+    if (unknown.length > 0) {
+      throw new Error("unknown_client");
+    }
+    const doomed = new Set(clientIds);
+    const sweep = <V extends { clientId: string }>(map: Map<string, V>): void => {
+      for (const [key, value] of map) {
+        if (doomed.has(value.clientId)) map.delete(key);
+      }
+    };
+    for (const clientId of doomed) {
+      this.clients.delete(clientId);
+    }
+    sweep(this.accessTokens);
+    sweep(this.refreshTokens);
+    sweep(this.rotatedTombstones);
+    sweep(this.codes);
+    return this.persist();
   }
 
   createAuthorizationCode(params: {
@@ -1103,13 +1215,14 @@ export class OAuthStore {
       // Keep the verified salt/key for subsequent saves.
       this.hmacSalt = salt;
       this.hmacKey = key;
+      this.loadResult = "loaded";
       // A promotion held only in memory is lost if nothing else saves before
       // its tokens lapse and the process restarts: the file would still say
       // `pending`, and the proof would be gone. So write it now. Only here, on
       // a file that verified, and only when something was promoted — a load
       // that failed never reaches this line and must not overwrite the file
       // with the empty state it fell back to.
-      if (promoted > 0) {
+      if (promoted > 0 && this.options.writeAtLoad !== false) {
         this.persist();
       }
     } catch {
@@ -1122,6 +1235,7 @@ export class OAuthStore {
       this.accessTokens.clear();
       this.refreshTokens.clear();
       this.rotatedTombstones.clear();
+      this.loadResult = "failed";
       console.error("[oauth] state file failed verification; starting with empty OAuth state");
     }
   }
@@ -1130,7 +1244,9 @@ export class OAuthStore {
    * Atomic save (tmp + rename), 0600 file / 0700 dir. Failures only warn: for
    * tokens, persistence is an availability feature and a failed save must not
    * break auth. The two registration transitions that must not be answered
-   * unless they landed call `persist` instead (#184).
+   * unless they landed call `persist` instead (#184), and so does removing
+   * registrations, because an operator must not be told it worked when it did
+   * not.
    */
   private save(): void {
     this.persist();
