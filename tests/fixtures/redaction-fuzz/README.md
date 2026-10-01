@@ -4,7 +4,7 @@ Generated inputs for the differential fuzz of the log redactor (#249). The gener
 
 ## `seed-1.jsonl`
 
-170 cases from `generate(1, 170)`: ten of each of the 17 families, in turn. `tests/redactionFuzz.test.ts` regenerates it and requires the same bytes, so a change to the generator shows up as a change to this file.
+190 cases from `generate(1, 190)`: ten of each of the 19 families, in turn. `tests/redactionFuzz.test.ts` regenerates it and requires the same bytes, so a change to the generator shows up as a change to this file.
 
 Each line has the corpus fields a judge reads, plus the case's origin:
 

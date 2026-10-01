@@ -10,7 +10,7 @@ import { compare, type FuzzCase, generate, SED_COPIES, sedEngine, shippedMask } 
 import { broken, type Engine, type EngineResult, readable } from "./tools/redactionJudge.js";
 
 /**
- * The differential fuzz, on the committed sample (seed 1, 170 cases = 10 of each
+ * The differential fuzz, on the committed sample (seed 1, 190 cases = 10 of each
  * family). The full runs (several seeds x 16,000 cases) are the tool's job; this
  * pins the generator and shows the runner can see what it claims to compare.
  */
@@ -23,7 +23,11 @@ const sample: FuzzCase[] = readFileSync(SAMPLE, "utf8")
   .filter((line) => line.length > 0)
   .map((line) => JSON.parse(line) as FuzzCase);
 
-/** Runs the sed engine once per distinct input: each run is a bash process per case. */
+/**
+ * Runs the sed engine once per distinct input: each run is a bash process per case.
+ * It keys on the text alone, so it is for the sed engines only: an engine that reads
+ * the kind can answer the same text differently in a command and in a text.
+ */
 function memo(engine: Engine): Engine {
   const seen = new Map<string, EngineResult>();
   return (fragments) => {
@@ -39,7 +43,7 @@ const identity: Engine = (fragments) => fragments.map(({ text }) => ({ text, sta
 
 describe("the fuzz generator", () => {
   it("regenerates the committed sample byte for byte", () => {
-    const text = generate(1, 170)
+    const text = generate(1, 190)
       .map((c) => JSON.stringify(c))
       .join("\n");
     expect(`${text}\n`).toBe(readFileSync(SAMPLE, "utf8"));
@@ -208,40 +212,53 @@ describe("the fuzz runner's command line", { timeout: 300_000 }, () => {
   it("rejects invalid numeric arguments before running the engine", async () => {
     expect(dir).not.toContain(" ");
     const E = SENTINEL_ENGINE;
-    const bad: [string, string[]][] = [
-      ...["typo", "NaN", "Infinity", "-Infinity", "0", "-1", "1.5", "9007199254740992", "", " "].map(
-        (v): [string, string[]] => ["count", ["--seed", "1", "--count", v, "--engine", E]]
-      ),
-      ...["typo", "NaN", "Infinity", "-1", "1.5", "4294967296", "", " "].map((v): [string, string[]] => [
-        "seed",
-        ["--seed", v, "--count", "17", "--engine", E]
-      ]),
-      ["count", ["--seed", "1", "--engine", E, "--count"]],
-      ["seed", ["--count", "17", "--engine", E, "--seed"]],
-      ["count", ["--seed", "1", "--count", "--engine", E]],
-      ["seed", ["--seed", "--count", "17", "--engine", E]],
-      ["engine", ["--seed", "1", "--count", "17", "--engine"]],
-      ["engine", ["--seed", "1", "--count", "17", "--engine", "--count"]]
+    // Each row names the check that must refuse it, so taking one check out shows
+    // on its own rows even where the other check would still refuse the value:
+    // "range" for a value Number() reads outside the range, "digits" for one it
+    // reads inside the range but spelled otherwise, "value" for a missing value.
+    type Why = "range" | "digits" | "value";
+    type Bad = [option: string, why: Why, args: string[]];
+    const count = (v: string, why: Why): Bad => ["count", why, ["--seed", "1", "--count", v, "--engine", E]];
+    const seed = (v: string, why: Why): Bad => ["seed", why, ["--seed", v, "--count", "17", "--engine", E]];
+    const bad: Bad[] = [
+      ...["typo", "NaN", "Infinity", "-Infinity", "0", "-1", "9007199254740992", "", " "].map((v) => count(v, "range")),
+      ...["1.5", "1e3", "0x10", "+17", " 17"].map((v) => count(v, "digits")),
+      ...["typo", "NaN", "Infinity", "-1", "4294967296"].map((v) => seed(v, "range")),
+      ...["1.5", "", " ", "-0"].map((v) => seed(v, "digits")),
+      ["count", "value", ["--seed", "1", "--engine", E, "--count"]],
+      ["seed", "value", ["--count", "17", "--engine", E, "--seed"]],
+      ["count", "value", ["--seed", "1", "--count", "--engine", E]],
+      ["seed", "value", ["--seed", "--count", "17", "--engine", E]],
+      ["engine", "value", ["--seed", "1", "--count", "17", "--engine"]],
+      ["engine", "value", ["--seed", "1", "--count", "17", "--engine", "--count"]]
     ];
     const results: Run[] = [];
     for (let i = 0; i < bad.length; i += 6) {
-      results.push(...(await Promise.all(bad.slice(i, i + 6).map(([, args]) => run(SCRIPT, args)))));
+      results.push(...(await Promise.all(bad.slice(i, i + 6).map(([, , args]) => run(SCRIPT, args)))));
     }
+    const refusal = (option: string, stderr: string) => {
+      const line = stderr.split("\n")[0]!;
+      if (!line.startsWith(`Error: --${option} `)) return line;
+      if (line.includes(" must be between ")) return "range";
+      if (line.includes(" must be written in decimal digits")) return "digits";
+      if (line.endsWith(" needs a value")) return "value";
+      return line;
+    };
     const seen = results.map((r, i) => ({
-      args: bad[i]![1].join(" "),
+      args: bad[i]![2].join(" "),
       status: r.status,
       signal: r.signal,
       stdout: r.stdout,
-      named: r.stderr.split("\n")[0]!.startsWith(`Error: --${bad[i]![0]} `),
+      refused: refusal(bad[i]![0], r.stderr),
       started: r.started
     }));
     expect(seen).toEqual(
-      bad.map(([, args]) => ({
+      bad.map(([, why, args]) => ({
         args: args.join(" "),
         status: 2,
         signal: null,
         stdout: "",
-        named: true,
+        refused: why,
         started: false
       }))
     );
