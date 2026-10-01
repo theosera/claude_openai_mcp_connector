@@ -1636,13 +1636,27 @@ describe("OAuthStore persistence", () => {
     ).toBeDefined();
   });
 
-  it("refuses to start when the state path is a directory, and leaves it as it was (#258)", async () => {
+  // A directory cannot be renamed over, so a store that started anyway would
+  // not lose anything here; what this pins is the refusal and its message.
+  it("refuses to start when the state path is a directory (#258)", async () => {
     const file = await stateFilePath();
     await fs.mkdir(file);
+    expectRefusal(refusal(file), "EISDIR", file);
+  });
+
+  // A symlink whose target is missing (an unmounted volume) reads as ENOENT,
+  // like a missing file. Taken for a first run, the first save would rename a
+  // file over the link, and the target would never be read again once it came
+  // back. So it refuses, and the link stays a link.
+  it("refuses to start on a symlink whose target is missing, and keeps the link (#258)", async () => {
+    const file = await stateFilePath();
+    const target = path.join(path.dirname(file), "unmounted", "oauth-state.json");
+    await fs.symlink(target, file);
     const message = refusal(file);
-    expect((await fs.stat(file)).isDirectory()).toBe(true);
-    expect(await fs.readdir(file)).toEqual([]);
-    expectRefusal(message, "EISDIR", file);
+    expect((await fs.lstat(file)).isSymbolicLink()).toBe(true);
+    expect(await fs.readlink(file)).toBe(target);
+    expectRefusal(message, "ENOENT", file);
+    expect(message).not.toContain(target);
   });
 
   // The code is printed only when it has the shape of an errno code. An error

@@ -297,8 +297,12 @@ DCR + metadata discovery 必須**。`src/oauth/` の最小単一ユーザ AS。*
    (`MCP_OAUTH_PASSWORD` から scrypt 導出、per-file salt) で完全性を守り、改ざん/破損/version
    不一致/password 変更は**空 state で fail-closed** (詳細をログに echo しない)。**読めない file
    (ENOENT 以外の読み取りエラー: EACCES / EISDIR / EIO) は空で始めず、起動を拒む** (#258) —
-   空で始めると次の save の rename が file を置き換え (要るのは dir の write 権限だけ)、登録が全部消える。
-   メッセージは env 名と errno コードだけで、path も中身も出さない。**ENOENT だけが初回**。auth code は
+   読めない file (EACCES) で空で始めると、次の save の rename が file を置き換え (要るのは dir の write 権限だけ)、
+   登録が全部消える。EISDIR は rename できないので消えないが、黙って空で動く点は同じ。
+   親ディレクトリに入れない場合 (EACCES / ENOTDIR / ELOOP) は、store より先に `loadOAuthConfig` の path 照合が止める。
+   メッセージは env 名と errno コードだけで、path も中身も出さない。**パスに何も無いときだけが初回** —
+   行き先の無い symlink も ENOENT を返すので、`lstat` で何か在れば拒む (初回にすると最初の save の rename が
+   symlink そのものを置き換え、行き先が戻っても二度と読まない)。auth code は
    **永続化しない** (60s 単回)。**`rotateRefreshToken` の 3 アーム** (期限切れ / 未 rotate の
    client_id 不一致 / 回転成功) は**除去・遷移を即 disk 反映**する。⛔ **全 write 経路の話ではない** —
    例えば `validateAccessToken` の期限切れ除去は save しない。

@@ -1099,23 +1099,37 @@ export class OAuthStore {
    * A read error other than a missing file throws, which stops the server.
    */
   private load(secret: string): void {
-    if (!this.persistPath) {
+    const file = this.persistPath;
+    if (!file) {
       return;
     }
     let read: { raw: string } | { unreadable: string };
     try {
-      read = { raw: fs.readFileSync(this.persistPath, "utf8") };
+      read = { raw: fs.readFileSync(file, "utf8") };
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") {
+      // A symlink whose target is missing reads as ENOENT too. Taken for a
+      // first run, the first save would rename a file over the LINK, and the
+      // store would never read the target again once it came back. So only
+      // nothing at the path at all is a first run.
+      const nothingThere = (() => {
+        try {
+          fs.lstatSync(file);
+          return false;
+        } catch (inner) {
+          return (inner as NodeJS.ErrnoException).code === "ENOENT";
+        }
+      })();
+      if (code === "ENOENT" && nothingThere) {
         // Missing file is the normal first run; derive a fresh salt lazily on save.
         return;
       }
       read = { unreadable: typeof code === "string" && /^[A-Z][A-Z0-9_]*$/.test(code) ? code : "an unknown error" };
     }
     if ("unreadable" in read) {
-      // Anything but a missing file (EACCES from another account, EISDIR, EIO)
-      // is a state file that exists and was not read. Starting empty would be
+      // Anything but a missing file (EACCES from another account, EISDIR, EIO,
+      // a symlink whose target is missing) is a state file that exists and was
+      // not read. Starting empty would be
       // silent, and the next save renames over the file, which needs write
       // permission on the directory only: every registration in it would be
       // lost, and ChatGPT does not register again (#184). So the server does
@@ -1125,7 +1139,8 @@ export class OAuthStore {
       throw new Error(
         `MCP_OAUTH_STATE_FILE is set but the state file could not be read (${read.unreadable}). ` +
           "Refusing to start: running on an empty OAuth state would replace the file at the next save " +
-          "and lose every client registration. Fix the file's permissions or ownership, then start again."
+          "and lose every client registration. Make the path a file this account can read (check its owner, " +
+          "its mode, and that it is not a directory), then start again."
       );
     }
     const raw = read.raw;

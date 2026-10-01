@@ -95,12 +95,16 @@ same store, so one file covers every web client). Security properties:
   OAuth state and clients simply re-authorize. Rotating the password is
   therefore also how you revoke all persisted sessions at once.
 - A state file that exists but **cannot be read** is different: the server
-  **refuses to start** (#258). This happens when another account owns the file,
-  the path is a directory, or the disk returns an I/O error. The log shows
+  **refuses to start** (#258). This happens when the file itself cannot be
+  read: its owner or mode changed, the path is a directory, the path is a
+  symbolic link whose target is missing (an unmounted volume, say), or the disk
+  returns an I/O error. The log shows
   `MCP_OAUTH_STATE_FILE is set but the state file could not be read (<code>)`,
-  with the error code only. Starting empty instead would let the next save
-  replace the file, which needs write permission on the directory only, and
-  every registration in it would be lost. Under launchd with `KeepAlive`, the
+  with the error code only. (A parent directory that cannot be entered is
+  refused earlier, by the configuration check, with its own message.) For an
+  unreadable file, starting empty instead would let the next save replace it,
+  which needs write permission on the directory only, and every registration
+  in it would be lost. Under launchd with `KeepAlive`, the
   agent is restarted and refused again until the file is fixed, so that line
   repeats in its `StandardErrorPath` log. **Fix the file's ownership and
   permissions:** it should be mode `0600` and owned by the account the server

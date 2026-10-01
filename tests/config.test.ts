@@ -460,21 +460,14 @@ describe("startup env boundary (spawned entrypoint)", () => {
 
   // #258 on the real entrypoint: an OAuth state file that exists and cannot be
   // read stops the server before it listens, and the message names the variable
-  // and the error code, not the path or the password. The file is left as it
-  // was. The same environment with the file readable starts, as the control.
+  // and the error code, not the path or the password. The same environment with
+  // the file readable starts, as the control. Whether the file keeps its bytes
+  // is pinned in the store tests, which attempt a save: a spawned server saves
+  // nothing until a client registers, so a check here would see nothing.
   it("refuses to start on an OAuth state file it cannot read (#258)", async (ctx) => {
     const password = "correct horse battery staple";
     const stateFile = path.join(stateDir, "oauth-state.json");
     await fs.writeFile(stateFile, "{}", { mode: 0o600 });
-    const snapshot = async () => {
-      const handle = await fs.open(stateFile, "r");
-      try {
-        return { bytes: (await handle.readFile()).toString("base64"), ino: (await handle.stat()).ino };
-      } finally {
-        await handle.close();
-      }
-    };
-    const before = await snapshot();
     const env = async () => ({
       KNOWLEDGE_ROOT: vault,
       MCP_PATCH_STATE_DIR: path.join(stateDir, "patches"),
@@ -501,7 +494,6 @@ describe("startup env boundary (spawned entrypoint)", () => {
     expect(refused).not.toMatch(/transport listening/);
     expect(refused).not.toContain(stateDir);
     expect(refused).not.toContain(password);
-    expect(await snapshot()).toEqual(before);
 
     const started = await runHttpServer(await env());
     expect(started).toMatch(/transport listening/);
