@@ -130,7 +130,8 @@ same store, so one file covers every web client). Security properties:
   `save()`. And for tokens, a failed save is reported as a warning without
   failing the request, so on those arms "written" means attempted rather than
   confirmed. Two registration steps are the exception (next bullet): they are
-  not answered unless they reached the file.
+  not answered unless they reached the file. So is the registration command
+  below, which reports a failed write as a failure.
 - What none of this buys you any more is single use across a restart.
 - **A client registration is removed automatically only if nobody ever
   consented to it (#184).** What decides is whether the owner has entered the
@@ -180,8 +181,8 @@ same store, so one file covers every web client). Security properties:
   without a token only at its next `/register` or start, so its file can hold
   any number of them, an anonymous caller's included, and they all count from
   the first start after the upgrade. How many a real file holds has not been
-  measured. There is no command yet to list registrations or remove one; it is
-  planned as the next change. Until then:
+  measured. Remove the ones you no longer want with the registration command
+  below (stop the server first):
   - **Read the counts at start-up.** With OAuth on, the startup line ends in
     `registrations=given:N,pending:N,unknown:N` — how many registrations the
     owner has authorized, how many are waiting for consent, and how many were
@@ -196,9 +197,9 @@ same store, so one file covers every web client). Security properties:
   - **Do not edit the state file by hand.** It is protected by an HMAC, so an
     edited file fails verification, and the server starts with no
     registrations and no tokens at all — the same as deleting it.
-  - Deleting the state file is the only remedy, and it is a last resort, not a
-    procedure: every connector must connect again, and ChatGPT has to delete
-    and recreate its app.
+  - Deleting the state file remains a last resort, not a procedure: every
+    connector must connect again, and ChatGPT has to delete and recreate its
+    app.
 - **ChatGPT shows `400 Unknown client_id.` on every consent attempt.** Its
   registration is gone from this server: nobody consented to it within 24 hours
   (or an older build swept it after one hour), or the state file was deleted or
@@ -206,6 +207,46 @@ same store, so one file covers every web client). Security properties:
   does not register again. Uninstalling and reinstalling the app keeps the same
   `client_id`. **Delete the app and create it again**; the new app registers
   afresh. Claude.ai recovers by pressing connect once more.
+
+**Listing and removing a client registration** (`pnpm oauth:registrations`,
+#184). It reads and writes the state file through the same code as the server,
+so the file keeps its HMAC.
+
+- ⚠️ **Stop the server first. The command cannot fully check that you did.** A
+  running server holds the registrations in memory and writes them back on its
+  next save, so a registration removed underneath it **silently comes back**.
+  `--apply` refuses while anything answers on `MCP_HTTP_HOST`:`MCP_HTTP_PORT`
+  and when the file changed after it was read, but a server on another port,
+  or one started a moment later, is not seen. Stopping the server is the
+  precaution; the check is a backstop. Under launchd with `KeepAlive`, stopping
+  means `launchctl bootout`, and `launchctl bootstrap` brings it back.
+- Steps, after `pnpm build`:
+  1. Stop the server.
+  2. `pnpm oauth:registrations list` — one line per registration: its
+     `client_id`, when it was created, how many live tokens it holds, its name
+     and its redirect URIs. The first line says it is a snapshot of the file.
+     The name and the redirect URIs are whatever the caller of `/register`
+     sent; control characters in them are printed as escapes.
+  3. `pnpm oauth:registrations remove <client_id>...` — shows what would be
+     removed and writes nothing.
+  4. The same with `--apply` — removes the named registrations together with
+     their access and refresh tokens and rotation records.
+  5. Start the server again.
+- It reads its configuration the way the server does (`MCP_ENV_FILE`, then the
+  environment), so it finds the same file with the same password.
+- It refuses, and writes nothing, when the state file does not verify (writing
+  would replace it with an empty state and lose every registration), when a
+  named `client_id` is not registered, and when no `client_id` is named. There
+  is no option to remove everything, or everything in some state.
+- Loading applies what the server applies at start, so it can drop entries the
+  file still holds. The dry run says how many, and `--apply` writes that too.
+- Removing a registration ends that registration and its sessions, not the
+  client: under dynamic registration it can register again and come back under
+  a new `client_id`. ChatGPT does not register again on its own; after its
+  registration is removed, it has to delete and recreate its app.
+- **Do not edit the state file by hand.** An edited file fails verification and
+  the server starts with no registrations and no tokens. Deleting the state file
+  remains the last resort, not a procedure.
 
 **Fix 2: don't let the process die.** Run it supervised with auto-restart
 (below). With the state file, a restart costs nothing. Without it, a restart

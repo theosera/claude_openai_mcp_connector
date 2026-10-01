@@ -146,10 +146,12 @@ was outstanding:
   touched. A consent page left open for more than 24 hours still loses its
   registration: the original #184 case with a wider window, not a cure. 24
   hours and 20 are provisional values that nothing was measured to choose.
+  ✅ **Operator path, added the same day:** `pnpm oauth:registrations` lists
+  registrations and removes one it has named, with its tokens, so a registry
+  full of authorized or carried-over registrations has a remedy short of
+  deleting the state file. It runs against a stopped server; `docs/operations.md`
+  §1.B says what it cannot check.
   🔭 **Still open:**
-  - An operator path that lists registrations and removes one it has named, so
-    a registry full of authorized registrations has a remedy short of deleting
-    the state file.
   - Client ID Metadata Documents (SEP-991). OpenAI's docs say ChatGPT supports
     them; whether Claude.ai does is unchecked. They are the structural fix,
     because a URL-shaped `client_id` has nothing to sweep. The
@@ -2142,8 +2144,12 @@ Use cases, roughly by how real/soon they are:
    after a one-hour grace window, and that stranded ChatGPT, which never
    registers again on its own. Only registrations nobody consented to are
    pruned now, after 24 hours; an authorized one is kept until an operator
-   removes it. So an operator-triggered surface is no longer optional polish:
-   it is the only remedy for a registry full of authorized registrations.
+   removes it. 🚧 **That operator-triggered surface landed the same day
+   (#184):** `pnpm oauth:registrations` lists registrations and removes named
+   ones with their tokens. It is an offline command for a stopped server, not
+   an MCP tool and not an HTTP route (`docs/operations.md` §1.B says why and
+   what it cannot check). It removes registrations and their sessions; the
+   caveat below applies to it unchanged.
    Now that tokens persist across restarts, "revoke ChatGPT only, without making
    Claude.ai re-authorize" wants per-`client_id` token eviction.
    ⚠️ **Under DCR that lever is blunter than it reads**, which the entry did not
