@@ -115,7 +115,16 @@ const SHAPES: readonly (readonly [string, string, (length: number) => string])[]
   // Label elements opened inside each other with no text after them, each
   // walking the opening tags after it, and opening tags whose `>` never comes.
   ["nested-label-elements", "FKPERFNE1", (n) => fill("token=FKPERFNE1 ", "<password>", n)],
-  ["label-elements-unclosed-tags", "FKPERFNU1", (n) => fill("token=FKPERFNU1 ", "<password><a b", n)]
+  ["label-elements-unclosed-tags", "FKPERFNU1", (n) => fill("token=FKPERFNU1 ", "<password><a b", n)],
+  // Label elements among closed tags, all glued, ending in a tag whose `>` never
+  // comes: every label walks the tags after it up to that tag. The shape above
+  // stops each walk at its own unclosed tag, so it stays linear with the memo of
+  // walked tags taken out; this one does not (#275).
+  [
+    "label-elements-before-an-unclosed-tag",
+    "FKPERFNW1",
+    (n) => fill("token=FKPERFNW1 ", "<password><a>", n - 4) + "<a b"
+  ]
 ];
 
 function median(values: readonly number[]): number {

@@ -929,11 +929,16 @@ function collectLabelSpans(original, kind, vocabulary) {
   const childValue = (at) => {
     const text = original[at] === "<" ? textAfterTags(at) : -1;
     if (text < 0) return null;
-    if (!original.startsWith("<![CDATA[", text)) return valueAt(text);
-    const start = text + 9;
-    const stop = cdataEnd(start);
-    if (stop < 0) return valueAt(start);
-    return stop > start ? { start, end: stop, next: stop + 3 } : null;
+    let value;
+    if (!original.startsWith("<![CDATA[", text)) value = valueAt(text);
+    else {
+      const start = text + 9;
+      const stop = cdataEnd(start);
+      value = stop < 0 ? valueAt(start) : stop > start ? { start, end: stop, next: stop + 3 } : null;
+    }
+    // Labels after the tag are read again, as they were before the value was
+    // read: it runs on over the tags after the text (`v</value></password><token>`).
+    return value && { ...value, next: at };
   };
 
   /**
@@ -1003,15 +1008,31 @@ function collectLabelSpans(original, kind, vocabulary) {
     return labelAtEnd.test(original.slice(index, stop));
   };
 
-  /**
-   * The last list separator in `from`..`to`, or -1. Asked only of a value not
-   * shaped like a label, and the next such value starts after its last separator
-   * or after its end, so the searches together walk each character at most twice
-   * (labels nested in one word, `k:k:k:…`, are shaped like labels and never ask).
-   */
+  // Where the list separators are, found once on first use. Walking back from
+  // each value's end was linear while the next value started after the last
+  // one's end; a label element's child value now has the scan read again from
+  // the tag (#275), so the values of a line of label elements whose CDATA never
+  // ends each end at the line end, and the walks took quadratic time. Only the
+  // separators' positions are kept, so the memory follows how many there are,
+  // not the fragment's length.
+  let separators = null;
+  /** The last list separator in `from`..`to`, or -1. */
   const lastListSeparator = (from, to) => {
-    let at = to - 1;
-    while (at >= from && original[at] !== "," && original[at] !== ";" && original[at] !== "&") at -= 1;
+    if (!separators) {
+      separators = [];
+      for (let at = 0; at < original.length; at += 1) {
+        if (original[at] === "," || original[at] === ";" || original[at] === "&") separators.push(at);
+      }
+    }
+    // The first separator at or after `to`, by halving; the one before it is the last before `to`.
+    let low = 0;
+    let high = separators.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (separators[middle] < to) low = middle + 1;
+      else high = middle;
+    }
+    const at = low > 0 ? separators[low - 1] : -1;
     return at >= from ? at : -1;
   };
 
