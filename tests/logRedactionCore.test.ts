@@ -272,7 +272,12 @@ describe("the core on the step 2-3 review's shapes", () => {
   });
 
   it("refuses a call with no kind rather than skipping the labels", () => {
+    // The declaration requires the options and their kind; the call is here to
+    // see the refusal at run time too, for a caller that is not type-checked.
+    // @ts-expect-error -- the options are left out on purpose.
     expect(() => collectCredentialSpans("password: FKRV0025")).toThrow(TypeError);
+    // @ts-expect-error -- the kind is left out on purpose.
+    expect(() => collectCredentialSpans("password: FKRV0026", {})).toThrow(TypeError);
   });
 });
 
