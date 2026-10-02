@@ -889,8 +889,9 @@ function collectLabelSpans(original, kind, vocabulary) {
   let tagsText = -1;
   /**
    * Where the text after the opening tags glued on from `at` starts (`<value>v`,
-   * `<a><b>v`, `<br/>v`), or the `<![CDATA[` that holds it. -1 when no opening tag
-   * starts at `at`, or a closing tag, a blank or a line end comes first.
+   * `<a><b>v`, `<br/>v`), or the `<![CDATA[` that holds it, also with no tag
+   * before it (`<password><![CDATA[v]]>` with no closing tag on the line). -1 when
+   * neither starts at `at`, or a closing tag, a blank or a line end comes first.
    */
   const textAfterTags = (at) => {
     if (at >= tagsFrom && at < tagsTo) return tagsText;
@@ -912,7 +913,7 @@ function collectLabelSpans(original, kind, vocabulary) {
     }
     const ch = original[index];
     const cdata = original.startsWith("<![CDATA[", index);
-    const text = index > at && ch !== undefined && (ch !== "<" || cdata) && !/\s/.test(ch) ? index : -1;
+    const text = (index > at || cdata) && ch !== undefined && (ch !== "<" || cdata) && !/\s/.test(ch) ? index : -1;
     tagsFrom = at;
     tagsTo = index;
     tagsText = text;

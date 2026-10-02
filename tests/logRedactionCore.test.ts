@@ -834,6 +834,21 @@ describe("the core on a label element that starts with other elements", () => {
       `<${password}><value><![CDATA[FKRV0507 KEEPRW56`,
       `<${password}><value><![CDATA[${MASK} KEEPRW56`
     ],
+    [
+      "a CDATA section right after the tag, with no closing tag",
+      `<${password}><![CDATA[FKRV0512]]> KEEPRW65`,
+      `<${password}><![CDATA[${MASK}]]> KEEPRW65`
+    ],
+    [
+      "a CDATA section right after the tag that never ends",
+      `<${password}><![CDATA[FKRV0513 KEEPRW66`,
+      `<${password}><![CDATA[${MASK} KEEPRW66`
+    ],
+    [
+      "a CDATA section right after the tag, then other text",
+      `<${password}><![CDATA[FKRV0514]]>tail KEEPRW67`,
+      `<${password}><![CDATA[${MASK}]]>tail KEEPRW67`
+    ],
     ["upper case", `<${upper}><Value>FKRV0508</Value></${upper}> KEEPRW57`, `<${upper}><Value>${MASK} KEEPRW57`],
     ["another label", "<token><v>FKRV0509</v></token> KEEPRW58", `<token><v>${MASK} KEEPRW58`],
     [
