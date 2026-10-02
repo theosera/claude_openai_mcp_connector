@@ -982,17 +982,99 @@ describe("the core on a label element's child that holds no secret (#275, over-m
 // #275: the list-separator search, edge by edge. It now halves over the
 // separators' positions instead of walking back from each value's end (the walk
 // went quadratic once a label element's child value had the scan read again from
-// the tag: unclosed-cdata in the time test). These shapes, found by a
-// differential fuzz against the walk, each change when a separator at the value's
-// last or first character is missed, or one just after the value is taken.
+// the tag: unclosed-cdata in the time test). These shapes were found by a
+// differential fuzz against the walk. Since a child value is read again from its
+// tag whatever separator it holds, only the first-character shape still turns
+// when its edge moves: missing a separator as the value's last character, or
+// taking one just after the value, changed no output in a fuzz of 40,000 inputs
+// nor in 882 shapes written for those edges. An ordinary value's separator only
+// moves where its last item is read again, and an item that ends at a separator
+// names no value.
 describe("the core on a list separator at a value's edges (#275)", () => {
   const passwd = ["pass", "wd"].join("");
   const cases: readonly (readonly [string, "command" | "text", string, string])[] = [
-    ["a separator as the value's last character", "text", `<${passwd}><_key><D>;`, `<${passwd}><_key><D>${MASK}`],
+    // A child value: since the scan reads a child value's tags again whatever
+    // separator the text holds, `<D>` is masked too.
+    ["a separator as the value's last character", "text", `<${passwd}><_key><D>;`, `<${passwd}><_key>${MASK}`],
     ["a separator as the value's first character", "text", `${passwd}>;${passwd}>' `, `${passwd}>${MASK}`],
     ["a separator just after the value", "command", `<${passwd}><_key><y>>;`, `<${passwd}><_key>${MASK};`]
   ];
   it.each(cases)("%s, as %s", (_name, kind, input, expected) => {
+    expect(redactFragment({ text: input, kind })).toEqual({ text: expected, status: "ok" });
+  });
+});
+
+// #275, a review of the re-read: a list separator in a label element's child value
+// moved the scan to just after it, past the tags the value starts after, so a
+// label in those tags was never read (`<password><a token="S">v,x</a>`), where
+// ffb837d, main and the sed `mask()` hid it. The scan now goes on from no further
+// than the value says. The control holds no separator. The last two pin guards
+// that a mutation left green: the scan starts at the child's tag itself, so a
+// label element as the first child is read (`next: at + 2` skipped it), and the
+// separator is the last one inside the value, not the first on the line.
+describe("the core on a list separator in a label element's child value (#275)", () => {
+  const password = ["pass", "word"].join("");
+  const token = ["to", "ken"].join("");
+  const auth = ["Author", "ization"].join("");
+  const bearer = ["Bea", "rer"].join("");
+  const secretKey = ["secret", "_key"].join("");
+  const cases: readonly (readonly [string, string, string, string])[] = [
+    [
+      "a label in an attribute, then a comma",
+      `<${password}><a ${token}="FKRV0709">KEEPRW82,x</a></${password}>`,
+      `<${password}><a ${token}="${MASK}`,
+      `<${password}><a ${token}="${MASK}">${MASK}`
+    ],
+    [
+      "a scheme value in an attribute, then a comma",
+      `<${password}><a ${auth}="${bearer} FKRV0710">KEEPRW83,x</a>`,
+      `<${password}><a ${auth}="${bearer} ${MASK}`,
+      `<${password}><a ${auth}="${bearer} ${MASK}">${MASK}`
+    ],
+    [
+      "an option in the tag, then a comma",
+      `<${password}><a --${token} FKRV0711>KEEPRW84,x</a>`,
+      `<${password}><a --${token} ${MASK}`,
+      `<${password}><a --${token} ${MASK}`
+    ],
+    [
+      "a label in an attribute, then an ampersand",
+      `<${password}><a ${token}="FKRV0712">KEEPRW85&y</a>`,
+      `<${password}><a ${token}="${MASK}&y</a>`,
+      `<${password}><a ${token}="${MASK}">${MASK}`
+    ],
+    [
+      "a label element as the child, then a comma",
+      `<${password}><${token}>a,b FKRV0713</${token}>`,
+      `<${password}><${token}>${MASK}</${token}>`,
+      `<${password}><${token}>${MASK}</${token}>`
+    ],
+    [
+      "the control: no separator",
+      `<${password}><a ${token}="FKRV0714">KEEPRW86</a>`,
+      `<${password}><a ${token}="${MASK}`,
+      `<${password}><a ${token}="${MASK}">${MASK}`
+    ],
+    [
+      "a label element as the first child",
+      `<${password}><${token}>KEEPRW87 FKRV0715</${token}>`,
+      `<${password}><${token}>${MASK}</${token}>`,
+      `<${password}><${token}>${MASK}</${token}>`
+    ],
+    [
+      "a separator before the value",
+      `a,b ${password}: FKRV0716,${secretKey} FKRV0717`,
+      `a,b ${password}: ${MASK} ${MASK}`,
+      `a,b ${password}: ${MASK} ${MASK}`
+    ]
+  ];
+
+  it.each(
+    cases.flatMap(([name, input, command, text]) => [
+      [name, "command", input, command] as const,
+      [name, "text", input, text] as const
+    ])
+  )("%s, as %s", (_name, kind, input, expected) => {
     expect(redactFragment({ text: input, kind })).toEqual({ text: expected, status: "ok" });
   });
 });

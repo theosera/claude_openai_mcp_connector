@@ -1100,8 +1100,15 @@ function collectLabelSpans(original, kind, vocabulary) {
       const labelLike = original[value.start] === "-" || last === ":" || last === "=" || optionAfterQuote;
       // A list value is read again from its last item: an item that ends in a
       // label (`S1,secret_key S2`, `S1;keytoken S2`) names the value after it.
+      // Never from further on than the value says, though: a label element's
+      // child value is read again from the tag, and a separator in the text
+      // must not skip the labels in the tags before it
+      // (`<password><a token="S">v,x</a>`).
       const separator = labelLike ? -1 : lastListSeparator(value.start, value.end);
-      if (!labelLike) label.lastIndex = Math.max(label.lastIndex, separator >= 0 ? separator + 1 : value.next);
+      if (!labelLike) {
+        const from = separator >= 0 ? Math.min(separator + 1, value.next) : value.next;
+        label.lastIndex = Math.max(label.lastIndex, from);
+      }
     }
   }
   return spans;
