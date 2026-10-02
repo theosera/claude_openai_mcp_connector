@@ -111,7 +111,11 @@ const SHAPES: readonly (readonly [string, string, (length: number) => string])[]
   // each, and the base64-line rule counted them as blanks, so every start walked
   // the rest of the run.
   ["line-separators", "FKPERFLS1", (n) => "token=FKPERFLS1\n" + LS.repeat(n - 16)],
-  ["paragraph-separators", "FKPERFPS1", (n) => "token=FKPERFPS1\n" + PS.repeat(n - 16)]
+  ["paragraph-separators", "FKPERFPS1", (n) => "token=FKPERFPS1\n" + PS.repeat(n - 16)],
+  // Label elements opened inside each other with no text after them, each
+  // walking the opening tags after it, and opening tags whose `>` never comes.
+  ["nested-label-elements", "FKPERFNE1", (n) => fill("token=FKPERFNE1 ", "<password>", n)],
+  ["label-elements-unclosed-tags", "FKPERFNU1", (n) => fill("token=FKPERFNU1 ", "<password><a b", n)]
 ];
 
 function median(values: readonly number[]): number {

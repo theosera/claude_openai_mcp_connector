@@ -798,3 +798,80 @@ describe("the core on the key that ends a shell word after a closing quote", () 
     expect(redactFragment({ text: input, kind: "command" })).toEqual({ text: expected, status: "ok" });
   });
 });
+
+// Codex on #272 (2026-10-02): a label element that starts with other elements
+// (`<password><value>v</value></password>`, as a settings file nests one) gave
+// no value, and main masked it in `text`. The value is the text after the
+// opening tags, read with what is glued to it.
+describe("the core on a label element that starts with other elements", () => {
+  const both = ["command", "text"] as const;
+  const password = ["pass", "word"].join("");
+  const upper = ["Pass", "word"].join("");
+  const cases: readonly (readonly [string, string, string])[] = [
+    [
+      "a child element",
+      `<${password}><value>FKRV0501</value></${password}> KEEPRW51`,
+      `<${password}><value>${MASK} KEEPRW51`
+    ],
+    ["two levels", `<${password}><a><b>FKRV0502</b></a></${password}> KEEPRW52`, `<${password}><a><b>${MASK} KEEPRW52`],
+    [
+      "two children",
+      `<${password}><value>FKRV0503</value><value>FKRV0504</value></${password}> KEEPRW53`,
+      `<${password}><value>${MASK} KEEPRW53`
+    ],
+    [
+      "a self-closing element first",
+      `<${password}><br/>FKRV0505</${password}> KEEPRW54`,
+      `<${password}><br/>${MASK} KEEPRW54`
+    ],
+    [
+      "a CDATA section in the child",
+      `<${password}><value><![CDATA[FKRV0506]]></value></${password}> KEEPRW55`,
+      `<${password}><value><![CDATA[${MASK}]]></value></${password}> KEEPRW55`
+    ],
+    [
+      "a CDATA section that never ends",
+      `<${password}><value><![CDATA[FKRV0507 KEEPRW56`,
+      `<${password}><value><![CDATA[${MASK} KEEPRW56`
+    ],
+    ["upper case", `<${upper}><Value>FKRV0508</Value></${upper}> KEEPRW57`, `<${upper}><Value>${MASK} KEEPRW57`],
+    ["another label", "<token><v>FKRV0509</v></token> KEEPRW58", `<token><v>${MASK} KEEPRW58`],
+    [
+      "an outer element that does not close",
+      `<${password}><value>FKRV0510</value> KEEPRW59`,
+      `<${password}><value>${MASK} KEEPRW59`
+    ],
+    [
+      "a child with an attribute",
+      `<${password}><value id="a">FKRV0511</value></${password}> KEEPRW60`,
+      `<${password}><value id="a">${MASK} KEEPRW60`
+    ],
+    [
+      "a child of an element that is no label",
+      "<user><value>KEEPRW61</value></user>",
+      "<user><value>KEEPRW61</value></user>"
+    ],
+    [
+      "a closing tag before an element",
+      `</${password}><value>KEEPRW62</value>`,
+      `</${password}><value>KEEPRW62</value>`
+    ],
+    [
+      "a blank before the child",
+      `<${password}> <value>KEEPRW63</value></${password}>`,
+      `<${password}> <value>KEEPRW63</value></${password}>`
+    ],
+    [
+      "an empty child",
+      `<${password}><value></value></${password}> KEEPRW64`,
+      `<${password}><value></value></${password}> KEEPRW64`
+    ]
+  ];
+
+  it.each(cases.flatMap(([name, input, expected]) => both.map((kind) => [name, kind, input, expected] as const)))(
+    "%s, as %s",
+    (_name, kind, input, expected) => {
+      expect(redactFragment({ text: input, kind })).toEqual({ text: expected, status: "ok" });
+    }
+  );
+});

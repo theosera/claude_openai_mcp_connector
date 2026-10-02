@@ -880,6 +880,61 @@ function collectLabelSpans(original, kind, vocabulary) {
     return { name, bare: open === end, start: textStart, end: textEnd, closeEnd: close + 1 };
   };
 
+  // Where the last walk over glued opening tags started, where it stopped, and
+  // where the text after them starts (-1 for none): labels nested as element
+  // names (`<password><password>…`) each ask from inside the same walk, and
+  // remembering it keeps a line of them linear.
+  let tagsFrom = -1;
+  let tagsTo = -1;
+  let tagsText = -1;
+  /**
+   * Where the text after the opening tags glued on from `at` starts (`<value>v`,
+   * `<a><b>v`, `<br/>v`), or the `<![CDATA[` that holds it. -1 when no opening tag
+   * starts at `at`, or a closing tag, a blank or a line end comes first.
+   */
+  const textAfterTags = (at) => {
+    if (at >= tagsFrom && at < tagsTo) return tagsText;
+    let index = at;
+    while (original[index] === "<" && !original.startsWith("<![CDATA[", index)) {
+      let name = index + 1;
+      while (name < original.length && /[A-Za-z0-9_.:-]/.test(original[name])) name += 1;
+      if (name === index + 1) break;
+      let close = name;
+      while (
+        close < original.length &&
+        original[close] !== ">" &&
+        original[close] !== "<" &&
+        !isLineEnd(original[close])
+      )
+        close += 1;
+      if (original[close] !== ">") break;
+      index = close + 1;
+    }
+    const ch = original[index];
+    const cdata = original.startsWith("<![CDATA[", index);
+    const text = index > at && ch !== undefined && (ch !== "<" || cdata) && !/\s/.test(ch) ? index : -1;
+    tagsFrom = at;
+    tagsTo = index;
+    tagsText = text;
+    return text;
+  };
+
+  /**
+   * The value an element holds in the elements it starts with
+   * (`<password><value>v</value>`, as a settings file nests one): the text after
+   * them, read as a value so that what is glued on is too (`<a>v1</a><b>v2</b>`),
+   * or a CDATA section's content.
+   */
+  const childValue = (at) => {
+    const text = original[at] === "<" ? textAfterTags(at) : -1;
+    if (text < 0) return null;
+    if (!original.startsWith("<![CDATA[", text)) return valueAt(text);
+    const start = text + 9;
+    const stop = cdataEnd(start);
+    if (stop < 0) return valueAt(start);
+    return stop > start ? { start, end: stop, next: stop + 3 } : null;
+  };
+
   /**
    * The values an element holds, in order: its text. A plist writes a key and its
    * value as two elements (`<key>token</key><string>v</string>`): a bare `<key>`
@@ -992,8 +1047,11 @@ function collectLabelSpans(original, kind, vocabulary) {
         // after its `>` is a value (`<password>v`, `<token>=v`, `Enter <password>:
         // v`), as step 2-3 read it. A blank after the `>` is not (`-p<password> -h
         // host`, `Optional<Secret> s`), and a closing tag's name takes nothing else.
+        // An opening tag followed by other opening tags holds its value in them
+        // (`<password><value>v</value>`).
         const glued = original[end] === ">" && end + 1 < original.length && !/[\s<]/.test(original[end + 1]);
         if (glued) value = valueAfter(separatorEnd(end + 1, original.length, false));
+        else if (!closingTag && original[end] === ">") value = childValue(end + 1);
       } else {
         // A quote right after the label that opens nothing -- an apostrophe-like
         // quote in `text` -- belongs to the label, as the anchor's `['"]?` allowed.
