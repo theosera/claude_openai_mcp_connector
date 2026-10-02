@@ -193,6 +193,14 @@ export function readStateFile(file: string): StateFileRead {
                 }
           };
   }
+  // Frozen, so what the WeakSet vouches for stays what was found: code in the
+  // same process cannot turn a refused read into `absent` and have a store
+  // start on it. A Buffer's bytes cannot be frozen; changed, they fail the
+  // MAC like any other change to the file.
+  if (result.kind === "failed") {
+    Object.freeze(result.failure);
+  }
+  Object.freeze(result);
   issuedReads.add(result);
   return result;
 }
@@ -507,6 +515,11 @@ export class OAuthStore {
     this.now = options.now ?? Date.now;
     this.maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS;
     this.maxTombstones = this.maxTokens;
+    if (options.stateFileRead !== undefined && !options.persistPath) {
+      // A read of a state file with nowhere to load it would be dropped
+      // silently, and the caller would believe it had been checked.
+      throw new Error("stateFileRead needs persistPath: it is a read of the state file.");
+    }
     if (options.persistPath) {
       if (!options.persistSecret) {
         throw new Error("OAuthStore persistence requires persistSecret (state-file HMAC key source).");

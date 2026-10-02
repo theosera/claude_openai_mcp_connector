@@ -1779,6 +1779,37 @@ describe("OAuthStore persistence", () => {
     expect((await fs.lstat(file)).isSymbolicLink()).toBe(true);
   });
 
+  // What readStateFile returns cannot be changed once it is made, so a read
+  // that found a link cannot be turned into "nothing there" and handed to a
+  // store, which would then start empty and save over the link.
+  //
+  // Reverse-verified: not freezing the read reddens this test.
+  it("returns frozen reads, so a refused read cannot be rewritten into another (#273)", async () => {
+    const file = await stateFilePath();
+    await fs.symlink(path.join(path.dirname(file), "elsewhere.json"), file);
+    const read = readStateFile(file);
+    expect(read.kind).toBe("failed");
+    expect(Object.isFrozen(read)).toBe(true);
+    expect(read.kind === "failed" && Object.isFrozen(read.failure)).toBe(true);
+    expect(() => {
+      (read as { kind: string }).kind = "absent";
+    }).toThrow(TypeError);
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, stateFileRead: read });
+    expect(store.loadOutcome).toBe("failed");
+    expect((await fs.lstat(file)).isSymbolicLink()).toBe(true);
+  });
+
+  // A read given to a store with no state file to load it into would be
+  // dropped, and the caller would believe it had been checked.
+  //
+  // Reverse-verified: dropping the check reddens this test.
+  it("refuses a read it is given when it has no state file to load it into (#273)", async () => {
+    const file = await stateFilePath();
+    expect(() => new OAuthStore({ ...opts, stateFileRead: readStateFile(file) })).toThrow(
+      "stateFileRead needs persistPath: it is a read of the state file."
+    );
+  });
+
   // The code is printed only when it has the shape of an errno code. An error
   // with no code, or a code that is not one, reads "an unknown error", and
   // nothing the error carried reaches the message. The file is there, so the
