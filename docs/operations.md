@@ -90,10 +90,81 @@ same store, so one file covers every web client). Security properties:
 - Tokens are stored **as sha256 hashes** — the file never contains a
   recoverable credential (hash-at-rest, not just encryption).
 - The file is written atomically with mode `0600` and carries an **HMAC keyed
-  from `MCP_OAUTH_PASSWORD`** (scrypt-derived). A tampered, corrupted, or
-  password-rotated state file fails **closed**: the server starts with empty
-  OAuth state and clients simply re-authorize. Rotating the password is
-  therefore also how you revoke all persisted sessions at once.
+  from `MCP_OAUTH_PASSWORD`** (scrypt-derived), so the server trusts nothing in
+  a file that was changed, damaged, written by another version, or written
+  under another password. Such a file is never used and never overwritten: the
+  server refuses to start on it (the next points).
+- A state file that exists but **cannot be read** is one case: the server
+  **refuses to start** (#258). This happens when the file itself cannot be
+  read: its owner or mode changed, the path is a directory, or the disk
+  returns an I/O error. The log shows
+  `MCP_OAUTH_STATE_FILE is set but the state file could not be read (<code>)`,
+  with the error code only. (A parent directory that cannot be entered is
+  refused earlier, by the configuration check, with its own message.) For an
+  unreadable file, starting empty instead would let the next save replace it,
+  which needs write permission on the directory only, and every registration
+  in it would be lost. Under launchd with `KeepAlive`, the
+  agent is restarted and refused again until the file is fixed, so that line
+  repeats in its `StandardErrorPath` log. **Fix the file's ownership and
+  permissions:** it should be mode `0600` and owned by the account the server
+  runs as. The next restart then loads it. Do not delete the file to get the
+  server up again: that loses every registration, and ChatGPT has to delete and
+  recreate its app.
+- **A symbolic link at the path** stops the server too, whether or not its
+  target is there (#263): `MCP_OAUTH_STATE_FILE is set but the path is a
+  symbolic link.` A save writes a temporary file beside the path and renames it
+  over, which replaces the link itself: with the target there, the server would
+  read it once and from then on write beside it, leaving the target with the
+  old state; with the target missing (an unmounted volume), the first save
+  would take the link's place. **Set `MCP_OAUTH_STATE_FILE` to the path of the
+  file itself** (mount its volume first if it is on one), and start again.
+  A directory above the file may still be a link; only the last component is
+  checked. ⚠️ **This changes an upgrade:** a deployment whose
+  `MCP_OAUTH_STATE_FILE` is still a link does not start after it. Nothing is
+  lost — point the variable at the file the link names, and it loads. (If a save
+  by an earlier build already replaced the link, the path is now a regular
+  file holding the current state, it starts as before, and the file the link
+  named holds an older one.)
+- A state file that reads but **does not verify** stops the server as well
+  (#263). The log
+  shows `MCP_OAUTH_STATE_FILE is set but the state file did not verify: …`. A
+  wrong password, a damaged file and an edited one look the same to the
+  server, so the message names no single cause, and it carries no path, no
+  password and nothing from the file. The file is left exactly as it was.
+  (Before #263 the server started empty instead, and its next save replaced
+  the file: every registration in it was lost.)
+  - **If `MCP_OAUTH_PASSWORD` is wrong** — a typo, or an old value — set the
+    one that wrote the file and start again. Every registration and every live
+    token comes back, and no connector has to do anything.
+  - **If the file was damaged or edited**, what it held cannot be read back
+    from it. Restore it from a backup if you have one. Otherwise move it aside
+    as in the steps below and start without it: every connector must connect
+    again, and ChatGPT has to delete and recreate its app.
+- **Changing `MCP_OAUTH_PASSWORD` on purpose** revokes every persisted session
+  at once, and it now takes one step it did not take before (#263): the old
+  state file has to be moved aside, because the server will not start on a
+  file written under another password.
+  1. Stop the server and keep it stopped: under launchd with `KeepAlive`,
+     `launchctl bootout`; under systemd, `systemctl stop`.
+  2. Check which environment file and which `MCP_OAUTH_STATE_FILE` it uses.
+  3. Move the state file aside, outside the vault (a knowledge root is a read
+     surface), to a name that does not exist yet; do not overwrite an earlier
+     one. If the move fails, stop here. For example, with the variable set to
+     the path from step 2 and a directory of your own outside the vault:
+
+     ```bash
+     aside="$HOME/oauth-state-backups/oauth-state.$(date +%Y%m%d-%H%M%S).json"
+     mkdir -p -m 700 "$(dirname "$aside")"
+     mv -n "$MCP_OAUTH_STATE_FILE" "$aside"   # -n: never replace an existing file
+     test ! -e "$MCP_OAUTH_STATE_FILE" && test -f "$aside" && echo moved || echo "NOT moved: stop"
+     ```
+  4. Change the password and start the server. It starts as a first run.
+  5. Connect a client, restart, and check that its registration is still
+     there.
+
+  Every connector must connect again, and ChatGPT has to delete and recreate
+  its app. Do not undo the change by moving the old file back with the old
+  password: every token in it that has not expired would work again.
 - Authorization codes are never persisted; they are single-use with a TTL of
   60 seconds by default, configurable via `MCP_OAUTH_CODE_TTL`.
 - A rotated refresh token is **not** invalidated immediately — it is
@@ -172,9 +243,11 @@ same store, so one file covers every web client). Security properties:
     connector needs. Once the flood stops, the slots come back within 24 hours.
     The connectors you have authorized are never affected.
   - Every registration is also lost in two other ways. One is running without
-    a state file and restarting. The other is a state file that fails
-    verification, and rotating `MCP_OAUTH_PASSWORD` counts as that. After
-    either, ChatGPT needs the recovery below.
+    a state file and restarting. The other is moving the state file aside,
+    which changing `MCP_OAUTH_PASSWORD` on purpose requires (above). After
+    either, ChatGPT needs the recovery below. (A state file that does not
+    verify no longer loses anything: the server refuses to start and leaves the
+    file as it was, #263.)
 - **When all 100 slots are taken by authorized registrations** — or by
   registrations carried over from a state file written before this change,
   which are kept the same way. A build before this one removed a registration
@@ -188,22 +261,21 @@ same store, so one file covers every web client). Security properties:
     owner has authorized, how many are waiting for consent, and how many were
     carried over. Counts only; no client_id or redirect URI is printed. Check
     `unknown` on the first start after an upgrade.
-  - **All three at 0 means one of two things.** Either there was no state file
-    yet, or the file failed verification and the server started empty. The
-    second case is preceded by the line
-    `[oauth] state file failed verification; starting with empty OAuth state`,
-    and after it every connector must authorize again (ChatGPT by deleting and
-    recreating its app).
+  - **All three at 0 means there was no state file at the path yet**, or it was
+    moved aside. A file that could not be read or did not verify does not get
+    this far: the server refuses to start (#258, #263).
   - **Do not edit the state file by hand.** It is protected by an HMAC, so an
-    edited file fails verification, and the server starts with no
-    registrations and no tokens at all — the same as deleting it.
+    edited file does not verify, and the server refuses to start on it until
+    it is restored or moved aside — and moving it aside loses every
+    registration, the same as deleting it.
   - Deleting the state file remains a last resort, not a procedure: every
     connector must connect again, and ChatGPT has to delete and recreate its
     app.
 - **ChatGPT shows `400 Unknown client_id.` on every consent attempt.** Its
   registration is gone from this server: nobody consented to it within 24 hours
   (or an older build swept it after one hour), or the state file was deleted or
-  failed its integrity check. ChatGPT keeps the `client_id` with the app and
+  moved aside (or, before #263, failed its integrity check and was replaced).
+  ChatGPT keeps the `client_id` with the app and
   does not register again. Uninstalling and reinstalling the app keeps the same
   `client_id`. **Delete the app and create it again**; the new app registers
   afresh. Claude.ai recovers by pressing connect once more.
@@ -215,11 +287,14 @@ so the file keeps its HMAC.
 - ⚠️ **Stop the server first. The command cannot fully check that you did.** A
   running server holds the registrations in memory and writes them back on its
   next save, so a registration removed underneath it **silently comes back**.
-  `--apply` refuses while anything answers on `MCP_HTTP_HOST`:`MCP_HTTP_PORT`
-  and when the file changed after it was read, but a server on another port,
-  or one started a moment later, is not seen. Stopping the server is the
-  precaution; the check is a backstop. Under launchd with `KeepAlive`, stopping
-  means `launchctl bootout`, and `launchctl bootstrap` brings it back.
+  `--apply` refuses while anything answers on `MCP_HTTP_HOST`:`MCP_HTTP_PORT`,
+  and, just before it writes, unless the file still has the bytes it read, is
+  still the same file (device and inode) and still belongs to this account.
+  But a server on another port, or one started a moment later, is not seen,
+  and **the last check is not a compare-and-swap**: a save that lands between
+  it and the write is lost. Stopping the server is the precaution; the checks
+  are a backstop. Under launchd with `KeepAlive`, stopping means
+  `launchctl bootout`, and `launchctl bootstrap` brings it back.
 - Steps, after `pnpm build`:
   1. Stop the server.
   2. `pnpm oauth:registrations list` — one line per registration: its
@@ -252,9 +327,9 @@ so the file keeps its HMAC.
   client: under dynamic registration it can register again and come back under
   a new `client_id`. ChatGPT does not register again on its own; after its
   registration is removed, it has to delete and recreate its app.
-- **Do not edit the state file by hand.** An edited file fails verification and
-  the server starts with no registrations and no tokens. Deleting the state file
-  remains the last resort, not a procedure.
+- **Do not edit the state file by hand.** An edited file does not verify, and
+  the server refuses to start on it (#263). Deleting the state file remains the
+  last resort, not a procedure.
 
 **Fix 2: don't let the process die.** Run it supervised with auto-restart
 (below). With the state file, a restart costs nothing. Without it, a restart
@@ -554,7 +629,9 @@ launchctl load -w ~/Library/LaunchAgents/local.mcp-connector.plist
 > root**: the server refuses to start if it resolves inside one, since a root is
 > walked, indexed and readable through `search` / `fetch`. That check can only
 > run after the file has been read, so if it fires on a running deployment,
-> rotate the secrets rather than moving the file and reusing them.
+> rotate the secrets rather than moving the file and reusing them. With a state
+> file, changing `MCP_OAUTH_PASSWORD` means moving the old one aside first (see
+> "Changing `MCP_OAUTH_PASSWORD` on purpose", §1.B).
 
 > **Use a STABLE `node` path.** Version-manager shims are often **per-shell** and
 > disappear after a reboot, which breaks `KeepAlive` (launchd can no longer find
@@ -1144,7 +1221,9 @@ readable through `search` / `fetch`. Unlike those three, this check can only run
 *after* the file has been read, because the file is one of the things that can
 supply the roots. **If it fires on a deployment that was previously running,
 rotate `MCP_AUTH_TOKEN` and `MCP_OAUTH_PASSWORD`** rather than moving the file
-and restarting with the same values.
+and restarting with the same values. With an OAuth state file, the new password
+also means moving the old state file aside first, or the server will not start
+(see "Changing `MCP_OAUTH_PASSWORD` on purpose", §1.B).
 
 > 🚨 **MIGRATION — REQUIRED BEFORE YOU RESTART EITHER ENDPOINT.** Up to v0.7.0
 > the connector loaded `.env` from its **working directory** (`dotenv.config()`

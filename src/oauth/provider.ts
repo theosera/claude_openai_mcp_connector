@@ -62,10 +62,15 @@ export class OAuthProvider {
         refreshTokenTtlSec: config.refreshTokenTtlSec,
         codeTtlSec: config.codeTtlSec,
         // Persistence is opt-in; the state-file HMAC key is derived from the
-        // login password, so rotating the password revokes persisted sessions.
+        // login password, so a state file written under another password does
+        // not verify (#263).
         persistPath: config.stateFile,
         persistSecret: config.stateFile ? config.loginPassword : undefined
       });
+    // Before anything is served, and for a store that was passed in too: a
+    // state file that could not be read or did not verify stops the server
+    // here instead of running on an empty state (#258, #263).
+    this.store.assertUsable();
   }
 
   get issuer(): string {

@@ -458,6 +458,85 @@ describe("startup env boundary (spawned entrypoint)", () => {
     expect(off).not.toContain("registrations=");
   }, 60_000);
 
+  // A state file as the server writes it, under `password`, holding one
+  // registration that waits for consent.
+  const writeStateFile = (stateFile: string, password: string): void => {
+    const store = new OAuthStore({
+      accessTokenTtlSec: 60,
+      refreshTokenTtlSec: 600,
+      codeTtlSec: 60,
+      persistPath: stateFile,
+      persistSecret: password
+    });
+    store.registerClient(["https://chatgpt.com/cb"], "ChatGPT");
+  };
+  const oauthEnv = async (stateFile: string, password: string) => ({
+    KNOWLEDGE_ROOT: vault,
+    MCP_PATCH_STATE_DIR: path.join(stateDir, "patches"),
+    MCP_HTTP_PORT: String(await freePort()),
+    MCP_OAUTH_ENABLED: "1",
+    MCP_HTTP_PUBLIC_URL: "https://vault.example",
+    MCP_OAUTH_PASSWORD: password,
+    MCP_OAUTH_STATE_FILE: stateFile
+  });
+
+  // #258 on the real entrypoint: an OAuth state file that exists and cannot be
+  // read stops the server before it listens, and the message names the variable
+  // and the error code, not the path or the password. The same environment with
+  // the file readable starts, as the control. Whether the file keeps its bytes
+  // is pinned in the store tests, which attempt a save: a spawned server saves
+  // nothing until a client registers, so a check here would see nothing.
+  it("refuses to start on an OAuth state file it cannot read (#258)", async (ctx) => {
+    const password = "correct horse battery staple";
+    const stateFile = path.join(stateDir, "oauth-state.json");
+    writeStateFile(stateFile, password);
+    const env = () => oauthEnv(stateFile, password);
+
+    await fs.chmod(stateFile, 0o000);
+    let refused: string;
+    try {
+      const denied = await fs.readFile(stateFile).then(
+        () => null,
+        (error: NodeJS.ErrnoException) => error.code
+      );
+      if (denied !== "EACCES") ctx.skip(); // run as root: the file is still readable
+      refused = await runHttpServer(await env());
+    } finally {
+      await fs.chmod(stateFile, 0o600);
+    }
+    expect(refused).toMatch(/MCP_OAUTH_STATE_FILE is set but the state file could not be read \(EACCES\)/);
+    expect(refused).not.toMatch(/transport listening/);
+    expect(refused).not.toContain(stateDir);
+    expect(refused).not.toContain(password);
+
+    const started = await runHttpServer(await env());
+    expect(started).toMatch(/transport listening/);
+  }, 60_000);
+
+  // #263 on the real entrypoint: a state file that does not verify — here, one
+  // written under another password — stops the server before it listens, with
+  // a fixed message that carries neither the path nor either password. Setting
+  // the password that wrote the file starts it again with the registration the
+  // file holds: nothing was lost by refusing. (Bytes are pinned in the store
+  // tests, for the reason given above.)
+  it("refuses to start on an OAuth state file that does not verify, and starts with the right password (#263)", async () => {
+    const password = "correct horse battery staple";
+    const wrong = "a password that did not write the file";
+    const stateFile = path.join(stateDir, "oauth-state.json");
+    writeStateFile(stateFile, password);
+
+    const refused = await runHttpServer(await oauthEnv(stateFile, wrong));
+    expect(refused).toMatch(/MCP_OAUTH_STATE_FILE is set but the state file did not verify/);
+    expect(refused).not.toMatch(/transport listening/);
+    expect(refused).not.toContain(stateDir);
+    expect(refused).not.toContain(password);
+    expect(refused).not.toContain(wrong);
+
+    const started = await runHttpServer(await oauthEnv(stateFile, password));
+    expect(started).toMatch(/transport listening/);
+    expect(started).toContain("registrations=given:0,pending:1,unknown:0)");
+  }, 60_000);
+
   it("refuses to start on a relative or unreadable MCP_ENV_FILE", async () => {
     const relative = await runServer({ KNOWLEDGE_ROOT: vault, MCP_ENV_FILE: CWD_ENV_FILE });
     expect(relative.code).toBe(1);

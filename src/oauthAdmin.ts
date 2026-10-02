@@ -7,10 +7,12 @@
 // meant to run with the server STOPPED. A running server holds the
 // registrations in memory and writes them back on its next save, so a
 // registration removed underneath it silently comes back. Before writing, this
-// checks that nothing answers on the configured port and that the file has not
-// changed since it was read — but a server on another port, or one started a
-// moment later, is invisible to that check. Stopping the server first is the
-// actual precaution; the check is a backstop.
+// checks that nothing answers on the configured port and that the file is still
+// the one it read (same bytes, same file, still this account's) — but a server
+// on another port, or one started a moment later, is invisible to that check,
+// and a save that lands after the last check is still lost: the check is not a
+// compare-and-swap. Stopping the server first is the actual precaution; the
+// check is a backstop.
 //
 // It is deliberately not an MCP tool (a model reading untrusted vault content
 // could be talked into calling it, and the HTTP tool surface follows the
@@ -121,9 +123,43 @@ function sha256(bytes: Buffer): string {
   return crypto.createHash("sha256").update(bytes).digest("hex");
 }
 
+interface Snapshot {
+  bytes: Buffer;
+  uid: number;
+  dev: number;
+  ino: number;
+}
+
+/**
+ * The state file's bytes and identity, read through one descriptor so they
+ * describe the same file. Taken through the path twice (stat, then read), the
+ * owner and the bytes could belong to two files.
+ */
+function snapshot(file: string): Snapshot {
+  const fd = fs.openSync(file, "r");
+  try {
+    const stat = fs.fstatSync(fd);
+    return { bytes: fs.readFileSync(fd), uid: stat.uid, dev: stat.dev, ino: stat.ino };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 function fail(message: string, code = 1): number {
   process.stderr.write(`oauth:registrations: ${message}\n`);
   return code;
+}
+
+const LINKED =
+  "MCP_OAUTH_STATE_FILE is a symbolic link, and the server refuses to start on one: a save would replace " +
+  "the link with a regular file. Set it to the path of the file itself. Nothing was read and nothing was written.";
+
+function isSymbolicLink(file: string): boolean {
+  try {
+    return fs.lstatSync(file).isSymbolicLink();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -160,15 +196,21 @@ export async function main(args: string[], hooks: { beforeWrite?: () => void } =
     );
   }
 
-  let raw: Buffer;
+  let first: Snapshot;
   try {
-    raw = fs.readFileSync(oauth.stateFile);
+    first = snapshot(oauth.stateFile);
   } catch (error) {
     // Only a missing file means "no registrations yet". Anything else (most
     // often EACCES: run as another account than the server) is a file this
     // command cannot read, and calling it absent would send an operator to
     // re-run it as someone who can — and that run would write the file back
     // owned by them, where the server may no longer read it.
+    // A link, with its target or without, is what the server refuses too
+    // (#263). Without this, a link with no target read as "no state file
+    // yet" and the command exited 0 while the server would not start.
+    if (isSymbolicLink(oauth.stateFile)) {
+      return fail(LINKED);
+    }
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== "ENOENT") {
       return fail(
@@ -181,6 +223,7 @@ export async function main(args: string[], hooks: { beforeWrite?: () => void } =
     }
     return fail("there is no state file at the configured path, so there is nothing to remove.");
   }
+  const raw = first.bytes;
   const readSha = sha256(raw);
 
   const store = new OAuthStore({
@@ -195,10 +238,16 @@ export async function main(args: string[], hooks: { beforeWrite?: () => void } =
     writeAtLoad: false
   });
   if (store.loadOutcome !== "loaded") {
-    // Never go on to write: the store fell back to an empty state, and saving
-    // it would replace every registration and token in the file.
+    // Never go on to write: the store holds nothing from the file, and saving
+    // would replace every registration and token in it. The store read the
+    // path again, so name what it found, not only the usual cause.
+    const kind = store.loadFailureKind;
     return fail(
-      "the state file did not verify (it was changed, is damaged, or MCP_OAUTH_PASSWORD differs from the one that wrote it). Nothing was read and nothing was written."
+      kind === "symlink"
+        ? LINKED
+        : kind === "unreadable"
+          ? "the state file cannot be read. Run this as the account the server runs as. Nothing was read and nothing was written."
+          : "the state file did not verify (it was changed, is damaged, or MCP_OAUTH_PASSWORD differs from the one that wrote it). Nothing was read and nothing was written."
     );
   }
   const listings = store.listRegistrations();
@@ -248,8 +297,9 @@ export async function main(args: string[], hooks: { beforeWrite?: () => void } =
     }
     // The write replaces the file with one owned by whoever runs this, so
     // running it as another account would leave the server a file it may not
-    // be able to read.
-    const owner = fs.statSync(oauth.stateFile).uid;
+    // be able to read. The owner comes from the same read as the bytes, and is
+    // checked again just before the write.
+    const owner = first.uid;
     if (typeof process.geteuid === "function" && owner !== process.geteuid()) {
       return fail(
         `the state file belongs to uid ${owner}, not to this account (uid ${process.geteuid()}). Run this as the account the server runs as. Nothing was written.`
@@ -274,14 +324,30 @@ export async function main(args: string[], hooks: { beforeWrite?: () => void } =
   }
 
   hooks.beforeWrite?.();
-  let current: Buffer;
+  // The last look before the write: the same bytes, in the same file, still
+  // owned by this account. Equal bytes alone say nothing about the other two:
+  // a chown leaves the bytes as they were, and so does replacing the file with
+  // a copy. None of this makes the write a compare-and-swap — a save that
+  // lands between here and the rename is still lost.
+  let last: Snapshot;
   try {
-    current = fs.readFileSync(oauth.stateFile);
-  } catch {
-    return fail("the state file disappeared after it was read. Nothing was written.");
+    last = snapshot(oauth.stateFile);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return fail(`the state file could not be read again (${code ?? "unknown error"}). Nothing was written.`);
   }
-  if (sha256(current) !== readSha) {
+  if (sha256(last.bytes) !== readSha) {
     return fail("the state file changed after it was read; something else is writing it. Nothing was written.");
+  }
+  if (last.dev !== first.dev || last.ino !== first.ino) {
+    return fail(
+      "the state file was replaced after it was read (same bytes, another file); something else is writing it. Nothing was written."
+    );
+  }
+  if (typeof process.geteuid === "function" && last.uid !== process.geteuid()) {
+    return fail(
+      `the state file now belongs to uid ${last.uid}, not to this account (uid ${process.geteuid()}). Nothing was written.`
+    );
   }
   if (!store.removeRegistrations(clientIds)) {
     return fail("the state file could not be written. The registrations are still there.");
