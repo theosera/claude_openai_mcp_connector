@@ -44,6 +44,10 @@ const PAIRS = 7;
 const ATTEMPTS = 3;
 const CEILING_MS_PER_64_KIB = 1000;
 
+const DASH5 = "-".repeat(5);
+const LS = String.fromCharCode(0x2028);
+const PS = String.fromCharCode(0x2029);
+
 function fill(head: string, unit: string, length: number): string {
   const body = unit.repeat(Math.ceil((length - head.length) / unit.length));
   return head + body.slice(0, length - head.length);
@@ -90,7 +94,24 @@ const SHAPES: readonly (readonly [string, string, (length: number) => string])[]
   // 32,768 blanks).
   ["number-blanks", "FKPERFNB1", (n) => "token=FKPERFNB1\n1" + " ".repeat(n - 18) + "!"],
   // Elements whose CDATA section never ends, each looking ahead for its `]]>`.
-  ["unclosed-cdata", "FKPERFCD1", (n) => fill("token=FKPERFCD1 ", "<password><![CDATA[x", n)]
+  ["unclosed-cdata", "FKPERFCD1", (n) => fill("token=FKPERFCD1 ", "<password><![CDATA[x", n)],
+  // #270, 1: labels nested in one label-like word (`token=-token=-…`), each giving a
+  // span to the same word end, then quoted armor delimiters glued into that word:
+  // every span was clipped against every guard inside it (N x G pieces). Half the
+  // length each.
+  [
+    "nested-labels-guards",
+    "FKPERFNG1",
+    (n) =>
+      "token=FKPERFNG1 " +
+      fill("", "token=-", Math.floor((n - 16) / 2)) +
+      fill("", `'${DASH5}BEGIN A${DASH5}'`, Math.floor((n - 16) / 2))
+  ],
+  // #270, 2: a long run of U+2028, and of U+2029. The multiline `^` matches after
+  // each, and the base64-line rule counted them as blanks, so every start walked
+  // the rest of the run.
+  ["line-separators", "FKPERFLS1", (n) => "token=FKPERFLS1\n" + LS.repeat(n - 16)],
+  ["paragraph-separators", "FKPERFPS1", (n) => "token=FKPERFPS1\n" + PS.repeat(n - 16)]
 ];
 
 function median(values: readonly number[]): number {

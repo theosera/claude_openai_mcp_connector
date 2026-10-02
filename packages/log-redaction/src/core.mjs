@@ -1058,9 +1058,15 @@ const URL_AUTHORITY_VALUE = /(:\/\/[^/:@\s]+:)([^/@\s]+)(@)/g;
  * number are read by one quantifier: two adjacent ones (`[ ]+[|:>]?[ ]*`) could
  * split a run of blanks either way, and a line of a number, blanks and no base64
  * took quadratic time to fail (measured, 7.5 s at 32,768 blanks).
+ *
+ * A blank here is any whitespace that does not end a line for this regex: not CR
+ * or LF, and not U+2028 or U+2029 either, because the multiline `^` and `$` treat
+ * those two as line ends too. With them counted as blanks, `^` matched after each
+ * one in a run of them and every start walked the rest of the run before failing:
+ * quadratic (#270, measured 1.4 s at 21,845 characters and 9.4 s at twice that).
  */
 const BARE_BASE64_LINE =
-  /^([^\S\r\n]*(?:[0-9]+(?:[^\S\r\n]+(?:[|:>][^\S\r\n]*)?|[|:>][^\S\r\n]*)|[>|]+[^\S\r\n]*|[^\s:]+:[0-9]+:[^\S\r\n]*|-)?)([A-Za-z0-9+/=]{32,})[^\S\r\n]*$/gm;
+  /^([^\S\r\n\u2028\u2029]*(?:[0-9]+(?:[^\S\r\n\u2028\u2029]+(?:[|:>][^\S\r\n\u2028\u2029]*)?|[|:>][^\S\r\n\u2028\u2029]*)|[>|]+[^\S\r\n\u2028\u2029]*|[^\s:]+:[0-9]+:[^\S\r\n\u2028\u2029]*|-)?)([A-Za-z0-9+/=]{32,})[^\S\r\n\u2028\u2029]*$/gm;
 
 /**
  * Collects the span of every credential value, decided against the original.
@@ -1268,10 +1274,19 @@ export function redactFragment(fragment, options = {}) {
   try {
     const vocabulary = options.vocabulary ?? POLICY_VOCABULARY;
     const guards = collectProtectedSpans(original);
-    const spans = [
-      ...collectArmorSpans(original),
-      ...withoutProtected(collectCredentialSpans(original, { vocabulary, kind: fragment.kind }), guards)
-    ];
+    // The credential spans are merged before they are clipped. Labels nested in
+    // one label-like word each give a span to the same word end, and clipping each
+    // of N such spans against the G guards inside them made N x G pieces: quadratic
+    // in time and in memory (#270: 2.2 s at 64 KiB, 24 s at 128 KiB, and the process
+    // aborted at 256 KiB; a heap that runs out is something no try/catch here can
+    // turn into an omission). Clipping is set subtraction,
+    // so clipping the union removes exactly what clipping each span removed, and
+    // the masked text is the same.
+    const credentials = mergeOverlaps(
+      collectCredentialSpans(original, { vocabulary, kind: fragment.kind }),
+      original.length
+    );
+    const spans = [...collectArmorSpans(original), ...withoutProtected(credentials, guards)];
     const merged = mergeOverlaps(spans, original.length);
     return { text: applySpansOnce(original, merged), status: "ok" };
   } catch (error) {
