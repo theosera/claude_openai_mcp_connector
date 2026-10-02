@@ -383,22 +383,27 @@ describe("oauth:registrations (#184)", () => {
 
   /**
    * Run the command in this process, for what a spawned one cannot reach: an
-   * account the test pretends to be, or a change made after every check and
-   * before the write (`beforeWrite`).
+   * account the test pretends to be, a change made after every check and
+   * before the write (`beforeWrite`), or one made between the first read and
+   * the store being built from it (`afterRead`).
    */
-  async function runInProcess(args: string[], beforeWrite?: () => void) {
+  async function runInProcess(args: string[], beforeWrite?: () => void, afterRead?: () => void) {
     for (const [key, value] of Object.entries(configEnv())) {
       vi.stubEnv(key, value);
     }
     vi.stubEnv("MCP_ENV_FILE", "");
     const errors: string[] = [];
+    const output: string[] = [];
     vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
       errors.push(String(chunk));
       return true;
     });
-    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-    const code = await main(args, { beforeWrite });
-    return { code, stderr: errors.join("") };
+    vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      output.push(String(chunk));
+      return true;
+    });
+    const code = await main(args, { afterRead, beforeWrite });
+    return { code, stdout: output.join(""), stderr: errors.join("") };
   }
 
   // In process: a file owned by another account cannot be made without root,
@@ -565,6 +570,70 @@ describe("oauth:registrations (#184)", () => {
     },
     30_000
   );
+
+  /**
+   * The bytes of another state the file could hold: the one in `a` with one
+   * more registration, saved under the same password, so it verifies. Built in
+   * a copy beside the state file, which stays as it was.
+   */
+  function withAnotherRegistration(a: Buffer): { bytes: Buffer; clientId: string } {
+    const copy = `${stateFile}.other`;
+    fsSync.writeFileSync(copy, a, { mode: 0o600 });
+    const late = new OAuthStore({ ...TTL, persistPath: copy, persistSecret: PASSWORD }).registerClient([
+      "https://late.example/cb"
+    ])!;
+    return { bytes: fsSync.readFileSync(copy), clientId: late.clientId };
+  }
+
+  // #273: the store is built from the bytes the command read and hashed, not
+  // from a second read of the path. Between the two, the file is rewritten in
+  // place to another state that verifies; what is listed is the file as the
+  // command read it.
+  //
+  // Reverse-verified: building the store from a second read of the path
+  // reddens this test and the next.
+  it("lists what it read, though the file changes in place before the store is built (#273)", async () => {
+    const { kept, doomed } = seed();
+    const before = await snapshotOf(stateFile);
+    const other = withAnotherRegistration(before.bytes);
+    const listed = await runInProcess(["list"], undefined, () => {
+      fsSync.writeFileSync(stateFile, other.bytes); // truncates and rewrites the same file
+    });
+    const after = await snapshotOf(stateFile);
+    expect(after.stat.ino).toBe(before.stat.ino); // the change reached the same file, as intended
+    expect(after.bytes.equals(other.bytes)).toBe(true);
+    expect(listed.code).toBe(0);
+    expect(listed.stdout).toContain(kept.clientId);
+    expect(listed.stdout).toContain(doomed.clientId);
+    expect(listed.stdout).not.toContain(other.clientId);
+  }, 30_000);
+
+  // The case #273 names: the file goes A, B, A in place between the command's
+  // first read and its last. Every check before the write passes (same bytes,
+  // same file, same owner), so what is written depends only on which bytes the
+  // store was built from: A with the removal applied, and nothing of B.
+  it("removes from what it read, though the file goes A, B, A in place before the write (#273)", async () => {
+    const { kept, doomed } = seed();
+    const before = await snapshotOf(stateFile);
+    const other = withAnotherRegistration(before.bytes);
+    let restored = false;
+    const removed = await runInProcess(
+      ["remove", doomed.clientId, "--apply"],
+      () => {
+        fsSync.writeFileSync(stateFile, before.bytes); // back to A, in place
+        restored = true;
+      },
+      () => {
+        fsSync.writeFileSync(stateFile, other.bytes); // B, in place
+      }
+    );
+    expect(restored).toBe(true); // the command reached the last check, as intended
+    expect(removed.code).toBe(0);
+    const store = reload();
+    expect(store.getClient(doomed.clientId)).toBeUndefined();
+    expect(store.getClient(kept.clientId)).toBeDefined();
+    expect(store.getClient(other.clientId)).toBeUndefined(); // nothing of B was written
+  }, 30_000);
 
   it("never prints the password, the key derived from it, the bearer or a token", async () => {
     const { keptTokens, doomed, doomedTokens, rotated } = seed();
