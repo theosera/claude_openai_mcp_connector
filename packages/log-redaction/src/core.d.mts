@@ -26,7 +26,7 @@ export declare function applySpansOnce(original: string, merged: Span[]): string
 export declare function collectArmorSpans(original: string): Span[];
 export declare function collectCredentialSpans(
   original: string,
-  options?: { vocabulary?: Vocabulary; kind?: Kind }
+  options: { vocabulary?: Vocabulary; kind: Kind }
 ): Span[];
 export declare function collectProtectedSpans(original: string): Span[];
 export declare function withoutProtected(spans: Span[], guards: Span[]): Span[];

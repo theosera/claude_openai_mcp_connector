@@ -11,7 +11,9 @@ import { MASK, redactFragment } from "../packages/log-redaction/src/core.mjs";
  * the median time must grow by less than 3.0 times per doubling. A quadratic walk
  * grows by about 4. The shapes are the three in `perf-I.json`, where the sed
  * `mask()` went quadratic under GNU sed, plus a line of many short labelled
- * values, which stresses the span handling instead of the quote walk.
+ * values, which stresses the span handling instead of the quote walk, and a word
+ * of nested labels. `I-unclosed-escaped` as `text` also caught a quadratic
+ * rescan here: every escaped quote was walked to the line end again.
  *
  * Each shape starts with a secret word, and every size is checked for it before
  * anything is timed: a core that stopped masking would otherwise pass by doing
@@ -26,8 +28,12 @@ import { MASK, redactFragment } from "../packages/log-redaction/src/core.mjs";
  * run on its own. A pair shares its moment, so load that comes and goes cancels
  * out of its ratio, while a quadratic walk is over the limit in every pair.
  *
- * `logRedactionPerf` carries no speed floor: the core is judged on how its time
- * grows, not on how fast this machine is.
+ * The core is judged on how its time grows, not on how fast this machine is,
+ * with one exception: the first call at each size must take under a second per
+ * 64 KiB. A linear core takes milliseconds; a quadratic one takes seconds at
+ * 64 KiB, and vitest's timeout cannot stop a synchronous loop -- a quadratic
+ * mutation once kept this file running for 22 minutes. The ceiling fails it in
+ * one call instead.
  */
 
 const KiB = 1024;
@@ -36,6 +42,7 @@ const LIMIT = 3.0;
 const REPEAT = 4;
 const PAIRS = 7;
 const ATTEMPTS = 3;
+const CEILING_MS_PER_64_KIB = 1000;
 
 function fill(head: string, unit: string, length: number): string {
   const body = unit.repeat(Math.ceil((length - head.length) / unit.length));
@@ -46,7 +53,44 @@ const SHAPES: readonly (readonly [string, string, (length: number) => string])[]
   ["I-unclosed-escaped", "FKPERFUE1", (n) => fill('passphrase: "FKPERFUE1 ', 'a\\"', n)],
   ["I-masked-doubled", "FKPERFMD1", (n) => fill("token=FKPERFMD1 ", `${MASK}''x`, n)],
   ["I-label-quotes", "FKPERFLQ1", (n) => fill('passwd: "FKPERFLQ1', 'passwd: "ab', n)],
-  ["many-labels", "FKPERFML1", (n) => fill("token=FKPERFML1 ", "token=v ", n)]
+  ["many-labels", "FKPERFML1", (n) => fill("token=FKPERFML1 ", "token=v ", n)],
+  // Labels nested in one unquoted word: each is read again, and each value runs
+  // to the end of the same word. Measured quadratic until the word's end and
+  // quotedness were remembered (3.5 to 3.9 per doubling as a command). Whole
+  // labels only: a word is read again only when it ends like a label (`token:`),
+  // so a word cut mid-label at one size and not the next times two different
+  // paths and reads as a jump of 6 in one doubling.
+  ["nested-labels", "FKPERFNL1", (n) => "token=FKPERFNL1 " + "token:".repeat(Math.floor((n - 16) / 6))],
+  // A long run of digits that fails a base64 line at its last character. A line
+  // number prefix that could end anywhere inside the digits made this quadratic
+  // (3.6 s at 32,000 characters).
+  ["digits-bang", "FKPERFDG1", (n) => "token=FKPERFDG1\n" + "7".repeat(n - 17) + "!"],
+  // Many labels inside one quoted string, each asking for the word joined after
+  // its closing quote (`echo "k=k=k=…"X=`), and many labels whose blank-free value
+  // is read again inside the string (`echo "k>k>k>…x="`). Both were quadratic.
+  [
+    "quoted-labels-joined",
+    "FKPERFQJ1",
+    (n) => 'token=FKPERFQJ1 echo "' + "token=".repeat(Math.floor(n / 12)) + '"' + "X".repeat(Math.floor(n / 2)) + "="
+  ],
+  [
+    "quoted-labels-arrow",
+    "FKPERFQA1",
+    (n) => 'token=FKPERFQA1 echo "' + "token>".repeat(Math.floor((n - 30) / 6)) + 'x="'
+  ],
+  // Escaped quotes before a blank inside one text quote, each looking ahead for a
+  // label before the next quote, and elements that never close, each looking
+  // ahead for its closing tag. Each looks only as far as the next quote or `<`.
+  // A blank follows each tag so that no tag takes a value that would run over
+  // the rest of the line and leave the other tags unread.
+  ["escaped-quotes-blank", "FKPERFEB1", (n) => fill("passphrase: 'FKPERFEB1 ", "n\\' x ", n)],
+  ["unclosed-elements", "FKPERFUN1", (n) => fill("token=FKPERFUN1 ", "<password> x", n)],
+  // A line number, then blanks and no base64. Two adjacent blank quantifiers in
+  // the line-number prefix split the blanks every way before failing (7.5 s at
+  // 32,768 blanks).
+  ["number-blanks", "FKPERFNB1", (n) => "token=FKPERFNB1\n1" + " ".repeat(n - 18) + "!"],
+  // Elements whose CDATA section never ends, each looking ahead for its `]]>`.
+  ["unclosed-cdata", "FKPERFCD1", (n) => fill("token=FKPERFCD1 ", "<password><![CDATA[x", n)]
 ];
 
 function median(values: readonly number[]): number {
@@ -119,7 +163,13 @@ describe("the core's time per doubling", { timeout: 180_000 }, () => {
     let previous: string | null = null;
     for (const size of SIZES) {
       const text = make(size);
+      const first = performance.now();
       const result = redactFragment({ text, kind });
+      const firstMs = performance.now() - first;
+      expect({ size, firstMs: firstMs < (CEILING_MS_PER_64_KIB * size) / (64 * KiB) ? "under" : firstMs }).toEqual({
+        size,
+        firstMs: "under"
+      });
       expect(result.status).toBe("ok");
       expect(result.text).not.toContain(secret);
       if (previous) {
