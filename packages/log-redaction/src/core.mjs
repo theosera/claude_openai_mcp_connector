@@ -293,18 +293,21 @@ const COMMAND_STOP = /[\s;&|)]/;
 
 /**
  * Characters that end a shell word only right after a closing quote and before
- * another key: a label (`']token v`) or a `NEXT_KEY`. A value in a flow mapping (`{password: 'v',token: …}`)
+ * another key: a label (`']token v`) or a word followed by `:` or `=`. A value in a flow mapping (`{password: 'v',token: …}`)
  * stops at the next key there; an unquoted value may hold them (`PASSWORD=a,b`),
  * and so may a quoted one followed by more of itself (`'a',b`).
  */
 const AFTER_QUOTE_STOP = /[,}\]]/;
 
-/**
- * What must follow `,` `}` `]` after a closing quote for the word to end there:
- * another key (`token:`, `user=`). Before anything else they are part of the
- * value (`'a',b`), and ending there left the rest of the value in the clear.
- */
-const NEXT_KEY = /[^\S\r\n]*[A-Za-z_][\w.-]*[^\S\r\n]*[:=]/y;
+/** Whether `ch` may start a key that ends a word after a closing quote: a letter or `_`. */
+function isKeyStart(ch) {
+  return (ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z") || ch === "_";
+}
+
+/** Whether `ch` may go on in such a key: also a digit, `.` or `-`. */
+function isKeyChar(ch) {
+  return isKeyStart(ch) || (ch >= "0" && ch <= "9") || ch === "." || ch === "-";
+}
 
 /**
  * Blanks other than line ends. The sed `mask()`'s `[[:space:]]` covers the
@@ -576,12 +579,25 @@ function collectLabelSpans(original, kind, vocabulary) {
     return labelKey.test(original);
   };
 
-  /** Whether a key starts at `at`, after blanks: a label as above, or a word followed by `:` or `=`. */
-  const keyAt = (at) => {
-    if (labelKeyAt(at)) return true;
-    NEXT_KEY.lastIndex = at;
-    return NEXT_KEY.test(original);
+  /**
+   * What must follow `,` `}` `]` after a closing quote for the word to end there:
+   * a word followed by `:` or `=`, after blanks (`token:`, `user =`). Before
+   * anything else they are part of the value (`'a',b`), and ending there left the
+   * rest of the value in the clear. A walk over the characters, not a pattern:
+   * three adjacent quantifiers read as polynomial to a static check, even anchored.
+   */
+  const wordKeyAt = (at) => {
+    let index = at;
+    while (index < original.length && BLANK.test(original[index])) index += 1;
+    if (!isKeyStart(original[index])) return false;
+    index += 1;
+    while (index < original.length && isKeyChar(original[index])) index += 1;
+    while (index < original.length && BLANK.test(original[index])) index += 1;
+    return original[index] === ":" || original[index] === "=";
   };
+
+  /** Whether a key starts at `at`, after blanks: a label as above, or a word followed by `:` or `=`. */
+  const keyAt = (at) => labelKeyAt(at) || wordKeyAt(at);
 
   /** End of the shell word that starts at `from`; `from` itself when nothing starts there. */
   const wordEnd = (from) => {

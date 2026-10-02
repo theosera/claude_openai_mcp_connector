@@ -775,3 +775,21 @@ describe("the core on the seventh review's shapes", () => {
     expect(redactFragment({ text: input, kind })).toEqual({ text: expected, status: "ok" });
   });
 });
+
+// In a command, a shell word ends after a closing quote at `,` `}` `]` before a
+// word followed by `:` or `=`. No test held where that word starts and ends
+// (#272, 2026-10-02): removing the check kept every test green.
+describe("the core on the key that ends a shell word after a closing quote", () => {
+  const password = ["pass", "word"].join("");
+  const cases: readonly (readonly [string, string, string])[] = [
+    ["a word and =", `${password}='FKRV0401',user=KEEPRW41`, `${password}='${MASK}',user=KEEPRW41`],
+    ["blanks before the word", `${password}='FKRV0402', user=KEEPRW42`, `${password}='${MASK}', user=KEEPRW42`],
+    ["a digit first, which starts no key", `${password}='FKRV0403',1x=KEEPRW43`, `${password}='${MASK}`],
+    ["a dot and a dash in the word", `${password}='FKRV0404',a.b-c=KEEPRW44`, `${password}='${MASK}',a.b-c=KEEPRW44`],
+    ["blanks between the word and :", `${password}='FKRV0405',user :KEEPRW45`, `${password}='${MASK}',user :KEEPRW45`]
+  ];
+
+  it.each(cases)("%s", (_name, input, expected) => {
+    expect(redactFragment({ text: input, kind: "command" })).toEqual({ text: expected, status: "ok" });
+  });
+});
