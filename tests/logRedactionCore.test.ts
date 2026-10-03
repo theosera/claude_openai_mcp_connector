@@ -984,12 +984,16 @@ describe("the core on a label element's child that holds no secret (#275, over-m
 // went quadratic once a label element's child value had the scan read again from
 // the tag: unclosed-cdata in the time test). These shapes were found by a
 // differential fuzz against the walk. Since a child value is read again from its
-// tag whatever separator it holds, only the first-character shape still turns
-// when its edge moves: missing a separator as the value's last character, or
-// taking one just after the value, changed no output in a fuzz of 40,000 inputs
-// nor in 882 shapes written for those edges. An ordinary value's separator only
-// moves where its last item is read again, and an item that ends at a separator
-// names no value.
+// tag whatever separator it holds, only the first-character shape among them
+// still turns when its edge moves. Taking a separator just after the value
+// changed no output in a fuzz of 40,000 inputs nor in 882 shapes written for
+// those edges. Missing one as the value's last character changed none there
+// either, but it is not without effect: in `text`, `password: a,secret_key=', r' K`
+// leaves ` r'` readable, as main does since #272 -- the list value ends right
+// after its last separator, so its last item is not read again, and that item's
+// quoted value runs on past the blank -- while the miss reads the item again and
+// masks it. A test here would pin that leak, so it is left to its own issue
+// (#278).
 describe("the core on a list separator at a value's edges (#275)", () => {
   const passwd = ["pass", "wd"].join("");
   const cases: readonly (readonly [string, "command" | "text", string, string])[] = [

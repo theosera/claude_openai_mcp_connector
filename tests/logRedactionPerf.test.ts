@@ -124,7 +124,31 @@ const SHAPES: readonly (readonly [string, string, (length: number) => string])[]
     "label-elements-before-an-unclosed-tag",
     "FKPERFNW1",
     (n) => fill("token=FKPERFNW1 ", "<password><a>", n - 4) + "<a b"
-  ]
+  ],
+  // Label elements nested in each other, then a quote or a CDATA section that
+  // never ends: every label reaches the same text, and its value runs to the line
+  // end. Reading that value once per label was quadratic as text (47 and 64 ms at
+  // 32 KiB, under 2 ms on main), until the value was remembered for its text.
+  [
+    "label-elements-before-an-unclosed-quote",
+    "FKPERFNQ1",
+    (n) =>
+      "token=FKPERFNQ1 " + "<password>".repeat(Math.floor(n / 20)) + '"' + "x".repeat(n - 17 - 10 * Math.floor(n / 20))
+  ],
+  [
+    "label-elements-before-an-unclosed-cdata",
+    "FKPERFNC1",
+    (n) =>
+      "token=FKPERFNC1 " +
+      "<password>".repeat(Math.floor(n / 20)) +
+      '<![CDATA["' +
+      "x".repeat(n - 26 - 10 * Math.floor(n / 20))
+  ],
+  // Many labelled values among many list separators (`,` `;` `&`): each value's
+  // search for the last separator before its end halves over their positions. A
+  // walk over the positions, from either end, is quadratic here, and no other
+  // shape holds many separators.
+  ["values-among-separators", "FKPERFVS1", (n) => fill("token=FKPERFVS1 ", "token=v a, ", n)]
 ];
 
 function median(values: readonly number[]): number {

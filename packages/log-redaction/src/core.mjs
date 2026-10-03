@@ -920,6 +920,11 @@ function collectLabelSpans(original, kind, vocabulary) {
     return text;
   };
 
+  // The text the last child value was read from, and that value: the labels
+  // nested inside one walk all reach the same text, and reading its value each
+  // time walked a quote that never closes to the line end once per label.
+  let childText = -1;
+  let childRead = null;
   /**
    * The value an element holds in the elements it starts with
    * (`<password><value>v</value>`, as a settings file nests one): the text after
@@ -930,11 +935,16 @@ function collectLabelSpans(original, kind, vocabulary) {
     const text = original[at] === "<" ? textAfterTags(at) : -1;
     if (text < 0) return null;
     let value;
-    if (!original.startsWith("<![CDATA[", text)) value = valueAt(text);
+    if (text === childText) value = childRead;
     else {
-      const start = text + 9;
-      const stop = cdataEnd(start);
-      value = stop < 0 ? valueAt(start) : stop > start ? { start, end: stop, next: stop + 3 } : null;
+      if (!original.startsWith("<![CDATA[", text)) value = valueAt(text);
+      else {
+        const start = text + 9;
+        const stop = cdataEnd(start);
+        value = stop < 0 ? valueAt(start) : stop > start ? { start, end: stop, next: stop + 3 } : null;
+      }
+      childText = text;
+      childRead = value;
     }
     // Labels after the tag are read again, as they were before the value was
     // read: it runs on over the tags after the text (`v</value></password><token>`).
