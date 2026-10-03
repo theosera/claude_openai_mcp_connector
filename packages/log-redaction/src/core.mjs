@@ -617,8 +617,10 @@ function collectLabelSpans(original, kind, vocabulary) {
         continue;
       }
       if (COMMAND_STOP.test(ch)) break;
-      // A comma before another label ends the word (`PASSWORD=a,token v`).
-      if (ch === "," && labelKeyAt(index + 1)) break;
+      // A list separator or closing bracket before another label ends the word
+      // (`PASSWORD=a,token v`, `{password=a}Bearer v`). Without a label after
+      // it the bracket belongs to the value, just as the comma does.
+      if ((ch === "," || ch === "}" || ch === "]") && labelKeyAt(index + 1)) break;
       index += 1;
     }
     const end = Math.min(index, original.length);
@@ -628,16 +630,17 @@ function collectLabelSpans(original, kind, vocabulary) {
   };
 
   /**
-   * End of an unquoted `text` value: the next blank or line end, or a `,` `;` `&`
-   * before another label (`password: a,token v`). Before anything else they are
-   * part of the value (`password: a;b`).
+   * End of an unquoted `text` value: the next blank or line end, or a list
+   * separator / closing bracket before another label (`password: a,token v`,
+   * `{password=a}Bearer v`). Otherwise they are part of the value (`password: a}b`).
    */
   const runEnd = (from) => {
     if (from >= wordFrom && from < wordTo) return wordTo;
     let end = from;
     while (end < original.length && !/\s/.test(original[end])) {
       const ch = original[end];
-      if ((ch === "," || ch === ";" || ch === "&") && labelKeyAt(end + 1)) break;
+      if ((ch === "," || ch === ";" || ch === "&" || ch === "}" || ch === "]" || ch === ")") && labelKeyAt(end + 1))
+        break;
       end += 1;
     }
     wordFrom = from;
@@ -877,7 +880,41 @@ function collectLabelSpans(original, kind, vocabulary) {
     let close = after + 2 + name.length;
     while (close < original.length && BLANK.test(original[close])) close += 1;
     if (original[close] !== ">") return null;
-    return { name, bare: open === end, start: textStart, end: textEnd, closeEnd: close + 1 };
+    return {
+      name,
+      bare: open === end,
+      attributesStart: end,
+      openEnd: open,
+      start: textStart,
+      end: textEnd,
+      closeEnd: close + 1
+    };
+  };
+
+  /**
+   * Every attribute value of a label element, whether or not it also has text.
+   * Attribute names are not an allowlist: `type`, `id` and `name` are deliberately
+   * masked too, since any of them can hold the value the old mask() hid.
+   */
+  const maskElementAttributes = (element) => {
+    let at = element.attributesStart;
+    while (at < element.openEnd) {
+      if (original[at] !== "=") {
+        at += 1;
+        continue;
+      }
+      at += 1;
+      while (at < element.openEnd && BLANK.test(original[at])) at += 1;
+      const segment = opened.get(at);
+      if (segment && segment.close <= element.openEnd) {
+        if (segment.close > at + 1) spans.push({ start: at + 1, end: segment.close, kind: "credential:label" });
+        at = segment.close + 1;
+      } else {
+        const start = at;
+        while (at < element.openEnd && !BLANK.test(original[at])) at += 1;
+        if (at > start) spans.push({ start, end: at, kind: "credential:label" });
+      }
+    }
   };
 
   // Where the last walk over glued opening tags started, where it stopped, and
@@ -1069,6 +1106,7 @@ function collectLabelSpans(original, kind, vocabulary) {
       const closingTag = original[start - 1] === "/" && original[start - 2] === "<";
       const tag = (original[start - 1] === "<" && original[end] === ">") || closingTag;
       if (element) {
+        maskElementAttributes(element);
         const values = elementValues(element).filter(Boolean);
         for (const before of values.slice(0, -1)) {
           spans.push({ start: before.start, end: before.end, kind: "credential:label" });
