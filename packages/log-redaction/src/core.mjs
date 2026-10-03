@@ -560,6 +560,8 @@ function collectLabelSpans(original, kind, vocabulary) {
   // of `k:k:k:…` linear instead of re-walking the word per label. A start equal to
   // the last one hits too: labels inside one quoted string all ask for the word
   // after its closing quote, and missing that made `echo "k=k=k=…"` quadratic.
+  // Remember an empty word too: a delimiter followed by blanks and another label
+  // ends at its start, and repeating that lookahead would re-read all the blanks.
   let wordFrom = -1;
   let wordTo = -1;
   // The same for one blank-delimited word inside a quoted segment.
@@ -601,7 +603,7 @@ function collectLabelSpans(original, kind, vocabulary) {
 
   /** End of the shell word that starts at `from`; `from` itself when nothing starts there. */
   const wordEnd = (from) => {
-    if (from >= wordFrom && from < wordTo) return wordTo;
+    if (from === wordFrom || (from >= wordFrom && from < wordTo)) return wordTo;
     let index = from;
     while (index < original.length) {
       const segment = opened.get(index);
