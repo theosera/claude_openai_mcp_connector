@@ -798,3 +798,287 @@ describe("the core on the key that ends a shell word after a closing quote", () 
     expect(redactFragment({ text: input, kind: "command" })).toEqual({ text: expected, status: "ok" });
   });
 });
+
+// Codex on #272 (2026-10-02): a label element that starts with other elements
+// (`<password><value>v</value></password>`, as a settings file nests one) gave
+// no value, and main masked it in `text`. The value is the text after the
+// opening tags, read with what is glued to it.
+describe("the core on a label element that starts with other elements", () => {
+  const both = ["command", "text"] as const;
+  const password = ["pass", "word"].join("");
+  const upper = ["Pass", "word"].join("");
+  const cases: readonly (readonly [string, string, string])[] = [
+    [
+      "a child element",
+      `<${password}><value>FKRV0501</value></${password}> KEEPRW51`,
+      `<${password}><value>${MASK} KEEPRW51`
+    ],
+    ["two levels", `<${password}><a><b>FKRV0502</b></a></${password}> KEEPRW52`, `<${password}><a><b>${MASK} KEEPRW52`],
+    [
+      "two children",
+      `<${password}><value>FKRV0503</value><value>FKRV0504</value></${password}> KEEPRW53`,
+      `<${password}><value>${MASK} KEEPRW53`
+    ],
+    [
+      "a self-closing element first",
+      `<${password}><br/>FKRV0505</${password}> KEEPRW54`,
+      `<${password}><br/>${MASK} KEEPRW54`
+    ],
+    [
+      "a CDATA section in the child",
+      `<${password}><value><![CDATA[FKRV0506]]></value></${password}> KEEPRW55`,
+      `<${password}><value><![CDATA[${MASK}]]></value></${password}> KEEPRW55`
+    ],
+    [
+      "a CDATA section that never ends",
+      `<${password}><value><![CDATA[FKRV0507 KEEPRW56`,
+      `<${password}><value><![CDATA[${MASK} KEEPRW56`
+    ],
+    [
+      "a CDATA section right after the tag, with no closing tag",
+      `<${password}><![CDATA[FKRV0512]]> KEEPRW65`,
+      `<${password}><![CDATA[${MASK}]]> KEEPRW65`
+    ],
+    [
+      "a CDATA section right after the tag that never ends",
+      `<${password}><![CDATA[FKRV0513 KEEPRW66`,
+      `<${password}><![CDATA[${MASK} KEEPRW66`
+    ],
+    [
+      "a CDATA section right after the tag, then other text",
+      `<${password}><![CDATA[FKRV0514]]>tail KEEPRW67`,
+      `<${password}><![CDATA[${MASK}]]>tail KEEPRW67`
+    ],
+    ["upper case", `<${upper}><Value>FKRV0508</Value></${upper}> KEEPRW57`, `<${upper}><Value>${MASK} KEEPRW57`],
+    ["another label", "<token><v>FKRV0509</v></token> KEEPRW58", `<token><v>${MASK} KEEPRW58`],
+    [
+      "an outer element that does not close",
+      `<${password}><value>FKRV0510</value> KEEPRW59`,
+      `<${password}><value>${MASK} KEEPRW59`
+    ],
+    [
+      "a child with an attribute",
+      `<${password}><value id="a">FKRV0511</value></${password}> KEEPRW60`,
+      `<${password}><value id="a">${MASK} KEEPRW60`
+    ],
+    [
+      "a child of an element that is no label",
+      "<user><value>KEEPRW61</value></user>",
+      "<user><value>KEEPRW61</value></user>"
+    ],
+    [
+      "a closing tag before an element",
+      `</${password}><value>KEEPRW62</value>`,
+      `</${password}><value>KEEPRW62</value>`
+    ],
+    [
+      "a blank before the child",
+      `<${password}> <value>KEEPRW63</value></${password}>`,
+      `<${password}> <value>KEEPRW63</value></${password}>`
+    ],
+    [
+      "an empty child",
+      `<${password}><value></value></${password}> KEEPRW64`,
+      `<${password}><value></value></${password}> KEEPRW64`
+    ]
+  ];
+
+  it.each(cases.flatMap(([name, input, expected]) => both.map((kind) => [name, kind, input, expected] as const)))(
+    "%s, as %s",
+    (_name, kind, input, expected) => {
+      expect(redactFragment({ text: input, kind })).toEqual({ text: expected, status: "ok" });
+    }
+  );
+});
+
+// #275: once a child's value was read, the label scan used to jump to the end of
+// that value's word (`v</value></password><token`), so a label later in the same
+// word was never read and its value leaked, where ffb837d and the sed mask() hid
+// it. The scan now reads again from where it stood. The four shapes are the ones
+// the independent reviews of step 2-3b found; each leaked `FKRV0702`-style values
+// with the jump in place.
+describe("the core on labels after a label element's child value (#275)", () => {
+  const both = ["command", "text"] as const;
+  const password = ["pass", "word"].join("");
+  const token = ["to", "ken"].join("");
+  const cases: readonly (readonly [string, string, string])[] = [
+    [
+      "a label element after it, inside an outer element",
+      `<server><${password}><value>FKRV0701</value></${password}><${token} type="x">FKRV0702</${token}></server> KEEPRW71`,
+      `<server><${password}><value>${MASK} type="x">${MASK}</${token}></server> KEEPRW71`
+    ],
+    [
+      "a label element after it",
+      `<${password}><value>FKRV0703</value></${password}><${token} type="x">FKRV0704</${token}> KEEPRW72`,
+      `<${password}><value>${MASK} type="x">${MASK}</${token}> KEEPRW72`
+    ],
+    [
+      "an option glued to the value",
+      `<${password}><a>FKRV0705--${token} FKRV0706 KEEPRW73`,
+      `<${password}><a>${MASK} ${MASK} KEEPRW73`
+    ],
+    [
+      "a label element inside a CDATA section",
+      `<${token}><![CDATA[<${password} a="1">FKRV0707 KEEPRW74`,
+      `<${token}><![CDATA[${MASK} ${MASK} KEEPRW74`
+    ]
+  ];
+
+  it.each(cases.flatMap(([name, input, expected]) => both.map((kind) => [name, kind, input, expected] as const)))(
+    "%s, as %s",
+    (_name, kind, input, expected) => {
+      expect(redactFragment({ text: input, kind })).toEqual({ text: expected, status: "ok" });
+    }
+  );
+});
+
+// #275: the walk over the opening tags glued after a label element, pinned guard
+// by guard (none of these had a test). Each shape turns when its guard is taken
+// out: an element name may start with `_`; `<` with no name after it is no tag;
+// and a tag that a `<` or a line end cuts off before its `>` is no tag either.
+describe("the core on the opening tags glued after a label element (#275)", () => {
+  const both = ["command", "text"] as const;
+  const password = ["pass", "word"].join("");
+  const cases: readonly (readonly [string, string, string])[] = [
+    [
+      "a child whose name starts with an underscore",
+      `<${password}><_v>FKRV0708</_v></${password}> KEEPRW75`,
+      `<${password}><_v>${MASK} KEEPRW75`
+    ],
+    ["a `<` with no name", `<${password}><>KEEPRW76 KEEPRW77`, `<${password}><>KEEPRW76 KEEPRW77`],
+    [
+      "a tag cut off by a `<`",
+      `<${password}><v a<b>KEEPRW78</v> KEEPRW79`,
+      `<${password}><v a<b>KEEPRW78</v> KEEPRW79`
+    ],
+    ["a tag cut off by a line end", `<${password}><v\n>KEEPRW80</v>`, `<${password}><v\n>KEEPRW80</v>`]
+  ];
+
+  it.each(cases.flatMap(([name, input, expected]) => both.map((kind) => [name, kind, input, expected] as const)))(
+    "%s, as %s",
+    (_name, kind, input, expected) => {
+      expect(redactFragment({ text: input, kind })).toEqual({ text: expected, status: "ok" });
+    }
+  );
+});
+
+// #275, a cost taken knowingly (f4, 2026-10-02): the text a label element's first
+// child holds is read as the label's value, so a child that holds no secret is
+// masked too. main masked this shape in `text` and kept `KEEPRW81` in `command`;
+// ffb837d kept it in both. Reading the child closes the eight shapes of the first
+// list in `command` as well, where main and ffb837d leaked them, and a child that
+// is a secret cannot be told from one that is not. Pinned so that a change to
+// it is seen.
+describe("the core on a label element's child that holds no secret (#275, over-masking)", () => {
+  const password = ["pass", "word"].join("");
+  it.each(["command", "text"] as const)("masks it, as %s", (kind) => {
+    expect(redactFragment({ text: `<${password}><user>KEEPRW81</user></${password}>`, kind })).toEqual({
+      text: `<${password}><user>${MASK}`,
+      status: "ok"
+    });
+  });
+});
+
+// #275: the list-separator search, edge by edge. It now halves over the
+// separators' positions instead of walking back from each value's end (the walk
+// went quadratic once a label element's child value had the scan read again from
+// the tag: unclosed-cdata in the time test). These shapes were found by a
+// differential fuzz against the walk. Since a child value is read again from its
+// tag whatever separator it holds, only the first-character shape among them
+// still turns when its edge moves. Taking a separator just after the value
+// changed no output in a fuzz of 40,000 inputs nor in 882 shapes written for
+// those edges. Missing one as the value's last character changed none there
+// either, but it is not without effect: in `text`, `password: a,secret_key=', r' K`
+// leaves ` r'` readable, as main does since #272 -- the list value ends right
+// after its last separator, so its last item is not read again, and that item's
+// quoted value runs on past the blank -- while the miss reads the item again and
+// masks it. A test here would pin that leak, so it is left to its own issue
+// (#278).
+describe("the core on a list separator at a value's edges (#275)", () => {
+  const passwd = ["pass", "wd"].join("");
+  const cases: readonly (readonly [string, "command" | "text", string, string])[] = [
+    // A child value: since the scan reads a child value's tags again whatever
+    // separator the text holds, `<D>` is masked too.
+    ["a separator as the value's last character", "text", `<${passwd}><_key><D>;`, `<${passwd}><_key>${MASK}`],
+    ["a separator as the value's first character", "text", `${passwd}>;${passwd}>' `, `${passwd}>${MASK}`],
+    ["a separator just after the value", "command", `<${passwd}><_key><y>>;`, `<${passwd}><_key>${MASK};`]
+  ];
+  it.each(cases)("%s, as %s", (_name, kind, input, expected) => {
+    expect(redactFragment({ text: input, kind })).toEqual({ text: expected, status: "ok" });
+  });
+});
+
+// #275, a review of the re-read: a list separator in a label element's child value
+// moved the scan to just after it, past the tags the value starts after, so a
+// label in those tags was never read (`<password><a token="S">v,x</a>`), where
+// ffb837d, main and the sed `mask()` hid it. The scan now goes on from no further
+// than the value says. The control holds no separator. The last two pin guards
+// that a mutation left green: the scan starts at the child's tag itself, so a
+// label element as the first child is read (`next: at + 2` skipped it), and the
+// separator is the last one inside the value, not the first on the line.
+describe("the core on a list separator in a label element's child value (#275)", () => {
+  const password = ["pass", "word"].join("");
+  const token = ["to", "ken"].join("");
+  const auth = ["Author", "ization"].join("");
+  const bearer = ["Bea", "rer"].join("");
+  const secretKey = ["secret", "_key"].join("");
+  const cases: readonly (readonly [string, string, string, string])[] = [
+    [
+      "a label in an attribute, then a comma",
+      `<${password}><a ${token}="FKRV0709">KEEPRW82,x</a></${password}>`,
+      `<${password}><a ${token}="${MASK}`,
+      `<${password}><a ${token}="${MASK}">${MASK}`
+    ],
+    [
+      "a scheme value in an attribute, then a comma",
+      `<${password}><a ${auth}="${bearer} FKRV0710">KEEPRW83,x</a>`,
+      `<${password}><a ${auth}="${bearer} ${MASK}`,
+      `<${password}><a ${auth}="${bearer} ${MASK}">${MASK}`
+    ],
+    [
+      "an option in the tag, then a comma",
+      `<${password}><a --${token} FKRV0711>KEEPRW84,x</a>`,
+      `<${password}><a --${token} ${MASK}`,
+      `<${password}><a --${token} ${MASK}`
+    ],
+    [
+      "a label in an attribute, then an ampersand",
+      `<${password}><a ${token}="FKRV0712">KEEPRW85&y</a>`,
+      `<${password}><a ${token}="${MASK}&y</a>`,
+      `<${password}><a ${token}="${MASK}">${MASK}`
+    ],
+    [
+      "a label element as the child, then a comma",
+      `<${password}><${token}>a,b FKRV0713</${token}>`,
+      `<${password}><${token}>${MASK}</${token}>`,
+      `<${password}><${token}>${MASK}</${token}>`
+    ],
+    [
+      "the control: no separator",
+      `<${password}><a ${token}="FKRV0714">KEEPRW86</a>`,
+      `<${password}><a ${token}="${MASK}`,
+      `<${password}><a ${token}="${MASK}">${MASK}`
+    ],
+    [
+      "a label element as the first child",
+      `<${password}><${token}>KEEPRW87 FKRV0715</${token}>`,
+      `<${password}><${token}>${MASK}</${token}>`,
+      `<${password}><${token}>${MASK}</${token}>`
+    ],
+    [
+      "a separator before the value",
+      `a,b ${password}: FKRV0716,${secretKey} FKRV0717`,
+      `a,b ${password}: ${MASK} ${MASK}`,
+      `a,b ${password}: ${MASK} ${MASK}`
+    ]
+  ];
+
+  it.each(
+    cases.flatMap(([name, input, command, text]) => [
+      [name, "command", input, command] as const,
+      [name, "text", input, text] as const
+    ])
+  )("%s, as %s", (_name, kind, input, expected) => {
+    expect(redactFragment({ text: input, kind })).toEqual({ text: expected, status: "ok" });
+  });
+});

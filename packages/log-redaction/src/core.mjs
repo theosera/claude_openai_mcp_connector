@@ -880,6 +880,77 @@ function collectLabelSpans(original, kind, vocabulary) {
     return { name, bare: open === end, start: textStart, end: textEnd, closeEnd: close + 1 };
   };
 
+  // Where the last walk over glued opening tags started, where it stopped, and
+  // where the text after them starts (-1 for none): labels nested as element
+  // names (`<password><password>…`) each ask from inside the same walk, and
+  // remembering it keeps a line of them linear.
+  let tagsFrom = -1;
+  let tagsTo = -1;
+  let tagsText = -1;
+  /**
+   * Where the text after the opening tags glued on from `at` starts (`<value>v`,
+   * `<a><b>v`, `<br/>v`), or the `<![CDATA[` that holds it, also with no tag
+   * before it (`<password><![CDATA[v]]>` with no closing tag on the line). -1 when
+   * neither starts at `at`, or a closing tag, a blank or a line end comes first.
+   */
+  const textAfterTags = (at) => {
+    if (at >= tagsFrom && at < tagsTo) return tagsText;
+    let index = at;
+    while (original[index] === "<" && !original.startsWith("<![CDATA[", index)) {
+      let name = index + 1;
+      while (name < original.length && /[A-Za-z0-9_.:-]/.test(original[name])) name += 1;
+      if (name === index + 1) break;
+      let close = name;
+      while (
+        close < original.length &&
+        original[close] !== ">" &&
+        original[close] !== "<" &&
+        !isLineEnd(original[close])
+      )
+        close += 1;
+      if (original[close] !== ">") break;
+      index = close + 1;
+    }
+    const ch = original[index];
+    const cdata = original.startsWith("<![CDATA[", index);
+    const text = (index > at || cdata) && ch !== undefined && (ch !== "<" || cdata) && !/\s/.test(ch) ? index : -1;
+    tagsFrom = at;
+    tagsTo = index;
+    tagsText = text;
+    return text;
+  };
+
+  // The text the last child value was read from, and that value: the labels
+  // nested inside one walk all reach the same text, and reading its value each
+  // time walked a quote that never closes to the line end once per label.
+  let childText = -1;
+  let childRead = null;
+  /**
+   * The value an element holds in the elements it starts with
+   * (`<password><value>v</value>`, as a settings file nests one): the text after
+   * them, read as a value so that what is glued on is too (`<a>v1</a><b>v2</b>`),
+   * or a CDATA section's content.
+   */
+  const childValue = (at) => {
+    const text = original[at] === "<" ? textAfterTags(at) : -1;
+    if (text < 0) return null;
+    let value;
+    if (text === childText) value = childRead;
+    else {
+      if (!original.startsWith("<![CDATA[", text)) value = valueAt(text);
+      else {
+        const start = text + 9;
+        const stop = cdataEnd(start);
+        value = stop < 0 ? valueAt(start) : stop > start ? { start, end: stop, next: stop + 3 } : null;
+      }
+      childText = text;
+      childRead = value;
+    }
+    // Labels after the tag are read again, as they were before the value was
+    // read: it runs on over the tags after the text (`v</value></password><token>`).
+    return value && { ...value, next: at };
+  };
+
   /**
    * The values an element holds, in order: its text. A plist writes a key and its
    * value as two elements (`<key>token</key><string>v</string>`): a bare `<key>`
@@ -947,15 +1018,31 @@ function collectLabelSpans(original, kind, vocabulary) {
     return labelAtEnd.test(original.slice(index, stop));
   };
 
-  /**
-   * The last list separator in `from`..`to`, or -1. Asked only of a value not
-   * shaped like a label, and the next such value starts after its last separator
-   * or after its end, so the searches together walk each character at most twice
-   * (labels nested in one word, `k:k:k:…`, are shaped like labels and never ask).
-   */
+  // Where the list separators are, found once on first use. Walking back from
+  // each value's end was linear while the next value started after the last
+  // one's end; a label element's child value now has the scan read again from
+  // the tag (#275), so the values of a line of label elements whose CDATA never
+  // ends each end at the line end, and the walks took quadratic time. Only the
+  // separators' positions are kept, so the memory follows how many there are,
+  // not the fragment's length.
+  let separators = null;
+  /** The last list separator in `from`..`to`, or -1. */
   const lastListSeparator = (from, to) => {
-    let at = to - 1;
-    while (at >= from && original[at] !== "," && original[at] !== ";" && original[at] !== "&") at -= 1;
+    if (!separators) {
+      separators = [];
+      for (let at = 0; at < original.length; at += 1) {
+        if (original[at] === "," || original[at] === ";" || original[at] === "&") separators.push(at);
+      }
+    }
+    // The first separator at or after `to`, by halving; the one before it is the last before `to`.
+    let low = 0;
+    let high = separators.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (separators[middle] < to) low = middle + 1;
+      else high = middle;
+    }
+    const at = low > 0 ? separators[low - 1] : -1;
     return at >= from ? at : -1;
   };
 
@@ -992,8 +1079,11 @@ function collectLabelSpans(original, kind, vocabulary) {
         // after its `>` is a value (`<password>v`, `<token>=v`, `Enter <password>:
         // v`), as step 2-3 read it. A blank after the `>` is not (`-p<password> -h
         // host`, `Optional<Secret> s`), and a closing tag's name takes nothing else.
+        // An opening tag followed by other opening tags holds its value in them
+        // (`<password><value>v</value>`).
         const glued = original[end] === ">" && end + 1 < original.length && !/[\s<]/.test(original[end + 1]);
         if (glued) value = valueAfter(separatorEnd(end + 1, original.length, false));
+        else if (!closingTag && original[end] === ">") value = childValue(end + 1);
       } else {
         // A quote right after the label that opens nothing -- an apostrophe-like
         // quote in `text` -- belongs to the label, as the anchor's `['"]?` allowed.
@@ -1020,8 +1110,15 @@ function collectLabelSpans(original, kind, vocabulary) {
       const labelLike = original[value.start] === "-" || last === ":" || last === "=" || optionAfterQuote;
       // A list value is read again from its last item: an item that ends in a
       // label (`S1,secret_key S2`, `S1;keytoken S2`) names the value after it.
+      // Never from further on than the value says, though: a label element's
+      // child value is read again from the tag, and a separator in the text
+      // must not skip the labels in the tags before it
+      // (`<password><a token="S">v,x</a>`).
       const separator = labelLike ? -1 : lastListSeparator(value.start, value.end);
-      if (!labelLike) label.lastIndex = Math.max(label.lastIndex, separator >= 0 ? separator + 1 : value.next);
+      if (!labelLike) {
+        const from = separator >= 0 ? Math.min(separator + 1, value.next) : value.next;
+        label.lastIndex = Math.max(label.lastIndex, from);
+      }
     }
   }
   return spans;

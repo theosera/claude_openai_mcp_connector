@@ -111,7 +111,44 @@ const SHAPES: readonly (readonly [string, string, (length: number) => string])[]
   // each, and the base64-line rule counted them as blanks, so every start walked
   // the rest of the run.
   ["line-separators", "FKPERFLS1", (n) => "token=FKPERFLS1\n" + LS.repeat(n - 16)],
-  ["paragraph-separators", "FKPERFPS1", (n) => "token=FKPERFPS1\n" + PS.repeat(n - 16)]
+  ["paragraph-separators", "FKPERFPS1", (n) => "token=FKPERFPS1\n" + PS.repeat(n - 16)],
+  // Label elements opened inside each other with no text after them, each
+  // walking the opening tags after it, and opening tags whose `>` never comes.
+  ["nested-label-elements", "FKPERFNE1", (n) => fill("token=FKPERFNE1 ", "<password>", n)],
+  ["label-elements-unclosed-tags", "FKPERFNU1", (n) => fill("token=FKPERFNU1 ", "<password><a b", n)],
+  // Label elements among closed tags, all glued, ending in a tag whose `>` never
+  // comes: every label walks the tags after it up to that tag. The shape above
+  // stops each walk at its own unclosed tag, so it stays linear with the memo of
+  // walked tags taken out; this one does not (#275).
+  [
+    "label-elements-before-an-unclosed-tag",
+    "FKPERFNW1",
+    (n) => fill("token=FKPERFNW1 ", "<password><a>", n - 4) + "<a b"
+  ],
+  // Label elements nested in each other, then a quote or a CDATA section that
+  // never ends: every label reaches the same text, and its value runs to the line
+  // end. Reading that value once per label was quadratic as text (47 and 64 ms at
+  // 32 KiB, under 2 ms on main), until the value was remembered for its text.
+  [
+    "label-elements-before-an-unclosed-quote",
+    "FKPERFNQ1",
+    (n) =>
+      "token=FKPERFNQ1 " + "<password>".repeat(Math.floor(n / 20)) + '"' + "x".repeat(n - 17 - 10 * Math.floor(n / 20))
+  ],
+  [
+    "label-elements-before-an-unclosed-cdata",
+    "FKPERFNC1",
+    (n) =>
+      "token=FKPERFNC1 " +
+      "<password>".repeat(Math.floor(n / 20)) +
+      '<![CDATA["' +
+      "x".repeat(n - 26 - 10 * Math.floor(n / 20))
+  ],
+  // Many labelled values among many list separators (`,` `;` `&`): each value's
+  // search for the last separator before its end halves over their positions. A
+  // walk over the positions, from either end, is quadratic here, and no other
+  // shape holds many separators.
+  ["values-among-separators", "FKPERFVS1", (n) => fill("token=FKPERFVS1 ", "token=v a, ", n)]
 ];
 
 function median(values: readonly number[]): number {
