@@ -944,6 +944,82 @@ describe("session-archive secret masking", () => {
   });
 });
 
+/** #291 exercises the shipped sed copies; the shared core has its own owner. */
+describe.each([
+  ["capture", captureHookPath],
+  ["archive", hookPath]
+])("hookmask #291: %s", (_hook, scriptPath) => {
+  let mask: string;
+  beforeAll(async () => {
+    mask = await shippedMask(scriptPath);
+  });
+
+  it("masks mixed attribute quotes and spaces, including non-secret metadata", () => {
+    const input = `<password first="S1 words" second='S2 words' third=S3 lang="en" class="hint"> K1`;
+    expect(runMask(mask, input)).toBe("<password ***MASKED***> K1");
+    const unrelated = '<span lang="en" class="hint"> K1';
+    expect(runMask(mask, unrelated)).toBe(unrelated);
+  });
+
+  it("keeps the existing armor window when an attribute contains a delimiter", () => {
+    for (const label of ["PRIVATE KEY", "PGP PRIVATE KEY BLOCK", "SSH2 ENCRYPTED PRIVATE KEY"]) {
+      const open = label.startsWith("SSH2") ? `---- BEGIN ${label} ----` : `-----BEGIN ${label}-----`;
+      const close = label.startsWith("SSH2") ? `---- END ${label} ----` : `-----END ${label}-----`;
+      const input = `<password first="S1" second="${open}">\n> ABCDEFGHIJKL\n${close}\nK1`;
+      const output = runMask(mask, input);
+      expect(output).not.toContain("S1");
+      expect(output).not.toContain("ABCDEFGHIJKL");
+      expect(output).toContain("K1");
+      expect(output.split("\n")).toHaveLength(input.split("\n").length);
+    }
+  });
+
+  for (const kind of ["command", "text"] as const) {
+    // The hooks have one sed function, with no kind flag. Exercise a shell
+    // command string and a text body through that same shipped function.
+    const inputFor = (element: string) => (kind === "command" ? `printf '%s' '${element}'` : element);
+    const shapes = [
+      ["closing tag on the next line", (attrs: string) => `<password ${attrs}>\n</password> K1`],
+      ["child element", (attrs: string) => `<password ${attrs}><value>x</value></password> K1`],
+      ["no closing tag on the line", (attrs: string) => `<password ${attrs}> K1`]
+    ] as const;
+
+    for (const [shape, element] of shapes) {
+      it(`${kind}: masks every attribute with ${shape} and preserves K1`, () => {
+        for (const attrs of ['first="S1" second="S2"', 'first="S1" second="S2" third="S3"']) {
+          const input = inputFor(element(attrs));
+          const output = runMask(mask, input);
+          for (const secret of ["S1", "S2", "S3"]) expect(output).not.toContain(secret);
+          expect(output).toContain("***MASKED***");
+          expect(output).toContain("K1");
+          expect(output.split("\n")).toHaveLength(input.split("\n").length);
+        }
+      });
+
+      it(`${kind}: keeps a single attribute masked with ${shape}`, () => {
+        const output = runMask(mask, inputFor(element('value="S1"')));
+        expect(output).not.toContain("S1");
+        expect(output).toContain("***MASKED***");
+        expect(output).toContain("K1");
+      });
+    }
+
+    it(`${kind}: keeps both #276 shapes masked`, () => {
+      for (const element of [
+        '<password value="S1"></password> K1',
+        "<token value=S1></token> K1",
+        "{password=S2}Bearer S1 K1"
+      ]) {
+        const output = runMask(mask, inputFor(element));
+        expect(output).not.toContain("S1");
+        expect(output).not.toContain("S2");
+        expect(output).toContain("***MASKED***");
+        expect(output).toContain("K1");
+      }
+    });
+  }
+});
+
 /**
  * The rule that replaced the PEM range mask recognises a key body only when the
  * body is the WHOLE line. A plain `cat` delivers it that way; plenty of other
@@ -1460,8 +1536,9 @@ describe("session-archive PEM key masking", () => {
     // line survives behind a masked path.
     const anchored = mask.split("\n").find((line) => line.includes(PREFIXED_CATCH_ALL));
     expect(anchored, "the anchored catch-all action is gone from the shipped mask()").toBeDefined();
-    const action = anchored!.slice(anchored!.indexOf("/s/") + 1);
-    const unanchored = mutate(mask, action, `${PREFIXED_CATCH_ALL_UNANCHORED}'`, "the anchored catch-all action");
+    // Keep the shell quote and continuation: this is no longer the last -e.
+    const action = anchored!.slice(anchored!.indexOf("/s/") + 1, anchored!.lastIndexOf("'"));
+    const unanchored = mutate(mask, action, PREFIXED_CATCH_ALL_UNANCHORED, "the anchored catch-all action");
     const leaked = runMask(unanchored, planted);
     expect(bodyLinesSurviving(leaked)).toBe(BODY.length);
     expect(leaked.split("\n").filter((line) => line.startsWith("***MASKED***:"))).toHaveLength(BODY.length);
@@ -1923,7 +2000,14 @@ describe("session-archive auth-scheme masking", () => {
     // caller controls, so every one of them must carry the boundary. Counting the
     // three the probes above reach would leave a fourth unguarded, and a fourth is
     // what each of the last two rounds turned up.
-    const keywordRules = rules.filter((line) => line.includes("token|key|secret"));
+    // #291's angle-bounded cleanup runs LAST, after all armor state changes.
+    // It may consume a delimiter only after those rules have already read it.
+    // Keep this exception exact and last so an earlier consuming rule cannot
+    // silently bypass the dash-boundary check below.
+    const xmlCleanup = rules.filter((line) => line.includes("[^<>]*>"));
+    expect(xmlCleanup).toHaveLength(1);
+    expect(rules.at(-1)).toBe(xmlCleanup[0]);
+    const keywordRules = rules.filter((line) => line.includes("token|key|secret") && line !== xmlCleanup[0]);
     expect(keywordRules).toHaveLength(6);
 
     // Four of the six carry the dash boundary. The other two are the addressed
@@ -4813,7 +4897,8 @@ describe("session-archive fence re-check after masking (#228)", () => {
     ]),
     ["bearer", "```bearer `x`"],
     ["the scheme rule", "```Authorization: Token `x`"],
-    ["a backtick inside the value", "```token=ab`c"]
+    ["a backtick inside the value", "```token=ab`c"],
+    ["#291: a backtick in the second XML attribute", '```<password first="S1" second="`S2`">']
   ];
 
   for (const [label, line] of SHAPES) {
@@ -4852,6 +4937,20 @@ describe("session-archive fence re-check after masking (#228)", () => {
     );
     expect(refence(everyRun, input, masked)).not.toBe(masked);
     expect(forgedTurnsAtTopLevel(archived(everyRun, forging(SHAPES[0][1])))).toBe(1);
+  });
+
+  it("#291 re-checks a line whose XML cleanup consumes a bare CR", () => {
+    // sed splits at LF, so a bare CR can be part of the removed attribute
+    // region. Refence must compare the changed CR segments as well as LF count.
+    const before = '```<password first="S1" second="`S2`"\r lang="en">\n';
+    const masked = maskRaw(before);
+    expect(masked).toBe("```<password ***MASKED***>\n");
+    expect(refence(refenceProgram, before, masked)).toBe("\\```<password ***MASKED***>\n");
+
+    // The renderer already escapes this CR-bearing text turn before masking;
+    // do not claim that removing refence alone exposes this particular turn.
+    const transcript = forging(before.trimEnd());
+    expect(forgedTurnsAtTopLevel(archived(refenceProgram, transcript))).toBe(0);
   });
 
   // Segments split on CR are compared pairwise. When their number changed, the
