@@ -24,7 +24,12 @@ import fs from "node:fs";
 import net from "node:net";
 import { pathToFileURL } from "node:url";
 import { loadEnvFile, loadHttpConfig } from "./config.js";
-import { OAuthStore, REGISTRATION_CONSENT_DEADLINE_MS, type RegistrationListing } from "./oauth/store.js";
+import {
+  OAuthStore,
+  readStateFile,
+  REGISTRATION_CONSENT_DEADLINE_MS,
+  type RegistrationListing
+} from "./oauth/store.js";
 
 const USAGE = `Usage:
   oauth:registrations list
@@ -123,28 +128,6 @@ function sha256(bytes: Buffer): string {
   return crypto.createHash("sha256").update(bytes).digest("hex");
 }
 
-interface Snapshot {
-  bytes: Buffer;
-  uid: number;
-  dev: number;
-  ino: number;
-}
-
-/**
- * The state file's bytes and identity, read through one descriptor so they
- * describe the same file. Taken through the path twice (stat, then read), the
- * owner and the bytes could belong to two files.
- */
-function snapshot(file: string): Snapshot {
-  const fd = fs.openSync(file, "r");
-  try {
-    const stat = fs.fstatSync(fd);
-    return { bytes: fs.readFileSync(fd), uid: stat.uid, dev: stat.dev, ino: stat.ino };
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
 function fail(message: string, code = 1): number {
   process.stderr.write(`oauth:registrations: ${message}\n`);
   return code;
@@ -154,20 +137,17 @@ const LINKED =
   "MCP_OAUTH_STATE_FILE is a symbolic link, and the server refuses to start on one: a save would replace " +
   "the link with a regular file. Set it to the path of the file itself. Nothing was read and nothing was written.";
 
-function isSymbolicLink(file: string): boolean {
-  try {
-    return fs.lstatSync(file).isSymbolicLink();
-  } catch {
-    return false;
-  }
-}
-
 /**
- * Run the command. `hooks.beforeWrite` exists for one test only: it runs after
- * every check and before the state file is re-read and written, so the test
- * can change the file in that window and see the write refused.
+ * Run the command. The hooks exist for tests only. `afterRead` runs after the
+ * first read and before the store is built from it, so a test can change the
+ * file in that window and see that the store holds what was read.
+ * `beforeWrite` runs after every check and before the state file is re-read
+ * and written, so a test can change the file there and see the write refused.
  */
-export async function main(args: string[], hooks: { beforeWrite?: () => void } = {}): Promise<number> {
+export async function main(
+  args: string[],
+  hooks: { afterRead?: () => void; beforeWrite?: () => void } = {}
+): Promise<number> {
   const command = args[0];
   if (command === "-h" || command === "--help") {
     process.stdout.write(USAGE);
@@ -196,10 +176,19 @@ export async function main(args: string[], hooks: { beforeWrite?: () => void } =
     );
   }
 
-  let first: Snapshot;
-  try {
-    first = snapshot(oauth.stateFile);
-  } catch (error) {
+  // One read, the way the server's store reads (O_NOFOLLOW): its bytes are what
+  // the sha below is taken over, what the store is built from, and what the
+  // last read before a write is compared with. Read again for the store, the
+  // file could change in place and back between the reads (#273).
+  const first = readStateFile(oauth.stateFile);
+  if (first.kind === "absent") {
+    if (command === "list") {
+      process.stdout.write("No state file yet at the configured path, so there are no registrations.\n");
+      return 0;
+    }
+    return fail("there is no state file at the configured path, so there is nothing to remove.");
+  }
+  if (first.kind === "failed") {
     // Only a missing file means "no registrations yet". Anything else (most
     // often EACCES: run as another account than the server) is a file this
     // command cannot read, and calling it absent would send an operator to
@@ -208,21 +197,13 @@ export async function main(args: string[], hooks: { beforeWrite?: () => void } =
     // A link, with its target or without, is what the server refuses too
     // (#263). Without this, a link with no target read as "no state file
     // yet" and the command exited 0 while the server would not start.
-    if (isSymbolicLink(oauth.stateFile)) {
-      return fail(LINKED);
-    }
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "ENOENT") {
-      return fail(
-        `the state file cannot be read (${code ?? "unknown error"}). Run this as the account the server runs as. Nothing was read and nothing was written.`
-      );
-    }
-    if (command === "list") {
-      process.stdout.write("No state file yet at the configured path, so there are no registrations.\n");
-      return 0;
-    }
-    return fail("there is no state file at the configured path, so there is nothing to remove.");
+    return fail(
+      first.failure.kind === "symlink"
+        ? LINKED
+        : `the state file cannot be read (${first.failure.code}). Run this as the account the server runs as. Nothing was read and nothing was written.`
+    );
   }
+  hooks.afterRead?.();
   const raw = first.bytes;
   const readSha = sha256(raw);
 
@@ -232,6 +213,7 @@ export async function main(args: string[], hooks: { beforeWrite?: () => void } =
     codeTtlSec: oauth.codeTtlSec,
     persistPath: oauth.stateFile,
     persistSecret: oauth.loginPassword,
+    stateFileRead: first,
     // Loading may promote a pending registration that holds a live token, and
     // the server writes that at once. Here it must not: `list` and the dry run
     // write nothing, and the sha check below compares against the file as read.
@@ -239,8 +221,9 @@ export async function main(args: string[], hooks: { beforeWrite?: () => void } =
   });
   if (store.loadOutcome !== "loaded") {
     // Never go on to write: the store holds nothing from the file, and saving
-    // would replace every registration and token in it. The store read the
-    // path again, so name what it found, not only the usual cause.
+    // would replace every registration and token in it. A read that failed
+    // was refused above, so this is a file that did not verify; the message
+    // still follows the store's reason.
     const kind = store.loadFailureKind;
     return fail(
       kind === "symlink"
@@ -253,14 +236,14 @@ export async function main(args: string[], hooks: { beforeWrite?: () => void } =
   const listings = store.listRegistrations();
   // Loading applies what the server applies at start, so it can drop entries
   // the file still holds. Say so, because --apply writes that out as well.
-  // `raw` is the bytes the sha was taken over, not the bytes the store
-  // verified, so this parse is only for the count and must not throw.
+  // `raw` is the bytes the store verified, so this parse succeeds; it stays
+  // inside a try because the count is a courtesy and must never stop the
+  // command.
   let inFile = listings.length;
   try {
     inFile = (JSON.parse(JSON.parse(raw.toString("utf8")).payload as string).clients ?? []).length as number;
   } catch {
-    // The count is a courtesy; the sha check before any write catches a file
-    // that changed between the two reads.
+    // Keep the listing's own count.
   }
   const droppedAtLoad = Math.max(0, inFile - listings.length);
   const dropNote = `${droppedAtLoad} registration(s) in the file are dropped on loading, as the server drops them at its next start; --apply writes that too.\n`;
@@ -329,12 +312,15 @@ export async function main(args: string[], hooks: { beforeWrite?: () => void } =
   // a chown leaves the bytes as they were, and so does replacing the file with
   // a copy. None of this makes the write a compare-and-swap — a save that
   // lands between here and the rename is still lost.
-  let last: Snapshot;
-  try {
-    last = snapshot(oauth.stateFile);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    return fail(`the state file could not be read again (${code ?? "unknown error"}). Nothing was written.`);
+  const last = readStateFile(oauth.stateFile);
+  if (last.kind !== "read") {
+    const why =
+      last.kind === "absent"
+        ? "ENOENT"
+        : last.failure.kind === "symlink"
+          ? "a symbolic link is there now"
+          : last.failure.code;
+    return fail(`the state file could not be read again (${why}). Nothing was written.`);
   }
   if (sha256(last.bytes) !== readSha) {
     return fail("the state file changed after it was read; something else is writing it. Nothing was written.");
