@@ -346,6 +346,32 @@ describe("redirect_uri policy", () => {
 describe("OAuthStore", () => {
   const opts = { accessTokenTtlSec: 60, refreshTokenTtlSec: 600, codeTtlSec: 60 };
 
+  describe("maxTokens validation", () => {
+    it.each([
+      ["NaN", NaN],
+      ["Infinity", Infinity],
+      ["-Infinity", -Infinity],
+      ["0", 0],
+      ["-1", -1],
+      ["1.5", 1.5],
+      ["MAX_SAFE_INTEGER + 1", Number.MAX_SAFE_INTEGER + 1]
+    ] as const)("rejects %s", (_name, maxTokens) => {
+      expect(() => new OAuthStore({ ...opts, maxTokens })).toThrow("maxTokens must be a positive safe integer");
+    });
+
+    it("accepts the default when maxTokens is omitted", () => {
+      expect(() => new OAuthStore(opts)).not.toThrow();
+    });
+
+    it("accepts explicit undefined", () => {
+      expect(() => new OAuthStore({ ...opts, maxTokens: undefined })).not.toThrow();
+    });
+
+    it.each([1, 4, Number.MAX_SAFE_INTEGER])("accepts positive safe integer %s", (maxTokens) => {
+      expect(() => new OAuthStore({ ...opts, maxTokens })).not.toThrow();
+    });
+  });
+
   it("issues single-use authorization codes", () => {
     const store = new OAuthStore(opts);
     const code = store.createAuthorizationCode({
