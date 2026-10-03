@@ -92,6 +92,64 @@ describe("the fuzz generator", () => {
   });
 });
 
+// Independent of FAMILY_NAMES: removing a generator family and regenerating the
+// sample must name the missing corpus shape, rather than shrinking both sides.
+// Input checks also catch a family that keeps its name but loses its shape.
+describe("committed L/M coverage", () => {
+  const shapes: readonly (readonly [string, string, "command" | "text", number, RegExp])[] = [
+    ["L-2", "url-userinfo-dash", "command", 2, /https:\/\/\S+:FK[A-Z0-9]{8}-FK[A-Z0-9]{8}@\S+/],
+    ["L-3", "url-userinfo-pair", "command", 2, /https:\/\/\S+:\S+@\S+ b http:\/\/\S+:\S+@\S+/],
+    [
+      "L-4",
+      "url-userinfo-quoted",
+      "command",
+      1,
+      /url=(["'])https:\/\/[^\s"']+:[^\s"']+@[^\s"']+\1 next=KEEP[A-Z0-9]{6}/
+    ],
+    ["L-5", "url-user-only", "command", 0, /https:\/\/KEEP[A-Z0-9]{6}@KEEP[A-Z0-9]{6}\.example\.test\/KEEP[A-Z0-9]{6}/],
+    ["L-6", "url-port-only", "command", 0, /https:\/\/KEEP[A-Z0-9]{6}\.example\.test:(8443|8080)\/KEEP[A-Z0-9]{6}/],
+    [
+      "L-7",
+      "url-userinfo-port",
+      "command",
+      1,
+      /postgres:\/\/KEEP[A-Z0-9]{6}:FK[A-Z0-9]{8}@KEEP[A-Z0-9]{6}\.example\.test:(5432|5433)\/KEEP[A-Z0-9]{6}/
+    ],
+    ["M-2", "passwd-dash-followed", "text", 2, /passwd=(["'])FK[A-Z0-9]{8}-----FK[A-Z0-9]{8}\1 next=KEEP[A-Z0-9]{6}/],
+    [
+      "M-3",
+      "passphrase-dash-quoted",
+      "command",
+      2,
+      /gpg --passphrase (["'])FK[A-Z0-9]{8} with-----FK[A-Z0-9]{8}\1 KEEP[A-Z0-9]{6}/
+    ],
+    [
+      "M-5",
+      "passwd-dash-certificate",
+      "text",
+      2,
+      /passwd=(["'])FK[A-Z0-9]{8}-----FK[A-Z0-9]{8}\1 KEEP[A-Z0-9]{6} -----BEGIN CERTIFICATE----- KEEP[A-Z0-9]{6}/
+    ],
+    [
+      "M-6",
+      "passwd-armor",
+      "text",
+      2,
+      /passwd=(["'])FK[A-Z0-9]{8}\1 KEEP[A-Z0-9]{6}\n-----BEGIN (RSA PRIVATE KEY|OPENSSH PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----\nFK[A-Z0-9]{8}\n-----END \2-----\nKEEP[A-Z0-9]{6}/
+    ]
+  ];
+
+  it.each(shapes)("%s (%s) is present with its input shape", (corpus, family, kind, secrets, shape) => {
+    const cases = sample.filter((c) => c.family === family);
+    expect(cases.length, `${corpus}: missing ${family} in the committed sample`).toBeGreaterThan(0);
+    for (const c of cases) {
+      expect(c.kind, c.id).toBe(kind);
+      expect(c.input, `${corpus}: ${c.id}`).toMatch(shape);
+      expect(c.secrets, c.id).toHaveLength(secrets);
+    }
+  });
+});
+
 describe("the fuzz runner's argument reader", () => {
   const E = ["--engine", "node x.mjs"];
 
