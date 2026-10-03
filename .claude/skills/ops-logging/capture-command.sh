@@ -428,9 +428,10 @@ mask() {
   # first attribute, and consuming an armor delimiter before the counter rules
   # would expose its body. This final substitution can only mask more.
   # The region ends at the next angle bracket on this physical line; it neither
-  # needs nor searches for a closing element, and never joins lines. This is a
-  # conservative text rule, not an XML parser (quoted angle brackets and start
-  # tags split across lines are outside this rule). Non-secret attribute names
+  # needs nor searches for a closing element, and never joins LF lines. Bare CR
+  # can be removed; archive's refence pass re-checks changed CR segments too.
+  # This is a conservative text rule, not an XML parser (quoted angle brackets
+  # and start tags split across LF lines are outside this rule). Attribute names
   # and values (for example lang="en" or class="hint") are masked too.
   sed -E \
     -e '/-----BEGIN PGP PRIVATE KEY BLOCK-----|---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----/{x;s/.*/o/;x;}' \

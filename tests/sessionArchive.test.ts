@@ -4898,8 +4898,7 @@ describe("session-archive fence re-check after masking (#228)", () => {
     ["bearer", "```bearer `x`"],
     ["the scheme rule", "```Authorization: Token `x`"],
     ["a backtick inside the value", "```token=ab`c"],
-    ["#291: a backtick in the second XML attribute", '```<password first="S1" second="`S2`">'],
-    ["#291: XML attributes spanning a bare CR", '```<password first="S1" second="`S2`"\r lang="en">']
+    ["#291: a backtick in the second XML attribute", '```<password first="S1" second="`S2`">']
   ];
 
   for (const [label, line] of SHAPES) {
@@ -4938,6 +4937,20 @@ describe("session-archive fence re-check after masking (#228)", () => {
     );
     expect(refence(everyRun, input, masked)).not.toBe(masked);
     expect(forgedTurnsAtTopLevel(archived(everyRun, forging(SHAPES[0][1])))).toBe(1);
+  });
+
+  it("#291 re-checks a line whose XML cleanup consumes a bare CR", () => {
+    // sed splits at LF, so a bare CR can be part of the removed attribute
+    // region. Refence must compare the changed CR segments as well as LF count.
+    const before = '```<password first="S1" second="`S2`"\r lang="en">\n';
+    const masked = maskRaw(before);
+    expect(masked).toBe("```<password ***MASKED***>\n");
+    expect(refence(refenceProgram, before, masked)).toBe("\\```<password ***MASKED***>\n");
+
+    // The renderer already escapes this CR-bearing text turn before masking;
+    // do not claim that removing refence alone exposes this particular turn.
+    const transcript = forging(before.trimEnd());
+    expect(forgedTurnsAtTopLevel(archived(refenceProgram, transcript))).toBe(0);
   });
 
   // Segments split on CR are compared pairwise. When their number changed, the
