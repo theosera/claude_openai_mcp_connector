@@ -20,7 +20,7 @@ import {
 import { broken, type Engine, type EngineResult, readable } from "./tools/redactionJudge.js";
 
 /**
- * The differential fuzz, on the committed sample (seed 1, 190 cases = 10 of each
+ * The differential fuzz, on the committed sample (seed 1, 290 cases = 10 of each
  * family). The full runs (several seeds x 16,000 cases) are the tool's job; this
  * pins the generator and shows the runner can see what it claims to compare.
  */
@@ -55,7 +55,7 @@ const identity: Engine = (fragments) => fragments.map(({ text }) => ({ text, sta
 
 describe("the fuzz generator", () => {
   it("regenerates the committed sample byte for byte", () => {
-    const text = generate(1, 190)
+    const text = generate(1, 290)
       .map((c) => JSON.stringify(c))
       .join("\n");
     expect(`${text}\n`).toBe(readFileSync(SAMPLE, "utf8"));

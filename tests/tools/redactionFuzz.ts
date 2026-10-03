@@ -6,7 +6,8 @@
  *     --engine "node packages/log-redaction/src/cli.mjs"
  *
  * Every case carries marker words: a secret is `FK` + 8 characters with at least
- * one digit, a preserve word is `KEEP` + 6. No marker is part of another or of the
+ * one digit, a preserve word is `KEEP` + 6 (plus a host/port suffix in the
+ * port families, so losing just the port is visible). No marker is part of another or of the
  * mask token, and every marker is in the input; the generator refuses a case that
  * breaks either rule instead of dropping it. No marker ends with a label
  * (`SECRET_LABELS`), and the generator draws such a word again, as it does a word
@@ -72,7 +73,7 @@ function rng(seed: number): () => number {
 
 const ALNUM = "ABCDEFGHJKLNPQRTUVWXYZ0123456789";
 
-type Parts = { S: () => string; K: () => string; pick: <T>(xs: readonly T[]) => T; r: () => number };
+type Parts = { S: () => string; K: (suffix?: string) => string; pick: <T>(xs: readonly T[]) => T; r: () => number };
 
 type Family = { name: string; kind: "command" | "text"; make: (p: Parts) => string };
 
@@ -84,9 +85,10 @@ const LABELS = ["password", "token", "secret", "api_key", "pat"] as const;
  * first, dash runs of 4 to 8, an unclosed quote from prose, the shell's `'\''` and
  * YAML's `''`, argument-position secrets, adjacent keywords, and a preserve word on
  * the next line. Preserve words sit at the edges of the secret's range, where an
- * over-reaching rule eats them first. The last two families come from sections L
- * and M of the redaction corpus: a password in a URL's userinfo between a kept user
- * name and host, and a passwd value joined by five dashes just before a key's armor.
+ * over-reaching rule eats them first. The requested additions from sections L and
+ * M of the redaction corpus each have a named family: URL userinfo (including password-free negatives
+ * and ports), quoted five-dash values, and adjacent certificate / private-key
+ * armor. Each M family keeps a word immediately after the quoted value.
  */
 const FAMILIES: readonly Family[] = [
   { name: "mysql-p", kind: "command", make: (p) => `mysql -u app -p${p.S()} ${p.K()}` },
@@ -160,7 +162,73 @@ const FAMILIES: readonly Family[] = [
     make: (p) => {
       const q = p.pick(Q);
       const block = p.pick(["RSA PRIVATE KEY", "OPENSSH PRIVATE KEY", "PGP PRIVATE KEY BLOCK"]);
-      return `passwd=${q}${p.S()}-----${p.S()}${q}\n-----BEGIN ${block}-----\n${p.S()}\n-----END ${block}-----\n${p.K()} after`;
+      return `passwd=${q}${p.S()}-----${p.S()}${q} ${p.K()}\n-----BEGIN ${block}-----\n${p.S()}\n-----END ${block}-----\n${p.K()} after`;
+    }
+  },
+  {
+    name: "url-userinfo-dash",
+    kind: "command",
+    make: (p) => `curl https://${p.K()}:${p.S()}-${p.S()}@${p.K()}.example.test/x`
+  },
+  {
+    name: "url-userinfo-pair",
+    kind: "command",
+    make: (p) => `a https://${p.K()}:${p.S()}@${p.K()}.example.test/ b http://${p.K()}:${p.S()}@${p.K()}.example.test/`
+  },
+  {
+    name: "url-userinfo-quoted",
+    kind: "command",
+    make: (p) => {
+      const q = p.pick(Q);
+      return `url=${q}https://${p.K()}:${p.S()}@${p.K()}.example.test/${q} next=${p.K()}`;
+    }
+  },
+  {
+    name: "url-user-only",
+    kind: "command",
+    make: (p) => `https://${p.K()}@${p.K()}.example.test/${p.K()}`
+  },
+  {
+    name: "url-port-only",
+    kind: "command",
+    make: (p) => `https://${p.K(`.example.test:${p.pick([8443, 8080])}`)}/${p.K()}`
+  },
+  {
+    name: "url-userinfo-port",
+    kind: "command",
+    make: (p) => `psql postgres://${p.K()}:${p.S()}@${p.K(`.example.test:${p.pick([5432, 5433])}`)}/${p.K()}`
+  },
+  {
+    name: "passwd-dash-followed",
+    kind: "text",
+    make: (p) => {
+      const q = p.pick(Q);
+      return `passwd=${q}${p.S()}-----${p.S()}${q} next=${p.K()}`;
+    }
+  },
+  {
+    name: "passphrase-dash-quoted",
+    kind: "command",
+    make: (p) => {
+      const q = p.pick(Q);
+      return `gpg --passphrase ${q}${p.S()} with-----${p.S()}${q} ${p.K()}`;
+    }
+  },
+  {
+    name: "passwd-dash-certificate",
+    kind: "text",
+    make: (p) => {
+      const q = p.pick(Q);
+      return `passwd=${q}${p.S()}-----${p.S()}${q} ${p.K()} -----BEGIN CERTIFICATE----- ${p.K()}`;
+    }
+  },
+  {
+    name: "passwd-armor",
+    kind: "text",
+    make: (p) => {
+      const q = p.pick(Q);
+      const block = p.pick(["RSA PRIVATE KEY", "OPENSSH PRIVATE KEY", "PGP PRIVATE KEY BLOCK"]);
+      return `passwd=${q}${p.S()}${q} ${p.K()}\n-----BEGIN ${block}-----\n${p.S()}\n-----END ${block}-----\n${p.K()}`;
     }
   }
 ];
@@ -202,8 +270,9 @@ export function generate(seed: number, count: number): FuzzCase[] {
         secrets.push(w);
         return w;
       },
-      K: () => {
-        const w = word(r, "KEEP", 6);
+      K: (suffix = "") => {
+        // Keep the host and port as one marker so losing only the port is visible.
+        const w = word(r, "KEEP", 6) + suffix;
         preserve.push(w);
         return w;
       },
@@ -396,6 +465,11 @@ function main(argv: string[]): void {
         new_leaked_by_family: byFamily(col.new_leaked),
         new_broken_by_family: byFamily(col.new_broken),
         main_leaked_by_family: byFamily(col.main_leaked),
+        main_broken_by_family: byFamily(col.main_broken),
+        fixed_by_family: byFamily(col.fixed),
+        omitted_by_family: byFamily(col.omitted),
+        copy_mismatch_by_family: byFamily(col.copy_mismatch),
+        cases_by_family: byFamily(cases.map((c) => c.id)),
         first: {
           new_leaked: col.new_leaked.slice(0, 3),
           new_broken: col.new_broken.slice(0, 3),
