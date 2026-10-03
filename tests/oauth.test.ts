@@ -377,6 +377,33 @@ describe("redirect_uri policy", () => {
 describe("OAuthStore", () => {
   const opts = { accessTokenTtlSec: 60, refreshTokenTtlSec: 600, codeTtlSec: 60 };
 
+  describe.each(["accessTokenTtlSec", "refreshTokenTtlSec", "codeTtlSec"] as const)("%s validation", (key) => {
+    it.each([
+      ["NaN", NaN],
+      ["Infinity", Infinity],
+      ["-Infinity", -Infinity],
+      ["0", 0],
+      ["-1", -1],
+      ["1.5", 1.5],
+      ["MAX_SAFE_INTEGER + 1", Number.MAX_SAFE_INTEGER + 1]
+    ] as const)("rejects %s with RangeError", (_name, value) => {
+      expect(() => new OAuthStore({ ...opts, [key]: value })).toThrow(RangeError);
+    });
+
+    it.each([1, 60, 600, 3600, 86_400, 2_592_000, Number.MAX_SAFE_INTEGER])(
+      "accepts positive safe integer %s",
+      (value) => {
+        expect(() => new OAuthStore({ ...opts, [key]: value })).not.toThrow();
+      }
+    );
+  });
+
+  it("accepts the TTL defaults used by loadOAuthConfig", () => {
+    expect(
+      () => new OAuthStore({ accessTokenTtlSec: 3600, refreshTokenTtlSec: 2_592_000, codeTtlSec: 60 })
+    ).not.toThrow();
+  });
+
   describe("maxTokens validation", () => {
     it.each([
       ["NaN", NaN],
@@ -388,6 +415,12 @@ describe("OAuthStore", () => {
       ["MAX_SAFE_INTEGER + 1", Number.MAX_SAFE_INTEGER + 1]
     ] as const)("rejects %s", (_name, maxTokens) => {
       expect(() => new OAuthStore({ ...opts, maxTokens })).toThrow("maxTokens must be a positive safe integer");
+    });
+
+    it("rejects null with RangeError", () => {
+      // JavaScript callers can pass null despite the TypeScript option type.
+      // @ts-expect-error Deliberately exercise an invalid runtime option.
+      expect(() => new OAuthStore({ ...opts, maxTokens: null })).toThrow(RangeError);
     });
 
     it("accepts the default when maxTokens is omitted", () => {

@@ -518,6 +518,11 @@ export class OAuthStore {
   private loadFailure?: LoadFailure;
 
   constructor(private readonly options: OAuthStoreOptions) {
+    for (const key of ["accessTokenTtlSec", "refreshTokenTtlSec", "codeTtlSec"] as const) {
+      if (!Number.isSafeInteger(options[key]) || options[key] <= 0) {
+        throw new RangeError(`${key} must be a positive safe integer`);
+      }
+    }
     this.now = options.now ?? Date.now;
     this.maxTokens = options.maxTokens === undefined ? DEFAULT_MAX_TOKENS : options.maxTokens;
     if (!Number.isSafeInteger(this.maxTokens) || this.maxTokens <= 0) {
