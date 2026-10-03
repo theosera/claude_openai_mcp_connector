@@ -44,6 +44,37 @@ function mustRegister(store: OAuthStore, redirectUris: string[], clientName?: st
   return client;
 }
 
+type IndexedTokenRecord = { familyId: string; generation: number };
+type TokenFamilyMembers = { access: Set<string>; refresh: Set<string> };
+
+function tokenMaps(store: OAuthStore) {
+  return store as unknown as {
+    accessTokens: Map<string, IndexedTokenRecord>;
+    refreshTokens: Map<string, IndexedTokenRecord>;
+    tokenFamilies: Map<string, TokenFamilyMembers>;
+  };
+}
+
+/** Recompute independently from the authoritative maps, including empty-family cleanup. */
+function expectTokenFamilyIndex(store: OAuthStore): void {
+  const maps = tokenMaps(store);
+  const expected = new Map<string, TokenFamilyMembers>();
+  for (const [kind, records] of [
+    ["access", maps.accessTokens],
+    ["refresh", maps.refreshTokens]
+  ] as const) {
+    for (const [key, record] of records) {
+      let members = expected.get(record.familyId);
+      if (!members) {
+        members = { access: new Set(), refresh: new Set() };
+        expected.set(record.familyId, members);
+      }
+      members[kind].add(key);
+    }
+  }
+  expect(maps.tokenFamilies).toEqual(expected);
+}
+
 async function makeStore(): Promise<KnowledgeStore> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-oauth-vault-"));
   const patchStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-oauth-patches-"));
@@ -633,9 +664,16 @@ describe("OAuthStore", () => {
     t += 30_000; // legitimate client replays inside the window
     const replayed = store.rotateRefreshToken(tokens.refreshToken, "c");
     expect(replayed).not.toBeNull();
-    // Every hop of the interceptor's chain is dead — access and refresh legs.
+    // Check every access leg before presenting any refresh token: a tombstone
+    // replay during those presentations could revoke the next hop itself and
+    // conceal a revokeFamilyAbove that only removed the direct successor.
     for (const pair of [lost!, hop1!, hop2!]) {
       expect(store.validateAccessToken(pair.accessToken)).toBeNull();
+      expect(
+        tokenMaps(store).refreshTokens.has(crypto.createHash("sha256").update(pair.refreshToken).digest("hex"))
+      ).toBe(false);
+    }
+    for (const pair of [lost!, hop1!, hop2!]) {
       expect(store.rotateRefreshToken(pair.refreshToken, "c")).toBeNull();
     }
     expect(store.validateAccessToken(replayed!.accessToken)?.clientId).toBe("c");
@@ -1545,6 +1583,170 @@ describe("OAuthStore", () => {
   });
 });
 
+describe("OAuthStore family index (#282)", () => {
+  const opts = { accessTokenTtlSec: 600, refreshTokenTtlSec: 600, codeTtlSec: 60 };
+  const hash = (token: string) => crypto.createHash("sha256").update(token).digest("hex");
+
+  it("indexes both token maps after every mint, rotation and replay", () => {
+    const store = new OAuthStore({ ...opts, now: () => 1000 });
+    expectTokenFamilyIndex(store);
+    const root = store.issueTokens("c", "vault.read", "r");
+    expectTokenFamilyIndex(store);
+    const family = tokenMaps(store).accessTokens.get(hash(root.accessToken))!.familyId;
+    const rotated = store.rotateRefreshToken(root.refreshToken, "c");
+    expect(rotated).not.toBeNull();
+    expectTokenFamilyIndex(store);
+    expect(tokenMaps(store).tokenFamilies.get(family)).toEqual({
+      access: new Set([hash(root.accessToken), hash(rotated!.accessToken)]),
+      refresh: new Set([hash(root.refreshToken), hash(rotated!.refreshToken)])
+    });
+    expect(store.rotateRefreshToken(root.refreshToken, "c")).not.toBeNull();
+    expectTokenFamilyIndex(store);
+    expect(store.validateAccessToken(rotated!.accessToken)).toBeNull();
+    expect(tokenMaps(store).tokenFamilies.size).toBe(1);
+  });
+
+  it("removes cap-evicted access and refresh hashes from the index", () => {
+    const store = new OAuthStore({ ...opts, maxTokens: 2, now: () => 1000 });
+    const first = store.issueTokens("c", "vault.read", "r");
+    const firstFamily = tokenMaps(store).accessTokens.get(hash(first.accessToken))!.familyId;
+    store.issueTokens("c", "vault.read", "r");
+    expectTokenFamilyIndex(store);
+    store.issueTokens("c", "vault.read", "r");
+    expect(tokenMaps(store).accessTokens.has(hash(first.accessToken))).toBe(false);
+    expect(tokenMaps(store).refreshTokens.has(hash(first.refreshToken))).toBe(false);
+    expectTokenFamilyIndex(store);
+    expect(tokenMaps(store).tokenFamilies.has(firstFamily)).toBe(false);
+  });
+
+  it("removes an expired access hash from the index during validation", () => {
+    let t = 1000;
+    const store = new OAuthStore({ ...opts, accessTokenTtlSec: 1, now: () => t });
+    const pair = store.issueTokens("c", "vault.read", "r");
+    t += 1000;
+    expect(store.validateAccessToken(pair.accessToken)).toBeNull();
+    expect(tokenMaps(store).accessTokens.size).toBe(0);
+    expect(tokenMaps(store).refreshTokens.size).toBe(1);
+    expectTokenFamilyIndex(store);
+  });
+
+  it("removes an expired refresh hash from the index during rotation", () => {
+    let t = 1000;
+    const store = new OAuthStore({ ...opts, refreshTokenTtlSec: 1, now: () => t });
+    const pair = store.issueTokens("c", "vault.read", "r");
+    t += 1000;
+    expect(store.rotateRefreshToken(pair.refreshToken, "c")).toBeNull();
+    expect(tokenMaps(store).accessTokens.size).toBe(1);
+    expect(tokenMaps(store).refreshTokens.size).toBe(0);
+    expectTokenFamilyIndex(store);
+  });
+
+  it("removes a never-rotated refresh hash from the index on client mismatch", () => {
+    const store = new OAuthStore({ ...opts, now: () => 1000 });
+    const pair = store.issueTokens("c", "vault.read", "r");
+    expect(store.rotateRefreshToken(pair.refreshToken, "other")).toBeNull();
+    expect(tokenMaps(store).accessTokens.size).toBe(1);
+    expect(tokenMaps(store).refreshTokens.size).toBe(0);
+    expectTokenFamilyIndex(store);
+  });
+
+  it("removes revoked access and refresh hashes from the index without touching another family", () => {
+    const store = new OAuthStore({ ...opts, now: () => 1000 });
+    const root = store.issueTokens("c", "vault.read", "r");
+    const lost = store.rotateRefreshToken(root.refreshToken, "c")!;
+    const downstream = store.rotateRefreshToken(lost.refreshToken, "c")!;
+    const bystander = store.issueTokens("c", "vault.read", "r");
+    store.observeRotationReplay(root.refreshToken, "c");
+    expectTokenFamilyIndex(store);
+    expect(tokenMaps(store).accessTokens.size).toBe(2);
+    expect(tokenMaps(store).refreshTokens.size).toBe(2);
+    expect(store.validateAccessToken(lost.accessToken)).toBeNull();
+    expect(store.validateAccessToken(downstream.accessToken)).toBeNull();
+    expect(store.validateAccessToken(bystander.accessToken)?.clientId).toBe("c");
+  });
+
+  it("removes registration access and refresh hashes and empty families from the index", () => {
+    const store = new OAuthStore({ ...opts, now: () => 1000 });
+    const removed = mustRegister(store, ["https://removed.example/cb"]);
+    const kept = mustRegister(store, ["https://kept.example/cb"]);
+    const root = store.issueTokens(removed.clientId, "vault.read", "r");
+    store.rotateRefreshToken(root.refreshToken, removed.clientId);
+    const bystander = store.issueTokens(kept.clientId, "vault.read", "r");
+    expect(store.removeRegistrations([removed.clientId])).toBe(true);
+    expectTokenFamilyIndex(store);
+    expect(tokenMaps(store).tokenFamilies.size).toBe(1);
+    expect(tokenMaps(store).accessTokens.size).toBe(1);
+    expect(tokenMaps(store).refreshTokens.size).toBe(1);
+    expect(store.validateAccessToken(bystander.accessToken)?.clientId).toBe(kept.clientId);
+  });
+
+  it.each(["access", "refresh"] as const)("removes expired %s hashes from the index during pruning", (kind) => {
+    let t = 1000;
+    const store = new OAuthStore({
+      ...opts,
+      ...(kind === "access" ? { accessTokenTtlSec: 1 } : { refreshTokenTtlSec: 1 }),
+      now: () => t
+    });
+    store.issueTokens("c", "vault.read", "r");
+    t += 1000;
+    store.createAuthorizationCode({
+      clientId: "c",
+      redirectUri: "https://c.example/cb",
+      codeChallenge: "challenge",
+      scope: "vault.read",
+      resource: "r"
+    });
+    expect(tokenMaps(store)[kind === "access" ? "accessTokens" : "refreshTokens"].size).toBe(0);
+    expectTokenFamilyIndex(store);
+    t += 600_000;
+    store.registerClient(["https://new.example/cb"]);
+    expectTokenFamilyIndex(store);
+    expect(tokenMaps(store).tokenFamilies.size).toBe(0);
+  });
+
+  it.each([0, 2000])("revokes by family without enumerating token maps with %i unrelated families", (count) => {
+    const store = new OAuthStore({ ...opts, maxTokens: count + 10, now: () => 1000 });
+    for (let i = 0; i < count; i++) store.issueTokens("bystander", "vault.read", "r");
+    const root = store.issueTokens("c", "vault.read", "r");
+    const lost = store.rotateRefreshToken(root.refreshToken, "c")!;
+    const downstream = store.rotateRefreshToken(lost.refreshToken, "c")!;
+    const maps = tokenMaps(store);
+    const family = maps.refreshTokens.get(hash(root.refreshToken))!.familyId;
+    const members = maps.tokenFamilies.get(family)!;
+    const allowed = new Set([...members.access, ...members.refresh]);
+    const spies: Array<{ mockRestore: () => void }> = [];
+    let lookups = 0;
+    try {
+      for (const map of [maps.accessTokens, maps.refreshTokens]) {
+        const get = map.get.bind(map);
+        spies.push(
+          vi.spyOn(map, "get").mockImplementation((key) => {
+            expect(allowed.has(key), "looked up an unrelated family's token").toBe(true);
+            lookups++;
+            return get(key);
+          })
+        );
+        for (const method of [Symbol.iterator, "entries", "values", "keys", "forEach"] as const) {
+          spies.push(
+            vi.spyOn(map, method).mockImplementation(() => {
+              throw new Error("family revocation enumerated an entire token map");
+            })
+          );
+        }
+      }
+      store.observeRotationReplay(root.refreshToken, "c");
+      expect(lookups).toBeLessThanOrEqual(allowed.size * 2 + 1);
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+    expectTokenFamilyIndex(store);
+    expect(maps.accessTokens.size).toBe(count + 1);
+    expect(maps.refreshTokens.size).toBe(count + 1);
+    expect(store.validateAccessToken(lost.accessToken)).toBeNull();
+    expect(store.validateAccessToken(downstream.accessToken)).toBeNull();
+  });
+});
+
 describe("OAuthStore persistence", () => {
   const opts = { accessTokenTtlSec: 60, refreshTokenTtlSec: 600, codeTtlSec: 60 };
   const secret = "hunter2";
@@ -1571,6 +1773,95 @@ describe("OAuthStore persistence", () => {
         .digest("hex")
     };
   }
+
+  it("rebuilds the family index for loaded access and refresh records without changing the state schema (#282)", async () => {
+    const file = await stateFilePath();
+    const persisted = { ...opts, persistPath: file, persistSecret: secret, now: () => 1000 };
+    const store = new OAuthStore(persisted);
+    const root = store.issueTokens("c", "vault.read", "r");
+    const lost = store.rotateRefreshToken(root.refreshToken, "c")!;
+    store.issueTokens("other", "vault.read", "r");
+    const envelope = JSON.parse(await fs.readFile(file, "utf8"));
+    const payload = JSON.parse(envelope.payload);
+    expect(Object.keys(envelope).sort()).toEqual(["mac", "payload", "salt", "version"]);
+    expect(envelope.version).toBe(1);
+    expect(Object.keys(payload).sort()).toEqual(["accessTokens", "clients", "refreshTokens", "rotatedTombstones"]);
+    expect(Object.keys(payload.accessTokens[0]).sort()).toEqual([
+      "clientId",
+      "expiresAt",
+      "familyId",
+      "generation",
+      "resource",
+      "scope",
+      "tokenHash"
+    ]);
+    expect(Object.keys(payload.refreshTokens[0]).sort()).toEqual([
+      "clientId",
+      "expiresAt",
+      "familyId",
+      "generation",
+      "resource",
+      "rotatedAt",
+      "scope",
+      "tokenHash"
+    ]);
+    const loaded = new OAuthStore(persisted);
+    expect(loaded.loadOutcome).toBe("loaded");
+    expect(tokenMaps(loaded).accessTokens.size).toBe(3);
+    expect(tokenMaps(loaded).refreshTokens.size).toBe(3);
+    expectTokenFamilyIndex(loaded);
+    loaded.observeRotationReplay(root.refreshToken, "c");
+    expect(loaded.validateAccessToken(lost.accessToken)).toBeNull();
+    expectTokenFamilyIndex(loaded);
+  });
+
+  it.each(["accessTokens", "refreshTokens"] as const)(
+    "replaces prior family membership when a loaded %s hash occurs twice (#282)",
+    async (kind) => {
+      const file = await stateFilePath();
+      const persisted = { ...opts, persistPath: file, persistSecret: secret, now: () => 1000 };
+      const store = new OAuthStore(persisted);
+      store.issueTokens("c", "vault.read", "r");
+      const envelope = JSON.parse(await fs.readFile(file, "utf8"));
+      const payload = JSON.parse(envelope.payload);
+      const original = payload[kind][0];
+      payload[kind].push({ ...original, familyId: "replacement-family" });
+      await fs.writeFile(
+        file,
+        JSON.stringify(signedEnvelope(envelope, JSON.stringify(payload), Buffer.from(envelope.salt, "hex")))
+      );
+      const loaded = new OAuthStore(persisted);
+      expect(loaded.loadOutcome).toBe("loaded");
+      expect(tokenMaps(loaded)[kind].get(original.tokenHash)?.familyId).toBe("replacement-family");
+      expectTokenFamilyIndex(loaded);
+    }
+  );
+
+  it("clears the family index after a load fails following partial token hydration (#282)", async () => {
+    const file = await stateFilePath();
+    const persisted = { ...opts, persistPath: file, persistSecret: secret, now: () => 1000 };
+    const store = new OAuthStore(persisted);
+    store.issueTokens("c", "vault.read", "r");
+    const envelope = JSON.parse(await fs.readFile(file, "utf8"));
+    const payload = JSON.parse(envelope.payload);
+    expect(payload.accessTokens).toHaveLength(1);
+    expect(payload.refreshTokens).toHaveLength(1);
+    // The MAC verifies and both token maps hydrate before this non-iterable
+    // tombstone collection throws. A bad MAC would leave the index empty
+    // already and could never expose a missing clear in the catch block.
+    payload.rotatedTombstones = {};
+    const corrupted = JSON.stringify(
+      signedEnvelope(envelope, JSON.stringify(payload), Buffer.from(envelope.salt, "hex"))
+    );
+    await fs.writeFile(file, corrupted);
+    const loaded = new OAuthStore(persisted);
+    expect(loaded.loadOutcome).toBe("failed");
+    expect(tokenMaps(loaded).accessTokens.size).toBe(0);
+    expect(tokenMaps(loaded).refreshTokens.size).toBe(0);
+    expectTokenFamilyIndex(loaded);
+    expect(tokenMaps(loaded).tokenFamilies.size).toBe(0);
+    expect(await fs.readFile(file, "utf8")).toBe(corrupted);
+  });
 
   it("requires persistSecret when persistPath is set", async () => {
     const file = await stateFilePath();
