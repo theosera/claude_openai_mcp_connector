@@ -4,7 +4,7 @@ Synthetic inputs for the log redactor (#249). Every value is made up: the secret
 
 ## `corpus.jsonl`
 
-147 cases, one JSON object per line. The fields are:
+179 cases, one JSON object per line. The fields are:
 
 - `id` and `section`: the case's name and the group it belongs to.
 - `kind`: `command` or `text`, the input kinds `packages/log-redaction/src/policy.mjs` declares.
@@ -23,6 +23,8 @@ Section O, added at 20:33 JST, holds marker words that end in a label word. #262
 
 - O-1 and O-2: a quoted passphrase whose first word ends in `KEY`, in double and single quotes. The sed `mask()` reads the end of that word as a label: it masks the second word, takes the closing quote with it, and the quoted-passphrase rule no longer applies, so the first word is left in the clear (`baseline.leaked`). The core masks both words.
 - O-3 is left out: a URL whose user name ends in `KEY`. Both the sed `mask()` and the core read the end of the user name and the colon as a label, and mask the host's preserve word (#261). It would fail the core's corpus check today, so it comes in with the fix for #261.
+
+Section P holds #276's label-element attribute values and labels after unquoted values ending in a closing brace, bracket or parenthesis, in both input kinds. Its controls keep non-label attributes readable and mask closing delimiters inside a secret when no label follows. The sed baseline for these 32 additions was measured from revision `965df52`, like the earlier sections.
 
 The file keeps only the fields above. Two kinds of field are left out:
 
