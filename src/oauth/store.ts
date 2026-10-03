@@ -121,6 +121,90 @@ export type LoadOutcome = "absent" | "loaded" | "failed";
  */
 type LoadFailure = { kind: "unreadable"; code: string } | { kind: "symlink" } | { kind: "unverified" };
 
+/**
+ * What one read of a state file found: its bytes with the identity of the file
+ * they came from, nothing at the path, or why it could not be read. Only
+ * `readStateFile` makes these; a store given one checks that.
+ */
+export type StateFileRead =
+  | {
+      readonly kind: "read";
+      readonly file: string;
+      readonly bytes: Buffer;
+      readonly uid: number;
+      readonly dev: number;
+      readonly ino: number;
+    }
+  | { readonly kind: "absent"; readonly file: string }
+  | { readonly kind: "failed"; readonly file: string; readonly failure: Exclude<LoadFailure, { kind: "unverified" }> };
+
+/** Every `StateFileRead` that `readStateFile` returned, so a store can refuse one made by hand. */
+const issuedReads = new WeakSet<StateFileRead>();
+
+/**
+ * Read the state file once, the way the store loads it: O_NOFOLLOW, so a
+ * symbolic link at the path fails to open instead of being followed, in the
+ * same call that opens a regular file, and no link can be swapped in between
+ * a check and the read. The bytes and the identity come from that one
+ * descriptor. Only nothing at the path is `absent`; a link, with its target or
+ * without, and any other read error are `failed`. Only the error code is kept:
+ * the caught error's message carries the path.
+ */
+export function readStateFile(file: string): StateFileRead {
+  const resolved = path.resolve(file);
+  let result: StateFileRead;
+  try {
+    const fd = fs.openSync(resolved, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    try {
+      const stat = fs.fstatSync(fd);
+      result = {
+        kind: "read",
+        file: resolved,
+        bytes: fs.readFileSync(fd),
+        uid: stat.uid,
+        dev: stat.dev,
+        ino: stat.ino
+      };
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    // What is at the path itself: a Stats, null for nothing at all, or
+    // undefined when that cannot be told either.
+    const there = (() => {
+      try {
+        return fs.lstatSync(resolved);
+      } catch (inner) {
+        return (inner as NodeJS.ErrnoException).code === "ENOENT" ? null : undefined;
+      }
+    })();
+    result =
+      code === "ENOENT" && there === null
+        ? { kind: "absent", file: resolved }
+        : {
+            kind: "failed",
+            file: resolved,
+            failure: there?.isSymbolicLink()
+              ? { kind: "symlink" }
+              : {
+                  kind: "unreadable",
+                  code: typeof code === "string" && /^[A-Z][A-Z0-9_]*$/.test(code) ? code : "an unknown error"
+                }
+          };
+  }
+  // Frozen, so what the WeakSet vouches for stays what was found: code in the
+  // same process cannot turn a refused read into `absent` and have a store
+  // start on it. A Buffer's bytes cannot be frozen; changed, they fail the
+  // MAC like any other change to the file.
+  if (result.kind === "failed") {
+    Object.freeze(result.failure);
+  }
+  Object.freeze(result);
+  issuedReads.add(result);
+  return result;
+}
+
 /** One registration as the operator command shows it. Carries no credential. */
 export interface RegistrationListing {
   clientId: string;
@@ -244,6 +328,14 @@ export interface OAuthStoreOptions {
    * the promotion together with the removal (#184).
    */
   writeAtLoad?: boolean;
+  /**
+   * A read of `persistPath` the caller already made with `readStateFile`. The
+   * store loads from it instead of reading the path again, so the bytes the
+   * caller checked are the bytes it loads (#273). It is verified and refused
+   * exactly as a read the store makes itself; one that `readStateFile` did not
+   * make, or that read another path, throws.
+   */
+  stateFileRead?: StateFileRead;
   now?: () => number;
 }
 
@@ -423,6 +515,11 @@ export class OAuthStore {
     this.now = options.now ?? Date.now;
     this.maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS;
     this.maxTombstones = this.maxTokens;
+    if (options.stateFileRead !== undefined && !options.persistPath) {
+      // A read of a state file with nowhere to load it would be dropped
+      // silently, and the caller would believe it had been checked.
+      throw new Error("stateFileRead needs persistPath: it is a read of the state file.");
+    }
     if (options.persistPath) {
       if (!options.persistSecret) {
         throw new Error("OAuthStore persistence requires persistSecret (state-file HMAC key source).");
@@ -1169,42 +1266,21 @@ export class OAuthStore {
     if (!file) {
       return;
     }
-    let read: { raw: string } | { failure: LoadFailure };
-    try {
-      // O_NOFOLLOW: a symbolic link at the path fails to open instead of being
-      // followed, in the same call that opens a regular file, so no link can
-      // be swapped in between a check and the read.
-      const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-      try {
-        read = { raw: fs.readFileSync(fd, "utf8") };
-      } finally {
-        fs.closeSync(fd);
-      }
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      // What is at the path itself: a Stats, null for nothing at all, or
-      // undefined when that cannot be told either.
-      const there = (() => {
-        try {
-          return fs.lstatSync(file);
-        } catch (inner) {
-          return (inner as NodeJS.ErrnoException).code === "ENOENT" ? null : undefined;
-        }
-      })();
-      if (code === "ENOENT" && there === null) {
-        // Missing file is the normal first run; derive a fresh salt lazily on save.
-        return;
-      }
-      read = {
-        failure: there?.isSymbolicLink()
-          ? { kind: "symlink" }
-          : {
-              kind: "unreadable",
-              code: typeof code === "string" && /^[A-Z][A-Z0-9_]*$/.test(code) ? code : "an unknown error"
-            }
-      };
+    // A read the caller already made is loaded as it is, so a caller that
+    // hashed those bytes knows they are the bytes the store holds (#273). It
+    // has to be one `readStateFile` made, of this path: then it went through
+    // the same O_NOFOLLOW open and the same refusals as the read below, and
+    // what follows verifies it the same way.
+    const given = this.options.stateFileRead;
+    if (given !== undefined && (!issuedReads.has(given) || given.file !== file)) {
+      throw new Error("stateFileRead must be what readStateFile returned for persistPath.");
     }
-    if ("failure" in read) {
+    const read = given ?? readStateFile(file);
+    if (read.kind === "absent") {
+      // Missing file is the normal first run; derive a fresh salt lazily on save.
+      return;
+    }
+    if (read.kind === "failed") {
       // Anything but nothing at the path (EACCES from another account, EISDIR,
       // EIO) is a state file that exists and was not read (#258). Starting
       // empty would be silent, and the next save renames over the file, which
@@ -1221,7 +1297,7 @@ export class OAuthStore {
       this.loadFailure = read.failure;
       return;
     }
-    const raw = read.raw;
+    const raw = read.bytes.toString("utf8");
     try {
       const envelope = JSON.parse(raw) as { version?: unknown; salt?: unknown; mac?: unknown; payload?: unknown };
       if (

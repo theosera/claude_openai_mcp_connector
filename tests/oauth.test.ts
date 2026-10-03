@@ -24,8 +24,10 @@ import {
   DEFAULT_MAX_CLIENTS,
   MAX_UNCONSENTED_CLIENTS,
   OAuthStore,
+  readStateFile,
   REGISTRATION_CONSENT_DEADLINE_MS,
-  ROTATION_GRACE_MS
+  ROTATION_GRACE_MS,
+  type StateFileRead
 } from "../src/oauth/store.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -1707,6 +1709,105 @@ describe("OAuthStore persistence", () => {
     expect(
       new OAuthStore({ ...opts, persistPath: target, persistSecret: secret }).getClient(kept.clientId)
     ).toBeDefined();
+  });
+
+  // A caller that already read the state file can have the store load those
+  // bytes instead of reading the path again (#273). That must not be a way
+  // around what a load refuses: the read has to be one `readStateFile` made,
+  // of this store's path, and it is refused or verified as the store's own
+  // read would be.
+  //
+  // Reverse-verified: not checking where the read came from reddens the
+  // hand-made case, not checking its path the other-path case, and loading a
+  // given read without verifying it the wrong-password case.
+  it("loads a read it is given only if readStateFile made it of its own path, and verifies it the same way (#273)", async () => {
+    const file = await stateFilePath();
+    const kept = mustRegister(
+      new OAuthStore({ ...opts, persistPath: file, persistSecret: secret }),
+      ["https://chatgpt.com/cb"],
+      "ChatGPT"
+    );
+    const read = readStateFile(file);
+    expect(read.kind).toBe("read");
+
+    // The genuine read loads, and holds what the file held.
+    const given = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, stateFileRead: read });
+    expect(given.loadOutcome).toBe("loaded");
+    expect(given.getClient(kept.clientId)).toBeDefined();
+
+    // A copy made by hand, with the same fields, is not one readStateFile made.
+    const handMade = { ...read } as StateFileRead;
+    expect(
+      () => new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, stateFileRead: handMade })
+    ).toThrow("stateFileRead must be what readStateFile returned for persistPath.");
+
+    // A genuine read of another path is not a read of this one.
+    const other = await stateFilePath();
+    mustRegister(new OAuthStore({ ...opts, persistPath: other, persistSecret: secret }), ["https://claude.ai/cb"]);
+    expect(
+      () => new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, stateFileRead: readStateFile(other) })
+    ).toThrow("stateFileRead must be what readStateFile returned for persistPath.");
+
+    // Given under another password, the read does not verify, as the store's
+    // own read would not, and nothing is written over the file.
+    const before = await snapshot(file);
+    const wrong = new OAuthStore({
+      ...opts,
+      persistPath: file,
+      persistSecret: "another",
+      stateFileRead: readStateFile(file)
+    });
+    expect(wrong.loadOutcome).toBe("failed");
+    expect(wrong.loadFailureKind).toBe("unverified");
+    expect(wrong.removeRegistrations([])).toBe(false);
+    expect(await snapshot(file)).toEqual(before);
+  });
+
+  // A read that found a link is refused when it is given, as it is when the
+  // store reads the path itself (#263): the link stays a link.
+  it("refuses a given read that found a symbolic link, and writes nothing (#273)", async () => {
+    const file = await stateFilePath();
+    const target = path.join(path.dirname(file), "elsewhere.json");
+    mustRegister(new OAuthStore({ ...opts, persistPath: target, persistSecret: secret }), ["https://chatgpt.com/cb"]);
+    await fs.symlink(target, file);
+    const read = readStateFile(file);
+    expect(read.kind === "failed" && read.failure.kind).toBe("symlink");
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, stateFileRead: read });
+    expect(store.loadOutcome).toBe("failed");
+    expect(store.loadFailureKind).toBe("symlink");
+    expect(() => store.registerClient(["https://claude.ai/cb"])).toThrow("registration_not_persisted");
+    expect((await fs.lstat(file)).isSymbolicLink()).toBe(true);
+  });
+
+  // What readStateFile returns cannot be changed once it is made, so a read
+  // that found a link cannot be turned into "nothing there" and handed to a
+  // store, which would then start empty and save over the link.
+  //
+  // Reverse-verified: not freezing the read reddens this test.
+  it("returns frozen reads, so a refused read cannot be rewritten into another (#273)", async () => {
+    const file = await stateFilePath();
+    await fs.symlink(path.join(path.dirname(file), "elsewhere.json"), file);
+    const read = readStateFile(file);
+    expect(read.kind).toBe("failed");
+    expect(Object.isFrozen(read)).toBe(true);
+    expect(read.kind === "failed" && Object.isFrozen(read.failure)).toBe(true);
+    expect(() => {
+      (read as { kind: string }).kind = "absent";
+    }).toThrow(TypeError);
+    const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, stateFileRead: read });
+    expect(store.loadOutcome).toBe("failed");
+    expect((await fs.lstat(file)).isSymbolicLink()).toBe(true);
+  });
+
+  // A read given to a store with no state file to load it into would be
+  // dropped, and the caller would believe it had been checked.
+  //
+  // Reverse-verified: dropping the check reddens this test.
+  it("refuses a read it is given when it has no state file to load it into (#273)", async () => {
+    const file = await stateFilePath();
+    expect(() => new OAuthStore({ ...opts, stateFileRead: readStateFile(file) })).toThrow(
+      "stateFileRead needs persistPath: it is a read of the state file."
+    );
   });
 
   // The code is printed only when it has the shape of an errno code. An error
