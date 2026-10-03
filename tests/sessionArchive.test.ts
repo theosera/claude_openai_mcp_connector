@@ -1536,8 +1536,9 @@ describe("session-archive PEM key masking", () => {
     // line survives behind a masked path.
     const anchored = mask.split("\n").find((line) => line.includes(PREFIXED_CATCH_ALL));
     expect(anchored, "the anchored catch-all action is gone from the shipped mask()").toBeDefined();
-    const action = anchored!.slice(anchored!.indexOf("/s/") + 1);
-    const unanchored = mutate(mask, action, `${PREFIXED_CATCH_ALL_UNANCHORED}'`, "the anchored catch-all action");
+    // Keep the shell quote and continuation: this is no longer the last -e.
+    const action = anchored!.slice(anchored!.indexOf("/s/") + 1, anchored!.lastIndexOf("'"));
+    const unanchored = mutate(mask, action, PREFIXED_CATCH_ALL_UNANCHORED, "the anchored catch-all action");
     const leaked = runMask(unanchored, planted);
     expect(bodyLinesSurviving(leaked)).toBe(BODY.length);
     expect(leaked.split("\n").filter((line) => line.startsWith("***MASKED***:"))).toHaveLength(BODY.length);
@@ -1999,7 +2000,14 @@ describe("session-archive auth-scheme masking", () => {
     // caller controls, so every one of them must carry the boundary. Counting the
     // three the probes above reach would leave a fourth unguarded, and a fourth is
     // what each of the last two rounds turned up.
-    const keywordRules = rules.filter((line) => line.includes("token|key|secret"));
+    // #291's angle-bounded cleanup runs LAST, after all armor state changes.
+    // It may consume a delimiter only after those rules have already read it.
+    // Keep this exception exact and last so an earlier consuming rule cannot
+    // silently bypass the dash-boundary check below.
+    const xmlCleanup = rules.filter((line) => line.includes("[^<>]*>"));
+    expect(xmlCleanup).toHaveLength(1);
+    expect(rules.at(-1)).toBe(xmlCleanup[0]);
+    const keywordRules = rules.filter((line) => line.includes("token|key|secret") && line !== xmlCleanup[0]);
     expect(keywordRules).toHaveLength(6);
 
     // Four of the six carry the dash boundary. The other two are the addressed
