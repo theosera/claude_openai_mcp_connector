@@ -268,8 +268,8 @@ interface TokenRecord {
    * carrying those never arrived, so if anyone else holds them it is an
    * interceptor.
    *
-   * Membership is a property of each record, so revocation is a scan of the
-   * two maps rather than a walk of links between them. That is the whole point:
+   * Membership is a property of each record, indexed by family rather than
+   * linked through ancestors. That is the whole point:
    * a walk terminates at the first missing hop, and any deletion — a failed
    * presentation, the expiry sweep, the hard cap — can remove one. A scan
    * reaches the same descendants whether or not their ancestors still exist.
@@ -372,7 +372,7 @@ function tokenKey(token: string): string {
  * interceptor who drives the sweep on purpose; it is measured and bounded on
  * `rotateRefreshToken` rather than hidden here.
  */
-function enforceCap<K, V>(map: Map<K, V>, max: number, spare?: K): void {
+function enforceCap<K, V>(map: Map<K, V>, max: number, spare?: K, onEvict?: (key: K, value: V) => void): void {
   while (map.size > max) {
     let victim: K | undefined;
     let oldest: K | undefined;
@@ -389,6 +389,7 @@ function enforceCap<K, V>(map: Map<K, V>, max: number, spare?: K): void {
     if (doomed === undefined) {
       break;
     }
+    onEvict?.(doomed, map.get(doomed)!);
     map.delete(doomed);
   }
 }
@@ -448,6 +449,9 @@ interface PersistedTokenRecord extends TokenRecord {
   tokenHash: string;
 }
 
+type TokenKind = "access" | "refresh";
+type FamilyKeys = Record<TokenKind, Set<string>>;
+
 interface PersistedTombstone extends RotationTombstone {
   tokenHash: string;
 }
@@ -482,6 +486,8 @@ export class OAuthStore {
   /** Keyed by sha256(token) — raw token values are never stored anywhere. */
   private readonly accessTokens = new Map<string, TokenRecord>();
   private readonly refreshTokens = new Map<string, TokenRecord>();
+  /** Derived from the token maps, never persisted. Empty families are removed. */
+  private readonly tokenFamilies = new Map<string, FamilyKeys>();
   /**
    * Rotated refresh records, keyed the same way, outliving the records
    * themselves (#170). Keyed by sha256(token) in memory and at rest, exactly as
@@ -800,16 +806,19 @@ export class OAuthStore {
       throw new Error("unknown_client");
     }
     const doomed = new Set(clientIds);
-    const sweep = <V extends { clientId: string }>(map: Map<string, V>): void => {
+    const sweep = <V extends { clientId: string }>(
+      map: Map<string, V>,
+      remove = (key: string) => map.delete(key)
+    ): void => {
       for (const [key, value] of map) {
-        if (doomed.has(value.clientId)) map.delete(key);
+        if (doomed.has(value.clientId)) remove(key);
       }
     };
     for (const clientId of doomed) {
       this.clients.delete(clientId);
     }
-    sweep(this.accessTokens);
-    sweep(this.refreshTokens);
+    sweep(this.accessTokens, (key) => this.deleteToken("access", key));
+    sweep(this.refreshTokens, (key) => this.deleteToken("refresh", key));
     sweep(this.rotatedTombstones);
     sweep(this.codes);
     return this.persist();
@@ -858,6 +867,38 @@ export class OAuthStore {
     return issued;
   }
 
+  private setToken(kind: TokenKind, key: string, record: TokenRecord): void {
+    // A verified state file can repeat a hash under another family. Match Map's
+    // last-value-wins behaviour without retaining membership in the old family.
+    const map = kind === "access" ? this.accessTokens : this.refreshTokens;
+    const previous = map.get(key);
+    if (previous) this.unindexToken(kind, key, previous);
+    map.set(key, record);
+    let family = this.tokenFamilies.get(record.familyId);
+    if (!family) {
+      family = { access: new Set(), refresh: new Set() };
+      this.tokenFamilies.set(record.familyId, family);
+    }
+    family[kind].add(key);
+  }
+
+  private unindexToken(kind: TokenKind, key: string, record: TokenRecord): void {
+    const family = this.tokenFamilies.get(record.familyId);
+    if (!family) return;
+    family[kind].delete(key);
+    if (family.access.size === 0 && family.refresh.size === 0) {
+      this.tokenFamilies.delete(record.familyId);
+    }
+  }
+
+  private deleteToken(kind: TokenKind, key: string): boolean {
+    const map = kind === "access" ? this.accessTokens : this.refreshTokens;
+    const record = map.get(key);
+    if (!record) return false;
+    this.unindexToken(kind, key, record);
+    return map.delete(key);
+  }
+
   /**
    * Mint a pair WITHOUT saving. Exists so `rotateRefreshToken` can persist the
    * revocation of the superseded generations and the pair that replaces them in
@@ -879,7 +920,7 @@ export class OAuthStore {
     const refreshToken = randomSecret();
     const familyId = lineage?.familyId ?? randomSecret();
     const generation = lineage?.generation ?? 0;
-    this.accessTokens.set(tokenKey(accessToken), {
+    this.setToken("access", tokenKey(accessToken), {
       clientId,
       scope,
       resource,
@@ -887,7 +928,7 @@ export class OAuthStore {
       generation,
       expiresAt: this.now() + this.options.accessTokenTtlSec * 1000
     });
-    this.refreshTokens.set(tokenKey(refreshToken), {
+    this.setToken("refresh", tokenKey(refreshToken), {
       clientId,
       scope,
       resource,
@@ -898,11 +939,13 @@ export class OAuthStore {
     // Enforce the hard cap even when every entry is still live (pruning only
     // removes expired ones): evict the oldest live tokens so a client minting
     // tokens faster than they expire cannot grow the maps without bound.
-    enforceCap(this.accessTokens, this.maxTokens);
+    enforceCap(this.accessTokens, this.maxTokens, undefined, (key, record) => this.unindexToken("access", key, record));
     // Only the refresh map takes the preference: a rotated root's own access
     // token was superseded by its first rotation and is not part of what a
     // replay hands back.
-    enforceCap(this.refreshTokens, this.maxTokens, spareRefreshKey);
+    enforceCap(this.refreshTokens, this.maxTokens, spareRefreshKey, (key, record) =>
+      this.unindexToken("refresh", key, record)
+    );
     return {
       accessToken,
       refreshToken,
@@ -922,7 +965,7 @@ export class OAuthStore {
       return null;
     }
     if (record.expiresAt <= this.now()) {
-      this.accessTokens.delete(key);
+      this.deleteToken("access", key);
       return null;
     }
     return { clientId: record.clientId, scope: record.scope, resource: record.resource };
@@ -964,7 +1007,7 @@ export class OAuthStore {
     }
     const t = this.now();
     if (record.expiresAt <= t) {
-      this.refreshTokens.delete(key);
+      this.deleteToken("refresh", key);
       // Nothing else is revoked here, deliberately. This arm is reached by a
       // spent presentation, which is not evidence that the lineage is
       // compromised — and revoking on it would let anyone holding a COPY of a
@@ -999,7 +1042,7 @@ export class OAuthStore {
       // mismatch as reuse evidence is what would let a copied token kill the
       // live pair.
       if (record.rotatedAt === undefined) {
-        this.refreshTokens.delete(key);
+        this.deleteToken("refresh", key);
         this.save();
       }
       return null;
@@ -1074,19 +1117,23 @@ export class OAuthStore {
   /**
    * Delete every access and refresh token in `familyId` above `generation`.
    *
-   * A scan, not a walk. The records that must die are identified by what they
-   * carry, so no intermediate record has to survive for them to be found —
+   * The family index identifies records by membership, so no intermediate
+   * record has to survive for its descendants to be found —
    * which is the failure this replaced: links stored in the records themselves
    * made the chain only as reachable as its least durable hop, and three
-   * separate deletion paths could remove one. Cost is bounded by the token cap
-   * (`maxTokens`), which the two maps are held under at every mint.
+   * separate deletion paths could remove one. Only this family's keys are
+   * visited: cost is proportional to its size, independent of other families.
    */
   private revokeFamilyAbove(familyId: string, generation: number): number {
+    const family = this.tokenFamilies.get(familyId);
+    if (!family) return 0;
     let removed = 0;
-    for (const map of [this.accessTokens, this.refreshTokens]) {
-      for (const [key, record] of map) {
-        if (record.familyId === familyId && record.generation > generation) {
-          map.delete(key);
+    for (const kind of ["access", "refresh"] as const) {
+      const map = kind === "access" ? this.accessTokens : this.refreshTokens;
+      for (const key of family[kind]) {
+        const record = map.get(key);
+        if (record && record.generation > generation) {
+          this.deleteToken(kind, key);
           removed += 1;
         }
       }
@@ -1230,10 +1277,10 @@ export class OAuthStore {
   private evictExpired(): void {
     const t = this.now();
     for (const [token, record] of this.accessTokens) {
-      if (record.expiresAt <= t) this.accessTokens.delete(token);
+      if (record.expiresAt <= t) this.deleteToken("access", token);
     }
     for (const [token, record] of this.refreshTokens) {
-      if (record.expiresAt <= t) this.refreshTokens.delete(token);
+      if (record.expiresAt <= t) this.deleteToken("refresh", token);
     }
     this.pruneTombstones();
   }
@@ -1335,7 +1382,7 @@ export class OAuthStore {
           this.clients.set(client.clientId, { ...client, consent });
         }
       }
-      const loadTokens = (records: PersistedTokenRecord[] | undefined, into: Map<string, TokenRecord>) => {
+      const loadTokens = (records: PersistedTokenRecord[] | undefined, kind: TokenKind) => {
         for (const record of records ?? []) {
           if (
             typeof record?.tokenHash === "string" &&
@@ -1369,12 +1416,12 @@ export class OAuthStore {
             if (typeof record.rotatedAt === "number") {
               loaded.rotatedAt = record.rotatedAt;
             }
-            into.set(record.tokenHash, loaded);
+            this.setToken(kind, record.tokenHash, loaded);
           }
         }
       };
-      loadTokens(payload.accessTokens, this.accessTokens);
-      loadTokens(payload.refreshTokens, this.refreshTokens);
+      loadTokens(payload.accessTokens, "access");
+      loadTokens(payload.refreshTokens, "refresh");
       // Tombstones are rotation-grace state and are persisted for the same
       // reason `rotatedAt` is: a replay after a supervisor bounce must still
       // revoke what the lost response minted. A record swept by the cap is not
@@ -1435,6 +1482,7 @@ export class OAuthStore {
       this.clients.clear();
       this.accessTokens.clear();
       this.refreshTokens.clear();
+      this.tokenFamilies.clear();
       this.rotatedTombstones.clear();
       this.loadResult = "failed";
       this.loadFailure = { kind: "unverified" };
