@@ -306,7 +306,7 @@ export interface OAuthStoreOptions {
   accessTokenTtlSec: number;
   refreshTokenTtlSec: number;
   codeTtlSec: number;
-  /** Hard cap per token map (default DEFAULT_MAX_TOKENS). Bounds memory. */
+  /** Positive safe integer cap per token map (default DEFAULT_MAX_TOKENS). Bounds memory. */
   maxTokens?: number;
   /**
    * Absolute path of the optional state file. When set, registered clients and
@@ -513,7 +513,10 @@ export class OAuthStore {
 
   constructor(private readonly options: OAuthStoreOptions) {
     this.now = options.now ?? Date.now;
-    this.maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS;
+    this.maxTokens = options.maxTokens === undefined ? DEFAULT_MAX_TOKENS : options.maxTokens;
+    if (!Number.isSafeInteger(this.maxTokens) || this.maxTokens <= 0) {
+      throw new RangeError("maxTokens must be a positive safe integer");
+    }
     this.maxTombstones = this.maxTokens;
     if (options.stateFileRead !== undefined && !options.persistPath) {
       // A read of a state file with nowhere to load it would be dropped
