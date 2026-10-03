@@ -944,6 +944,82 @@ describe("session-archive secret masking", () => {
   });
 });
 
+/** #291 exercises the shipped sed copies; the shared core has its own owner. */
+describe.each([
+  ["capture", captureHookPath],
+  ["archive", hookPath]
+])("hookmask #291: %s", (_hook, scriptPath) => {
+  let mask: string;
+  beforeAll(async () => {
+    mask = await shippedMask(scriptPath);
+  });
+
+  it("masks mixed attribute quotes and spaces, including non-secret metadata", () => {
+    const input = `<password first="S1 words" second='S2 words' third=S3 lang="en" class="hint"> K1`;
+    expect(runMask(mask, input)).toBe("<password ***MASKED***> K1");
+    const unrelated = '<span lang="en" class="hint"> K1';
+    expect(runMask(mask, unrelated)).toBe(unrelated);
+  });
+
+  it("keeps the existing armor window when an attribute contains a delimiter", () => {
+    for (const label of ["PRIVATE KEY", "PGP PRIVATE KEY BLOCK", "SSH2 ENCRYPTED PRIVATE KEY"]) {
+      const open = label.startsWith("SSH2") ? `---- BEGIN ${label} ----` : `-----BEGIN ${label}-----`;
+      const close = label.startsWith("SSH2") ? `---- END ${label} ----` : `-----END ${label}-----`;
+      const input = `<password first="S1" second="${open}">\n> ABCDEFGHIJKL\n${close}\nK1`;
+      const output = runMask(mask, input);
+      expect(output).not.toContain("S1");
+      expect(output).not.toContain("ABCDEFGHIJKL");
+      expect(output).toContain("K1");
+      expect(output.split("\n")).toHaveLength(input.split("\n").length);
+    }
+  });
+
+  for (const kind of ["command", "text"] as const) {
+    // The hooks have one sed function, with no kind flag. Exercise a shell
+    // command string and a text body through that same shipped function.
+    const inputFor = (element: string) => (kind === "command" ? `printf '%s' '${element}'` : element);
+    const shapes = [
+      ["closing tag on the next line", (attrs: string) => `<password ${attrs}>\n</password> K1`],
+      ["child element", (attrs: string) => `<password ${attrs}><value>x</value></password> K1`],
+      ["no closing tag on the line", (attrs: string) => `<password ${attrs}> K1`]
+    ] as const;
+
+    for (const [shape, element] of shapes) {
+      it(`${kind}: masks every attribute with ${shape} and preserves K1`, () => {
+        for (const attrs of ['first="S1" second="S2"', 'first="S1" second="S2" third="S3"']) {
+          const input = inputFor(element(attrs));
+          const output = runMask(mask, input);
+          for (const secret of ["S1", "S2", "S3"]) expect(output).not.toContain(secret);
+          expect(output).toContain("***MASKED***");
+          expect(output).toContain("K1");
+          expect(output.split("\n")).toHaveLength(input.split("\n").length);
+        }
+      });
+
+      it(`${kind}: keeps a single attribute masked with ${shape}`, () => {
+        const output = runMask(mask, inputFor(element('value="S1"')));
+        expect(output).not.toContain("S1");
+        expect(output).toContain("***MASKED***");
+        expect(output).toContain("K1");
+      });
+    }
+
+    it(`${kind}: keeps both #276 shapes masked`, () => {
+      for (const element of [
+        '<password value="S1"></password> K1',
+        "<token value=S1></token> K1",
+        "{password=S2}Bearer S1 K1"
+      ]) {
+        const output = runMask(mask, inputFor(element));
+        expect(output).not.toContain("S1");
+        expect(output).not.toContain("S2");
+        expect(output).toContain("***MASKED***");
+        expect(output).toContain("K1");
+      }
+    });
+  }
+});
+
 /**
  * The rule that replaced the PEM range mask recognises a key body only when the
  * body is the WHOLE line. A plain `cat` delivers it that way; plenty of other
@@ -4813,7 +4889,8 @@ describe("session-archive fence re-check after masking (#228)", () => {
     ]),
     ["bearer", "```bearer `x`"],
     ["the scheme rule", "```Authorization: Token `x`"],
-    ["a backtick inside the value", "```token=ab`c"]
+    ["a backtick inside the value", "```token=ab`c"],
+    ["#291: a backtick in the second XML attribute", '```<password first="S1" second="`S2`">']
   ];
 
   for (const [label, line] of SHAPES) {
