@@ -4898,7 +4898,8 @@ describe("session-archive fence re-check after masking (#228)", () => {
     ["bearer", "```bearer `x`"],
     ["the scheme rule", "```Authorization: Token `x`"],
     ["a backtick inside the value", "```token=ab`c"],
-    ["#291: a backtick in the second XML attribute", '```<password first="S1" second="`S2`">']
+    ["#291: a backtick in the second XML attribute", '```<password first="S1" second="`S2`">'],
+    ["#291: XML attributes spanning a bare CR", '```<password first="S1" second="`S2`"\r lang="en">']
   ];
 
   for (const [label, line] of SHAPES) {
