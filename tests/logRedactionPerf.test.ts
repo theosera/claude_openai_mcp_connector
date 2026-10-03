@@ -7,9 +7,14 @@ import { MASK, redactFragment } from "../packages/log-redaction/src/core.mjs";
 /**
  * Step ②-3 of #249: the core's time against input length.
  *
- * The owner's criterion (2026-09-29): at 64, 128, 256 and 512 KiB and at 1 MiB,
- * the median time must grow by less than 3.0 times per doubling. A quadratic walk
- * grows by about 4. The shapes are the three in `perf-I.json`, where the sed
+ * The owner's criterion for #284 (2026-10-03): judge two doublings together,
+ * 64 -> 256 KiB and 256 KiB -> 1 MiB, against 3.0 squared (strictly below 9).
+ * `escaped-quotes-blank` as `text` is linear overall but alternates low and high
+ * steps (about 1.4 and 2.7 per doubling); a high step alone crossed 3.0 in CI.
+ * Combining two steps tolerates a shift in where the high step lands: linear
+ * growth is about 3.8 to 4.0 over the pair, while quadratic growth is about 16.
+ * The intermediate 128 and 512 KiB sizes still get the first-call checks below.
+ * The shapes are the three in `perf-I.json`, where the sed
  * `mask()` went quadratic under GNU sed, plus a line of many short labelled
  * values, which stresses the span handling instead of the quote walk, and a word
  * of nested labels. `I-unclosed-escaped` as `text` also caught a quadratic
@@ -20,12 +25,12 @@ import { MASK, redactFragment } from "../packages/log-redaction/src/core.mjs";
  * nothing quickly. The connection stage (process start, the hook's timeout) is
  * measured separately, when the hooks are switched over.
  *
- * Each doubling is timed as interleaved pairs -- the smaller input, then the
+ * Each fourfold increase is timed as interleaved pairs -- the smaller input, then the
  * larger, then the other way round -- and judged on the median of the pairs'
- * ratios. Timing the two sizes minutes apart let the other test files, running in
- * parallel, load one side and not the other: measured, the same linear shape
- * failed two full runs in three with ratios of 3.5 and 4.9, and passed every
- * run on its own. A pair shares its moment, so load that comes and goes cancels
+ * ratios. Under the old per-doubling rule, timing the two sizes minutes apart
+ * let the other test files, running in parallel, load one side and not the other:
+ * the same linear shape failed two full runs in three with ratios of 3.5 and 4.9,
+ * and passed every run on its own. A pair shares its moment, so transient load cancels
  * out of its ratio, while a quadratic walk is over the limit in every pair.
  *
  * The core is judged on how its time grows, not on how fast this machine is,
@@ -38,7 +43,8 @@ import { MASK, redactFragment } from "../packages/log-redaction/src/core.mjs";
 
 const KiB = 1024;
 const SIZES = [64, 128, 256, 512, 1024].map((k) => k * KiB);
-const LIMIT = 3.0;
+const DOUBLINGS = 2;
+const LIMIT = 3.0 ** DOUBLINGS;
 const REPEAT = 4;
 const PAIRS = 7;
 const ATTEMPTS = 3;
@@ -157,7 +163,7 @@ function median(values: readonly number[]): number {
 }
 
 /** The median of the pairs' ratios, from pairs of batch times `[smaller, larger]`. */
-function doublingRatio(pairs: readonly (readonly [number, number])[]): number {
+function growthRatio(pairs: readonly (readonly [number, number])[]): number {
   return median(pairs.map(([small, large]) => large / small));
 }
 
@@ -181,45 +187,59 @@ function timedPairs(small: string, large: string, kind: "command" | "text"): [nu
   return pairs;
 }
 
-describe("the doubling-ratio check itself", () => {
+describe("the two-doubling ratio check itself", () => {
   it("fails a quadratic curve and passes a linear one", () => {
     expect(
-      doublingRatio([
-        [1, 4],
-        [2, 8],
-        [1, 4]
+      growthRatio([
+        [1, 16],
+        [2, 32],
+        [1, 16]
       ]) < LIMIT
     ).toBe(false);
     expect(
-      doublingRatio([
-        [1, 2],
-        [2, 4],
-        [1, 2]
+      growthRatio([
+        [1, 4],
+        [2, 8],
+        [1, 4]
       ]) < LIMIT
     ).toBe(true);
   });
 
   it("is not moved by one stalled pair", () => {
     expect(
-      doublingRatio([
-        [1, 2],
-        [1, 9],
-        [1, 2]
+      growthRatio([
+        [1, 4],
+        [1, 100],
+        [1, 4]
       ]) < LIMIT
     ).toBe(true);
   });
+
+  it.each([
+    [1.4, 2.7],
+    [2.7, 1.4],
+    [1.25, 3.2],
+    [3.2, 1.25]
+  ])("passes stepped linear growth with doublings of %s and %s", (first, second) => {
+    expect(growthRatio([[1, first * second]]) < LIMIT).toBe(true);
+  });
+
+  it("requires a ratio strictly below 9", () => {
+    expect(growthRatio([[1, 8.999]]) < LIMIT).toBe(true);
+    expect(growthRatio([[1, 9]]) < LIMIT).toBe(false);
+  });
 });
 
-describe("the core's time per doubling", { timeout: 180_000 }, () => {
+describe("the core's time over two doublings", { timeout: 180_000 }, () => {
   const cases = SHAPES.flatMap(([name, secret, make]) =>
     (["command", "text"] as const).map((kind) => [name, kind, secret, make] as const)
   );
 
-  // Sizes are taken smallest first and each doubling is judged as soon as it is
-  // measured, so a quadratic walk fails at 128 KiB instead of running on to 1 MiB.
+  // Sizes are taken smallest first and each two-doubling window is judged as
+  // soon as it is measured, so a quadratic walk can fail at 256 KiB before 1 MiB.
   it.each(cases)("%s as %s", (_name, kind, secret, make) => {
     let previous: string | null = null;
-    for (const size of SIZES) {
+    for (const [index, size] of SIZES.entries()) {
       const text = make(size);
       const first = performance.now();
       const result = redactFragment({ text, kind });
@@ -230,13 +250,15 @@ describe("the core's time per doubling", { timeout: 180_000 }, () => {
       });
       expect(result.status).toBe("ok");
       expect(result.text).not.toContain(secret);
+      if (index % DOUBLINGS !== 0) continue;
       if (previous) {
-        // Up to three sets of pairs. Pairing alone still failed one full run in
-        // three (a ratio of 3.1 at 256 KiB, on a shape whose batches take a few
-        // milliseconds); a quadratic walk is over the limit in every set.
+        // Up to three sets of pairs. Under the old per-doubling rule, pairing
+        // alone still failed one full run in three (a ratio of 3.1 at 256 KiB,
+        // on a shape whose batches take a few milliseconds). Keep the retries
+        // for transient load; a quadratic walk is over 9 in every set.
         const ratios: number[] = [];
         while (ratios.length < ATTEMPTS && !(ratios.at(-1)! < LIMIT)) {
-          ratios.push(doublingRatio(timedPairs(previous, text, kind)));
+          ratios.push(growthRatio(timedPairs(previous, text, kind)));
         }
         expect({ size, ratio: ratios.at(-1)! < LIMIT ? "under" : ratios }).toEqual({ size, ratio: "under" });
       }
