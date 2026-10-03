@@ -434,6 +434,7 @@ function main(argv: string[]): void {
   const { seed, count, engine: engineCommand } = parseArgs(argv);
   const engine = commandEngine(engineCommand.split(" "), ROOT);
   const cases = generate(seed, count);
+  const familyById = new Map(cases.map((c) => [c.id, c.family]));
   const capture = sedEngine(shippedMask(SED_COPIES.capture));
   const archive = sedEngine(shippedMask(SED_COPIES.archive));
   for (const [name, ref, other] of [
@@ -445,7 +446,7 @@ function main(argv: string[]): void {
     const byFamily = (ids: string[]) => {
       const counts: Record<string, number> = {};
       for (const id of ids) {
-        const f = cases.find((c) => c.id === id)!.family;
+        const f = familyById.get(id)!;
         counts[f] = (counts[f] ?? 0) + 1;
       }
       return counts;
