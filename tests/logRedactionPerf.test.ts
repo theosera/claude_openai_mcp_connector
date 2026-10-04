@@ -100,7 +100,9 @@ const ISSUE295_SHAPES: readonly Issue295PerfShape[] = [
   [
     "issue295-multiline-long-start",
     "FKPERF295M1",
-    (n) => completeUnits("<password\n", ' a="x"\n', ' b="FKPERF295M1"> KEEP295M1', n),
+    // Keep the long attribute walk on two physical lines. The former repeated
+    // newline form intentionally exceeds the new 32-line recovery bound.
+    (n) => completeUnits("<password\n", ' a="x" ', ' b="FKPERF295M1"> KEEP295M1', n),
     "KEEP295M1"
   ],
   [
@@ -122,8 +124,64 @@ const ISSUE295_SHAPES: readonly Issue295PerfShape[] = [
     // Earlier slashes remain part of the long value that must be masked.
     (n) => enclosed("<input value=FKPERF295S1/", "segment/", " type=password/> KEEP295S1", n),
     "KEEP295S1"
+  ],
+  [
+    "issue295-many-starts-across-fence-barriers",
+    "FKPERF295F1",
+    (n) =>
+      completeUnits(
+        "",
+        '<password a="x\n~~~~~~\nPUBLIC295F1\n~~~~~~\nz" b="s"> KEEP295F1\n' +
+          '<password a="x\n```\nPUBLIC295F1\n```\nz" b="s"> KEEP295F1\n',
+        '\n<input value="FKPERF295F1" type=password/> KEEP295F1\n',
+        n
+      ),
+    "PUBLIC295F1"
+  ],
+  [
+    "issue295-many-starts-beyond-line-bound",
+    "FKPERF295B1",
+    (n) =>
+      completeUnits(
+        "",
+        '<password a="x\n' + " note\n".repeat(31) + 'PUBLIC295B1\nz" b="s"> KEEP295B1\n',
+        '\n<input value="FKPERF295B1" type=password/> KEEP295B1\n',
+        n
+      ),
+    "PUBLIC295B1"
+  ],
+  [
+    "issue295-long-invalid-backtick-info",
+    "FKPERF295T1",
+    (n) => {
+      const head = '<input value="FKPERF295T1" type=password/> KEEP295T1 ';
+      const tail = '`\n<input value="FKPERF295T1" type=password/> KEEP295T1\n';
+      const available = n - head.length - tail.length;
+      const ticks = Math.floor(available / 2);
+      // The later single backtick invalidates the first maximal fence run.
+      // Both the candidate line and the following line must still mask.
+      return head + "`".repeat(ticks) + "x".repeat(available - ticks) + tail;
+    },
+    "KEEP295T1"
   ]
 ];
+
+function expectPreserved(input: string, output: string, preserve: string) {
+  expect(output).toContain(preserve);
+  // Repeated recovery blocks must all survive, not merely the last one.
+  const words = new Set([preserve, ...(input.match(/\bKEEP295[A-Z0-9]+\b/g) ?? [])]);
+  for (const word of words) expect(output.split(word).length).toBe(input.split(word).length);
+  const fences = (text: string) =>
+    text.split(/\r\n|\r|\n/).filter((line) => {
+      if (line.includes("~~~")) return true;
+      const start = line.indexOf("```");
+      if (start < 0) return false;
+      let end = start + 3;
+      while (line[end] === "`") end++;
+      return line.indexOf("`", end) < 0;
+    });
+  expect(fences(output)).toEqual(fences(input));
+}
 
 const SHAPES: readonly PerfShape[] = [
   ...ISSUE295_SHAPES,
@@ -317,7 +375,7 @@ describe("the core's time over two doublings", { timeout: 180_000 }, () => {
       });
       expect(result.status).toBe("ok");
       expect(result.text).not.toContain(secret);
-      if (preserve) expect(result.text).toContain(preserve);
+      if (preserve) expectPreserved(text, result.text, preserve);
       if (index % DOUBLINGS !== 0) continue;
       if (previous) {
         // Up to three sets of pairs. Under the old per-doubling rule, pairing
@@ -390,7 +448,7 @@ describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_
           firstMs: "under"
         });
         expect(output).not.toContain(secret);
-        expect(output).toContain(preserve);
+        expectPreserved(text, output, preserve);
         if (index % DOUBLINGS !== 0) continue;
         if (previous) {
           const ratios: number[] = [];

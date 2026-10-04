@@ -170,3 +170,178 @@ for (const [hook, path] of hooks) {
     }
   });
 }
+
+const fenceShapes = [
+  ["early keyword", "~~~~~~ token=FENCE295EARLY\n~~~~~~\n"],
+  ["armor replacement", `-----BEGIN PRIVATE KEY-----\n~~~~~~ ${"A".repeat(40)}\n-----END PRIVATE KEY-----\n~~~~~~\n`],
+  ["late provider", `~~~~~~ sk-${"a".repeat(24)}\n~~~~~~\n`],
+  ["final label cleanup", '<password first="x" second="FENCE295FINAL"> ~~~~~~\n~~~~~~\n'],
+  ["unfinished unquoted tag", "<password x\n~~~~~~\nKEEP295FENCE\n~~~~~~\na -> b\n"],
+  ["unfinished quoted tag", '<password first="x" a="\n```text\nKEEP295FENCE\n```\nz"> tail\n'],
+  ["container-prefixed fence", "<password x\n> ```text\nKEEP295FENCE\n> ```\na -> b\n"],
+  ["CRLF fence", '<password first="x" a="\r\n~~~~~~\r\nKEEP295FENCE\r\n~~~~~~\r\nz"> tail\r\n'],
+  ["bare CR fence", '<password first="x" a="\r~~~~~~\rKEEP295FENCE\r~~~~~~\rz"> tail\r']
+] as const;
+
+function fenceLineBytes(text: string): string[] {
+  return (text.match(/[^\r\n]*(?:\r\n|\r|\n|$)/g) ?? []).filter((line) => /`{3}|~{3}/.test(line));
+}
+
+for (const [hook, path] of hooks) {
+  describe(`${hook} fence barriers and markup line bound`, () => {
+    for (const kind of ["command", "text"] as const) {
+      for (const [name, input] of fenceShapes) {
+        it(`${name}, as ${kind}: preserves every fence byte, count and parity`, () => {
+          const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+          const before = fenceLineBytes(input);
+          const after = fenceLineBytes(output);
+          expect(before).toHaveLength(2);
+          expect(after).toEqual(before);
+          expect(after.length % 2).toBe(0);
+          if (input.includes("KEEP295FENCE")) expect(output).toContain("KEEP295FENCE");
+        });
+      }
+      for (const [ending, separator] of [
+        ["LF", "\n"],
+        ["CRLF", "\r\n"],
+        ["CR", "\r"]
+      ] as const) {
+        for (const quoted of [false, true]) {
+          it(`stops ${quoted ? "quoted" : "unquoted"} markup before line 33 with ${ending}, as ${kind}`, () => {
+            const opener = quoted ? '<password first="x" a="' : "<password x";
+            const input =
+              [
+                opener,
+                ...Array.from({ length: 31 }, () => "continued attribute text"),
+                quoted ? 'KEEP295BOUND"> tail' : "KEEP295BOUND> tail"
+              ].join(separator) + separator;
+            const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+            expect(output).toContain("KEEP295BOUND");
+            expect(output.match(/\r\n|\r|\n/g)).toEqual(input.match(/\r\n|\r|\n/g));
+          });
+        }
+        it(`still masks a valid 32-line start tag with ${ending}, as ${kind}`, () => {
+          const input =
+            [
+              '<access_token first="S295LIMIT1"',
+              ...Array.from({ length: 30 }, () => ' a="S295LIMIT2"'),
+              ' last="S295LIMIT3"> KEEP295LIMIT'
+            ].join(separator) + separator;
+          const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+          for (const secret of ["S295LIMIT1", "S295LIMIT2", "S295LIMIT3"]) expect(output).not.toContain(secret);
+          expect(output).toContain("KEEP295LIMIT");
+        });
+      }
+    }
+    it("retains the legacy malformed short-tag fallback on short CR records", () => {
+      const input = '<password first="x" a="S295MALFORMED>\rplain\r';
+      const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+      expect(output).not.toContain("S295MALFORMED");
+    });
+    it("documents the malformed short-tag fallback cost on long CR records", () => {
+      const input = '<password first="x" a="S295MALFORMED>\r' + "plain\r".repeat(32);
+      const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+      expect(output).toContain("S295MALFORMED");
+    });
+    it("still masks complete short tags elsewhere on long CR records", () => {
+      const input = '<password first="x" a="S295COMPLETE">\r' + "plain\r".repeat(32);
+      const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+      expect(output).not.toContain("S295COMPLETE");
+    });
+    it("ages the existing armor window on protected fence records", () => {
+      const input =
+        [
+          "-----BEGIN PRIVATE KEY-----",
+          ...Array.from({ length: 100 }, () => "~~~~~~"),
+          "text KEEP295ARMORBOUND prose"
+        ].join("\n") + "\n";
+      const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+      expect(output).toContain("KEEP295ARMORBOUND");
+      expect(fenceLineBytes(output)).toEqual(fenceLineBytes(input));
+    });
+    for (const input of ["```token: `S295INVALID`", "```token: `S295INVALID` ```"]) {
+      it(`still masks invalid backtick info without a later-run rescue: ${input}`, () => {
+        const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], {
+          input: `${input}\n`,
+          encoding: "utf8"
+        });
+        expect(output).not.toContain("S295INVALID");
+      });
+    }
+  });
+}
+
+const mixedInvalidFenceShapes = [
+  ["OpenAI provider", `sk-${"A".repeat(32)}`],
+  ["AWS provider", `AKIA${"A".repeat(16)}`],
+  ["Google provider", `AIza${"A".repeat(35)}`],
+  ["Slack provider", `xoxb-${"A".repeat(24)}`],
+  ["compound markup", '<access_token first="S295MIX1" second="S295MIX2">S295MIX3</access_token>']
+] as const;
+
+for (const [hook, path] of hooks) {
+  describe(`${hook} original fence classification`, () => {
+    for (const kind of ["command", "text"] as const) {
+      for (const [name, suffix] of mixedInvalidFenceShapes) {
+        it(`keeps masking ${name} after invalid backtick info changes, as ${kind}`, () => {
+          const input = `\x60\x60\x60token: \x60S295MIX0\x60 ${suffix} KEEP295MIX\n`;
+          const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+          for (const secret of ["S295MIX0", "S295MIX1", "S295MIX2", "S295MIX3"]) expect(output).not.toContain(secret);
+          if (name !== "compound markup") expect(output).not.toContain(suffix);
+          expect(output).toContain("KEEP295MIX");
+        });
+      }
+    }
+    for (const input of [
+      "Nplain\n",
+      "Pplain\n",
+      "Ntoken=S295PREFIX\n",
+      "Ptoken=S295PREFIX\n",
+      "N~~~~~~ token=S295PREFIX\n",
+      "P~~~~~~ token=S295PREFIX\n"
+    ]) {
+      it(`does not treat an input prefix as trusted framing: ${JSON.stringify(input)}`, () => {
+        const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+        if (input.includes("~~~~~~") || input.includes("plain")) expect(output).toBe(input);
+        else {
+          expect(output).toBe(`${input[0]}token=***MASKED***\n`);
+          expect(output).not.toContain("S295PREFIX");
+        }
+      });
+    }
+  });
+}
+
+for (const [hook, path] of hooks) {
+  describe(`${hook} armor state across original protected records`, () => {
+    it("opens the armor window on a protected BEGIN record", () => {
+      const input = "~~~~~~ -----BEGIN PRIVATE KEY-----\nbody S295ARMORBEGIN prose\n-----END PRIVATE KEY-----\n";
+      const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+      expect(output).not.toContain("S295ARMORBEGIN");
+      expect(fenceLineBytes(output)).toEqual(fenceLineBytes(input));
+    });
+    it("closes the armor window on a protected END record", () => {
+      const input = "-----BEGIN PRIVATE KEY-----\n~~~~~~ -----END PRIVATE KEY-----\ntext KEEP295ARMOREND prose\n";
+      const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+      expect(output).toContain("KEEP295ARMOREND");
+      expect(fenceLineBytes(output)).toEqual(fenceLineBytes(input));
+    });
+  });
+}
+
+for (const [hook, path] of hooks) {
+  describe(`${hook} line completion across mask stages`, () => {
+    for (const input of ["", "plain", "plain\n", "plain\n\n", "~~~~~~\n", "Nplain\r\nPplain\r\n"]) {
+      it(`preserves record count when sed completes its final line: ${JSON.stringify(input)}`, () => {
+        // Model BSD sed final-line completion on this runner. This is a stream
+        // composition check; the real GNU/macOS runtime gates remain separate.
+        const completeSedLine = "sed() { command sed \"$@\" | awk '{ print }'; }";
+        const output = execFileSync("bash", ["-c", `${completeSedLine}\n${maskFunction(path)}\nmask`], {
+          input,
+          encoding: "utf8"
+        });
+        expect(output).toBe(input && !input.endsWith("\n") ? `${input}\n` : input);
+      });
+    }
+  });
+}

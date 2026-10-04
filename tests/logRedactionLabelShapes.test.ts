@@ -235,3 +235,188 @@ describe("core #295 self-close extension keeps other slash values literal", () =
     });
   });
 });
+
+// The fence contract covers the whole physical line, including info strings,
+// indentation/container prefixes and CR/LF bytes, even when the run is inline.
+const fenceLines295 = (text: string) =>
+  (text.match(/[^\r\n]*(?:\r\n|\r|\n|$)/g) ?? []).filter((line) => /`{3}|~{3}/.test(line));
+
+function expectFenceIdentity295(input: string, output: string) {
+  const before = fenceLines295(input);
+  const after = fenceLines295(output);
+  expect(before.length).toBeGreaterThan(0);
+  expect(after).toEqual(before);
+  expect(after.length).toBe(before.length);
+  expect(after.length % 2).toBe(before.length % 2);
+}
+
+describe("core #295 fence barrier protects every credential reader", () => {
+  const cases = [
+    [
+      "odd tilde fences inside a multiline quoted attribute",
+      '<password a="start\n~~~~~~\nPUBLIC295F1\n~~~~~~\nPUBLIC295F2\n~~~~~~\nfinish" b="S295"> KEEP295F'
+    ],
+    [
+      "quoted backtick info lines with CRLF",
+      '<password a="start\r\n > ```token \'PUBLIC295INFO\'\r\nPUBLIC295F1\r\n```\r\nfinish" b="S295"> KEEP295F'
+    ],
+    [
+      "inline tilde run and bare CR",
+      '<password a="start\rprefix ~~~ password=PUBLIC295INFO\rPUBLIC295F1\rfinish" b="S295"> KEEP295F'
+    ],
+    [
+      "legacy label on a fence line without an eventual tag close",
+      '<password a="start\n~~~ token=PUBLIC295INFO\nPUBLIC295F1'
+    ],
+    ["token-shape rule on a fence info line", "~~~ ghp_ABCDEFGHIJKLMNOPQRSTUVWX\nPUBLIC295F1\n~~~"],
+    ["URL rule on a fence info line", "~~~ https://user:PUBLIC295INFO@example.invalid/\nPUBLIC295F1\n~~~"]
+  ] as const;
+  it.each(cases.flatMap(([name, input]) => (["command", "text"] as const).map((kind) => [name, kind, input] as const)))(
+    "%s, as %s",
+    (_name, kind, input) => {
+      const result = redactFragment({ text: input, kind });
+      expect(result.status).toBe("ok");
+      expectFenceIdentity295(input, result.text);
+      expect(result.text).toContain("PUBLIC295F1");
+    }
+  );
+
+  it.each(["command", "text"] as const)("keeps the absent > plain-fence control, as %s", (kind) => {
+    const input = '<password a="start\n~~~~~~\nPUBLIC295F1\n~~~~~~\nno-close';
+    const result = redactFragment({ text: input, kind });
+    expectFenceIdentity295(input, result.text);
+    expect(result.text).toContain("PUBLIC295F1");
+  });
+});
+
+describe("core #295 global armor clipping preserves fence bytes", () => {
+  it.each(["command", "text"] as const)("masks armor across a fence without changing it, as %s", (kind) => {
+    const input =
+      "~~~ -----BEGIN PRIVATE KEY-----\nS295ARMOR1\n~~~~~~\nS295ARMOR2\n-----END PRIVATE KEY-----\nKEEP295ARMOR";
+    const result = redactFragment({ text: input, kind });
+    expect(result.status).toBe("ok");
+    expectFenceIdentity295(input, result.text);
+    expect(result.text).not.toContain("S295ARMOR1");
+    expect(result.text).not.toContain("S295ARMOR2");
+    expect(result.text).toContain("KEEP295ARMOR");
+  });
+});
+
+describe("core #295 fence-bearing omission keeps physical positions", () => {
+  const input = "PUBLIC295OMIT\r\n~~~ token=PUBLIC295INFO\r\n\r\nPRIVATE295OMIT\r~~~\nTAIL295OMIT";
+  const expected = (reason: string) =>
+    `***LOG_CONTENT_OMITTED: ${reason}***\r\n~~~ token=PUBLIC295INFO\r\n\r\n***LOG_CONTENT_OMITTED: ${reason}***\r~~~\n***LOG_CONTENT_OMITTED: ${reason}***`;
+  it("preserves every original line separator for unknown kind", () => {
+    const result = redactFragment({ text: input, kind: "unknown" });
+    expect(result).toEqual({ status: "omitted", reason: "unknown_kind", text: expected("unknown_kind") });
+    expectFenceIdentity295(input, result.text);
+  });
+  it.each(["command", "text"] as const)("preserves every original line separator for over-limit %s", (kind) => {
+    const result = redactFragment({ text: input, kind }, { maxBytes: 1 });
+    expect(result).toEqual({ status: "omitted", reason: "fragment_over_limit", text: expected("fragment_over_limit") });
+    expectFenceIdentity295(input, result.text);
+  });
+  it.each(["command", "text"] as const)("preserves fences on the armor omission path, as %s", (kind) => {
+    const original = "-----BEGIN PRIVATE KEY-----\nSECRET295OMIT\n~~~\nPUBLIC295AFTER\n~~~";
+    const result = redactFragment({ text: original, kind });
+    expect(result).toMatchObject({ status: "omitted", reason: "unterminated_private_armor" });
+    expectFenceIdentity295(original, result.text);
+    expect(result.text).not.toContain("SECRET295OMIT");
+    expect(result.text).not.toContain("PUBLIC295AFTER");
+    expect(result.text.split("\n")).toHaveLength(original.split("\n").length);
+  });
+});
+
+describe("core #295 multiline extent is at most 32 physical lines", () => {
+  it.each(
+    (["\n", "\r\n", "\r"] as const).flatMap((eol) =>
+      (["command", "text"] as const).map((kind) => [JSON.stringify(eol), kind, eol] as const)
+    )
+  )("keeps the valid 32-line start tag with %s, as %s", (_name, kind, eol) => {
+    const input = [
+      '<password a="start',
+      ...Array<string>(30).fill("S295WITHIN"),
+      'finish" b="S295LIMIT"> KEEP295LIMIT'
+    ].join(eol);
+    const result = redactFragment({ text: input, kind });
+    expect(result.status).toBe("ok");
+    expect(result.text).not.toContain("S295WITHIN");
+    expect(result.text).not.toContain("S295LIMIT");
+    expect(result.text).toContain("KEEP295LIMIT");
+  });
+  it.each(
+    (["\n", "\r\n", "\r"] as const).flatMap((eol) =>
+      (["command", "text"] as const).map((kind) => [JSON.stringify(eol), kind, eol] as const)
+    )
+  )("stops the start-tag claim before line 33 with %s, as %s", (_name, kind, eol) => {
+    const input = [
+      '<password a="start',
+      ...Array<string>(31).fill("PUBLIC295BOUND"),
+      'finish" b="PUBLIC295TAIL"> KEEP295BOUND'
+    ].join(eol);
+    const result = redactFragment({ text: input, kind });
+    expect(result.status).toBe("ok");
+    expect(result.text).toContain("PUBLIC295BOUND");
+    expect(result.text).toContain("PUBLIC295TAIL");
+    expect(result.text).toContain("KEEP295BOUND");
+  });
+  it.each(["command", "text"] as const)("bounds direct text using the remaining opening-tag budget, as %s", (kind) => {
+    const input = [
+      '<access_token a="S295A" b="S295B">',
+      ...Array<string>(32).fill("PUBLIC295BODY"),
+      "</access_token> KEEP295BODY"
+    ].join("\n");
+    const result = redactFragment({ text: input, kind });
+    expect(result.status).toBe("ok");
+    expect(result.text).not.toContain("S295A");
+    expect(result.text).not.toContain("S295B");
+    expect(result.text.match(/PUBLIC295BODY/g) ?? []).toHaveLength(32);
+    // Beyond the budget the old closing-label reader still takes this word.
+    // Retaining that fallback is deliberate; this is not a claim that the new
+    // within-budget following-word guarantee extends to oversized elements.
+    expect(result.text.endsWith("</access_token> ***MASKED***")).toBe(true);
+  });
+});
+
+describe("core #295 invalid backtick info stays eligible for masking", () => {
+  it.each(["command", "text"] as const)("retains the G-228 secret masking, as %s", (kind) => {
+    const input = "````\n```token: `FKgv`\n````";
+    const result = redactFragment({ text: input, kind });
+    expect(result.status).toBe("ok");
+    expect(result.text).not.toContain("FKgv");
+    expect(result.text.startsWith("````\n")).toBe(true);
+    expect(result.text.endsWith("\n````")).toBe(true);
+  });
+  it.each(["command", "text"] as const)("does not retry a later triple inside invalid info, as %s", (kind) => {
+    const result = redactFragment({ text: "```prefix ```token=S295INVALID", kind });
+    expect(result.status).toBe("ok");
+    expect(result.text).not.toContain("S295INVALID");
+  });
+});
+
+describe("core #295 closing delimiter shares the 32-line budget", () => {
+  it.each(
+    (["\n", "\r\n", "\r"] as const).flatMap((eol) =>
+      (["command", "text"] as const).map((kind) => [JSON.stringify(eol), kind, eol] as const)
+    )
+  )("keeps a close at line 32 with %s, as %s", (_name, kind, eol) => {
+    const input = `<access_token a="S295A" b="S295B">S295CLOSE</access_token${eol.repeat(31)}> KEEP295CLOSE`;
+    const result = redactFragment({ text: input, kind });
+    expect(result.status).toBe("ok");
+    expect(result.text).not.toContain("S295CLOSE");
+    expect(result.text).toContain("KEEP295CLOSE");
+  });
+  it.each(
+    (["\n", "\r\n", "\r"] as const).flatMap((eol) =>
+      (["command", "text"] as const).map((kind) => [JSON.stringify(eol), kind, eol] as const)
+    )
+  )("rejects a close at line 33 with %s, as %s", (_name, kind, eol) => {
+    const input = `<access_token a="S295A" b="S295B">PUBLIC295CLOSE</access_token${eol.repeat(32)}> KEEP295CLOSE`;
+    const result = redactFragment({ text: input, kind });
+    expect(result.status).toBe("ok");
+    expect(result.text).not.toContain("S295A");
+    expect(result.text).not.toContain("S295B");
+    expect(result.text).toContain("PUBLIC295CLOSE");
+    expect(result.text).toContain("KEEP295CLOSE");
+  });
+});

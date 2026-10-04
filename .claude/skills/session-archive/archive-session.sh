@@ -338,6 +338,18 @@ date_start="$(jq -rs '[ .[] | .timestamp // empty | select(length > 0) ] | first
 # the body copy is redacted. It reads no variables, so moving it is inert.
 
 mask() {
+  # Classify ORIGINAL fence records before any replacement. Every LF record
+  # receives one trusted N/P prefix, including payloads already starting N/P.
+  # A linear byte scan finds a tilde triple or the first maximal backtick run
+  # of at least three with no later backtick in that CR-delimited segment.
+  # Protect the whole containing LF record, and carry that decision unchanged
+  # through every stage. Credential-like text on protected records stays readable.
+  local long_cr_record
+  # The last legacy cleanup also spans CR. Skip it on LF records with at least
+  # 32 CR separators, including a trailing CR from CRLF, so it cannot undo the
+  # new markup bound. Complete short tags are already masked by awk; malformed
+  # short tags elsewhere on such a long CR record lose this legacy fallback.
+  long_cr_record="$(printf '^([^\r]*\r){32}')"
   # A credential in tool output is usually QUOTED ("access_token": "…",
   # {'api_key':'…'}), and the keyword rule at the bottom cannot see it: it ends
   # the value at whitespace, and a JSON line has none, so it never even starts —
@@ -729,6 +741,10 @@ mask() {
   # Each byte enters/leaves the tag array once. Name/attribute/value lookahead
   # strings have fixed maximum lengths; no suffix search or growing tag string
   # is repeated. A new unquoted < abandons an unfinished tag before restarting.
+  # A fence candidate flushes unfinished markup without changing that line.
+  # A start tag may span at most 32 physical lines including its opening line;
+  # LF and bare CR advance the count, while CRLF advances it only once. At the
+  # attempted 33rd line, emit the candidate unchanged and resume ordinary scans.
   # Buffer a candidate tag, plus direct body text only to its physical line
   # end or next <. A matching close is required before masking that body text.
   # An unrelated next tag or an unclosed element therefore keeps following prose.
@@ -743,7 +759,33 @@ mask() {
   # every substr($0, i, 1), even when length($0) is cached, making long lines
   # quadratic. Empty-separator split is supported by the required GNU/macOS
   # awk implementations (and mawk); no broader POSIX portability is assumed.
+  { cat; printf '\n'; } | LC_ALL=C awk '
+    function fenced(    n, j, c, ticks, tildes, phase) {
+      n = split($0, original_bytes, "")
+      for (j = 1; j <= n; j++) {
+        c = original_bytes[j]
+        if (c == "\r") {
+          if (phase == 1 || phase == 2) return 1
+          ticks = tildes = phase = 0
+          continue
+        }
+        tildes = c == "~" ? tildes + 1 : 0
+        if (tildes == 3) return 1
+        if (!phase) {
+          ticks = c == "`" ? ticks + 1 : 0
+          if (ticks == 3) phase = 1
+        } else if (phase == 1 && c != "`") phase = 2
+        else if (phase == 2 && c == "`") phase = 3
+      }
+      return phase == 1 || phase == 2
+    }
+    # Every framed record is terminated, so sed cannot invent a sentinel
+    # record by completing an unterminated line on BSD/macOS.
+    { printf "%s%s\n", fenced() ? "P" : "N", $0 }
+  ' |
   sed -E \
+    -e '/^P/bp' \
+    -e 's/^N//' \
     -e '/-----BEGIN PGP PRIVATE KEY BLOCK-----|---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----/{x;s/.*/o/;x;}' \
     -e 's/gh[pousr]_[A-Za-z0-9]{20,}/***MASKED***/g' \
     -e 's/github_pat_[A-Za-z0-9_]{20,}/***MASKED***/g' \
@@ -779,9 +821,22 @@ mask() {
     -e "/\`\`\`|~~~/!s/((passwd|passphrase)['\"]?[=:[:space:]]+')([^'\\\\-]|\\\\.|-{1,4}([^'\\\\-]|\\\\.))*-{0,4}'/\1***MASKED***'/Ig" \
     -e "/\`\`\`|~~~/!s/'\\*\\*\\*MASKED\\*\\*\\*''([^']|'')*'/'***MASKED***'/g" \
     -e '/^[[:space:]]*[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/.*/***MASKED***/' \
-    -e '/^[[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-)[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-))[A-Za-z0-9+\/=]{32,}([[:space:]]*)$/\1***MASKED***\3/' | { cat; printf '\n'; } | LC_ALL=C awk '
+    -e '/^[[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-)[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-))[A-Za-z0-9+\/=]{32,}([[:space:]]*)$/\1***MASKED***\3/' \
+    -e 's/^/N/' \
+    -e 'b' \
+    -e ':p' \
+    -e '/-----BEGIN PGP PRIVATE KEY BLOCK-----|---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----|-----BEGIN ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/{x;s/.*/o/;x;}' \
+    -e 'x;/^ox{0,100}$/{s/$/x/;};x' \
+    -e '/-----END ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----|-----END PGP PRIVATE KEY (BLOCK|\*\*\*MASKED\*\*\*)-----|---- END SSH2 ENCRYPTED PRIVATE KEY ----/{x;s/.*//;x;}' | LC_ALL=C awk '
+    # Reframe every emitted normal record, including buffered tag newlines.
+    # Protected records bypass emit() only after pending markup has been flushed.
+    function emit(s) {
+      if (output_start) printf "N"
+      printf "%s", s
+      output_start = s == "\n"
+    }
     function flush_tag(    j) {
-      for (j = 1; j <= used; j++) printf "%s", tag[j]
+      for (j = 1; j <= used; j++) emit(tag[j])
       clear_tag()
     }
     function clear_tag(    j) {
@@ -824,13 +879,13 @@ mask() {
       if (attribute == 4 && attr == "type" && value == "password/") password_input = 1
       if (attribute == 4) finish_value()
       if (!label && !password_input) { flush_tag(); return }
-      for (j = 1; j <= name_end; j++) printf "%s", tag[j]
+      for (j = 1; j <= name_end; j++) emit(tag[j])
       for (j = name_end + 1; j < used; j++) {
-        if (tag[j] == "\n" || tag[j] == "\r") { printf "%s", tag[j]; marked = 0 }
-        else if (!marked && tag[j] ~ /[[:space:]]/) printf "%s", tag[j]
-        else if (!marked) { printf "%s", "***MASKED***"; marked = 1 }
+        if (tag[j] == "\n" || tag[j] == "\r") { emit(tag[j]); marked = 0 }
+        else if (!marked && tag[j] ~ /[[:space:]]/) emit(tag[j])
+        else if (!marked) { emit("***MASKED***"); marked = 1 }
       }
-      printf ">"
+      emit(">")
       body = label && tag[used - 1] != "/"
       if (body) {
         body_name_length = name_end - 1
@@ -843,8 +898,8 @@ mask() {
     }
     function finish_body(mask,    j, marked) {
       for (j = 1; j <= body_used; j++) {
-        if (!mask || body_text[j] ~ /[[:space:]]/) printf "%s", body_text[j]
-        else if (!marked) { printf "%s", "***MASKED***"; marked = 1 }
+        if (!mask || body_text[j] ~ /[[:space:]]/) emit(body_text[j])
+        else if (!marked) { emit("***MASKED***"); marked = 1 }
         delete body_text[j]
       }
       for (j = 1; j <= body_name_length; j++) delete body_name[j]
@@ -856,7 +911,7 @@ mask() {
       else if (closing_used <= body_name_length + 2) ok = tolower(c) == body_name[closing_used - 2]
       else if (c == ">") {
         finish_body(1)
-        for (j = 1; j <= closing_used; j++) { printf "%s", closing[j]; delete closing[j] }
+        for (j = 1; j <= closing_used; j++) { emit(closing[j]); delete closing[j] }
         closing_used = 0
         return
       }
@@ -874,8 +929,8 @@ mask() {
         else { body_text[++body_used] = c; return }
       }
       if (state == 0) {
-        if (c != "<") { printf "%s", c; return }
-        state = 1; used = 1; tag[used] = c
+        if (c != "<") { emit(c); return }
+        state = 1; used = 1; tag[used] = c; tag_line = logical_line
         tail = component = ""; namespaced = local_secret = 0
         return
       }
@@ -908,14 +963,34 @@ mask() {
       if (quote == "" && c == ">") { close_tag(); return }
       attribute_byte(c)
     }
-    NR > 1 { byte("\n") }
-    { line_length = split($0, line_bytes, ""); for (i = 1; i <= line_length; i++) byte(line_bytes[i]) }
-    END {
+    function flush_pending(    j) {
       finish_body(0)
-      for (j = 1; j <= closing_used; j++) printf "%s", closing[j]
+      for (j = 1; j <= closing_used; j++) { emit(closing[j]); delete closing[j] }
+      closing_used = 0
       flush_tag()
     }
-  ' | sed -E 's/(<(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[[:space:]]+)[^<>]*>/\1***MASKED***>/Ig'
+    function feed(c) {
+      if (c == "\r" || (c == "\n" && !previous_cr)) {
+        logical_line++
+        if (state && logical_line - tag_line >= 32) flush_tag()
+      }
+      previous_cr = c == "\r"
+      byte(c)
+    }
+    BEGIN { output_start = 1 }
+    NR > 1 { feed("\n") }
+    /^P/ {
+      flush_pending()
+      printf "%s", $0
+      output_start = previous_cr = 0
+      next
+    }
+    {
+      line_length = split($0, line_bytes, "")
+      for (i = 2; i <= line_length; i++) feed(line_bytes[i])
+    }
+    END { flush_pending() }
+  ' | sed -E -e '/^P/{s/^P//;b;}' -e 's/^N//' -e "/$long_cr_record/b" -e 's/(<(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[[:space:]]+)[^<>]*>/\1***MASKED***>/Ig'
 }
 
 # Title priority: aiTitle (the session title Claude Code generates and keeps
