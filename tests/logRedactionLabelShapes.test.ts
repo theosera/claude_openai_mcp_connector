@@ -170,3 +170,68 @@ describe("core #295 preserves other label readers in selected markup", () => {
     expect(redactFragment({ text: input, kind })).toEqual({ status: "ok", text: expected });
   });
 });
+
+// Owner-approved follow-up to #295: accept the terminal unquoted password/ as
+// an XML-like self-closing log form. Quoted or nonterminal slashes stay literal.
+describe("core #295 terminal unquoted password input self-close", () => {
+  const cases = [
+    [
+      "unquoted value with terminal type=password/",
+      "<input value=SENSITIVE295 type=password/> KEEP295SC",
+      "SENSITIVE295",
+      "<input value=***MASKED*** type=***MASKED***/> KEEP295SC"
+    ],
+    [
+      "quoted value with terminal type=password/",
+      '<input value="SENSITIVE295Q" type=password/> KEEP295SC',
+      "SENSITIVE295Q",
+      '<input value="***MASKED***" type=***MASKED***/> KEEP295SC'
+    ],
+    [
+      "uppercase terminal password type",
+      "<INPUT value=SENSITIVE295U TYPE=PASSWORD/> KEEP295SC",
+      "SENSITIVE295U",
+      "<INPUT value=***MASKED*** TYPE=***MASKED***/> KEEP295SC"
+    ],
+    [
+      "slash-bearing URL secret before terminal password type",
+      "<input value=https://example.invalid/SENSITIVE295/a/b/ type=password/> KEEP295SC",
+      "https://example.invalid/SENSITIVE295/a/b/",
+      "<input value=***MASKED*** type=***MASKED***/> KEEP295SC"
+    ]
+  ] as const;
+  it.each(
+    cases.flatMap(([name, input, secret, expected]) =>
+      (["command", "text"] as const).map((kind) => [name, kind, input, secret, expected] as const)
+    )
+  )("%s, as %s", (_name, kind, input, secret, expected) => {
+    const result = redactFragment({ text: input, kind });
+    expect(result.status).toBe("ok");
+    expect(result.text).not.toContain(secret);
+    expect(result.text).toContain("KEEP295SC");
+    expect(result.text).toBe(expected);
+  });
+});
+
+describe("core #295 self-close extension keeps other slash values literal", () => {
+  const types = [
+    ["quoted password slash", 'type="password/">'],
+    ["password slash followed by a suffix", "type=password/foo>"],
+    ["password slash followed by whitespace", "type=password/ >"],
+    ["password slash followed by another attribute", "type=password/ class=example>"],
+    ["password followed by two slashes", "type=password//>"]
+  ] as const;
+  it.each(
+    types.flatMap(([name, ending]) => (["command", "text"] as const).map((kind) => [name, kind, ending] as const))
+  )("%s, as %s", (_name, kind, ending) => {
+    const input = `<input value=PUBLIC295SC ${ending} KEEP295SC`;
+    expect(redactFragment({ text: input, kind })).toEqual({ status: "ok", text: input });
+  });
+
+  it.each(["command", "text"] as const)("keeps generic slash-bearing value spans intact, as %s", (kind) => {
+    expect(redactFragment({ text: "<input type=password value=SENSITIVE295//> KEEP295SC", kind })).toEqual({
+      status: "ok",
+      text: "<input type=***MASKED*** value=***MASKED***> KEEP295SC"
+    });
+  });
+});

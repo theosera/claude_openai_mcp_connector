@@ -127,3 +127,46 @@ for (const [hook, path] of hooks) {
     }
   });
 }
+
+// Owner-approved adjacent #295 form: a bare type immediately before />.
+const selfClosingInputs = [
+  ["bare value", "<input value=SENSITIVE295 type=password/> KEEP"],
+  ["double-quoted value", '<input value="SENSITIVE295" type=password/> KEEP'],
+  ["single-quoted value", "<input value='SENSITIVE295' type=password/> KEEP"],
+  ["uppercase type", "<INPUT VALUE=SENSITIVE295 TYPE=PASSWORD/> KEEP"],
+  ["slash-bearing value", "<input value=SENSITIVE295/path/part type=password/> KEEP"]
+] as const;
+const nonPasswordSlashTypes = [
+  ["quoted slash", '<input value=VISIBLE295 type="password/"> KEEP'],
+  ["slash inside the bare type", "<input value=VISIBLE295 type=password/foo> KEEP"],
+  ["slash before whitespace", "<input value=VISIBLE295 type=password/ > KEEP"],
+  ["slash before another attribute", "<input value=VISIBLE295 type=password/ class=hint> KEEP"],
+  ["two terminal slashes", "<input value=VISIBLE295 type=password//> KEEP"]
+] as const;
+
+for (const [hook, path] of hooks) {
+  describe(`${hook} self-closing unquoted password type`, () => {
+    for (const kind of ["command", "text"] as const) {
+      for (const [name, input] of selfClosingInputs) {
+        it(`${name}, as ${kind}: masks the value and preserves the following word`, () => {
+          const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], {
+            input: `${input}\n`,
+            encoding: "utf8"
+          });
+          expect(output).not.toContain("SENSITIVE295");
+          if (name === "slash-bearing value") expect(output).not.toContain("path/part");
+          expect(output).toContain("KEEP");
+        });
+      }
+      for (const [name, input] of nonPasswordSlashTypes) {
+        it(`retains ${name}, as ${kind}`, () => {
+          const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], {
+            input: `${input}\n`,
+            encoding: "utf8"
+          });
+          expect(output).toBe(`${input}\n`);
+        });
+      }
+    }
+  });
+}

@@ -568,8 +568,16 @@ function collectMarkupLabelSpans(original, labels) {
       const valueEnd = cursor;
       const value = original.slice(valueStart, valueEnd);
       if (attributes.length > 0 && /[<>]/.test(value)) laterAngle = true;
-      if (key === "type" && value.toLowerCase() === "password") passwordInput = true;
-      attributes.push({ start: valueStart, end: valueEnd, kind: "credential:label" });
+      // Accept only this terminal XML-like log spelling. A slash in a quoted
+      // type, a nonterminal type, or any other attribute remains value data.
+      const selfClosingPasswordType =
+        name === "input" && key === "type" && !delimiter && cursor === openEnd && value.toLowerCase() === "password/";
+      if (key === "type" && (value.toLowerCase() === "password" || selfClosingPasswordType)) passwordInput = true;
+      attributes.push({
+        start: valueStart,
+        end: selfClosingPasswordType ? valueEnd - 1 : valueEnd,
+        kind: "credential:label"
+      });
       if (delimiter) cursor += 1;
     }
     const simple = labelNames.has(name);

@@ -53,7 +53,7 @@ describe("the core on the corpus", () => {
 
   it("masks every secret and keeps every preserve word outside argument position", () => {
     const inScope = corpus.filter((c) => !ARGUMENT_POSITION_CASES.has(c.id));
-    expect(inScope).toHaveLength(156);
+    expect(inScope).toHaveLength(158);
     const failures = inScope
       .map((c) => ({ id: c.id, ...verdict(c) }))
       .filter((v) => v.result.status !== "ok" || v.leaked.length > 0 || v.broken.length > 0)

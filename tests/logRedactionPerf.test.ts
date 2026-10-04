@@ -114,6 +114,14 @@ const ISSUE295_SHAPES: readonly Issue295PerfShape[] = [
     "FKPERF295U1",
     (n) => fill('<input type="password" value="FKPERF295U1"> KEEP295U1 ', '<access_token a="x" ', n),
     "KEEP295U1"
+  ],
+  [
+    "issue295-self-closing-input-long-slash-value",
+    "FKPERF295S1",
+    // Only the slash immediately before `>` terminates the unquoted type.
+    // Earlier slashes remain part of the long value that must be masked.
+    (n) => enclosed("<input value=FKPERF295S1/", "segment/", " type=password/> KEEP295S1", n),
+    "KEEP295S1"
   ]
 ];
 

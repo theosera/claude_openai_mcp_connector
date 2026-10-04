@@ -808,7 +808,9 @@ mask() {
       }
       if (attribute == 4) {
         if (c ~ /[[:space:]]/) finish_value()
-        else if (length(value) <= 8) value = value tolower(c)
+        # Keep one byte past password/ so longer slash-bearing types cannot
+        # truncate to the terminal form recognized by close_tag().
+        else if (length(value) <= 9) value = value tolower(c)
         return
       }
       if (c == "=" && (attribute == 1 || attribute == 2)) { attribute = 3; return }
@@ -817,6 +819,9 @@ mask() {
       if (length(attr) <= 4) attr = attr tolower(c)
     }
     function close_tag(    j, marked) {
+      # This function sees > itself. Only an unfinished bare type can treat
+      # its final slash as />; quoted or whitespace-terminated values cannot.
+      if (attribute == 4 && attr == "type" && value == "password/") password_input = 1
       if (attribute == 4) finish_value()
       if (!label && !password_input) { flush_tag(); return }
       for (j = 1; j <= name_end; j++) printf "%s", tag[j]
