@@ -33,7 +33,7 @@ export const MASK = "***MASKED***";
 /**
  * Used when a fragment cannot be analysed to completion -- an unterminated
  * armor block, a parse failure, an over-size input. Fence-bearing fragments
- * retain fence lines and line separators; other text is omitted and the reason
+ * retain fence syntax and line separators; other text is omitted and the reason
  * recorded. Deliberately NOT the same token as MASK: a reader has to be able to
  * tell "this was redacted" from "this could not be stored".
  */
@@ -346,44 +346,118 @@ function* physicalLines(original) {
   }
 }
 
-/**
- * Protect conservative fence candidates, including container/inline prefixes.
- * Backtick info cannot contain another backtick: retaining the known-invalid
- * `token: \`value\`` info form would regress corpus G-228's masking.
- * Find the FIRST maximal run once; retrying at each backtick can be quadratic.
- */
-function collectFenceLineSpans(original) {
-  const spans = [];
-  for (const line of physicalLines(original)) {
-    const content = original.slice(line.start, line.contentEnd);
-    let fence = content.includes("~~~");
-    if (!fence) {
-      const first = content.indexOf("```");
-      if (first >= 0) {
-        let after = first + 3;
-        while (content[after] === "`") after += 1;
-        fence = content.indexOf("`", after) < 0;
-      }
-    }
-    if (fence) spans.push({ start: line.start, end: line.end, kind: "protected:fence-line" });
-  }
-  return spans;
+/** Layout whitespace accepted by the renderer, including its MVS edge case. */
+function fenceBlank(ch) {
+  return ch !== undefined && (/\s/.test(ch) || ch === "\u180e");
 }
 
-/** No-fence omissions retain their old token; fence-bearing ones retain structure. */
-function omissionWithFences(original, reason, fences) {
-  if (fences.length === 0) return omitted(reason);
-  const parts = [];
-  let fenceIndex = 0;
-  for (const line of physicalLines(original)) {
-    if (fences[fenceIndex]?.start === line.start) {
-      parts.push(original.slice(line.start, line.end));
-      fenceIndex += 1;
-    } else {
-      if (line.contentEnd > line.start) parts.push(omitted(reason));
-      parts.push(original.slice(line.contentEnd, line.end));
+/** Only indentation, blockquote and list syntax may precede a protected run. */
+function fencePrefix(original, from, to) {
+  let at = from;
+  let container = false;
+  const ordinals = [];
+  while (at < to) {
+    if (fenceBlank(original[at])) {
+      at += 1;
+      continue;
     }
+    if (original[at] === ">") {
+      container = true;
+      at += 1;
+      continue;
+    }
+    if ("-+*".includes(original[at]) && fenceBlank(original[at + 1])) {
+      container = true;
+      at += 1;
+      continue;
+    }
+    const digits = at;
+    while (at < to && /[0-9]/.test(original[at]) && at - digits < 9) at += 1;
+    if (at > digits && (original[at] === "." || original[at] === ")") && fenceBlank(original[at + 1])) {
+      container = true;
+      ordinals.push({ start: digits, end: at });
+      at += 1;
+      continue;
+    }
+    return null;
   }
+  return container || /^ {0,3}$/.test(original.slice(from, to)) ? ordinals : null;
+}
+
+/**
+ * Protect only structural fence syntax, never whole lines or arbitrary inline
+ * markers. Prefixes must consist of indentation/container/list tokens. Invalid
+ * backtick info keeps the existing masking behavior; the archive renderer
+ * handles any resulting re-fencing. Each line and maximal run is walked once.
+ */
+function collectFenceSyntaxSpans(original) {
+  const spans = [];
+  const ordinals = [];
+  for (const line of physicalLines(original)) {
+    let first = -1;
+    let runEnd = -1;
+    let marker = "";
+    let at = line.start;
+    while (at < line.contentEnd) {
+      marker = original[at];
+      if (marker !== "`" && marker !== "~") {
+        at += 1;
+        continue;
+      }
+      let end = at + 1;
+      while (end < line.contentEnd && original[end] === marker) end += 1;
+      if (end - at >= 3) {
+        first = at;
+        runEnd = end;
+        break;
+      }
+      at = end;
+    }
+    if (first < 0) continue;
+    const prefixOrdinals = fencePrefix(original, line.start, first);
+    if (prefixOrdinals === null) continue;
+    // A later backtick makes this invalid info, not a structural fence. Do not
+    // preserve its delimiters: #228 relies on ordinary masking plus re-fencing.
+    if (marker === "`" && original.slice(runEnd, line.contentEnd).includes("`")) continue;
+    for (const ordinal of prefixOrdinals) ordinals.push(ordinal);
+    spans.push({ start: line.start, end: runEnd, kind: "protected:fence-syntax" });
+    let trailing = line.contentEnd;
+    // NEL is also closing whitespace for the archive renderer, although JS \s
+    // excludes it. It is not added to the conservative prefix grammar above.
+    while (trailing > runEnd && (fenceBlank(original[trailing - 1]) || original[trailing - 1] === "\u0085"))
+      trailing -= 1;
+    if (line.end > trailing) spans.push({ start: trailing, end: line.end, kind: "protected:fence-syntax" });
+  }
+  return { syntax: spans, ordinals };
+}
+
+/** Ordered-list digits can themselves be secrets; retain width using fixed zeroes. */
+function normalizeFenceOrdinals(original, ordinals) {
+  if (ordinals.length === 0) return original;
+  const parts = [];
+  let at = 0;
+  for (const ordinal of ordinals) {
+    parts.push(original.slice(at, ordinal.start), "0".repeat(ordinal.end - ordinal.start));
+    at = ordinal.end;
+  }
+  parts.push(original.slice(at));
+  return parts.join("");
+}
+
+/** On failure retain syntax/separators only; fence info is still omitted. */
+function omissionWithSyntax(original, reason, syntax) {
+  if (syntax.length === 0) return omitted(reason);
+  const bodies = [];
+  for (const line of physicalLines(original)) {
+    if (line.contentEnd > line.start) bodies.push({ start: line.start, end: line.contentEnd, kind: "omitted:body" });
+  }
+  const parts = [];
+  let at = 0;
+  for (const span of withoutProtected(bodies, syntax)) {
+    parts.push(original.slice(at, span.start), omitted(reason));
+    at = span.end;
+  }
+  parts.push(original.slice(at));
   return parts.join("");
 }
 
@@ -576,8 +650,8 @@ function collectMarkupLabelSpans(original, labels) {
   const spans = [];
   const ranges = [];
   const labelNames = new Set(labels.map((label) => label.toLowerCase()));
-  // Retain line separators inside selected values. Fence lines are protected
-  // separately by the entry point's segmentation and final span clipping.
+  // Retain line separators inside selected values. The entry point clips only
+  // structural fence syntax out of the final spans, without resetting context.
   const addSpan = (start, end) => {
     let from = start;
     for (let index = start; index < end; index += 1) {
@@ -1628,8 +1702,11 @@ export function redactFragment(fragment, options = {}) {
     return { text: omitted("non_string_input"), status: "omitted", reason: "non_string_input" };
   }
   const original = fragment.text;
-  const fences = collectFenceLineSpans(original);
-  const omitResult = (reason) => ({ text: omissionWithFences(original, reason, fences), status: "omitted", reason });
+  const { syntax, ordinals } = collectFenceSyntaxSpans(original);
+  // Credential readers use the untouched original; only rendering normalizes
+  // list ordinals, without changing any span index or structural width.
+  const rendering = normalizeFenceOrdinals(original, ordinals);
+  const omitResult = (reason) => ({ text: omissionWithSyntax(rendering, reason, syntax), status: "omitted", reason });
   if (!KINDS.includes(fragment.kind)) return omitResult("unknown_kind");
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
   if (Buffer.byteLength(original, "utf8") > maxBytes) return omitResult("fragment_over_limit");
@@ -1645,32 +1722,18 @@ export function redactFragment(fragment, options = {}) {
     // turn into an omission). Clipping is set subtraction,
     // so clipping the union removes exactly what clipping each span removed, and
     // the masked text is the same.
-    // Every credential reader gets disjoint non-fence segments. This prevents
-    // both new markup and old label/shape/URL rules from touching fence info or
-    // carrying an unfinished value across a structural line. Fence-line text is
-    // deliberately exempt from credential masking to preserve its exact bytes.
-    const credentialSpans = [];
-    let segmentStart = 0;
-    const collectSegment = (end) => {
-      if (end <= segmentStart) return;
-      for (const span of collectCredentialSpans(original.slice(segmentStart, end), {
-        vocabulary,
-        kind: fragment.kind
-      })) {
-        credentialSpans.push({ ...span, start: span.start + segmentStart, end: span.end + segmentStart });
-      }
-    };
-    for (const fence of fences) {
-      collectSegment(fence.start);
-      segmentStart = fence.end;
-    }
-    collectSegment(original.length);
-    const credentials = mergeOverlaps(credentialSpans, original.length);
+    // Read the full original once per rule. Fence syntax must not suppress
+    // credentials on that line or reset a value continuing across the marker.
+    const credentials = mergeOverlaps(
+      collectCredentialSpans(original, { vocabulary, kind: fragment.kind }),
+      original.length
+    );
     const spans = [...collectArmorSpans(original), ...withoutProtected(credentials, guards)];
     const merged = mergeOverlaps(spans, original.length);
-    // Armor still reads globally so a planted fence cannot expose the following
-    // key body, but its spans also leave every fence line byte-for-byte intact.
-    return { text: applySpansOnce(original, withoutProtected(merged, fences)), status: "ok" };
+    // Merge before clipping: N overlapping values crossing G syntax intervals
+    // must not create N x G fragments. Only normalized syntax bytes are exempt;
+    // info strings and inline/continuation secrets remain eligible for masking.
+    return { text: applySpansOnce(rendering, withoutProtected(merged, syntax)), status: "ok" };
   } catch (error) {
     // No fallback to the original text.
     const reason =

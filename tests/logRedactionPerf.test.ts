@@ -63,8 +63,21 @@ function fill(head: string, unit: string, length: number): string {
   return head + body.slice(0, length - head.length);
 }
 
-type PerfShape = readonly [name: string, secret: string, make: (length: number) => string, preserve?: string];
-type Issue295PerfShape = readonly [name: string, secret: string, make: (length: number) => string, preserve: string];
+type PerfSecrets = string | readonly string[];
+type PerfShape = readonly [
+  name: string,
+  secret: PerfSecrets,
+  make: (length: number) => string,
+  preserve?: string,
+  hookSecret?: string
+];
+type Issue295PerfShape = readonly [
+  name: string,
+  secret: PerfSecrets,
+  make: (length: number) => string,
+  preserve: string,
+  hookSecret?: string
+];
 
 function enclosed(head: string, unit: string, tail: string, length: number): string {
   return fill(head, unit, length - tail.length) + tail;
@@ -127,7 +140,9 @@ const ISSUE295_SHAPES: readonly Issue295PerfShape[] = [
   ],
   [
     "issue295-many-starts-across-fence-barriers",
-    "FKPERF295F1",
+    // Fence syntax no longer abandons the complete, bounded attribute. Its
+    // contents must mask too; only the word outside the element must survive.
+    ["FKPERF295F1", "PUBLIC295F1"],
     (n) =>
       completeUnits(
         "",
@@ -136,7 +151,7 @@ const ISSUE295_SHAPES: readonly Issue295PerfShape[] = [
         '\n<input value="FKPERF295F1" type=password/> KEEP295F1\n',
         n
       ),
-    "PUBLIC295F1"
+    "KEEP295F1"
   ],
   [
     "issue295-many-starts-beyond-line-bound",
@@ -163,24 +178,121 @@ const ISSUE295_SHAPES: readonly Issue295PerfShape[] = [
       return head + "`".repeat(ticks) + "x".repeat(available - ticks) + tail;
     },
     "KEEP295T1"
+  ],
+  [
+    "issue295-credential-bearing-fence-lines",
+    "FKPERF295FL1",
+    (n) => {
+      // The earlier long-invalid-info family is inline. Also exercise a long
+      // structural candidate under the narrower syntax-only guard contract.
+      const part = Math.floor(n / 4);
+      const head = "`".repeat(part) + "x".repeat(part) + "` token=FKPERF295FL1 INFO295FL1\n";
+      return completeUnits(
+        head,
+        "~~~~~~ token=FKPERF295FL1 INFO295FL1\n" +
+          "```text export API_KEY=FKPERF295FL1 INFO295FL1\n" +
+          "> ```text token=FKPERF295FL1 INFO295FL1\n" +
+          "1. ~~~ token=FKPERF295FL1 INFO295FL1\n" +
+          'inline ~~~ <input value="FKPERF295FL1" type=password/> KEEP295FL1\n' +
+          'inline ``` <ns:password a="x" b="FKPERF295FL1"> KEEP295FL1\n',
+        "\nKEEP295FL1\n",
+        n
+      );
+    },
+    "KEEP295FL1"
+  ],
+  [
+    "issue295-credentials-crossing-fence-markers",
+    "FKPERF295FM1",
+    (n) =>
+      completeUnits(
+        "",
+        '~~~ token="FKPERF295FM1~~~FKPERF295FM1" INFO295FM1\n' +
+          '```text token="FKPERF295FM1`FKPERF295FM1" INFO295FM1\n' +
+          "Bearer FKPERF295FM1~~~~~~FKPERF295FM1 KEEP295FM1\n" +
+          '<input value="FKPERF295FM1\n~~~~~~\nFKPERF295FM1" type=password/> KEEP295FM1\n' +
+          '<access_token a="FKPERF295FM1\n```text\nFKPERF295FM1" b="x"> KEEP295FM1\n',
+        "\nKEEP295FM1\n",
+        n
+      ),
+    "KEEP295FM1"
+  ],
+  [
+    "issue295-overbound-cr-legacy-tags",
+    "FKPERF295CRT1",
+    // The hooks' legacy simple-label rule masked this before #295. Their
+    // bounded parser must retain that privacy floor for many CR-delimited
+    // candidates in one LF record. Core keeps its existing 32-line bound;
+    // all engines must still reach the separate selected input at the end.
+    (n) =>
+      completeUnits(
+        "",
+        '<password a="x"\r' + " note\r".repeat(31) + ' b="FKPERF295CR1"> KEEP295CR1 ',
+        '\n<input value="FKPERF295CRT1" type=password/> KEEP295CRT1\n',
+        n
+      ),
+    "KEEP295CRT1",
+    "FKPERF295CR1"
   ]
 ];
+
+function fenceSyntax(text: string, original = text) {
+  function candidate(line: string) {
+    const match = line.match(/^([ \t>+*().0-9-]*)(`{3,}|~{3,})/);
+    if (!match) return null;
+    const [, prefix, marker] = match;
+    if (!/^ {0,3}$/.test(prefix)) {
+      let cursor = 0;
+      let container = false;
+      while (cursor < prefix.length) {
+        if (prefix[cursor] === " " || prefix[cursor] === "\t") cursor++;
+        else if (prefix[cursor] === ">") {
+          container = true;
+          cursor++;
+        } else {
+          // At most nine digits, punctuation and a blank: this small slice
+          // cannot repeatedly scan an unbounded prefix.
+          const item = prefix.slice(cursor, cursor + 11).match(/^(?:[-+*]|[0-9]{1,9}[.)])[ \t]/);
+          if (!item) return null;
+          container = true;
+          cursor += item[0].length;
+        }
+      }
+      if (!container) return null;
+    }
+    return {
+      prefix: prefix.replace(/[0-9]/g, "0"),
+      marker,
+      valid: marker[0] !== "`" || !line.slice(match[0].length).includes("`")
+    };
+  }
+  // Invalid info retains its baseline masking and downstream refencing policy.
+  // It is tested for secret removal, not marker identity at this mask stage.
+  const invalid = new Set(
+    original.split(/\r\n|\r|\n/).flatMap((line, index) => {
+      const found = candidate(line);
+      return found && !found.valid ? [index] : [];
+    })
+  );
+  const separators = text.match(/\r\n|\r|\n/g) ?? [];
+  return text.split(/\r\n|\r|\n/).flatMap((line, index) => {
+    const found = candidate(line);
+    return found?.valid && !invalid.has(index)
+      ? [{ line: index, prefix: found.prefix, marker: found.marker, separator: separators[index] ?? "" }]
+      : [];
+  });
+}
 
 function expectPreserved(input: string, output: string, preserve: string) {
   expect(output).toContain(preserve);
   // Repeated recovery blocks must all survive, not merely the last one.
   const words = new Set([preserve, ...(input.match(/\bKEEP295[A-Z0-9]+\b/g) ?? [])]);
   for (const word of words) expect(output.split(word).length).toBe(input.split(word).length);
-  const fences = (text: string) =>
-    text.split(/\r\n|\r|\n/).filter((line) => {
-      if (line.includes("~~~")) return true;
-      const start = line.indexOf("```");
-      if (start < 0) return false;
-      let end = start + 3;
-      while (line[end] === "`") end++;
-      return line.indexOf("`", end) < 0;
-    });
-  expect(fences(output)).toEqual(fences(input));
+  // Structural marker bytes, physical lines and separators must survive;
+  // credentials in info strings or elsewhere on those lines still mask.
+  // Ordered-list digits normalize to zeroes; info text and arbitrary inline
+  // runs need not survive. Invalid-info refencing is checked separately.
+  expect(fenceSyntax(output, input)).toEqual(fenceSyntax(input));
 }
 
 const SHAPES: readonly PerfShape[] = [
@@ -374,7 +486,7 @@ describe("the core's time over two doublings", { timeout: 180_000 }, () => {
         firstMs: "under"
       });
       expect(result.status).toBe("ok");
-      expect(result.text).not.toContain(secret);
+      for (const word of typeof secret === "string" ? [secret] : secret) expect(result.text).not.toContain(word);
       if (preserve) expectPreserved(text, result.text, preserve);
       if (index % DOUBLINGS !== 0) continue;
       if (previous) {
@@ -436,7 +548,10 @@ describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_
       return performance.now() - start;
     };
 
-    it.each(ISSUE295_SHAPES)(`${copy}: %s`, (name, secret, make, preserve) => {
+    const cases = ISSUE295_SHAPES.map(
+      ([name, secret, make, preserve, hookSecret]) => [name, secret, make, preserve, hookSecret] as const
+    );
+    it.each(cases)(`${copy}: %s`, (name, secret, make, preserve, hookSecret) => {
       let previous: string | null = null;
       for (const [index, size] of SIZES.entries()) {
         const text = make(size);
@@ -447,7 +562,8 @@ describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_
           size,
           firstMs: "under"
         });
-        expect(output).not.toContain(secret);
+        for (const word of typeof secret === "string" ? [secret] : secret) expect(output).not.toContain(word);
+        if (hookSecret) expect(output).not.toContain(hookSecret);
         expectPreserved(text, output, preserve);
         if (index % DOUBLINGS !== 0) continue;
         if (previous) {

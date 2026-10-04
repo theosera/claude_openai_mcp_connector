@@ -175,7 +175,7 @@ const fenceShapes = [
   ["early keyword", "~~~~~~ token=FENCE295EARLY\n~~~~~~\n"],
   ["armor replacement", `-----BEGIN PRIVATE KEY-----\n~~~~~~ ${"A".repeat(40)}\n-----END PRIVATE KEY-----\n~~~~~~\n`],
   ["late provider", `~~~~~~ sk-${"a".repeat(24)}\n~~~~~~\n`],
-  ["final label cleanup", '<password first="x" second="FENCE295FINAL"> ~~~~~~\n~~~~~~\n'],
+  ["final label cleanup", '~~~~~~ <password first="x" second="FENCE295FINAL">\n~~~~~~\n'],
   ["unfinished unquoted tag", "<password x\n~~~~~~\nKEEP295FENCE\n~~~~~~\na -> b\n"],
   ["unfinished quoted tag", '<password first="x" a="\n```text\nKEEP295FENCE\n```\nz"> tail\n'],
   ["container-prefixed fence", "<password x\n> ```text\nKEEP295FENCE\n> ```\na -> b\n"],
@@ -183,22 +183,42 @@ const fenceShapes = [
   ["bare CR fence", '<password first="x" a="\r~~~~~~\rKEEP295FENCE\r~~~~~~\rz"> tail\r']
 ] as const;
 
-function fenceLineBytes(text: string): string[] {
-  return (text.match(/[^\r\n]*(?:\r\n|\r|\n|$)/g) ?? []).filter((line) => /`{3}|~{3}/.test(line));
+function fenceSyntax(text: string): string[] {
+  return (text.match(/[^\r\n]*(?:\r\n|\r|\n|$)/g) ?? []).flatMap((line) => {
+    const match = /^([ >]*)(`{3,}|~{3,})([^\r\n]*)(\r\n|\r|\n|$)$/.exec(line);
+    if (!match) return [];
+    const [, prefix, run, info, ending] = match;
+    return [
+      JSON.stringify({
+        prefix,
+        run,
+        closing: !info!.trim(),
+        invalidBacktick: run!.startsWith("`") && info!.includes("`"),
+        ending
+      })
+    ];
+  });
 }
 
 for (const [hook, path] of hooks) {
   describe(`${hook} fence barriers and markup line bound`, () => {
     for (const kind of ["command", "text"] as const) {
       for (const [name, input] of fenceShapes) {
-        it(`${name}, as ${kind}: preserves every fence byte, count and parity`, () => {
+        it(`${name}, as ${kind}: preserves fence syntax, count and parity while masking its content`, () => {
           const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
-          const before = fenceLineBytes(input);
-          const after = fenceLineBytes(output);
+          const before = fenceSyntax(input);
+          const after = fenceSyntax(output);
           expect(before).toHaveLength(2);
           expect(after).toEqual(before);
           expect(after.length % 2).toBe(0);
-          if (input.includes("KEEP295FENCE")) expect(output).toContain("KEEP295FENCE");
+          for (const secret of ["FENCE295EARLY", "FENCE295FINAL", `sk-${"a".repeat(24)}`]) {
+            expect(output).not.toContain(secret);
+          }
+          // Text inside a selected multiline value remains credential context,
+          // including after a structural line; it is no longer exempted.
+          if (name === "unfinished quoted tag" || name === "unfinished unquoted tag") {
+            expect(output).not.toContain("KEEP295FENCE");
+          }
         });
       }
       for (const [ending, separator] of [
@@ -208,7 +228,7 @@ for (const [hook, path] of hooks) {
       ] as const) {
         for (const quoted of [false, true]) {
           it(`stops ${quoted ? "quoted" : "unquoted"} markup before line 33 with ${ending}, as ${kind}`, () => {
-            const opener = quoted ? '<password first="x" a="' : "<password x";
+            const opener = quoted ? '<access_token first="x" a="' : "<access_token x";
             const input =
               [
                 opener,
@@ -238,10 +258,10 @@ for (const [hook, path] of hooks) {
       const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
       expect(output).not.toContain("S295MALFORMED");
     });
-    it("documents the malformed short-tag fallback cost on long CR records", () => {
+    it("retains the malformed short-tag fallback on long CR records", () => {
       const input = '<password first="x" a="S295MALFORMED>\r' + "plain\r".repeat(32);
       const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
-      expect(output).toContain("S295MALFORMED");
+      expect(output).not.toContain("S295MALFORMED");
     });
     it("still masks complete short tags elsewhere on long CR records", () => {
       const input = '<password first="x" a="S295COMPLETE">\r' + "plain\r".repeat(32);
@@ -257,7 +277,7 @@ for (const [hook, path] of hooks) {
         ].join("\n") + "\n";
       const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
       expect(output).toContain("KEEP295ARMORBOUND");
-      expect(fenceLineBytes(output)).toEqual(fenceLineBytes(input));
+      expect(fenceSyntax(output)).toEqual(fenceSyntax(input));
     });
     for (const input of ["```token: `S295INVALID`", "```token: `S295INVALID` ```"]) {
       it(`still masks invalid backtick info without a later-run rescue: ${input}`, () => {
@@ -288,6 +308,8 @@ for (const [hook, path] of hooks) {
           const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
           for (const secret of ["S295MIX0", "S295MIX1", "S295MIX2", "S295MIX3"]) expect(output).not.toContain(secret);
           if (name !== "compound markup") expect(output).not.toContain(suffix);
+          // Invalid backtick info is ordinary input. The archive refence pass
+          // handles a newly valid fence if credential masking removed ticks.
           expect(output).toContain("KEEP295MIX");
         });
       }
@@ -302,11 +324,8 @@ for (const [hook, path] of hooks) {
     ]) {
       it(`does not treat an input prefix as trusted framing: ${JSON.stringify(input)}`, () => {
         const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
-        if (input.includes("~~~~~~") || input.includes("plain")) expect(output).toBe(input);
-        else {
-          expect(output).toBe(`${input[0]}token=***MASKED***\n`);
-          expect(output).not.toContain("S295PREFIX");
-        }
+        expect(output).toBe(input.replace("S295PREFIX", "***MASKED***"));
+        expect(output).not.toContain("S295PREFIX");
       });
     }
   });
@@ -318,13 +337,13 @@ for (const [hook, path] of hooks) {
       const input = "~~~~~~ -----BEGIN PRIVATE KEY-----\nbody S295ARMORBEGIN prose\n-----END PRIVATE KEY-----\n";
       const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
       expect(output).not.toContain("S295ARMORBEGIN");
-      expect(fenceLineBytes(output)).toEqual(fenceLineBytes(input));
+      expect(fenceSyntax(output)).toEqual(fenceSyntax(input));
     });
     it("closes the armor window on a protected END record", () => {
       const input = "-----BEGIN PRIVATE KEY-----\n~~~~~~ -----END PRIVATE KEY-----\ntext KEEP295ARMOREND prose\n";
       const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
       expect(output).toContain("KEEP295ARMOREND");
-      expect(fenceLineBytes(output)).toEqual(fenceLineBytes(input));
+      expect(fenceSyntax(output)).toEqual(fenceSyntax(input));
     });
   });
 }
@@ -342,6 +361,195 @@ for (const [hook, path] of hooks) {
         });
         expect(output).toBe(input && !input.endsWith("\n") ? `${input}\n` : input);
       });
+    }
+  });
+}
+
+const fenceCredentialShapes = [
+  ["password before tilde run", "password=S295FENCEMASK ~~~ KEEP295FENCEMASK\n", "S295FENCEMASK", "~~~"],
+  ["backtick opening info", "```sh export API_KEY=S295FENCEMASK\n", "S295FENCEMASK", "```"],
+  ["Bearer value touches tilde run", "Bearer S295FENCEMASK~~~ KEEP295FENCEMASK\n", "S295FENCEMASK", "~~~"],
+  ["token before tilde run", "token=S295FENCEMASK ~~~ KEEP295FENCEMASK\n", "S295FENCEMASK", "~~~"],
+  ["AWS value touches tilde run", `AKIA${"A".repeat(16)}~~~ KEEP295FENCEMASK\n`, `AKIA${"A".repeat(16)}`, "~~~"]
+] as const;
+
+for (const [hook, path] of hooks) {
+  describe(`${hook} credentials on fence-bearing lines`, () => {
+    for (const kind of ["command", "text"] as const) {
+      for (const [name, input, secret, run] of fenceCredentialShapes) {
+        it(`${name}, as ${kind}: masks the credential while retaining fence syntax`, () => {
+          const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+          expect(output).not.toContain(secret);
+          // Inline triples are ordinary credential bytes, not fence syntax.
+          if (input.startsWith("```")) expect(output).toContain(run);
+          expect(output.match(/\r\n|\r|\n/g)).toEqual(input.match(/\r\n|\r|\n/g));
+          if (input.includes("KEEP295FENCEMASK")) expect(output).toContain("KEEP295FENCEMASK");
+        });
+      }
+    }
+  });
+}
+
+const orderedFenceShapes = [
+  ["numeric prefix inside a quoted CR value", 'password="HEAD295\r123456789. ```lang\rTAIL295"\n'],
+  [
+    "numeric prefix inside an armor body",
+    "-----BEGIN PRIVATE KEY-----\n123456789. ```lang\n-----END PRIVATE KEY-----\n"
+  ],
+  ["value following the dotted list prefix", "123456789. ```sh password=S295LISTVALUE\n"]
+] as const;
+for (const [hook, path] of hooks) {
+  describe(`${hook} ordered-list fence syntax normalization`, () => {
+    for (const kind of ["command", "text"] as const) {
+      for (const [name, input] of orderedFenceShapes) {
+        it(`${name}, as ${kind}: does not restore the original ordinal as syntax`, () => {
+          const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+          expect(output).not.toContain("123456789");
+          expect(output).toContain("000000000. ```");
+          for (const secret of ["HEAD295", "TAIL295", "S295LISTVALUE"]) expect(output).not.toContain(secret);
+          expect(output.match(/\r\n|\r|\n/g)).toEqual(input.match(/\r\n|\r|\n/g));
+        });
+      }
+    }
+  });
+}
+
+const closingFenceWhitespace = [
+  ["BOM", "\ufeff"],
+  ["MVS", "\u180e"],
+  ["NBSP", "\u00a0"],
+  ["FF", "\f"],
+  ["VT", "\v"],
+  ["NEL", "\u0085"],
+  ["mixed", " \t\ufeff\u180e"]
+] as const;
+for (const [hook, path] of hooks) {
+  describe(`${hook} closing fence whitespace`, () => {
+    for (const [name, suffix] of closingFenceWhitespace) {
+      it(`retains a wholly whitespace ${name} closing suffix`, () => {
+        const input = `\x60\x60\x60\nPUBLIC295\n\x60\x60\x60${suffix}\n`;
+        const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+        expect(output).toBe(input);
+      });
+    }
+    for (const suffix of ["\u200b", "\u2060", "\ufeffpassword=S295TRAILER", "\u00a0X"]) {
+      it(`does not treat non-whitespace info as a closing suffix: ${JSON.stringify(suffix)}`, () => {
+        const input = `\x60\x60\x60${suffix}\n`;
+        const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+        expect(output).toBe("```***MASKED***\n");
+      });
+    }
+  });
+}
+
+for (const [hook, path] of hooks) {
+  describe(`${hook} syntax weaving and continuous credential context`, () => {
+    for (const [name, input] of [
+      ["password input", '<input value="HEAD295\n~~~~~~\nTAIL295" type=password/> KEEP295CONT\n'],
+      ["compound label", '<access_token a="HEAD295\n```text\nTAIL295" b="x">body</access_token> KEEP295CONT\n']
+    ] as const) {
+      for (const kind of ["command", "text"] as const) {
+        it(`reads the complete ${name} across a structural line, as ${kind}`, () => {
+          const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+          expect(output).not.toContain("HEAD295");
+          expect(output).not.toContain("TAIL295");
+          expect(output).toContain("KEEP295CONT");
+          expect(fenceSyntax(output)).toEqual(fenceSyntax(input));
+        });
+      }
+    }
+    it("preserves ordinary CR segments when masking did not consume their separators", () => {
+      const input = "plain KEEP295CRHEAD\r~~~~~~ password=S295CRINFO\rplain KEEP295CRTAIL\r";
+      const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+      expect(output).not.toContain("S295CRINFO");
+      expect(output).toContain("KEEP295CRHEAD");
+      expect(output).toContain("KEEP295CRTAIL");
+      expect(fenceSyntax(output)).toEqual(fenceSyntax(input));
+    });
+    it("documents the safe skeleton cost when legacy masking consumed CR separators", () => {
+      const input = 'password="HEAD295\r~~~~~~\rTAIL295" KEEP295CRCOST\nKEEP295CRAFTER\n';
+      const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+      for (const text of ["HEAD295", "TAIL295", "KEEP295CRCOST"]) expect(output).not.toContain(text);
+      expect(output).toContain("KEEP295CRAFTER");
+      expect(output.match(/\r\n|\r|\n/g)).toEqual(input.match(/\r\n|\r|\n/g));
+      expect(fenceSyntax(output)).toEqual(fenceSyntax(input));
+    });
+    for (const prefix of ["F0", "F1", "F1P~~~", "NF1P~~~"]) {
+      it(`cannot forge a metadata frame with literal ${prefix}`, () => {
+        const input = `${prefix} token=S295FRAME\n`;
+        const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+        expect(output).toBe(`${prefix} token=***MASKED***\n`);
+      });
+    }
+  });
+}
+
+for (const [hook, path] of hooks) {
+  describe(`${hook} match-local legacy markup bound`, () => {
+    for (const placement of ["before", "after"] as const) {
+      it(`masks a malformed short tag ${placement} 32 unrelated CR separators`, () => {
+        const tag = '<password first="C295SHORTA" second="C295SHORTB> KEEP295SHORT';
+        const padding = "ordinary\r".repeat(32);
+        const input = (placement === "before" ? `${tag}\r${padding}` : `${padding}${tag}`) + "\n";
+        const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+        expect(output).not.toContain("C295SHORTA");
+        expect(output).not.toContain("C295SHORTB");
+        expect(output).toContain("KEEP295SHORT");
+      });
+    }
+    for (const boundaries of [31, 32]) {
+      it(`counts ${boundaries} leading CR separators inside the candidate`, () => {
+        const input = "<password" + "\r".repeat(boundaries) + ' first="x" second="C295PREFIXBOUND> KEEP295SHORT\n';
+        const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+        expect(output).not.toContain("C295PREFIXBOUND");
+        expect(output).toContain("KEEP295SHORT");
+      });
+    }
+  });
+}
+
+for (const [hook, path] of hooks) {
+  describe(`${hook} opaque legacy fallback beyond the parser budget`, () => {
+    for (const lines of [33, 34]) {
+      it(`retains main masking on a ${lines}-line legacy tag and keeps the following word`, () => {
+        const input =
+          '<password first="C295BOUNDHEAD"\r' +
+          ' x="C295BOUNDMID"\r'.repeat(lines - 2) +
+          ' last="C295BOUNDTAIL"> KEEP295BOUND\n';
+        const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+        for (const secret of ["C295BOUNDHEAD", "C295BOUNDMID", "C295BOUNDTAIL"]) expect(output).not.toContain(secret);
+        expect(output).toContain("KEEP295BOUND");
+        expect(output.match(/\r\n|\r|\n/g)).toEqual(input.match(/\r\n|\r|\n/g));
+      });
+    }
+  });
+}
+
+const legacyLabelRule =
+  "s/(<(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[[:space:]]+)[^<>]*>/\\1***MASKED***>/Ig";
+for (const [hook, path] of hooks) {
+  describe(`${hook} ambient legacy label case folding`, () => {
+    for (const label of [
+      "ſecret",
+      "paſſword",
+      "paſſphrase",
+      "authorızation",
+      "Key",
+      "toKen",
+      "authorİzation",
+      "PASSWORD"
+    ]) {
+      for (const kind of ["command", "text"] as const) {
+        it(`retains the old final rule for ${label}, as ${kind}`, () => {
+          const input = `<${label} first="C295FOLDFIRST" second="C295FOLDSECOND"> KEEP295FOLD\n`;
+          // The old final rule is the oracle for the current GNU/BSD locale;
+          // Unicode case classes differ across those supported runtimes.
+          const baseline = execFileSync("sed", ["-E", legacyLabelRule], { input, encoding: "utf8" });
+          const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+          expect(output).toBe(baseline);
+          expect(output).toContain("KEEP295FOLD");
+        });
+      }
     }
   });
 }

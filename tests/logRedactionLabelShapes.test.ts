@@ -236,10 +236,8 @@ describe("core #295 self-close extension keeps other slash values literal", () =
   });
 });
 
-// The fence contract covers the whole physical line, including info strings,
-// indentation/container prefixes and CR/LF bytes, even when the run is inline.
-const fenceLines295 = (text: string) =>
-  (text.match(/[^\r\n]*(?:\r\n|\r|\n|$)/g) ?? []).filter((line) => /`{3}|~{3}/.test(line));
+// Fence syntax and physical separators survive; info and inline text redact.
+const fenceLines295 = (text: string) => markerSyntax295(text);
 
 function expectFenceIdentity295(input: string, output: string) {
   const before = fenceLines295(input);
@@ -248,6 +246,7 @@ function expectFenceIdentity295(input: string, output: string) {
   expect(after).toEqual(before);
   expect(after.length).toBe(before.length);
   expect(after.length % 2).toBe(before.length % 2);
+  expect(output.match(/\r\n|\r|\n/g)).toEqual(input.match(/\r\n|\r|\n/g));
 }
 
 describe("core #295 fence barrier protects every credential reader", () => {
@@ -259,10 +258,6 @@ describe("core #295 fence barrier protects every credential reader", () => {
     [
       "quoted backtick info lines with CRLF",
       '<password a="start\r\n > ```token \'PUBLIC295INFO\'\r\nPUBLIC295F1\r\n```\r\nfinish" b="S295"> KEEP295F'
-    ],
-    [
-      "inline tilde run and bare CR",
-      '<password a="start\rprefix ~~~ password=PUBLIC295INFO\rPUBLIC295F1\rfinish" b="S295"> KEEP295F'
     ],
     [
       "legacy label on a fence line without an eventual tag close",
@@ -277,9 +272,20 @@ describe("core #295 fence barrier protects every credential reader", () => {
       const result = redactFragment({ text: input, kind });
       expect(result.status).toBe("ok");
       expectFenceIdentity295(input, result.text);
-      expect(result.text).toContain("PUBLIC295F1");
+      if (input.includes('finish" b="S295"')) expect(result.text).not.toContain("PUBLIC295F1");
+      else expect(result.text).toContain("PUBLIC295F1");
     }
   );
+
+  it.each(["command", "text"] as const)("does not invent a fence from an inline marker, as %s", (kind) => {
+    const input = '<password a="start\rprefix ~~~ password=PUBLIC295INFO\rPUBLIC295F1\rfinish" b="S295"> KEEP295F';
+    const result = redactFragment({ text: input, kind });
+    expect(markerSyntax295(input)).toEqual([]);
+    expect(markerSyntax295(result.text)).toEqual([]);
+    expect(result.text).not.toContain("PUBLIC295F1");
+    expect(result.text).not.toContain("PUBLIC295INFO");
+    expect(result.text.match(/\r\n|\r|\n/g)).toEqual(input.match(/\r\n|\r|\n/g));
+  });
 
   it.each(["command", "text"] as const)("keeps the absent > plain-fence control, as %s", (kind) => {
     const input = '<password a="start\n~~~~~~\nPUBLIC295F1\n~~~~~~\nno-close';
@@ -305,7 +311,7 @@ describe("core #295 global armor clipping preserves fence bytes", () => {
 describe("core #295 fence-bearing omission keeps physical positions", () => {
   const input = "PUBLIC295OMIT\r\n~~~ token=PUBLIC295INFO\r\n\r\nPRIVATE295OMIT\r~~~\nTAIL295OMIT";
   const expected = (reason: string) =>
-    `***LOG_CONTENT_OMITTED: ${reason}***\r\n~~~ token=PUBLIC295INFO\r\n\r\n***LOG_CONTENT_OMITTED: ${reason}***\r~~~\n***LOG_CONTENT_OMITTED: ${reason}***`;
+    `***LOG_CONTENT_OMITTED: ${reason}***\r\n~~~***LOG_CONTENT_OMITTED: ${reason}***\r\n\r\n***LOG_CONTENT_OMITTED: ${reason}***\r~~~\n***LOG_CONTENT_OMITTED: ${reason}***`;
   it("preserves every original line separator for unknown kind", () => {
     const result = redactFragment({ text: input, kind: "unknown" });
     expect(result).toEqual({ status: "omitted", reason: "unknown_kind", text: expected("unknown_kind") });
@@ -386,6 +392,7 @@ describe("core #295 invalid backtick info stays eligible for masking", () => {
     expect(result.text).not.toContain("FKgv");
     expect(result.text.startsWith("````\n")).toBe(true);
     expect(result.text.endsWith("\n````")).toBe(true);
+    expect(result.text).toBe("````\n```token: ***MASKED***\n````");
   });
   it.each(["command", "text"] as const)("does not retry a later triple inside invalid info, as %s", (kind) => {
     const result = redactFragment({ text: "```prefix ```token=S295INVALID", kind });
@@ -419,4 +426,144 @@ describe("core #295 closing delimiter shares the 32-line budget", () => {
     expect(result.text).toContain("PUBLIC295CLOSE");
     expect(result.text).toContain("KEEP295CLOSE");
   });
+});
+
+// Owner correction: fence syntax survives, but fence info, inline credentials
+// and values continuing across a fence are never whole-line masking exemptions.
+const markerSyntax295 = (text: string) =>
+  text.split(/\r\n|\r|\n/).flatMap((line, index) => {
+    const match = /^( {0,3}|[ \t]*(?:(?:>[ \t]*)|(?:[-+*][ \t]+)|(?:[0-9]{1,9}[.)][ \t]+))+)(`{3,}|~{3,})/.exec(line);
+    if (!match || (match[2]!.startsWith("`") && line.slice(match[0].length).includes("`"))) return [];
+    const prefix = match[1]!.replace(/[0-9]{1,9}(?=[.)][ \t])/g, (digits) => "0".repeat(digits.length));
+    return [{ line: index, prefix, run: match[2] }];
+  });
+
+describe("core #295 fence syntax never exempts credentials", () => {
+  const cases = [
+    ["password before inline tildes", "password=S295BYPASS ~~~ KEEP295BYPASS", "S295BYPASS"],
+    ["API key in backtick info", "```sh export API_KEY=S295INFO\n```\nKEEP295BYPASS", "S295INFO"],
+    ["Bearer before inline tildes", "Bearer S295BEARER ~~~ KEEP295BYPASS", "S295BEARER"],
+    ["token value adjacent to a marker", "token=S295TOKEN~~~ KEEP295BYPASS", "S295TOKEN"],
+    ["AWS shape adjacent to a marker", "AKIAABCDEFGHIJKLMNOP~~~ KEEP295BYPASS", "AKIAABCDEFGHIJKLMNOP"],
+    ["provider shape adjacent to a marker", "ghp_ABCDEFGHIJKLMNOPQRST~~~ KEEP295BYPASS", "ghp_ABCDEFGHIJKLMNOPQRST"],
+    [
+      "quoted attribute continuation across markers",
+      '<password a="start\n~~~\nS295CONT\n~~~\nfinish" b="S295EXTRA"> KEEP295BYPASS',
+      "S295CONT"
+    ],
+    [
+      "labelled direct body across markers",
+      '<access_token a="S295A" b="S295B">start\n~~~\nS295BODY\n~~~\nfinish</access_token> KEEP295BYPASS',
+      "S295BODY"
+    ],
+    [
+      "quoted attribute across container and list fence prefixes",
+      '<password a="start\n > ```sh token=S295PREFIX\n1. ~~~\nfinish" b="S295EXTRA"> KEEP295BYPASS',
+      "S295PREFIX"
+    ]
+  ] as const;
+  it.each(
+    cases.flatMap(([name, input, secret]) =>
+      (["command", "text"] as const).map((kind) => [name, kind, input, secret] as const)
+    )
+  )("%s, as %s", (_name, kind, input, secret) => {
+    const result = redactFragment({ text: input, kind });
+    expect(result.status).toBe("ok");
+    expect(result.text).not.toContain(secret);
+    expect(result.text).toContain("KEEP295BYPASS");
+    expect(markerSyntax295(result.text)).toEqual(markerSyntax295(input));
+    if (input.includes(" > ```")) expect(result.text).toContain("\n > ```");
+    if (input.includes("\n1. ~~~")) expect(result.text).toContain("\n0. ~~~");
+  });
+  it.each(["command", "text"] as const)("omits fence-info credentials on failure, as %s", (kind) => {
+    const input = "~~~ token=S295OMIT\r\nPUBLIC295\r~~~";
+    const result = redactFragment({ text: input, kind }, { maxBytes: 1 });
+    expect(result).toMatchObject({ status: "omitted", reason: "fragment_over_limit" });
+    expect(result.text).not.toContain("S295OMIT");
+    expect(result.text).not.toContain("PUBLIC295");
+    expect(markerSyntax295(result.text)).toEqual(markerSyntax295(input));
+    expect(result.text.match(/\r\n|\r|\n/g)).toEqual(input.match(/\r\n|\r|\n/g));
+  });
+});
+
+describe("core #295 syntax-only masking retains fence classification", () => {
+  it.each(["command", "text"] as const)(
+    "treats invalid backtick info as ordinary credential content, as %s",
+    (kind) => {
+      const input = '<password a="start\n```token: `S295INVALIDINFO`\nfinish" b="S295EXTRA"> KEEP295CLASS';
+      const result = redactFragment({ text: input, kind });
+      expect(result.status).toBe("ok");
+      expect(result.text).not.toContain("S295INVALIDINFO");
+      expect(result.text.split("\n")[1]).toBe("***MASKED***");
+      expect(result.text).toContain("KEEP295CLASS");
+    }
+  );
+  it.each(["command", "text"] as const)("retains closing whitespace while masking across a marker, as %s", (kind) => {
+    const input = '<password a="start\n~~~ \t\nS295AFTER\nfinish" b="S295EXTRA"> KEEP295CLASS';
+    const result = redactFragment({ text: input, kind });
+    expect(result.status).toBe("ok");
+    expect(result.text).not.toContain("S295AFTER");
+    expect(result.text).toContain("\n~~~ \t\n");
+    expect(result.text).toContain("KEEP295CLASS");
+  });
+  it.each(
+    (["Npassword=S295FLAG ~~~ KEEP295FLAG", "P```sh export API_KEY=S295FLAG KEEP295FLAG"] as const).flatMap((input) =>
+      (["command", "text"] as const).map((kind) => [input[0], kind, input] as const)
+    )
+  )("a literal %s prefix is ordinary payload, as %s", (_prefix, kind, input) => {
+    const result = redactFragment({ text: input, kind });
+    expect(result.status).toBe("ok");
+    expect(result.text).not.toContain("S295FLAG");
+    expect(result.text).toContain("KEEP295FLAG");
+    expect(markerSyntax295(input)).toEqual([]);
+    expect(markerSyntax295(result.text)).toEqual([]);
+  });
+});
+
+describe("core #295 ordered-list fence prefixes cannot retain credential digits", () => {
+  it.each(["```lang", "~~~"] as const)("normalizes numeric shell continuation before %s", (marker) => {
+    const input = `password=\\\n123456789. ${marker}\n`;
+    const result = redactFragment({ text: input, kind: "command" });
+    expect(result.status).toBe("ok");
+    expect(result.text).not.toContain("123456789");
+    expect(result.text).toContain(`000000000. ${marker}\n`);
+    expect(result.text.match(/\r\n|\r|\n/g)).toEqual(input.match(/\r\n|\r|\n/g));
+  });
+  it.each(["command", "text"] as const)("normalizes numeric armor content used as a list prefix, as %s", (kind) => {
+    const input = "-----BEGIN PRIVATE KEY-----\n123456789. ~~~\n-----END PRIVATE KEY-----\n";
+    const result = redactFragment({ text: input, kind });
+    expect(result.status).toBe("ok");
+    expect(result.text).not.toContain("123456789");
+    expect(result.text).toContain("000000000. ~~~\n");
+    expect(result.text.match(/\r\n|\r|\n/g)).toEqual(input.match(/\r\n|\r|\n/g));
+  });
+  it.each(["command", "text"] as const)("normalizes list ordinals on omission, as %s", (kind) => {
+    const result = redactFragment({ text: "123456789. ~~~ token=S295ORDINAL\n", kind }, { maxBytes: 1 });
+    expect(result.status).toBe("omitted");
+    expect(result.text).not.toContain("123456789");
+    expect(result.text).not.toContain("S295ORDINAL");
+    expect(result.text.startsWith("000000000. ~~~")).toBe(true);
+  });
+  it.each(["command", "text"] as const)(
+    "normalizes public structural ordinals but not ordinary numeric text, as %s",
+    (kind) => {
+      const input = "27. ```text\nPUBLIC295LIST\n```\n123456789 ordinary text";
+      const result = redactFragment({ text: input, kind });
+      expect(result).toEqual({ status: "ok", text: "00. ```text\nPUBLIC295LIST\n```\n123456789 ordinary text" });
+    }
+  );
+});
+
+describe("core #295 renderer NEL closing whitespace", () => {
+  it.each(["command", "text"] as const)(
+    "keeps a NEL closing trailer while masking a quoted attribute, as %s",
+    (kind) => {
+      const input = '<password a="start\n~~~\u0085\nS295NEL\nfinish" b="S295EXTRA"> KEEP295NEL';
+      const result = redactFragment({ text: input, kind });
+      expect(result.status).toBe("ok");
+      expect(result.text).not.toContain("S295NEL");
+      expect(result.text).toContain("\n~~~\u0085\n");
+      expect(result.text).toContain("KEEP295NEL");
+    }
+  );
 });
