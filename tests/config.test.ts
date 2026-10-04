@@ -1067,6 +1067,39 @@ describe("MCP_AUTH_TOKEN_SCOPES (static bearer scopes)", () => {
   });
 });
 
+// #298: replacing isSafeInteger with isInteger makes all nine unsafe-value
+// cases below fail at the fallback assertion (reverse-verified 2026-10-04).
+describe.each([
+  ["MCP_OAUTH_ACCESS_TTL", "accessTokenTtlSec", 3600],
+  ["MCP_OAUTH_REFRESH_TTL", "refreshTokenTtlSec", 2592000],
+  ["MCP_OAUTH_CODE_TTL", "codeTtlSec", 60]
+] as const)("%s OAuth TTL", (envName, field, fallback) => {
+  const base = {
+    MCP_AUTH_TOKEN: "static-bearer",
+    MCP_OAUTH_ENABLED: "1",
+    MCP_HTTP_PUBLIC_URL: "https://vault.example.com",
+    MCP_OAUTH_PASSWORD: "login-password"
+  } satisfies NodeJS.ProcessEnv;
+
+  it.each(["9007199254740992", "9007199254740993", "99999999999999999999"])(
+    "falls back for unsafe integer %s",
+    (value) => {
+      expect(loadHttpConfig({ ...base, [envName]: value }).oauth?.[field]).toBe(fallback);
+    }
+  );
+
+  it.each([1, 600, Number.MAX_SAFE_INTEGER])("accepts positive safe integer %s", (value) => {
+    expect(loadHttpConfig({ ...base, [envName]: String(value) }).oauth?.[field]).toBe(value);
+  });
+
+  it.each([undefined, "", "   ", "0", "-1", "not-a-number", "Infinity"])(
+    "keeps the default for invalid or missing value %s",
+    (value) => {
+      expect(loadHttpConfig({ ...base, [envName]: value }).oauth?.[field]).toBe(fallback);
+    }
+  );
+});
+
 // INV-7 item 4: with MCP_OAUTH_ENABLED set, a missing issuer, a non-https
 // issuer, or a missing password must refuse to boot rather than advertise a
 // half-built authorization server. Every other OAuth test builds its config
