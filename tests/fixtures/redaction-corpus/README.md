@@ -4,7 +4,7 @@ Synthetic inputs for the log redactor (#249). Every value is made up: the secret
 
 ## `corpus.jsonl`
 
-179 cases, one JSON object per line. The fields are:
+195 cases, one JSON object per line. The fields are:
 
 - `id` and `section`: the case's name and the group it belongs to.
 - `kind`: `command` or `text`, the input kinds `packages/log-redaction/src/policy.mjs` declares.
@@ -12,7 +12,7 @@ Synthetic inputs for the log redactor (#249). Every value is made up: the secret
 - `input`: the text given to the redactor.
 - `secrets`: words that must not appear in the output. Count them after replacing every `***MASKED***` with a delimiter, because a secret word can occur inside the mask token itself. Replace it rather than remove it: removing it joins the text on either side into a word that is not in the output.
 - `preserve`: words that must still appear in the output. It does not rule out every over-mask. For example, the shipped sed `mask()` (capture-command.sh as of 550ec24) already turns `mysql and later -price list` into `mysql and later -p***MASKED*** list` through its `mysql … -p` rule, whether a quote is left open or not. Case A-F1c's rule (when a quote is not closed, mask the union) keeps it that way, and no `preserve` word requires otherwise.
-- `baseline`: what the sed `mask()` at `rev` did to the input. `rev` is `965df52` for every case, which is before #250.
+- `baseline`: what the sed `mask()` at `rev` did to the input. `rev` is `965df52` for sections A–P (before #250), and `38f2306abbc2b74f4f648bbaf8dcaa3125a8e705` for section Q.
   - `leaked`: the secrets it left in the clear.
   - `broken`: the preserve words it removed.
 - `regressed_on`: the revisions on which the case got worse, each as `{rev, leaked, broken}` like `baseline`.
@@ -25,6 +25,8 @@ Section O, added at 20:33 JST, holds marker words that end in a label word. #262
 - O-3 is left out: a URL whose user name ends in `KEY`. Both the sed `mask()` and the core read the end of the user name and the colon as a label, and mask the host's preserve word (#261). It would fail the core's corpus check today, so it comes in with the fix for #261.
 
 Section P holds #276's label-element attribute values and labels after unquoted values ending in a closing brace, bracket or parenthesis, in both input kinds. Its controls keep non-label attributes readable and mask closing delimiters inside a secret when no label follows. The sed baseline for these 32 additions was measured from revision `965df52`, like the earlier sections.
+
+Section Q holds #295's five selected shapes in both input kinds: three compound names, a namespaced label, a password input, a start tag across lines, and both angle characters inside a later quoted attribute. Synthetic words replace the Issue table's ellipses. Its 16 baselines were executed against the freshly fetched `38f2306` mask. Every case keeps the word after the element. The separate named tests preserve #291's known core gaps rather than treating them as regressions or fixing that excluded issue. The committed fuzz sample contains no `<`, so passing it does not exercise these markup rules.
 
 The file keeps only the fields above. Two kinds of field are left out:
 

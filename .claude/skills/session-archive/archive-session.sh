@@ -720,16 +720,25 @@ mask() {
   # F2 on #232 a, reproduced). After every rule that reads a value, the span
   # can only mask more. The cost: text between a label's closing quote and
   # the next quote is masked too (`grep "passwd:"***MASKED***"...`).
-  # #291: mask the remaining attribute region of a label start tag, including
-  # attributes after the first. Run LAST: earlier keyword rules can consume the
-  # first attribute, and consuming an armor delimiter before the counter rules
-  # would expose its body. This final substitution can only mask more.
-  # The region ends at the next angle bracket on this physical line; it neither
-  # needs nor searches for a closing element, and never joins LF lines. Bare CR
-  # can be removed; archive's refence pass re-checks changed CR segments too.
-  # This is a conservative text rule, not an XML parser (quoted angle brackets
-  # and start tags split across LF lines are outside this rule). Attribute names
-  # and values (for example lang="en" or class="hint") are masked too.
+  # #295: after the existing value/armor rules, a streaming tag pass precedes
+  # #291s final physical-line substitution. Only a quote after an attribute =
+  # opens a quoted value: earlier keyword rules may remove an entire first
+  # attribute, including its opening quote. Quoted angles therefore remain in
+  # the start tag. This stage retains LF/CR, including inside a value; the
+  # final #291 fallback can still remove CR as it did before (#228 refence).
+  # Each byte enters/leaves the tag array once. Name/attribute/value lookahead
+  # strings have fixed maximum lengths; no suffix search or growing tag string
+  # is repeated. A new unquoted < abandons an unfinished tag before restarting.
+  # Buffer a candidate tag, plus direct body text only to its physical line
+  # end or next <. A matching close is required before masking that body text.
+  # An unrelated next tag or an unclosed element therefore keeps following prose.
+  # A tag without > is
+  # emitted unchanged; the retained #291 final rule still covers malformed
+  # quoted tags that it masked before. Earlier sed rules keep their order.
+  # As in #291, all attribute names/values (including lang/class) are masked.
+  # XML-like prose in a matching element is also masked. Its following word
+  # stays intact. Appending one LF lets POSIX awk preserve the preceding sed
+  # streams separators, including its final LF choice. C locale scans bytes.
   sed -E \
     -e '/-----BEGIN PGP PRIVATE KEY BLOCK-----|---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----/{x;s/.*/o/;x;}' \
     -e 's/gh[pousr]_[A-Za-z0-9]{20,}/***MASKED***/g' \
@@ -766,8 +775,138 @@ mask() {
     -e "/\`\`\`|~~~/!s/((passwd|passphrase)['\"]?[=:[:space:]]+')([^'\\\\-]|\\\\.|-{1,4}([^'\\\\-]|\\\\.))*-{0,4}'/\1***MASKED***'/Ig" \
     -e "/\`\`\`|~~~/!s/'\\*\\*\\*MASKED\\*\\*\\*''([^']|'')*'/'***MASKED***'/g" \
     -e '/^[[:space:]]*[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/.*/***MASKED***/' \
-    -e '/^[[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-)[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-))[A-Za-z0-9+\/=]{32,}([[:space:]]*)$/\1***MASKED***\3/' \
-    -e 's/(<(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[[:space:]]+)[^<>]*>/\1***MASKED***>/Ig'
+    -e '/^[[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-)[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-))[A-Za-z0-9+\/=]{32,}([[:space:]]*)$/\1***MASKED***\3/' | { cat; printf '\n'; } | LC_ALL=C awk '
+    function flush_tag(    j) {
+      for (j = 1; j <= used; j++) printf "%s", tag[j]
+      clear_tag()
+    }
+    function clear_tag(    j) {
+      for (j = 1; j <= used; j++) delete tag[j]
+      used = 0
+      state = 0
+    }
+    function finish_value() {
+      if (attr == "type" && value == "password") password_input = 1
+      attr = value = ""
+      attribute = 0
+    }
+    function attribute_byte(c) {
+      if (quote != "") {
+        if (c == quote) { quote = ""; finish_value() }
+        else if (length(value) <= 8) value = value tolower(c)
+        return
+      }
+      if (attribute == 3) {
+        if (c ~ /[[:space:]]/) return
+        value = ""
+        if (c == "\042" || c == "\047") { quote = c; return }
+        attribute = 4
+      }
+      if (attribute == 4) {
+        if (c ~ /[[:space:]]/) finish_value()
+        else if (length(value) <= 8) value = value tolower(c)
+        return
+      }
+      if (c == "=" && (attribute == 1 || attribute == 2)) { attribute = 3; return }
+      if (c ~ /[[:space:]]/) { if (attribute == 1) attribute = 2; return }
+      if (attribute != 1) { attr = ""; attribute = 1 }
+      if (length(attr) <= 4) attr = attr tolower(c)
+    }
+    function close_tag(    j, marked) {
+      if (attribute == 4) finish_value()
+      if (!label && !password_input) { flush_tag(); return }
+      for (j = 1; j <= name_end; j++) printf "%s", tag[j]
+      for (j = name_end + 1; j < used; j++) {
+        if (tag[j] == "\n" || tag[j] == "\r") { printf "%s", tag[j]; marked = 0 }
+        else if (!marked && tag[j] ~ /[[:space:]]/) printf "%s", tag[j]
+        else if (!marked) { printf "%s", "***MASKED***"; marked = 1 }
+      }
+      printf ">"
+      body = label && tag[used - 1] != "/"
+      if (body) {
+        body_name_length = name_end - 1
+        for (j = 2; j <= name_end; j++) body_name[j - 1] = tolower(tag[j])
+      }
+      clear_tag()
+    }
+    function secret_component(s) {
+      return s ~ /^(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)$/
+    }
+    function finish_body(mask,    j, marked) {
+      for (j = 1; j <= body_used; j++) {
+        if (!mask || body_text[j] ~ /[[:space:]]/) printf "%s", body_text[j]
+        else if (!marked) { printf "%s", "***MASKED***"; marked = 1 }
+        delete body_text[j]
+      }
+      for (j = 1; j <= body_name_length; j++) delete body_name[j]
+      body_used = body_name_length = body = 0
+    }
+    function closing_byte(c,    j, ok) {
+      closing[++closing_used] = c
+      if (closing_used == 2) ok = c == "/"
+      else if (closing_used <= body_name_length + 2) ok = tolower(c) == body_name[closing_used - 2]
+      else if (c == ">") {
+        finish_body(1)
+        for (j = 1; j <= closing_used; j++) { printf "%s", closing[j]; delete closing[j] }
+        closing_used = 0
+        return
+      }
+      else ok = c ~ /[[:space:]]/ && c != "\n" && c != "\r"
+      if (ok) return
+      finish_body(0)
+      for (j = 1; j <= closing_used; j++) { byte(closing[j]); delete closing[j] }
+      closing_used = 0
+    }
+    function byte(c) {
+      if (body == 2) { closing_byte(c); return }
+      if (body == 1) {
+        if (c == "<") { body = 2; closing_used = 1; closing[1] = c; return }
+        if (c == "\n" || c == "\r") finish_body(0)
+        else { body_text[++body_used] = c; return }
+      }
+      if (state == 0) {
+        if (c != "<") { printf "%s", c; return }
+        state = 1; used = 1; tag[used] = c
+        tail = component = ""; namespaced = local_secret = 0
+        return
+      }
+      if (state == 1) {
+        if (c ~ /[A-Za-z0-9_.:-]/) {
+          tag[++used] = c
+          if (c == ":") { tail = component = ""; namespaced = 1; local_secret = 0 }
+          else {
+            if (length(tail) <= 13) tail = tail tolower(c)
+            if (c ~ /[_.-]/) { local_secret = local_secret || secret_component(component); component = "" }
+            else if (length(component) <= 13) component = component tolower(c)
+          }
+          return
+        }
+        label = local_secret || secret_component(component)
+        if ((!label && (tail != "input" || namespaced)) || c !~ /[[:space:]\/>]/) {
+          flush_tag()
+          byte(c)
+          return
+        }
+        name_end = used
+        state = 2; quote = attr = value = ""; attribute = password_input = 0
+      }
+      if (quote == "" && c == "<") {
+        flush_tag()
+        byte(c)
+        return
+      }
+      tag[++used] = c
+      if (quote == "" && c == ">") { close_tag(); return }
+      attribute_byte(c)
+    }
+    NR > 1 { byte("\n") }
+    { line_length = length($0); for (i = 1; i <= line_length; i++) byte(substr($0, i, 1)) }
+    END {
+      finish_body(0)
+      for (j = 1; j <= closing_used; j++) printf "%s", closing[j]
+      flush_tag()
+    }
+  ' | sed -E 's/(<(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[[:space:]]+)[^<>]*>/\1***MASKED***>/Ig'
 }
 
 # Title priority: aiTitle (the session title Claude Code generates and keeps

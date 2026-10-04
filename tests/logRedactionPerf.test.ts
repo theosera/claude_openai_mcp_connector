@@ -1,4 +1,8 @@
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { performance } from "node:perf_hooks";
+import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
@@ -59,7 +63,62 @@ function fill(head: string, unit: string, length: number): string {
   return head + body.slice(0, length - head.length);
 }
 
-const SHAPES: readonly (readonly [string, string, (length: number) => string])[] = [
+type PerfShape = readonly [name: string, secret: string, make: (length: number) => string, preserve?: string];
+type Issue295PerfShape = readonly [name: string, secret: string, make: (length: number) => string, preserve: string];
+
+function enclosed(head: string, unit: string, tail: string, length: number): string {
+  return fill(head, unit, length - tail.length) + tail;
+}
+
+function completeUnits(head: string, unit: string, tail: string, length: number): string {
+  const available = length - head.length - tail.length;
+  return head + unit.repeat(Math.floor(available / unit.length)).padEnd(available, " ") + tail;
+}
+
+// #295: each canary belongs to a newly supported shape, rather than an unrelated
+// token= prefix. A no-op new collector must fail before any timing is accepted.
+// Inputs use ASCII, so these lengths are both bytes and UTF-16 code units.
+const ISSUE295_SHAPES: readonly Issue295PerfShape[] = [
+  [
+    "issue295-compound-long-attribute",
+    "FKPERF295C1",
+    (n) => enclosed('<access_token a="x" b="FKPERF295C1 ', "x ", '"> KEEP295C1', n),
+    "KEEP295C1"
+  ],
+  [
+    "issue295-namespace-long-name",
+    "FKPERF295N1",
+    (n) => enclosed("<", "ns", ':password a="x" b="FKPERF295N1"> KEEP295N1', n),
+    "KEEP295N1"
+  ],
+  [
+    "issue295-input-many-label-like-attributes",
+    "FKPERF295I1",
+    (n) => completeUnits("<input ", 'data-tokenish="" ', 'type="password" value="FKPERF295I1"> KEEP295I1', n),
+    "KEEP295I1"
+  ],
+  [
+    "issue295-multiline-long-start",
+    "FKPERF295M1",
+    (n) => completeUnits("<password\n", ' a="x"\n', ' b="FKPERF295M1"> KEEP295M1', n),
+    "KEEP295M1"
+  ],
+  [
+    "issue295-later-value-many-quoted-angles",
+    "FKPERF295A1",
+    (n) => enclosed('<password a="x" b="y>z" c="FKPERF295A1 ', "< > ", '"> KEEP295A1', n),
+    "KEEP295A1"
+  ],
+  [
+    "issue295-many-unfinished-starts",
+    "FKPERF295U1",
+    (n) => fill('<input type="password" value="FKPERF295U1"> KEEP295U1 ', '<access_token a="x" ', n),
+    "KEEP295U1"
+  ]
+];
+
+const SHAPES: readonly PerfShape[] = [
+  ...ISSUE295_SHAPES,
   ["I-unclosed-escaped", "FKPERFUE1", (n) => fill('passphrase: "FKPERFUE1 ', 'a\\"', n)],
   ["I-masked-doubled", "FKPERFMD1", (n) => fill("token=FKPERFMD1 ", `${MASK}''x`, n)],
   ["I-label-quotes", "FKPERFLQ1", (n) => fill('passwd: "FKPERFLQ1', 'passwd: "ab', n)],
@@ -231,13 +290,13 @@ describe("the two-doubling ratio check itself", () => {
 });
 
 describe("the core's time over two doublings", { timeout: 180_000 }, () => {
-  const cases = SHAPES.flatMap(([name, secret, make]) =>
-    (["command", "text"] as const).map((kind) => [name, kind, secret, make] as const)
+  const cases = SHAPES.flatMap(([name, secret, make, preserve]) =>
+    (["command", "text"] as const).map((kind) => [name, kind, secret, make, preserve] as const)
   );
 
   // Sizes are taken smallest first and each two-doubling window is judged as
   // soon as it is measured, so a quadratic walk can fail at 256 KiB before 1 MiB.
-  it.each(cases)("%s as %s", (_name, kind, secret, make) => {
+  it.each(cases)("%s as %s", (_name, kind, secret, make, preserve) => {
     let previous: string | null = null;
     for (const [index, size] of SIZES.entries()) {
       const text = make(size);
@@ -250,6 +309,7 @@ describe("the core's time over two doublings", { timeout: 180_000 }, () => {
       });
       expect(result.status).toBe("ok");
       expect(result.text).not.toContain(secret);
+      if (preserve) expect(result.text).toContain(preserve);
       if (index % DOUBLINGS !== 0) continue;
       if (previous) {
         // Up to three sets of pairs. Under the old per-doubling rule, pairing
@@ -265,4 +325,75 @@ describe("the core's time over two doublings", { timeout: 180_000 }, () => {
       previous = text;
     }
   });
+});
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const MASK_COPIES = [
+  ["capture", ".claude/skills/ops-logging/capture-command.sh"],
+  ["archive", ".claude/skills/session-archive/archive-session.sh"]
+] as const;
+
+function shippedMask(path: string): string {
+  const lines = readFileSync(join(ROOT, path), "utf8").split("\n");
+  const start = lines.indexOf("mask() {");
+  const end = lines.findIndex((line, index) => index > start && line === "}");
+  if (start === -1 || end === -1) throw new Error(`mask() extraction anchors missing in ${path}`);
+  return lines.slice(start, end + 1).join("\n");
+}
+
+// The actual two hook functions, including their platform sed/awk programs.
+// One process per measurement avoids timing an artificial helper in isolation.
+// Unlike the synchronous core call, an accidentally quadratic child can be
+// terminated at the first-call ceiling. CI runs these on GNU and macOS tools.
+describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_000 }, () => {
+  for (const [copy, path] of MASK_COPIES) {
+    const source = shippedMask(path);
+    const run = (text: string) =>
+      execFileSync("bash", ["-c", `${source}\nmask`], {
+        input: text,
+        encoding: "utf8",
+        maxBuffer: 4 * 1024 * KiB,
+        timeout: Math.max(1000, (CEILING_MS_PER_64_KIB * text.length) / (64 * KiB))
+      });
+    const measure = (text: string) => {
+      const start = performance.now();
+      run(text);
+      return performance.now() - start;
+    };
+
+    it.each(ISSUE295_SHAPES)(`${copy}: %s`, (_name, secret, make, preserve) => {
+      let previous: string | null = null;
+      for (const [index, size] of SIZES.entries()) {
+        const text = make(size);
+        const first = performance.now();
+        const output = run(text);
+        const firstMs = performance.now() - first;
+        expect({ size, firstMs: firstMs < (CEILING_MS_PER_64_KIB * size) / (64 * KiB) ? "under" : firstMs }).toEqual({
+          size,
+          firstMs: "under"
+        });
+        expect(output).not.toContain(secret);
+        expect(output).toContain(preserve);
+        if (index % DOUBLINGS !== 0) continue;
+        if (previous) {
+          const ratios: number[] = [];
+          while (ratios.length < ATTEMPTS && !(ratios.at(-1)! < LIMIT)) {
+            const pairs: [number, number][] = [];
+            for (let p = 0; p < PAIRS; p += 1) {
+              if (p % 2 === 0) {
+                const small = measure(previous);
+                pairs.push([small, measure(text)]);
+              } else {
+                const large = measure(text);
+                pairs.push([measure(previous), large]);
+              }
+            }
+            ratios.push(growthRatio(pairs));
+          }
+          expect({ size, ratio: ratios.at(-1)! < LIMIT ? "under" : ratios }).toEqual({ size, ratio: "under" });
+        }
+        previous = text;
+      }
+    });
+  }
 });

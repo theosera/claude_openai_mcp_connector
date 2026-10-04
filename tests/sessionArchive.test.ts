@@ -1536,8 +1536,12 @@ describe("session-archive PEM key masking", () => {
     // line survives behind a masked path.
     const anchored = mask.split("\n").find((line) => line.includes(PREFIXED_CATCH_ALL));
     expect(anchored, "the anchored catch-all action is gone from the shipped mask()").toBeDefined();
-    // Keep the shell quote and continuation: this is no longer the last -e.
-    const action = anchored!.slice(anchored!.indexOf("/s/") + 1, anchored!.lastIndexOf("'"));
+    // Stop at this sed argument closing quote, preserving any later pipeline
+    // stages (which may have their own shell quotes on the same line).
+    const actionStart = anchored!.indexOf("/s/") + 1;
+    const actionEnd = anchored!.indexOf("'", actionStart);
+    expect(actionEnd).toBeGreaterThan(actionStart);
+    const action = anchored!.slice(actionStart, actionEnd);
     const unanchored = mutate(mask, action, PREFIXED_CATCH_ALL_UNANCHORED, "the anchored catch-all action");
     const leaked = runMask(unanchored, planted);
     expect(bodyLinesSurviving(leaked)).toBe(BODY.length);
@@ -1994,7 +1998,9 @@ describe("session-archive auth-scheme masking", () => {
     // Structural, so a rule added later cannot silently miss it. Naming the three
     // rules the probes above happen to reach would leave a fourth one unguarded,
     // and a fourth is exactly what the last two rounds each turned up.
-    const rules = mask.split("\n").filter((line) => line.trim().startsWith("-e"));
+    const rules = mask
+      .split("\n")
+      .filter((line) => line.trim().startsWith("-e") || line.trim().startsWith("' | sed -E '"));
 
     // Every rule that anchors on a mask keyword takes its value from a class the
     // caller controls, so every one of them must carry the boundary. Counting the
@@ -2007,6 +2013,12 @@ describe("session-archive auth-scheme masking", () => {
     const xmlCleanup = rules.filter((line) => line.includes("[^<>]*>"));
     expect(xmlCleanup).toHaveLength(1);
     expect(rules.at(-1)).toBe(xmlCleanup[0]);
+    expect(xmlCleanup[0]!.trim()).toBe(
+      String.raw`' | sed -E 's/(<(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[[:space:]]+)[^<>]*>/\1***MASKED***>/Ig'`
+    );
+    expect(mask).toContain("LC_ALL=C awk '");
+    expect(mask.indexOf(xmlCleanup[0]!)).toBeGreaterThan(mask.indexOf("LC_ALL=C awk '"));
+    expect(mask.trimEnd().endsWith(`${xmlCleanup[0]}\n}`)).toBe(true);
     const keywordRules = rules.filter((line) => line.includes("token|key|secret") && line !== xmlCleanup[0]);
     expect(keywordRules).toHaveLength(6);
 

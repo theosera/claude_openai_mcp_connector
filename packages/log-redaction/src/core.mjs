@@ -490,6 +490,128 @@ function escapeRegExp(word) {
 }
 
 /**
+ * #295's markup forms have their own quote-aware reading. The shell/text quote
+ * lexers deliberately reset at line ends and cannot read a multiline start tag.
+ * Only the five selected forms are claimed here: compound/namespaced labels,
+ * password inputs, and simple labels with multiline starts or an angle in a
+ * later attribute. Ordinary single-line simple labels still use elementAt;
+ * their outstanding multiple-attribute behavior belongs to #291.
+ *
+ * Each start tag is scanned once to its unquoted `>` (or next unquoted `<`),
+ * then once for attributes. A failed quoted tag consumes the rest of the input
+ * once, including empty values: no search restarts inside an already read tag.
+ * Direct text is scanned only to the next `<`. Thus these walks cost O(n), with
+ * O(n) spans/ranges; collectLabelSpans consumes the ordered ranges monotonically.
+ */
+function collectMarkupLabelSpans(original, labels) {
+  const spans = [];
+  const ranges = [];
+  const labelNames = new Set(labels.map((label) => label.toLowerCase()));
+  // Match the armor collector's line-count invariant: masking a multiline
+  // attribute or body never joins lines or changes the enclosing log's fences.
+  const addSpan = (start, end) => {
+    let from = start;
+    for (let index = start; index < end; index += 1) {
+      if (!isLineEnd(original[index])) continue;
+      if (index > from) spans.push({ start: from, end: index, kind: "credential:label" });
+      from = index + 1;
+    }
+    if (end > from) spans.push({ start: from, end, kind: "credential:label" });
+  };
+  let at = 0;
+  while (at < original.length) {
+    const start = original.indexOf("<", at);
+    if (start < 0) break;
+    let nameEnd = start + 1;
+    while (nameEnd < original.length && /[A-Za-z0-9_.:-]/.test(original[nameEnd])) nameEnd += 1;
+    if (nameEnd === start + 1) {
+      at = nameEnd;
+      continue;
+    }
+    const name = original.slice(start + 1, nameEnd).toLowerCase();
+    let openEnd = nameEnd;
+    let quote = "";
+    let multiline = false;
+    while (openEnd < original.length) {
+      const ch = original[openEnd];
+      if (isLineEnd(ch)) multiline = true;
+      if (quote) {
+        if (ch === quote) quote = "";
+      } else if (ch === "'" || ch === '"') quote = ch;
+      else if (ch === ">" || ch === "<") break;
+      openEnd += 1;
+    }
+    at = openEnd;
+    if (original[openEnd] !== ">") continue;
+    at += 1;
+
+    const attributes = [];
+    let passwordInput = false;
+    let laterAngle = false;
+    let cursor = nameEnd;
+    while (cursor < openEnd) {
+      while (cursor < openEnd && /\s/.test(original[cursor])) cursor += 1;
+      const keyStart = cursor;
+      while (cursor < openEnd && !/[\s='"/]/.test(original[cursor])) cursor += 1;
+      const key = original.slice(keyStart, cursor).toLowerCase();
+      while (cursor < openEnd && /\s/.test(original[cursor])) cursor += 1;
+      if (original[cursor] !== "=") {
+        if (cursor === keyStart) cursor += 1;
+        continue;
+      }
+      cursor += 1;
+      while (cursor < openEnd && /\s/.test(original[cursor])) cursor += 1;
+      const delimiter = original[cursor] === "'" || original[cursor] === '"' ? original[cursor++] : "";
+      const valueStart = cursor;
+      while (cursor < openEnd && (delimiter ? original[cursor] !== delimiter : !/\s/.test(original[cursor])))
+        cursor += 1;
+      const valueEnd = cursor;
+      const value = original.slice(valueStart, valueEnd);
+      if (attributes.length > 0 && /[<>]/.test(value)) laterAngle = true;
+      if (key === "type" && value.toLowerCase() === "password") passwordInput = true;
+      attributes.push({ start: valueStart, end: valueEnd, kind: "credential:label" });
+      if (delimiter) cursor += 1;
+    }
+    const simple = labelNames.has(name);
+    const localName = name.slice(name.lastIndexOf(":") + 1);
+    const compound = !simple && attributes.length > 0 && localName.split(/[_.-]/).some((part) => labelNames.has(part));
+    const input = name === "input" && passwordInput;
+    if (!compound && !input && !(simple && (multiline || laterAngle))) continue;
+
+    for (const attribute of attributes) addSpan(attribute.start, attribute.end);
+    // Suppress element names and values already fully claimed here. Other
+    // labels still use the old reader, including a label followed by a quoted
+    // value without =. An unquoted type=password must not eat the next word.
+    const opening = { start: start + 1, end: nameEnd, element: null };
+    ranges.push(opening);
+    for (const attribute of attributes) {
+      if (attribute.end > attribute.start) ranges.push({ ...attribute, element: null });
+    }
+    // Inputs are void elements. For labels, claim direct text only when the
+    // very next tag closes this name, so prose after an unclosed start survives.
+    if (!input) {
+      const textStart = openEnd + 1;
+      const textEnd = original.indexOf("<", textStart);
+      if (textEnd >= 0 && original.slice(textEnd, textEnd + name.length + 2).toLowerCase() === `</${name}`) {
+        let closeEnd = textEnd + name.length + 2;
+        while (closeEnd < original.length && /\s/.test(original[closeEnd])) closeEnd += 1;
+        if (original[closeEnd] === ">") {
+          addSpan(textStart, textEnd);
+          ranges.push({ start: textEnd + 2, end: textEnd + 2 + name.length, element: null });
+          // A non-bare <key> can also label the following plist <string>. Keep
+          // that existing handoff in elementValues rather than duplicating it.
+          if (name === "key") {
+            opening.element = { name, bare: false, start: textStart, end: textEnd, closeEnd: closeEnd + 1 };
+          }
+          at = closeEnd + 1;
+        }
+      }
+    }
+  }
+  return { spans, ranges };
+}
+
+/**
  * Collects the value after every label, per kind.
  *
  * A label is found wherever it occurs, and what follows it depends on where the
@@ -529,7 +651,8 @@ function escapeRegExp(word) {
 function collectLabelSpans(original, kind, vocabulary) {
   const labels = vocabulary.labels ?? SECRET_LABELS;
   if (labels.length === 0) return [];
-  const spans = [];
+  const markup = collectMarkupLabelSpans(original, labels);
+  const spans = markup.spans;
   const labelSource = [...labels]
     .sort((a, b) => b.length - a.length)
     .map(escapeRegExp)
@@ -1086,8 +1209,21 @@ function collectLabelSpans(original, kind, vocabulary) {
   };
 
   let match;
+  let markupIndex = 0;
   while ((match = label.exec(original)) !== null) {
     const start = match.index;
+    while (markupIndex < markup.ranges.length && markup.ranges[markupIndex].end <= start) markupIndex += 1;
+    const claimed = markup.ranges[markupIndex];
+    if (claimed && claimed.start <= start) {
+      if (claimed.element) {
+        for (const value of elementValues(claimed.element).slice(1)) {
+          if (value && value.end > value.start)
+            spans.push({ start: value.start, end: value.end, kind: "credential:label" });
+        }
+      }
+      label.lastIndex = claimed.end;
+      continue;
+    }
     const end = start + match[0].length;
     const segment = segmentAt(segments, start);
     let value = null;
