@@ -554,7 +554,7 @@ describe("the core on the fifth review's shapes", () => {
       "an element with attributes",
       both,
       '<password type="plain">FKRV0120</password> KEEPRW20',
-      `<password type="plain">${MASK}</password> KEEPRW20`
+      `<password type="${MASK}">${MASK}</password> KEEPRW20`
     ],
     [
       "a closing tag on the next line",
@@ -671,20 +671,20 @@ describe("the core on the sixth review's shapes", () => {
       "a key element with an attribute",
       both,
       '<key id="x">FKRV0133</key> KEEPRW33',
-      `<key id="x">${MASK}</key> KEEPRW33`
+      `<key id="${MASK}">${MASK}</key> KEEPRW33`
     ],
     [
       "a key element with an attribute before another element",
       both,
       '<key id="x">FKRV0140</key><string>KEEPRW40</string>',
-      `<key id="x">${MASK}</key><string>KEEPRW40</string>`
+      `<key id="${MASK}">${MASK}</key><string>KEEPRW40</string>`
     ],
     ["a key element with a blank before >", both, "<key >FKRV0134</key> KEEPRW34", `<key >${MASK}</key> KEEPRW34`],
     [
       "a Key element that is no plist key",
       both,
       '<Key name="license">FKRV0135</Key> KEEPRW35',
-      `<Key name="license">${MASK}</Key> KEEPRW35`
+      `<Key name="${MASK}">${MASK}</Key> KEEPRW35`
     ],
     ["a key element with no element after it", both, "<key>FKRV0139</key> KEEPRW39", `<key>${MASK}</key> KEEPRW39`],
     [
@@ -722,7 +722,7 @@ describe("the core on the seventh review's shapes", () => {
       "a key element with an attribute that holds a label, before another element",
       both,
       '<key id="x">token</key><string>FKRV0160</string> KEEPRW60',
-      `<key id="x">${MASK}</key><string>${MASK}</string> KEEPRW60`
+      `<key id="${MASK}">${MASK}</key><string>${MASK}</string> KEEPRW60`
     ],
     [
       "a key element with a blank before > that holds a label, before another element",
@@ -734,7 +734,7 @@ describe("the core on the seventh review's shapes", () => {
       "a Key element with an attribute that holds a label, before another element",
       both,
       `<Key name="a">${password}</Key><string>FKRV0162</string> KEEPRW62`,
-      `<Key name="a">${MASK}</Key><string>${MASK}</string> KEEPRW62`
+      `<Key name="${MASK}">${MASK}</Key><string>${MASK}</string> KEEPRW62`
     ],
     [
       "a plist key before an element with an attribute",
@@ -905,12 +905,12 @@ describe("the core on labels after a label element's child value (#275)", () => 
     [
       "a label element after it, inside an outer element",
       `<server><${password}><value>FKRV0701</value></${password}><${token} type="x">FKRV0702</${token}></server> KEEPRW71`,
-      `<server><${password}><value>${MASK} type="x">${MASK}</${token}></server> KEEPRW71`
+      `<server><${password}><value>${MASK} type="${MASK}">${MASK}</${token}></server> KEEPRW71`
     ],
     [
       "a label element after it",
       `<${password}><value>FKRV0703</value></${password}><${token} type="x">FKRV0704</${token}> KEEPRW72`,
-      `<${password}><value>${MASK} type="x">${MASK}</${token}> KEEPRW72`
+      `<${password}><value>${MASK} type="${MASK}">${MASK}</${token}> KEEPRW72`
     ],
     [
       "an option glued to the value",
@@ -1080,5 +1080,111 @@ describe("the core on a list separator in a label element's child value (#275)",
     ])
   )("%s, as %s", (_name, kind, input, expected) => {
     expect(redactFragment({ text: input, kind })).toEqual({ text: expected, status: "ok" });
+  });
+});
+
+// #276: every attribute value of a label element belongs to its credential,
+// including an element whose text is empty. The attributes of other elements
+// remain ordinary data. Pin each reading separately for the mutation checks.
+describe("the core on a label element's attribute values (#276)", () => {
+  const cases: readonly (readonly [string, string, string])[] = [
+    [
+      "quoted attribute with empty text",
+      '<password value="FK276A01"></password> KEEP276A01',
+      `<password value="${MASK}"></password> KEEP276A01`
+    ],
+    [
+      "single-quoted attribute with empty text",
+      "<token value='FK276A02'></token> KEEP276A02",
+      `<token value='${MASK}'></token> KEEP276A02`
+    ],
+    [
+      "unquoted attribute with empty text",
+      "<token value=FK276A03></token> KEEP276A03",
+      `<token value=${MASK}></token> KEEP276A03`
+    ],
+    [
+      "multiple attributes including whitespace in a quoted value",
+      `<password first="FK276A04 FK276A05" second='FK276A06' third=FK276A07></password> KEEP276A04`,
+      `<password first="${MASK}" second='${MASK}' third=${MASK}></password> KEEP276A04`
+    ],
+    [
+      "empty quoted attributes before a nonempty attribute",
+      `<password first="" second='' third="FK276A10"></password> KEEP276A10`,
+      `<password first="" second='' third="${MASK}"></password> KEEP276A10`
+    ],
+    [
+      "attribute values and element text coexist",
+      '<password source="FK276A08">FK276A09</password> KEEP276A05',
+      `<password source="${MASK}">${MASK}</password> KEEP276A05`
+    ],
+    [
+      "non-label element attribute values stay readable",
+      `<item first="KEEP276A06" second='KEEP276A07' third=KEEP276A08>KEEP276A09</item>`,
+      `<item first="KEEP276A06" second='KEEP276A07' third=KEEP276A08>KEEP276A09</item>`
+    ]
+  ];
+
+  it.each(
+    (["command", "text"] as const).flatMap((kind) =>
+      cases.map(([name, input, expected]) => [name, kind, input, expected] as const)
+    )
+  )("%s, as %s", (_name, kind, input, expected) => {
+    expect(redactFragment({ text: input, kind })).toEqual({ text: expected, status: "ok" });
+  });
+});
+
+// #276: a closing brace/bracket (or a text parenthesis) is a boundary only when
+// another label follows it. Without a label it stays inside the first secret.
+// Command ')' already ends a shell word and is checked as the unchanged control.
+describe("the core on an unquoted value before a closing delimiter and label (#276)", () => {
+  const delimiters = [
+    ["closing brace", "}"],
+    ["closing bracket", "]"],
+    ["closing parenthesis", ")"]
+  ] as const;
+
+  it.each(
+    (["command", "text"] as const).flatMap((kind) =>
+      delimiters.map(([name, delimiter]) => [kind === "text" ? "runEnd" : "wordEnd", name, kind, delimiter] as const)
+    )
+  )("%s: %s before a label, as %s", (_reader, _name, kind, delimiter) => {
+    expect(redactFragment({ text: `password=FK276B01${delimiter}token FK276B02 KEEP276B01`, kind })).toEqual({
+      text: `password=${MASK}${delimiter}token ${MASK} KEEP276B01`,
+      status: "ok"
+    });
+  });
+
+  it.each(["command", "text"] as const)("the handoff's closing brace before Bearer, as %s", (kind) => {
+    expect(redactFragment({ text: "{password=FK276B03}Bearer FK276B04 KEEP276B02", kind })).toEqual({
+      text: `{password=${MASK}}Bearer ${MASK} KEEP276B02`,
+      status: "ok"
+    });
+  });
+
+  it.each(
+    (["command", "text"] as const).flatMap((kind) =>
+      delimiters
+        .filter(([, delimiter]) => kind === "text" || delimiter !== ")")
+        .map(([name, delimiter]) => [kind === "text" ? "runEnd" : "wordEnd", name, kind, delimiter] as const)
+    )
+  )("%s: %s without a following label stays inside the secret, as %s", (_reader, _name, kind, delimiter) => {
+    expect(redactFragment({ text: `password=FK276B05${delimiter}FK276B06 KEEP276B03`, kind })).toEqual({
+      text: `password=${MASK} KEEP276B03`,
+      status: "ok"
+    });
+  });
+
+  it.each(
+    (["command", "text"] as const).flatMap((kind) =>
+      delimiters
+        .filter(([, delimiter]) => kind === "text" || delimiter !== ")")
+        .map(([name, delimiter]) => [kind === "text" ? "runEnd" : "wordEnd", name, kind, delimiter] as const)
+    )
+  )("%s: %s before a non-label key stays inside the secret, as %s", (_reader, _name, kind, delimiter) => {
+    expect(redactFragment({ text: `password=FK276B07${delimiter}item=FK276B08 KEEP276B04`, kind })).toEqual({
+      text: `password=${MASK} KEEP276B04`,
+      status: "ok"
+    });
   });
 });
