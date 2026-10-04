@@ -990,7 +990,7 @@ mask() {
       for (i = 2; i <= line_length; i++) feed(line_bytes[i])
     }
     END { flush_pending() }
-  ' | sed -E -e '/^P/{s/^P//;b;}' -e 's/^N//' -e "/$long_cr_record/b" -e 's/(<(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[[:space:]]+)[^<>]*>/\1***MASKED***>/Ig'
+  ' | sed -E -e '/^P/{' -e 's/^P//' -e 'b' -e '}' -e 's/^N//' -e "/$long_cr_record/b" -e 's/(<(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[[:space:]]+)[^<>]*>/\1***MASKED***>/Ig'
 }
 
 # Title priority: aiTitle (the session title Claude Code generates and keeps

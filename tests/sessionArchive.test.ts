@@ -2019,7 +2019,7 @@ describe("session-archive auth-scheme masking", () => {
     expect(xmlCleanup).toHaveLength(1);
     expect(rules.at(-1)).toBe(xmlCleanup[0]);
     expect(xmlCleanup[0]!.trim()).toBe(
-      String.raw`' | sed -E -e '/^P/{s/^P//;b;}' -e 's/^N//' -e "/$long_cr_record/b" -e 's/(<(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[[:space:]]+)[^<>]*>/\1***MASKED***>/Ig'`
+      String.raw`' | sed -E -e '/^P/{' -e 's/^P//' -e 'b' -e '}' -e 's/^N//' -e "/$long_cr_record/b" -e 's/(<(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[[:space:]]+)[^<>]*>/\1***MASKED***>/Ig'`
     );
     const awkStart = "LC_ALL=C awk '";
     expect(mask.split(awkStart)).toHaveLength(3); // Original flags, then markup.

@@ -693,7 +693,7 @@ mask() {
       for (i = 2; i <= line_length; i++) feed(line_bytes[i])
     }
     END { flush_pending() }
-  ' | sed -E -e '/^P/{s/^P//;b;}' -e 's/^N//' -e "/$long_cr_record/b" -e 's/(<(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[[:space:]]+)[^<>]*>/\1***MASKED***>/Ig'
+  ' | sed -E -e '/^P/{' -e 's/^P//' -e 'b' -e '}' -e 's/^N//' -e "/$long_cr_record/b" -e 's/(<(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[[:space:]]+)[^<>]*>/\1***MASKED***>/Ig'
 }
 # ⭐ 1 行の byte 上限。⛔ 上限が要る理由は可読性ではなく【リポの成長】である:
 #    実測 2026-09-09 — 5,004 行のうち 2,000 B を超えるのは 357 行 (7.1%) だけだが、
