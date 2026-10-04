@@ -56,18 +56,37 @@ function maskFunction(path: string): string {
 // git, or push machinery. Read both independently, even while they are equal.
 const captureMask = maskFunction(hooks.capture);
 const archiveMask = maskFunction(hooks.archive);
-function runHook(source: string, input: string) {
-  return {
-    status: "ok",
-    text: execFileSync("bash", ["-c", `${source}\nmask`], { input, encoding: "utf8" })
-  };
+function runHook(engine: keyof typeof hooks, source: string, input: string) {
+  try {
+    return {
+      status: "ok",
+      text: execFileSync("bash", ["-c", `${source}\nmask`], { input, encoding: "utf8", stdio: "pipe" })
+    };
+  } catch (error) {
+    const failure = error as {
+      status?: number | null;
+      signal?: string | null;
+      code?: string;
+      stderr?: string | Buffer;
+    };
+    let stderr = String(failure.stderr ?? "");
+    for (const entry of fixture.cases) {
+      for (const secret of entry.secrets) stderr = stderr.replaceAll(secret, "[synthetic-canary]");
+    }
+    const escaped = JSON.stringify(stderr);
+    const excerpt = escaped.length > 2048 ? `${escaped.slice(0, 2048)} [truncated]` : escaped;
+    // eslint-disable-next-line preserve-caught-error -- The original error exposes the entire bash command.
+    throw new Error(
+      `hook ${engine} (${hooks[engine]}) failed: status=${failure.status ?? "unknown"} signal=${failure.signal ?? "none"} code=${failure.code ?? "none"}; stderr=${excerpt}`
+    );
+  }
 }
 
 const engines: Record<Engine, (input: string) => { text: string; status: string }> = {
   "core-command": (input) => redactFragment({ text: input, kind: "command" }),
   "core-text": (input) => redactFragment({ text: input, kind: "text" }),
-  capture: (input) => runHook(captureMask, input),
-  archive: (input) => runHook(archiveMask, input)
+  capture: (input) => runHook("capture", captureMask, input),
+  archive: (input) => runHook("archive", archiveMask, input)
 };
 
 describe("#295 fence matrix measurement scope", () => {
