@@ -528,7 +528,7 @@ mask() {
         if (protected && (j <= end || closing)) {
           # Ordered-list ordinals may themselves be credential digits. Emit
           # constant zeroes of the same width, never those original digits.
-          printf "%s", j <= end && original_bytes[j] ~ /^[0-9]$/ ? "0" : original_bytes[j]
+          printf "%s", (j <= end && original_bytes[j] ~ /^[0-9]$/ ? "0" : original_bytes[j])
           marked = 0
         } else if (!marked) { printf "%s", "***MASKED***"; marked = 1 }
       }
@@ -761,7 +761,7 @@ mask() {
       for (i = 2; i <= line_length; i++) feed(line_bytes[i])
     }
     END { flush_pending(); if (output_used) flush_output(0) }
-  ' | sed -e '' | { cat; printf '\n'; } | LC_ALL=C awk -v legacy_profile="$legacy_profile" '
+  ' | sed -e '' | { cat; printf '\n'; } | LC_ALL=C CON295_LEGACY_PROFILE="$legacy_profile" awk '
     # Equivalent to the final legacy label cleanup, with a match-local budget.
     # Quotes are ordinary bytes here, just as in its old [^<>]* body.
     function legacy_emit(c) {
@@ -885,7 +885,7 @@ mask() {
       }
     }
     BEGIN {
-      profile_count = split(legacy_profile, accepted_profile, "\n")
+      profile_count = split(ENVIRON["CON295_LEGACY_PROFILE"], accepted_profile, "\n")
       for (i = 1; i <= profile_count; i++) {
         if (substr(accepted_profile[i], 1, 1) == "w") legacy_blanks[substr(accepted_profile[i], 2)] = 1
         else if (substr(accepted_profile[i], 2, 1) == ":") legacy_folds[substr(accepted_profile[i], 3)] = substr(accepted_profile[i], 1, 1)

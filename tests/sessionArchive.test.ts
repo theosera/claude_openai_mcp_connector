@@ -2019,9 +2019,9 @@ describe("session-archive auth-scheme masking", () => {
     expect(rules.filter((line) => line.includes("[^<>]*>"))).toEqual([]);
     expect(mask).not.toContain("long_cr_record");
     const awkStart = "LC_ALL=C awk '";
-    expect(mask.match(/LC_ALL=C awk\b/g)).toHaveLength(3); // Metadata, markup, then cleanup/weave.
+    expect(mask.match(/LC_ALL=C (?:CON295_LEGACY_PROFILE="\$legacy_profile" )?awk\b/g)).toHaveLength(3); // Metadata, markup, then cleanup/weave.
     const markupStart = mask.indexOf(awkStart, mask.indexOf(awkStart) + awkStart.length);
-    const cleanupStart = mask.indexOf('LC_ALL=C awk -v legacy_profile="$legacy_profile"');
+    const cleanupStart = mask.indexOf('LC_ALL=C CON295_LEGACY_PROFILE="$legacy_profile" awk');
     const weaveStart = mask.indexOf("function render(", cleanupStart);
     expect(cleanupStart).toBeGreaterThan(markupStart);
     expect(weaveStart).toBeGreaterThan(cleanupStart);
