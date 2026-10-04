@@ -915,7 +915,7 @@ function loadOAuthConfig(
   }
   const ttl = (value: string | undefined, fallback: number): number => {
     const n = Number.parseInt(value?.trim() || String(fallback), 10);
-    return Number.isInteger(n) && n > 0 ? n : fallback;
+    return Number.isSafeInteger(n) && n > 0 ? n : fallback;
   };
   // Optional token persistence (opt-in, like every new capability). Resolved
   // to an absolute path so a supervisor's cwd cannot change where state lands.
