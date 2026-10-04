@@ -348,25 +348,34 @@ function shippedMask(path: string): string {
 describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_000 }, () => {
   for (const [copy, path] of MASK_COPIES) {
     const source = shippedMask(path);
-    const run = (text: string) =>
-      execFileSync("bash", ["-c", `${source}\nmask`], {
-        input: text,
-        encoding: "utf8",
-        maxBuffer: 4 * 1024 * KiB,
-        timeout: Math.max(1000, (CEILING_MS_PER_64_KIB * text.length) / (64 * KiB))
-      });
-    const measure = (text: string) => {
+    const run = (text: string, phase: string) => {
       const start = performance.now();
-      run(text);
+      try {
+        return execFileSync("bash", ["-c", `${source}\nmask`], {
+          input: text,
+          encoding: "utf8",
+          maxBuffer: 4 * 1024 * KiB,
+          timeout: Math.max(1000, (CEILING_MS_PER_64_KIB * text.length) / (64 * KiB))
+        });
+      } catch (cause) {
+        throw new Error(
+          `${copy}: ${phase}, ${text.length} ASCII bytes, failed after ${(performance.now() - start).toFixed(1)} ms`,
+          { cause }
+        );
+      }
+    };
+    const measure = (text: string, phase: string) => {
+      const start = performance.now();
+      run(text, phase);
       return performance.now() - start;
     };
 
-    it.each(ISSUE295_SHAPES)(`${copy}: %s`, (_name, secret, make, preserve) => {
+    it.each(ISSUE295_SHAPES)(`${copy}: %s`, (name, secret, make, preserve) => {
       let previous: string | null = null;
       for (const [index, size] of SIZES.entries()) {
         const text = make(size);
         const first = performance.now();
-        const output = run(text);
+        const output = run(text, `${name}: first call`);
         const firstMs = performance.now() - first;
         expect({ size, firstMs: firstMs < (CEILING_MS_PER_64_KIB * size) / (64 * KiB) ? "under" : firstMs }).toEqual({
           size,
@@ -380,12 +389,13 @@ describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_
           while (ratios.length < ATTEMPTS && !(ratios.at(-1)! < LIMIT)) {
             const pairs: [number, number][] = [];
             for (let p = 0; p < PAIRS; p += 1) {
+              const phase = `${name}: ratio attempt ${ratios.length + 1}, pair ${p + 1}`;
               if (p % 2 === 0) {
-                const small = measure(previous);
-                pairs.push([small, measure(text)]);
+                const small = measure(previous, `${phase}, smaller`);
+                pairs.push([small, measure(text, `${phase}, larger`)]);
               } else {
-                const large = measure(text);
-                pairs.push([measure(previous), large]);
+                const large = measure(text, `${phase}, larger`);
+                pairs.push([measure(previous, `${phase}, smaller`), large]);
               }
             }
             ratios.push(growthRatio(pairs));

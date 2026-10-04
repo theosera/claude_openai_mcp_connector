@@ -440,8 +440,12 @@ mask() {
   # quoted tags that it masked before. Earlier sed rules keep their order.
   # As in #291, all attribute names/values (including lang/class) are masked.
   # XML-like prose in a matching element is also masked. Its following word
-  # stays intact. Appending one LF lets POSIX awk preserve the preceding sed
+  # stays intact. Appending one LF lets awk preserve the preceding sed
   # streams separators, including its final LF choice. C locale scans bytes.
+  # Split each physical record once. BSD awk can rescan a complete string inside
+  # every substr($0, i, 1), even when length($0) is cached, making long lines
+  # quadratic. Empty-separator split is supported by the required GNU/macOS
+  # awk implementations (and mawk); no broader POSIX portability is assumed.
   sed -E \
     -e '/-----BEGIN PGP PRIVATE KEY BLOCK-----|---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----/{x;s/.*/o/;x;}' \
     -e 's/gh[pousr]_[A-Za-z0-9]{20,}/***MASKED***/g' \
@@ -603,7 +607,7 @@ mask() {
       attribute_byte(c)
     }
     NR > 1 { byte("\n") }
-    { line_length = length($0); for (i = 1; i <= line_length; i++) byte(substr($0, i, 1)) }
+    { line_length = split($0, line_bytes, ""); for (i = 1; i <= line_length; i++) byte(line_bytes[i]) }
     END {
       finish_body(0)
       for (j = 1; j <= closing_used; j++) printf "%s", closing[j]
