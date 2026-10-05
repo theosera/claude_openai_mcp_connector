@@ -763,7 +763,11 @@ mask() {
   # every substr($0, i, 1), even when length($0) is cached, making long lines
   # quadratic. Empty-separator split is supported by the required GNU/macOS
   # awk implementations (and mawk); no broader POSIX portability is assumed.
-  { cat; printf '\n'; } | LC_ALL=C awk '
+  # Normalize NUL before any awk can truncate the rest of its input record.
+  # A visible non-whitespace ? keeps both sides without joining fields or
+  # turning fence info into closing whitespace. The archive renderer and
+  # refence comparisons apply the same mapping before measuring structure.
+  { LC_ALL=C tr '\000' '?'; printf '\n'; } | LC_ALL=C awk '
     # Byte widths for the renderer closing-whitespace union. Only a wholly
     # whitespace suffix is structural; a partial UTF-8 sequence never matches.
     function blank_width(at, last,    c, pair, triple) {
@@ -1288,6 +1292,17 @@ fi
 # text turn's fence parity, and refence_jq below, which re-checks the note
 # after mask(). One definition, so the two cannot disagree about it (#228).
 fence_jq='
+  # Normalize before fence sizing and before either side of the post-mask
+  # comparison. BWK awk can truncate a record at NUL; replacing that byte with
+  # a visible non-whitespace character preserves the tail and cannot create a
+  # closing fence. Keep this mapping equal to the byte-mode tr pass in mask().
+  # Dense NULs make both gsub and join rebuild the growing output repeatedly.
+  # A no-NUL fast path preserves ordinary text without allocation; a codepoint
+  # array plus implode bounds replacement work to the input length.
+  def normalize_nul:
+    if contains("\u0000")
+    then explode | map(if . == 0 then 63 else . end) | implode else . end;
+  def may_end_fence: test("^[[:space:]\u180e\ufeff]*$");
   def fence_m: if test("^ {0,3}(~{3,}|`{3,})") then capture("^(?<pad> {0,3})(?<run>~{3,}|`{3,})(?<info>.*)$") else null end;
   # A backtick fence info string cannot hold a backtick (CommonMark), so such a
   # line opens nothing.
@@ -1319,7 +1334,7 @@ body_jq="$fence_jq"'
   # Unicode 6.3, so an older reader drops it) -- a superset of every reader rule
   # measured in defang below. Both the fence sizer and the parity machine in
   # defang read THIS definition, so they cannot disagree about which runs close.
-  def may_end_fence: test("^[[:space:]\u180e\ufeff]*$");
+  # may_end_fence is shared with refence in fence_jq above.
   # A tilde run inside the content CLOSES a fixed-length fence (CommonMark: a
   # closing fence is the same character, at least as many, indented <= 3), so
   # the untrusted text escapes the block and becomes top-level Markdown -- a
@@ -1376,8 +1391,8 @@ body_jq="$fence_jq"'
   # below): the assembled note no longer passes through
   # strip_ansi, which now covers the frontmatter and title alone. A second pass
   # ran AFTER this measurement and could collapse a nested sequence into a bare
-  # closing fence, so it was moved off the body. Terminal control sequences outside them are untouched
-  # by either pass and do reach the note. It stops at U+000D: U+2028 /
+  # closing fence, so it was moved off the body. Other terminal controls remain
+  # untouched apart from NUL normalization. Line splitting stops at U+000D: U+2028 /
   # U+2029 / U+0085 / form feed are not CommonMark line endings, so folding them
   # would widen fences that no reader could have closed.
   def fence($lang; $text):
@@ -1385,7 +1400,7 @@ body_jq="$fence_jq"'
     # 問いを開け直す（F2）。パターンは strip_ansi と同一に保つこと — あちらで
     # 剥がれてこちらで剥がれない列が 1 つでもあると、穴がそのまま戻る。
     # strip_sgr, not gsub: see its definition at the top of this program.
-    (($text // "") | strip_sgr) as $t
+    (($text // "") | normalize_nul | strip_sgr) as $t
     | ([ $t
          | split("\n")[] | split("\r")[]
          | select(startswith("~") or startswith(" "))
@@ -1699,7 +1714,7 @@ body_jq="$fence_jq"'
     # heading to the rule below (the line does not START with `#`) but IS one to
     # a renderer that discards the sequence first -- an unescaped, forged turn.
     # Same sequences as fence and strip_ansi (strip_sgr); keep them in step.
-    (split("\n")
+    (normalize_nul | split("\n")
      | map(strip_sgr | split("\r")
            | if length == 0 then [""] else . end
            | if length > 1 and .[-1] == "" then {l: (.[0:-1]), cr: "\r"} else {l: ., cr: ""} end)) as $g
@@ -1809,14 +1824,16 @@ yaml_seq() {
 # mask() runs on the assembled note AFTER defang has decided each text turn's
 # fence parity, and it can delete a backtick from a run's info string: a line
 # at column 0 that opened nothing becomes an opener, the note's parity flips,
-# and the next tool result's body lands at top level (#228). mask() itself is
-# not changed. This pass compares each line before and after mask() and
-# escapes, with defang's own backslash, only a run that counts as a fence after
-# masking and did not before. A line that already counted is left alone: the
-# renderer's own fences are such lines, and escaping them would break the
-# structure this pass protects. Segments split on CR are compared the way
-# defang reads them; if their number differs, every counting segment is
-# escaped. The pass looks only for a run that became a fence. mask() can
+# and the next tool result's body lands at top level (#228). This pass compares
+# normalized lines before and after mask() and escapes newly counted runs AND
+# runs whose closing ability changes (#295 F1). A tilde run with nonempty info
+# already counts as an opener, but deleting its info makes it a closer too:
+# count and parity alone cannot detect that escape. Compare the exact run and
+# closing trailer: different readers trim different whitespace subsets, so
+# even a change between two may_end_fence trailers must fail closed. Unchanged
+# renderer fences keep their syntax. Segments split on CR are compared the way
+# defang reads them; if their number differs, every
+# counting segment is escaped. mask() can
 # also take one away: a keyword rule's separator matches CR, so a run that
 # follows `key:` and a CR can be masked as the value. That is harmless only
 # because defang gives a run on a line split by a bare CR the absorbing
@@ -1829,13 +1846,21 @@ yaml_seq() {
 # (below).
 refence_jq="$fence_jq"'
   def counts: fence_m as $m | $m != null and (not_a_fence($m) | not);
-  ($a | split("\n")) as $A | ($b | split("\n")) as $B | ($B | length) as $n
+  def closing_role:
+    # NEL + FEFF becoming FEFF changes trim-based closing but not strict or
+    # union closing. Preserve the exact trailer to cover every reader subset.
+    fence_m as $m
+    | if $m != null and ($m.info | may_end_fence)
+      then [$m.run, $m.info] else null end;
+  def newly_closes($before):
+    closing_role as $after | $after != null and $after != ($before | closing_role);
+  ($a | normalize_nul | split("\n")) as $A | ($b | normalize_nul | split("\n")) as $B | ($B | length) as $n
   | if ($A | length) != $n then "mask() changed the line count" | halt_error(9)
     else range(0; $n) as $i
       | (($A[$i] | split("\r")) as $x | ($B[$i] | split("\r")) as $y
          | [ range(0; $y | length) as $j
              | $y[$j]
-             | if counts and ((($x | length) != ($y | length)) or (($x[$j] | counts) | not)) then esc_bs else . end ]
+             | if counts and ((($x | length) != ($y | length)) or (($x[$j] | counts) | not) or newly_closes($x[$j])) then esc_bs else . end ]
          | join("\r"))
         + (if $i < $n - 1 then "\n" else "" end)
     end

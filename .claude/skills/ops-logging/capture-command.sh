@@ -466,7 +466,11 @@ mask() {
   # every substr($0, i, 1), even when length($0) is cached, making long lines
   # quadratic. Empty-separator split is supported by the required GNU/macOS
   # awk implementations (and mawk); no broader POSIX portability is assumed.
-  { cat; printf '\n'; } | LC_ALL=C awk '
+  # Normalize NUL before any awk can truncate the rest of its input record.
+  # A visible non-whitespace ? keeps both sides without joining fields or
+  # turning fence info into closing whitespace. The archive renderer and
+  # refence comparisons apply the same mapping before measuring structure.
+  { LC_ALL=C tr '\000' '?'; printf '\n'; } | LC_ALL=C awk '
     # Byte widths for the renderer closing-whitespace union. Only a wholly
     # whitespace suffix is structural; a partial UTF-8 sequence never matches.
     function blank_width(at, last,    c, pair, triple) {

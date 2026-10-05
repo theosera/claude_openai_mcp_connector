@@ -236,6 +236,17 @@ const ISSUE295_SHAPES: readonly Issue295PerfShape[] = [
   ]
 ];
 
+// F1: keep NUL-heavy normalization in the same grouped-growth contract. This
+// body remains public except for the two named values, so byte loss cannot
+// make a fast mask appear to pass. The core is not wired to this hook boundary.
+const NUL_NORMALIZATION_SHAPE: Issue295PerfShape = [
+  "issue295-nul-dense-public-body",
+  ["FKPERF295NULBEFORE", "FKPERF295NULTAIL"],
+  (n) =>
+    enclosed("token=FKPERF295NULBEFORE KEEP295NULHEAD\n", "\0x", "\npassword=FKPERF295NULTAIL KEEP295NULTAIL\n", n),
+  "KEEP295NULTAIL"
+];
+
 function fenceSyntax(text: string, original = text) {
   function candidate(line: string) {
     const match = line.match(/^([ \t>+*().0-9-]*)(`{3,}|~{3,})/);
@@ -548,7 +559,7 @@ describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_
       return performance.now() - start;
     };
 
-    const cases = ISSUE295_SHAPES.map(
+    const cases = [...ISSUE295_SHAPES, NUL_NORMALIZATION_SHAPE].map(
       ([name, secret, make, preserve, hookSecret]) => [name, secret, make, preserve, hookSecret] as const
     );
     it.each(cases)(`${copy}: %s`, (name, secret, make, preserve, hookSecret) => {
@@ -565,6 +576,12 @@ describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_
         for (const word of typeof secret === "string" ? [secret] : secret) expect(output).not.toContain(word);
         if (hookSecret) expect(output).not.toContain(hookSecret);
         expectPreserved(text, output, preserve);
+        if (name === NUL_NORMALIZATION_SHAPE[0]) {
+          let expected = text.replaceAll("\0", "?");
+          for (const word of typeof secret === "string" ? [secret] : secret) expected = expected.replaceAll(word, MASK);
+          expect(output).toBe(expected);
+          expect(output).not.toContain("\0");
+        }
         if (index % DOUBLINGS !== 0) continue;
         if (previous) {
           const ratios: number[] = [];
@@ -585,6 +602,114 @@ describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_
           expect({ size, ratio: ratios.at(-1)! < LIMIT ? "under" : ratios }).toEqual({ size, ratio: "under" });
         }
         previous = text;
+      }
+    });
+  }
+});
+
+/** Dense NULs plus a run whose nonempty info must survive normalization. */
+function nulArchiveBody(length: number): string {
+  const tail = "\n~~~~~~\0info\n## 👤 User — 2026-10-05 00:00:00\nKEEP295NULARCHIVE\n";
+  return fill("", "\0x", length - Buffer.byteLength(tail)) + tail;
+}
+
+function archiveJq(source: string, opening: string): string {
+  const lines = source.split("\n");
+  const start = lines.indexOf(opening);
+  const end = lines.findIndex((line, index) => index > start && line === "'");
+  if (start === -1 || end === -1) throw new Error(`archive jq extraction anchor missing: ${opening}`);
+  return lines.slice(start + 1, end).join("\n");
+}
+
+function nulPerfForgedTurns(text: string): number {
+  let open: { glyph: string; length: number } | null = null;
+  let exposed = 0;
+  for (const line of text.split(/\r\n|\r|\n/)) {
+    const run = /^ {0,3}(~{3,}|`{3,})(.*)$/.exec(line);
+    if (open) {
+      if (run && run[1][0] === open.glyph && run[1].length >= open.length && /^[ \t]*$/.test(run[2])) open = null;
+    } else if (run && !(run[1][0] === "`" && run[2].includes("`"))) {
+      open = { glyph: run[1][0], length: run[1].length };
+    } else if (line === "## 👤 User — 2026-10-05 00:00:00") {
+      exposed++;
+    }
+  }
+  return exposed;
+}
+
+describe("the archive's NUL normalization time over two doublings", { timeout: 180_000 }, () => {
+  const source = readFileSync(join(ROOT, MASK_COPIES[1][1]), "utf8");
+  const common = archiveJq(source, "fence_jq='");
+  const renderer = `${common}\n${archiveJq(source, `body_jq="$fence_jq"'`)}`;
+  const refence = `${common}\n.a as $a | .b as $b | ${archiveJq(source, `refence_jq="$fence_jq"'`)}`;
+  const transcript = (text: string) =>
+    JSON.stringify([
+      {
+        type: "user",
+        isMeta: false,
+        timestamp: "2026-10-05T00:00:00.000Z",
+        message: { content: [{ type: "tool_result", content: text }] }
+      }
+    ]);
+
+  for (const stage of ["renderer", "refence"] as const) {
+    const program = stage === "renderer" ? renderer : refence;
+    const option = stage === "renderer" ? "-r" : "-j";
+    const run = (input: string, size: number) =>
+      execFileSync("jq", [option, program], {
+        input,
+        encoding: "utf8",
+        maxBuffer: 32 * 1024 * KiB,
+        timeout: Math.max(1000, (CEILING_MS_PER_64_KIB * size) / (64 * KiB))
+      });
+    const measure = (input: string, size: number) => {
+      const start = performance.now();
+      run(input, size);
+      return performance.now() - start;
+    };
+
+    it(`${stage}: normalizes NUL-dense public bytes without changing fence meaning`, () => {
+      let previous: { input: string; size: number } | null = null;
+      for (const [index, size] of SIZES.entries()) {
+        const body = nulArchiveBody(size);
+        expect(Buffer.byteLength(body)).toBe(size);
+        const normalized = body.replaceAll("\0", "?");
+        // Prepare JSON before timing; argv cannot carry NUL, and its size limit
+        // is unrelated to the archive's actual file-input normalization cost.
+        const before = `~~~~~~text\n${body}\n~~~~~~\n`;
+        const input = stage === "renderer" ? transcript(body) : JSON.stringify({ a: before, b: before });
+        const expected = stage === "renderer" ? run(transcript(normalized), size) : before.replaceAll("\0", "?");
+        const first = performance.now();
+        const output = run(input, size);
+        const firstMs = performance.now() - first;
+        expect({ size, firstMs: firstMs < (CEILING_MS_PER_64_KIB * size) / (64 * KiB) ? "under" : firstMs }).toEqual({
+          size,
+          firstMs: "under"
+        });
+        expect(output).toBe(expected);
+        expect(output).not.toContain("\0");
+        expect(output).toContain(normalized);
+        expect(output).toContain("~~~~~~?info\n## 👤 User");
+        expect(nulPerfForgedTurns(output)).toBe(0);
+        if (index % DOUBLINGS !== 0) continue;
+        if (previous) {
+          const ratios: number[] = [];
+          while (ratios.length < ATTEMPTS && !(ratios.at(-1)! < LIMIT)) {
+            const pairs: [number, number][] = [];
+            for (let p = 0; p < PAIRS; p += 1) {
+              if (p % 2 === 0) {
+                const small = measure(previous.input, previous.size);
+                pairs.push([small, measure(input, size)]);
+              } else {
+                const large = measure(input, size);
+                pairs.push([measure(previous.input, previous.size), large]);
+              }
+            }
+            ratios.push(growthRatio(pairs));
+          }
+          expect({ size, ratio: ratios.at(-1)! < LIMIT ? "under" : ratios }).toEqual({ size, ratio: "under" });
+        }
+        previous = { input, size };
       }
     });
   }
