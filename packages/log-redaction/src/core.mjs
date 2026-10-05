@@ -32,15 +32,19 @@ export const MASK = "***MASKED***";
 
 /**
  * Used when a fragment cannot be analysed to completion -- an unterminated
- * armor block, a parse failure, an over-size input. The body is dropped and the
- * reason recorded. Deliberately NOT the same token as MASK: a reader has to be
- * able to tell "this was redacted" from "this could not be stored".
+ * armor block, a parse failure, an over-size input. Fence-bearing fragments
+ * retain fence syntax and line separators; other text is omitted and the reason
+ * recorded. Deliberately NOT the same token as MASK: a reader has to be able to
+ * tell "this was redacted" from "this could not be stored".
  */
 export function omitted(reason) {
   return `***LOG_CONTENT_OMITTED: ${reason}***`;
 }
 
-/** Per-fragment ceiling. Over this, the body is omitted rather than scanned. */
+/**
+ * Per-fragment ceiling for credential and armor analysis. Fence discovery still
+ * scans first so an over-limit omission can retain the fragment's structure.
+ */
 export const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
 
 /**
@@ -323,6 +327,140 @@ function isLineEnd(ch) {
   return ch === "\n" || ch === "\r";
 }
 
+/** CRLF is one physical separator; a bare CR or LF is one too. */
+function startsLineBreak(original, index) {
+  return original[index] === "\r" || (original[index] === "\n" && original[index - 1] !== "\r");
+}
+
+/** Physical line extents without retaining an array of every line. */
+function* physicalLines(original) {
+  let start = 0;
+  while (start < original.length) {
+    let contentEnd = start;
+    while (contentEnd < original.length && !isLineEnd(original[contentEnd])) contentEnd += 1;
+    let end = contentEnd;
+    if (original[end] === "\r") end += 1;
+    if (original[end] === "\n") end += 1;
+    yield { start, contentEnd, end };
+    start = end;
+  }
+}
+
+/** Layout whitespace accepted by the renderer, including its MVS edge case. */
+function fenceBlank(ch) {
+  return ch !== undefined && (/\s/.test(ch) || ch === "\u180e");
+}
+
+/** Only indentation, blockquote and list syntax may precede a protected run. */
+function fencePrefix(original, from, to) {
+  let at = from;
+  let container = false;
+  const ordinals = [];
+  while (at < to) {
+    if (fenceBlank(original[at])) {
+      at += 1;
+      continue;
+    }
+    if (original[at] === ">") {
+      container = true;
+      at += 1;
+      continue;
+    }
+    if ("-+*".includes(original[at]) && fenceBlank(original[at + 1])) {
+      container = true;
+      at += 1;
+      continue;
+    }
+    const digits = at;
+    while (at < to && /[0-9]/.test(original[at]) && at - digits < 9) at += 1;
+    if (at > digits && (original[at] === "." || original[at] === ")") && fenceBlank(original[at + 1])) {
+      container = true;
+      ordinals.push({ start: digits, end: at });
+      at += 1;
+      continue;
+    }
+    return null;
+  }
+  return container || /^ {0,3}$/.test(original.slice(from, to)) ? ordinals : null;
+}
+
+/**
+ * Protect only structural fence syntax, never whole lines or arbitrary inline
+ * markers. Prefixes must consist of indentation/container/list tokens. Invalid
+ * backtick info keeps the existing masking behavior; the archive renderer
+ * handles any resulting re-fencing. Each line and maximal run is walked once.
+ */
+function collectFenceSyntaxSpans(original) {
+  const spans = [];
+  const ordinals = [];
+  for (const line of physicalLines(original)) {
+    let first = -1;
+    let runEnd = -1;
+    let marker = "";
+    let at = line.start;
+    while (at < line.contentEnd) {
+      marker = original[at];
+      if (marker !== "`" && marker !== "~") {
+        at += 1;
+        continue;
+      }
+      let end = at + 1;
+      while (end < line.contentEnd && original[end] === marker) end += 1;
+      if (end - at >= 3) {
+        first = at;
+        runEnd = end;
+        break;
+      }
+      at = end;
+    }
+    if (first < 0) continue;
+    const prefixOrdinals = fencePrefix(original, line.start, first);
+    if (prefixOrdinals === null) continue;
+    // A later backtick makes this invalid info, not a structural fence. Do not
+    // preserve its delimiters: #228 relies on ordinary masking plus re-fencing.
+    if (marker === "`" && original.slice(runEnd, line.contentEnd).includes("`")) continue;
+    for (const ordinal of prefixOrdinals) ordinals.push(ordinal);
+    spans.push({ start: line.start, end: runEnd, kind: "protected:fence-syntax" });
+    let trailing = line.contentEnd;
+    // NEL is also closing whitespace for the archive renderer, although JS \s
+    // excludes it. It is not added to the conservative prefix grammar above.
+    while (trailing > runEnd && (fenceBlank(original[trailing - 1]) || original[trailing - 1] === "\u0085"))
+      trailing -= 1;
+    if (line.end > trailing) spans.push({ start: trailing, end: line.end, kind: "protected:fence-syntax" });
+  }
+  return { syntax: spans, ordinals };
+}
+
+/** Ordered-list digits can themselves be secrets; retain width using fixed zeroes. */
+function normalizeFenceOrdinals(original, ordinals) {
+  if (ordinals.length === 0) return original;
+  const parts = [];
+  let at = 0;
+  for (const ordinal of ordinals) {
+    parts.push(original.slice(at, ordinal.start), "0".repeat(ordinal.end - ordinal.start));
+    at = ordinal.end;
+  }
+  parts.push(original.slice(at));
+  return parts.join("");
+}
+
+/** On failure retain syntax/separators only; fence info is still omitted. */
+function omissionWithSyntax(original, reason, syntax) {
+  if (syntax.length === 0) return omitted(reason);
+  const bodies = [];
+  for (const line of physicalLines(original)) {
+    if (line.contentEnd > line.start) bodies.push({ start: line.start, end: line.contentEnd, kind: "omitted:body" });
+  }
+  const parts = [];
+  let at = 0;
+  for (const span of withoutProtected(bodies, syntax)) {
+    parts.push(original.slice(at, span.start), omitted(reason));
+    at = span.end;
+  }
+  parts.push(original.slice(at));
+  return parts.join("");
+}
+
 /**
  * Whether `\'` in a `text` single quote is an escaped quote, `from` being the
  * index after it. Before a non-blank it is (`'it\'s'`). Before a blank it is
@@ -489,6 +627,156 @@ function escapeRegExp(word) {
   return word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// Permit ordinary wrapped tags while bounding how far malformed markup can
+// claim later log text. The start, direct body and closing tail share this cap.
+const MAX_MARKUP_LINES = 32;
+
+/**
+ * #295's markup forms have their own quote-aware reading. The shell/text quote
+ * lexers deliberately reset at line ends and cannot read a multiline start tag.
+ * Only the five selected forms are claimed here: compound/namespaced labels,
+ * password inputs, and simple labels with multiline starts or an angle in a
+ * later attribute. Ordinary single-line simple labels still use elementAt;
+ * their outstanding multiple-attribute behavior belongs to #291.
+ *
+ * Each start tag is scanned once to its unquoted `>` (or next unquoted `<`),
+ * then once for attributes. A failed quoted tag stops at the physical-line cap
+ * or end of input; the next candidate starts no earlier than that stop. Direct
+ * text and the closing tail share the remaining line budget. Thus these walks
+ * cost O(n), with O(n) spans/ranges; collectLabelSpans consumes ordered ranges
+ * monotonically. The old readers handle any text outside a bounded new claim.
+ */
+function collectMarkupLabelSpans(original, labels) {
+  const spans = [];
+  const ranges = [];
+  const labelNames = new Set(labels.map((label) => label.toLowerCase()));
+  // Retain line separators inside selected values. The entry point clips only
+  // structural fence syntax out of the final spans, without resetting context.
+  const addSpan = (start, end) => {
+    let from = start;
+    for (let index = start; index < end; index += 1) {
+      if (!isLineEnd(original[index])) continue;
+      if (index > from) spans.push({ start: from, end: index, kind: "credential:label" });
+      from = index + 1;
+    }
+    if (end > from) spans.push({ start: from, end, kind: "credential:label" });
+  };
+  let at = 0;
+  while (at < original.length) {
+    const start = original.indexOf("<", at);
+    if (start < 0) break;
+    let nameEnd = start + 1;
+    while (nameEnd < original.length && /[A-Za-z0-9_.:-]/.test(original[nameEnd])) nameEnd += 1;
+    if (nameEnd === start + 1) {
+      at = nameEnd;
+      continue;
+    }
+    const name = original.slice(start + 1, nameEnd).toLowerCase();
+    let openEnd = nameEnd;
+    let quote = "";
+    let multiline = false;
+    let lines = 1;
+    while (openEnd < original.length) {
+      const ch = original[openEnd];
+      if (isLineEnd(ch)) multiline = true;
+      if (startsLineBreak(original, openEnd) && ++lines > MAX_MARKUP_LINES) break;
+      if (quote) {
+        if (ch === quote) quote = "";
+      } else if (ch === "'" || ch === '"') quote = ch;
+      else if (ch === ">" || ch === "<") break;
+      openEnd += 1;
+    }
+    at = openEnd;
+    if (original[openEnd] !== ">") continue;
+    at += 1;
+
+    const attributes = [];
+    let passwordInput = false;
+    let laterAngle = false;
+    let cursor = nameEnd;
+    while (cursor < openEnd) {
+      while (cursor < openEnd && /\s/.test(original[cursor])) cursor += 1;
+      const keyStart = cursor;
+      while (cursor < openEnd && !/[\s='"/]/.test(original[cursor])) cursor += 1;
+      const key = original.slice(keyStart, cursor).toLowerCase();
+      while (cursor < openEnd && /\s/.test(original[cursor])) cursor += 1;
+      if (original[cursor] !== "=") {
+        if (cursor === keyStart) cursor += 1;
+        continue;
+      }
+      cursor += 1;
+      while (cursor < openEnd && /\s/.test(original[cursor])) cursor += 1;
+      const delimiter = original[cursor] === "'" || original[cursor] === '"' ? original[cursor++] : "";
+      const valueStart = cursor;
+      while (cursor < openEnd && (delimiter ? original[cursor] !== delimiter : !/\s/.test(original[cursor])))
+        cursor += 1;
+      const valueEnd = cursor;
+      const value = original.slice(valueStart, valueEnd);
+      if (attributes.length > 0 && /[<>]/.test(value)) laterAngle = true;
+      // Accept only this terminal XML-like log spelling. A slash in a quoted
+      // type, a nonterminal type, or any other attribute remains value data.
+      const selfClosingPasswordType =
+        name === "input" && key === "type" && !delimiter && cursor === openEnd && value.toLowerCase() === "password/";
+      if (key === "type" && (value.toLowerCase() === "password" || selfClosingPasswordType)) passwordInput = true;
+      attributes.push({
+        start: valueStart,
+        end: selfClosingPasswordType ? valueEnd - 1 : valueEnd,
+        kind: "credential:label"
+      });
+      if (delimiter) cursor += 1;
+    }
+    const simple = labelNames.has(name);
+    const localName = name.slice(name.lastIndexOf(":") + 1);
+    const compound = !simple && attributes.length > 0 && localName.split(/[_.-]/).some((part) => labelNames.has(part));
+    const input = name === "input" && passwordInput;
+    if (!compound && !input && !(simple && (multiline || laterAngle))) continue;
+
+    for (const attribute of attributes) addSpan(attribute.start, attribute.end);
+    // Suppress element names and values already fully claimed here. Other
+    // labels still use the old reader, including a label followed by a quoted
+    // value without =. An unquoted type=password must not eat the next word.
+    const opening = { start: start + 1, end: nameEnd, element: null };
+    ranges.push(opening);
+    for (const attribute of attributes) {
+      if (attribute.end > attribute.start) ranges.push({ ...attribute, element: null });
+    }
+    // Inputs are void elements. For labels, claim direct text only when the
+    // very next tag closes this name, so prose after an unclosed start survives.
+    if (!input) {
+      const textStart = openEnd + 1;
+      let textEnd = textStart;
+      // The direct body shares the opening tag's 32-line budget. An overlong
+      // body falls back to the old readers; already bounded attributes stay
+      // masked. Even a body without another '<' stops at this finite boundary.
+      while (textEnd < original.length && original[textEnd] !== "<") {
+        if (startsLineBreak(original, textEnd) && ++lines > MAX_MARKUP_LINES) break;
+        textEnd += 1;
+      }
+      if (
+        original[textEnd] === "<" &&
+        original.slice(textEnd, textEnd + name.length + 2).toLowerCase() === `</${name}`
+      ) {
+        let closeEnd = textEnd + name.length + 2;
+        while (closeEnd < original.length && /\s/.test(original[closeEnd])) {
+          if (startsLineBreak(original, closeEnd) && ++lines > MAX_MARKUP_LINES) break;
+          closeEnd += 1;
+        }
+        if (original[closeEnd] === ">") {
+          addSpan(textStart, textEnd);
+          ranges.push({ start: textEnd + 2, end: textEnd + 2 + name.length, element: null });
+          // A non-bare <key> can also label the following plist <string>. Keep
+          // that existing handoff in elementValues rather than duplicating it.
+          if (name === "key") {
+            opening.element = { name, bare: false, start: textStart, end: textEnd, closeEnd: closeEnd + 1 };
+          }
+          at = closeEnd + 1;
+        }
+      }
+    }
+  }
+  return { spans, ranges };
+}
+
 /**
  * Collects the value after every label, per kind.
  *
@@ -529,7 +817,8 @@ function escapeRegExp(word) {
 function collectLabelSpans(original, kind, vocabulary) {
   const labels = vocabulary.labels ?? SECRET_LABELS;
   if (labels.length === 0) return [];
-  const spans = [];
+  const markup = collectMarkupLabelSpans(original, labels);
+  const spans = markup.spans;
   const labelSource = [...labels]
     .sort((a, b) => b.length - a.length)
     .map(escapeRegExp)
@@ -1086,8 +1375,21 @@ function collectLabelSpans(original, kind, vocabulary) {
   };
 
   let match;
+  let markupIndex = 0;
   while ((match = label.exec(original)) !== null) {
     const start = match.index;
+    while (markupIndex < markup.ranges.length && markup.ranges[markupIndex].end <= start) markupIndex += 1;
+    const claimed = markup.ranges[markupIndex];
+    if (claimed && claimed.start <= start) {
+      if (claimed.element) {
+        for (const value of elementValues(claimed.element).slice(1)) {
+          if (value && value.end > value.start)
+            spans.push({ start: value.start, end: value.end, kind: "credential:label" });
+        }
+      }
+      label.lastIndex = claimed.end;
+      continue;
+    }
     const end = start + match[0].length;
     const segment = segmentAt(segments, start);
     let value = null;
@@ -1399,14 +1701,15 @@ export function redactFragment(fragment, options = {}) {
   if (fragment === null || typeof fragment !== "object" || typeof fragment.text !== "string") {
     return { text: omitted("non_string_input"), status: "omitted", reason: "non_string_input" };
   }
-  if (!KINDS.includes(fragment.kind)) {
-    return { text: omitted("unknown_kind"), status: "omitted", reason: "unknown_kind" };
-  }
   const original = fragment.text;
+  const { syntax, ordinals } = collectFenceSyntaxSpans(original);
+  // Credential readers use the untouched original; only rendering normalizes
+  // list ordinals, without changing any span index or structural width.
+  const rendering = normalizeFenceOrdinals(original, ordinals);
+  const omitResult = (reason) => ({ text: omissionWithSyntax(rendering, reason, syntax), status: "omitted", reason });
+  if (!KINDS.includes(fragment.kind)) return omitResult("unknown_kind");
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
-  if (Buffer.byteLength(original, "utf8") > maxBytes) {
-    return { text: omitted("fragment_over_limit"), status: "omitted", reason: "fragment_over_limit" };
-  }
+  if (Buffer.byteLength(original, "utf8") > maxBytes) return omitResult("fragment_over_limit");
 
   try {
     const vocabulary = options.vocabulary ?? POLICY_VOCABULARY;
@@ -1419,13 +1722,18 @@ export function redactFragment(fragment, options = {}) {
     // turn into an omission). Clipping is set subtraction,
     // so clipping the union removes exactly what clipping each span removed, and
     // the masked text is the same.
+    // Read the full original once per rule. Fence syntax must not suppress
+    // credentials on that line or reset a value continuing across the marker.
     const credentials = mergeOverlaps(
       collectCredentialSpans(original, { vocabulary, kind: fragment.kind }),
       original.length
     );
     const spans = [...collectArmorSpans(original), ...withoutProtected(credentials, guards)];
     const merged = mergeOverlaps(spans, original.length);
-    return { text: applySpansOnce(original, merged), status: "ok" };
+    // Merge before clipping: N overlapping values crossing G syntax intervals
+    // must not create N x G fragments. Only normalized syntax bytes are exempt;
+    // info strings and inline/continuation secrets remain eligible for masking.
+    return { text: applySpansOnce(rendering, withoutProtected(merged, syntax)), status: "ok" };
   } catch (error) {
     // No fallback to the original text.
     const reason =
@@ -1434,6 +1742,6 @@ export function redactFragment(fragment, options = {}) {
         : error instanceof RangeError || error instanceof TypeError
           ? "span_contract_violated"
           : "redaction_failed";
-    return { text: omitted(reason), status: "omitted", reason };
+    return omitResult(reason);
   }
 }
