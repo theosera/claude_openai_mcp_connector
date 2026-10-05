@@ -896,8 +896,11 @@ mask() {
     -e '/^[[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-)[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-))[A-Za-z0-9+\/=]{32,}([[:space:]]*)$/\1***MASKED***\3/' \
     -e 's/^/N/' | LC_ALL=C awk '
     # Buffer one output record so its safe metadata stays paired even when a
-    # multiline tag delays output. Arrays avoid repeated growing-string copies.
+    # multiline tag delays output. Store bounded chunks, not one cell per byte.
+    # Each concatenation stops at 256 bytes (at most 267 after a MASK token).
     function flush_output(newline,    j) {
+      if (output_chunk_size) output_bytes[++output_used] = output_chunk
+      output_chunk = ""; output_chunk_size = 0
       printf "F%s\nN", frames[output_record]
       delete frames[output_record++]
       for (j = 1; j <= output_used; j++) { printf "%s", output_bytes[j]; delete output_bytes[j] }
@@ -906,7 +909,14 @@ mask() {
     }
     function emit(s) {
       if (s == "\n") flush_output(1)
-      else output_bytes[++output_used] = s
+      else {
+        output_chunk = output_chunk s
+        output_chunk_size += length(s)
+        if (output_chunk_size >= 256) {
+          output_bytes[++output_used] = output_chunk
+          output_chunk = ""; output_chunk_size = 0
+        }
+      }
     }
     function flush_tag(    j) {
       for (j = 1; j <= used; j++) emit(tag[j])
@@ -1057,15 +1067,26 @@ mask() {
       line_length = split($0, line_bytes, "")
       for (i = 2; i <= line_length; i++) feed(line_bytes[i])
     }
-    END { flush_pending(); if (output_used) flush_output(0) }
+    END { flush_pending(); if (output_used || output_chunk_size) flush_output(0) }
   ' | sed -e '' | { cat; printf '\n'; } | LC_ALL=C CON295_LEGACY_PROFILE="$legacy_profile" awk '
     # Equivalent to the final legacy label cleanup, with a match-local budget.
     # Quotes are ordinary bytes here, just as in its old [^<>]* body.
+    # Seal bounded chunks before CR segment indexes or the record end advance.
+    # The same 256-byte threshold bounds concatenation independently of input.
+    function seal_clean_chunk() {
+      if (clean_chunk_size) clean_parts[++clean_used] = clean_chunk
+      clean_chunk = ""; clean_chunk_size = 0
+    }
     function legacy_emit(c) {
       if (c == "\r") {
+        seal_clean_chunk()
         clean_ends[clean_segments] = clean_used
         clean_starts[++clean_segments] = clean_used + 1
-      } else clean_parts[++clean_used] = c
+      } else {
+        clean_chunk = clean_chunk c
+        clean_chunk_size += length(c)
+        if (clean_chunk_size >= 256) seal_clean_chunk()
+      }
     }
     function legacy_clear(    j) {
       for (j = 1; j <= legacy_used; j++) delete legacy_tag[j]
@@ -1114,6 +1135,7 @@ mask() {
       for (j = 1; j <= clean_used; j++) delete clean_parts[j]
       for (j = 1; j <= clean_segments; j++) { delete clean_starts[j]; delete clean_ends[j] }
       clean_used = 0; clean_segments = 1; clean_starts[1] = 1
+      clean_chunk = ""; clean_chunk_size = 0
       n = split(value, value_bytes, "")
       for (i = 1; i <= n; i++) {
         c = value_bytes[i]
@@ -1161,6 +1183,7 @@ mask() {
         } else legacy_tag[++legacy_used] = c
       }
       legacy_flush()
+      seal_clean_chunk()
       clean_ends[clean_segments] = clean_used
     }
     function clean_segment(segment,    j) {

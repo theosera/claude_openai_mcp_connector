@@ -553,3 +553,66 @@ for (const [hook, path] of hooks) {
     }
   });
 }
+
+const boundaryCases: { name: string; input: string; expected: string }[] = [];
+for (const length of [0, 1, 255, 256, 257, 511, 512, 513]) {
+  const text = ".".repeat(length);
+  boundaryCases.push({ name: `retains an ordinary ${length}-byte unterminated record`, input: text, expected: text });
+}
+for (const length of [255, 256, 257]) {
+  for (const [name, separator] of [
+    ["LF", "\n"],
+    ["CRLF", "\r\n"],
+    ["CR", "\r"]
+  ] as const) {
+    const prefix = ".".repeat(length) + separator + separator;
+    boundaryCases.push({
+      name: `retains ${name} and empty records after ${length} ordinary bytes`,
+      input: `${prefix}token=CHUNK295SECRET KEEP295CHUNK${separator}tail`,
+      expected: `${prefix}token=***MASKED*** KEEP295CHUNK${separator}tail`
+    });
+  }
+  boundaryCases.push({
+    name: `keeps structural and empty CR segments after ${length} ordinary bytes`,
+    input: `${".".repeat(length)}\r~~~ token=CHUNK295SECRET\r\rKEEP295CHUNK\r`,
+    expected: `${".".repeat(length)}\r~~~***MASKED***\r\rKEEP295CHUNK\r`
+  });
+  boundaryCases.push({
+    name: `restores CR syntax after a ${length}-byte quoted value collapses separators`,
+    input: `password="${".".repeat(length)}HEAD295\r~~~\rTAIL295" LOCAL295\nKEEP295CHUNK\n`,
+    expected: "***MASKED***\r~~~\r***MASKED***\nKEEP295CHUNK\n"
+  });
+}
+for (const length of [247, 248, 249]) {
+  for (const ending of ["", "\n"]) {
+    const prefix = ".".repeat(length);
+    boundaryCases.push({
+      name: `masks an input after ${length} bytes with ${ending ? "LF" : "EOF"} completion`,
+      input: `${prefix} <input value="CHUNK295SECRET" type=password/> KEEP295CHUNK${ending}`,
+      expected: `${prefix} <input ***MASKED***> KEEP295CHUNK${ending}`
+    });
+  }
+}
+boundaryCases.push({
+  name: "pairs delayed multiline output with each original record",
+  input: `<access_token a="CHUNK295SECRET${".".repeat(255)}\ncontinued"> KEEP295CHUNK\n`,
+  expected: "<access_token ***MASKED***\n***MASKED***> KEEP295CHUNK\n"
+});
+for (const text of ["0", "0\r0", "0\r\r0\r\n"]) {
+  boundaryCases.push({ name: `retains literal zero content ${JSON.stringify(text)}`, input: text, expected: text });
+}
+for (const [hook, path] of hooks) {
+  describe(`${hook} record boundaries during masking`, () => {
+    for (const { name, input, expected } of boundaryCases) {
+      it(name, () => {
+        // An identity sed supplies the platform's existing final-line behavior;
+        // the content, internal separators, masking and following word are exact.
+        const completed = execFileSync("sed", ["-e", ""], { input: expected, encoding: "utf8" });
+        const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+        expect(output).toBe(completed);
+        expect(output).not.toContain("CHUNK295SECRET");
+        if (input.includes("KEEP295CHUNK")) expect(output).toContain("KEEP295CHUNK");
+      });
+    }
+  });
+}
