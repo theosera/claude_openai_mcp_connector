@@ -338,6 +338,20 @@ date_start="$(jq -rs '[ .[] | .timestamp // empty | select(length > 0) ] | first
 # the body copy is redacted. It reads no variables, so moving it is inert.
 
 mask() {
+  # Every original record runs through all masking rules. A separate F frame
+  # carries only a pre-masked syntax skeleton, never original credential text.
+  # Final weaving preserves structural fence prefixes/runs while replacing all
+  # fence info with MASK. Inline marker runs receive ordinary masking throughout.
+  # When CR counts survive, only structural physical segments use the skeleton;
+  # if a legacy rule consumed CRs, use the full skeleton to restore structure.
+  # That fallback also masks neighboring non-fence segments on the same LF record.
+  # Probe a fixed nonsecret whitespace set with the same ambient sed class
+  # used by the old cleanup. The C-byte scanner then preserves that locale
+  # classification with bounded UTF-8 lookahead instead of widening the class.
+  # The same fixed probe preserves ambient case folds for the Unicode letters
+  # equivalent to ASCII s/i/k on some supported locales; N input stays untouched.
+  local legacy_profile
+  legacy_profile="$(printf 'w\302\205\nw\302\240\nw\341\232\200\nw\341\240\216\nw\342\200\200\nw\342\200\201\nw\342\200\202\nw\342\200\203\nw\342\200\204\nw\342\200\205\nw\342\200\206\nw\342\200\207\nw\342\200\210\nw\342\200\211\nw\342\200\212\nw\342\200\250\nw\342\200\251\nw\342\200\257\nw\342\201\237\nw\343\200\200\nw\357\273\277\ns:\305\277\ni:\304\261\ni:\304\260\nk:\342\204\252\n' | sed -En -e 's/^w([[:space:]])$/w\1/p' -e 's/^s:(s)$/s:\1/Ip' -e 's/^i:(i)$/i:\1/Ip' -e 's/^k:(k)$/k:\1/Ip')"
   # A credential in tool output is usually QUOTED ("access_token": "…",
   # {'api_key':'…'}), and the keyword rule at the bottom cannot see it: it ends
   # the value at whitespace, and a JSON line has none, so it never even starts —
@@ -720,17 +734,134 @@ mask() {
   # F2 on #232 a, reproduced). After every rule that reads a value, the span
   # can only mask more. The cost: text between a label's closing quote and
   # the next quote is masked too (`grep "passwd:"***MASKED***"...`).
-  # #291: mask the remaining attribute region of a label start tag, including
-  # attributes after the first. Run LAST: earlier keyword rules can consume the
-  # first attribute, and consuming an armor delimiter before the counter rules
-  # would expose its body. This final substitution can only mask more.
-  # The region ends at the next angle bracket on this physical line; it neither
-  # needs nor searches for a closing element, and never joins LF lines. Bare CR
-  # can be removed; archive's refence pass re-checks changed CR segments too.
-  # This is a conservative text rule, not an XML parser (quoted angle brackets
-  # and start tags split across LF lines are outside this rule). Attribute names
-  # and values (for example lang="en" or class="hint") are masked too.
+  # #295: after the existing value/armor rules, a streaming tag pass precedes
+  # #291s final physical-line substitution. Only a quote after an attribute =
+  # opens a quoted value: earlier keyword rules may remove an entire first
+  # attribute, including its opening quote. Quoted angles therefore remain in
+  # the start tag. This stage retains LF/CR, including inside a value; the
+  # final legacy fallback can remove CR within its own bounded match. The
+  # syntax weave restores structural separators if that changes segment counts.
+  # Each byte enters/leaves the tag array once. Name/attribute/value lookahead
+  # strings have fixed maximum lengths; no suffix search or growing tag string
+  # is repeated. A new unquoted < abandons an unfinished tag before restarting.
+  # Fence metadata never resets markup or credential context. The final weave
+  # restores syntax only after every rule has processed the complete input.
+  # A start tag may span at most 32 physical lines including its opening line;
+  # LF and bare CR advance the count, while CRLF advances it only once. At the
+  # attempted 33rd line, emit the candidate unchanged and resume ordinary scans.
+  # Buffer a candidate tag, plus direct body text only to its physical line
+  # end or next <. A matching close is required before masking that body text.
+  # An unrelated next tag or an unclosed element therefore keeps following prose.
+  # A tag without > is
+  # emitted unchanged; the retained #291 final rule still covers malformed
+  # quoted tags that it masked before. Earlier sed rules keep their order.
+  # As in #291, all attribute names/values (including lang/class) are masked.
+  # XML-like prose in a matching element is also masked. Its following word
+  # stays intact. Appending one LF lets awk preserve the preceding sed
+  # streams separators, including its final LF choice. C locale scans bytes.
+  # Split each physical record once. BSD awk can rescan a complete string inside
+  # every substr($0, i, 1), even when length($0) is cached, making long lines
+  # quadratic. Empty-separator split is supported by the required GNU/macOS
+  # awk implementations (and mawk); no broader POSIX portability is assumed.
+  # Normalize NUL before any awk can truncate the rest of its input record.
+  # A visible non-whitespace ? keeps both sides without joining fields or
+  # turning fence info into closing whitespace. The archive renderer and
+  # refence comparisons apply the same mapping before measuring structure.
+  { LC_ALL=C tr '\000' '?'; printf '\n'; } | LC_ALL=C awk '
+    # Byte widths for the renderer closing-whitespace union. Only a wholly
+    # whitespace suffix is structural; a partial UTF-8 sequence never matches.
+    function blank_width(at, last,    c, pair, triple) {
+      if (at > last) return 0
+      c = original_bytes[at]
+      if (c == " " || c == "\t" || c == "\013" || c == "\014") return 1
+      if (at + 1 > last) return 0
+      pair = c original_bytes[at + 1]
+      if (pair == "\302\205" || pair == "\302\240") return 2
+      if (at + 2 > last) return 0
+      triple = pair original_bytes[at + 2]
+      if (triple == "\341\232\200" || triple == "\341\240\216" || triple == "\342\200\250" || triple == "\342\200\251" || triple == "\342\200\257" || triple == "\342\201\237" || triple == "\343\200\200" || triple == "\357\273\277") return 3
+      if (pair == "\342\200" && index("\200\201\202\203\204\205\206\207\210\211\212", original_bytes[at + 2])) return 3
+      return 0
+    }
+    function structural(first, last,    j, c, count, container, spaces, end, width, k) {
+      j = first
+      while (j <= last) {
+        c = original_bytes[j]
+        width = blank_width(j, last)
+        if (width) {
+          if (!container) { if (c != " ") spaces = 4; else spaces++ }
+          j += width; continue
+        }
+        if (c == ">") { container = 1; j++; continue }
+        if (c ~ /^[-+*]$/ && blank_width(j + 1, last)) {
+          container = 1; j++; continue
+        }
+        if (c ~ /^[0-9]$/) {
+          end = j
+          while (end <= last && end - j < 10 && original_bytes[end] ~ /^[0-9]$/) end++
+          if (end - j <= 9 && original_bytes[end] ~ /^[.)]$/ && blank_width(end + 1, last)) {
+            container = 1; j = end + 1; continue
+          }
+        }
+        if (c != "`" && c != "~") return 0
+        end = j
+        while (end <= last && original_bytes[end] == c) end++
+        if (end - j < 3 || (!container && spaces > 3)) return 0
+        # Invalid backtick info is ordinary text. Legacy masking and the
+        # archive refence pass must still process any newly valid result.
+        if (c == "`") {
+          for (k = end; k <= last; k++) if (original_bytes[k] == "`") return 0
+        }
+        prefix_end = end - 1
+        marker = c
+        return 1
+      }
+      return 0
+    }
+    function skeleton(first, last, protected, end, tick,    j, marked, closing, width) {
+      printf "%s", protected ? "P" : "N"
+      closing = protected
+      for (j = end + 1; protected && j <= last; j += width) {
+        width = blank_width(j, last)
+        if (!width) { closing = 0; break }
+      }
+      for (j = first; j <= last; j++) {
+        if (protected && (j <= end || closing)) {
+          # Ordered-list ordinals may themselves be credential digits. Emit
+          # constant zeroes of the same width, never those original digits.
+          printf "%s", (j <= end && original_bytes[j] ~ /^[0-9]$/ ? "0" : original_bytes[j])
+          marked = 0
+        } else if (!marked) { printf "%s", "***MASKED***"; marked = 1 }
+      }
+    }
+    {
+      n = split($0, original_bytes, "")
+      segments = 0; any_fence = 0; first = 1
+      for (i = 1; i <= n + 1; i++) {
+        if (i <= n && original_bytes[i] != "\r") continue
+        segments++
+        starts[segments] = first; ends[segments] = i - 1
+        prefix_end = first - 1; marker = ""
+        selected[segments] = structural(first, i - 1)
+        prefixes[segments] = prefix_end; markers[segments] = marker
+        any_fence = any_fence || selected[segments]
+        first = i + 1
+      }
+      printf "F%d", any_fence
+      if (any_fence) {
+        for (i = 1; i <= segments; i++) {
+          if (i > 1) printf "\r"
+          skeleton(starts[i], ends[i], selected[i], prefixes[i], markers[i])
+        }
+      }
+      # Terminate every framed record; BSD sed must not create an extra record
+      # by completing a missing final LF. The input sentinel tracks EOF instead.
+      printf "\nN%s\n", $0
+    }
+  ' |
   sed -E \
+    -e '/^F/b' \
+    -e 's/^N//' \
     -e '/-----BEGIN PGP PRIVATE KEY BLOCK-----|---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----/{x;s/.*/o/;x;}' \
     -e 's/gh[pousr]_[A-Za-z0-9]{20,}/***MASKED***/g' \
     -e 's/github_pat_[A-Za-z0-9_]{20,}/***MASKED***/g' \
@@ -767,7 +898,333 @@ mask() {
     -e "/\`\`\`|~~~/!s/'\\*\\*\\*MASKED\\*\\*\\*''([^']|'')*'/'***MASKED***'/g" \
     -e '/^[[:space:]]*[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/.*/***MASKED***/' \
     -e '/^[[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-)[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-))[A-Za-z0-9+\/=]{32,}([[:space:]]*)$/\1***MASKED***\3/' \
-    -e 's/(<(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[[:space:]]+)[^<>]*>/\1***MASKED***>/Ig'
+    -e 's/^/N/' | LC_ALL=C awk '
+    # Buffer one output record so its safe metadata stays paired even when a
+    # multiline tag delays output. Store bounded chunks, not one cell per byte.
+    # Each concatenation stops at 256 bytes (at most 267 after a MASK token).
+    function flush_output(newline,    j) {
+      if (output_chunk_size) output_bytes[++output_used] = output_chunk
+      output_chunk = ""; output_chunk_size = 0
+      printf "F%s\nN", frames[output_record]
+      delete frames[output_record++]
+      for (j = 1; j <= output_used; j++) { printf "%s", output_bytes[j]; delete output_bytes[j] }
+      output_used = 0
+      if (newline) printf "\n"
+    }
+    function emit(s) {
+      if (s == "\n") flush_output(1)
+      else {
+        output_chunk = output_chunk s
+        output_chunk_size += length(s)
+        if (output_chunk_size >= 256) {
+          output_bytes[++output_used] = output_chunk
+          output_chunk = ""; output_chunk_size = 0
+        }
+      }
+    }
+    function flush_tag(    j) {
+      for (j = 1; j <= used; j++) emit(tag[j])
+      clear_tag()
+    }
+    function clear_tag(    j) {
+      for (j = 1; j <= used; j++) delete tag[j]
+      used = 0
+      state = 0
+    }
+    function finish_value() {
+      if (attr == "type" && value == "password") password_input = 1
+      attr = value = ""
+      attribute = 0
+    }
+    function attribute_byte(c) {
+      if (quote != "") {
+        if (c == quote) { quote = ""; finish_value() }
+        else if (length(value) <= 8) value = value tolower(c)
+        return
+      }
+      if (attribute == 3) {
+        if (c ~ /[[:space:]]/) return
+        value = ""
+        if (c == "\042" || c == "\047") { quote = c; return }
+        attribute = 4
+      }
+      if (attribute == 4) {
+        if (c ~ /[[:space:]]/) finish_value()
+        # Keep one byte past password/ so longer slash-bearing types cannot
+        # truncate to the terminal form recognized by close_tag().
+        else if (length(value) <= 9) value = value tolower(c)
+        return
+      }
+      if (c == "=" && (attribute == 1 || attribute == 2)) { attribute = 3; return }
+      if (c ~ /[[:space:]]/) { if (attribute == 1) attribute = 2; return }
+      if (attribute != 1) { attr = ""; attribute = 1 }
+      if (length(attr) <= 4) attr = attr tolower(c)
+    }
+    function close_tag(    j, marked) {
+      # This function sees > itself. Only an unfinished bare type can treat
+      # its final slash as />; quoted or whitespace-terminated values cannot.
+      if (attribute == 4 && attr == "type" && value == "password/") password_input = 1
+      if (attribute == 4) finish_value()
+      if (!label && !password_input) { flush_tag(); return }
+      for (j = 1; j <= name_end; j++) emit(tag[j])
+      for (j = name_end + 1; j < used; j++) {
+        if (tag[j] == "\n" || tag[j] == "\r") { emit(tag[j]); marked = 0 }
+        else if (!marked && tag[j] ~ /[[:space:]]/) emit(tag[j])
+        else if (!marked) { emit("***MASKED***"); marked = 1 }
+      }
+      emit(">")
+      body = label && tag[used - 1] != "/"
+      if (body) {
+        body_name_length = name_end - 1
+        for (j = 2; j <= name_end; j++) body_name[j - 1] = tolower(tag[j])
+      }
+      clear_tag()
+    }
+    function secret_component(s) {
+      return s ~ /^(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)$/
+    }
+    function finish_body(mask,    j, marked) {
+      for (j = 1; j <= body_used; j++) {
+        if (!mask || body_text[j] ~ /[[:space:]]/) emit(body_text[j])
+        else if (!marked) { emit("***MASKED***"); marked = 1 }
+        delete body_text[j]
+      }
+      for (j = 1; j <= body_name_length; j++) delete body_name[j]
+      body_used = body_name_length = body = 0
+    }
+    function closing_byte(c,    j, ok) {
+      closing[++closing_used] = c
+      if (closing_used == 2) ok = c == "/"
+      else if (closing_used <= body_name_length + 2) ok = tolower(c) == body_name[closing_used - 2]
+      else if (c == ">") {
+        finish_body(1)
+        for (j = 1; j <= closing_used; j++) { emit(closing[j]); delete closing[j] }
+        closing_used = 0
+        return
+      }
+      else ok = c ~ /[[:space:]]/ && c != "\n" && c != "\r"
+      if (ok) return
+      finish_body(0)
+      for (j = 1; j <= closing_used; j++) { byte(closing[j]); delete closing[j] }
+      closing_used = 0
+    }
+    function byte(c) {
+      if (body == 2) { closing_byte(c); return }
+      if (body == 1) {
+        if (c == "<") { body = 2; closing_used = 1; closing[1] = c; return }
+        if (c == "\n" || c == "\r") finish_body(0)
+        else { body_text[++body_used] = c; return }
+      }
+      if (state == 0) {
+        if (c != "<") { emit(c); return }
+        state = 1; used = 1; tag[used] = c; tag_line = logical_line
+        tail = component = ""; namespaced = local_secret = 0
+        return
+      }
+      if (state == 1) {
+        if (c ~ /[A-Za-z0-9_.:-]/) {
+          tag[++used] = c
+          if (c == ":") { tail = component = ""; namespaced = 1; local_secret = 0 }
+          else {
+            if (length(tail) <= 13) tail = tail tolower(c)
+            if (c ~ /[_.-]/) { local_secret = local_secret || secret_component(component); component = "" }
+            else if (length(component) <= 13) component = component tolower(c)
+          }
+          return
+        }
+        label = local_secret || secret_component(component)
+        if ((!label && (tail != "input" || namespaced)) || c !~ /[[:space:]\/>]/) {
+          flush_tag()
+          byte(c)
+          return
+        }
+        name_end = used
+        state = 2; quote = attr = value = ""; attribute = password_input = 0
+      }
+      if (quote == "" && c == "<") {
+        flush_tag()
+        byte(c)
+        return
+      }
+      tag[++used] = c
+      if (quote == "" && c == ">") { close_tag(); return }
+      attribute_byte(c)
+    }
+    function flush_pending(    j) {
+      finish_body(0)
+      for (j = 1; j <= closing_used; j++) { emit(closing[j]); delete closing[j] }
+      closing_used = 0
+      flush_tag()
+    }
+    function feed(c) {
+      if (c == "\r" || (c == "\n" && !previous_cr)) {
+        logical_line++
+        if (state && logical_line - tag_line >= 32) flush_tag()
+      }
+      previous_cr = c == "\r"
+      byte(c)
+    }
+    BEGIN { output_record = 1 }
+    /^F/ { frames[++input_record] = substr($0, 2); next }
+    /^N/ {
+      if (normal_records++) feed("\n")
+      line_length = split($0, line_bytes, "")
+      for (i = 2; i <= line_length; i++) feed(line_bytes[i])
+    }
+    END { flush_pending(); if (output_used || output_chunk_size) flush_output(0) }
+  ' | sed -e '' | { cat; printf '\n'; } | LC_ALL=C CON295_LEGACY_PROFILE="$legacy_profile" awk '
+    # Equivalent to the final legacy label cleanup, with a match-local budget.
+    # Quotes are ordinary bytes here, just as in its old [^<>]* body.
+    # Seal bounded chunks before CR segment indexes or the record end advance.
+    # The same 256-byte threshold bounds concatenation independently of input.
+    function seal_clean_chunk() {
+      if (clean_chunk_size) clean_parts[++clean_used] = clean_chunk
+      clean_chunk = ""; clean_chunk_size = 0
+    }
+    function legacy_emit(c) {
+      if (c == "\r") {
+        seal_clean_chunk()
+        clean_ends[clean_segments] = clean_used
+        clean_starts[++clean_segments] = clean_used + 1
+      } else {
+        clean_chunk = clean_chunk c
+        clean_chunk_size += length(c)
+        if (clean_chunk_size >= 256) seal_clean_chunk()
+      }
+    }
+    function legacy_clear(    j) {
+      for (j = 1; j <= legacy_used; j++) delete legacy_tag[j]
+      legacy_used = legacy_state = legacy_cr = 0
+      legacy_word = ""
+    }
+    function legacy_flush(    j) {
+      for (j = 1; j <= legacy_used; j++) legacy_emit(legacy_tag[j])
+      legacy_clear()
+    }
+    # Beyond 32 physical lines, stop parsing/buffering this legacy candidate.
+    # Keep masking opaquely to <, > or record end, preserving CR separators.
+    # An unclosed overbound candidate therefore loses the rest of that record.
+    function legacy_opaque(    j) {
+      for (j = 1; j <= legacy_prefix; j++) legacy_emit(legacy_tag[j])
+      opaque_marked = 0
+      for (j = legacy_prefix + 1; j <= legacy_used; j++) {
+        if (legacy_tag[j] == "\r") { legacy_emit("\r"); opaque_marked = 0 }
+        else if (!opaque_marked) { legacy_emit("***MASKED***"); opaque_marked = 1 }
+      }
+      legacy_clear()
+      legacy_state = 4
+    }
+    function legacy_width(at, last,    c, pair, triple) {
+      c = value_bytes[at]
+      if (c ~ /^[[:space:]]$/) return 1
+      if (at + 1 > last) return 0
+      pair = c value_bytes[at + 1]
+      if (pair in legacy_blanks) return 2
+      if (at + 2 > last) return 0
+      triple = pair value_bytes[at + 2]
+      return (triple in legacy_blanks) ? 3 : 0
+    }
+    function legacy_letter(at, last,    c, pair, triple) {
+      c = value_bytes[at]
+      if (c ~ /^[A-Za-z]$/) { folded_letter = tolower(c); return 1 }
+      if (at + 1 > last) return 0
+      pair = c value_bytes[at + 1]
+      if (pair in legacy_folds) { folded_letter = legacy_folds[pair]; return 2 }
+      if (at + 2 > last) return 0
+      triple = pair value_bytes[at + 2]
+      if (triple in legacy_folds) { folded_letter = legacy_folds[triple]; return 3 }
+      return 0
+    }
+    function legacy_cleanup(    i, j, c, n, width) {
+      for (j = 1; j <= clean_used; j++) delete clean_parts[j]
+      for (j = 1; j <= clean_segments; j++) { delete clean_starts[j]; delete clean_ends[j] }
+      clean_used = 0; clean_segments = 1; clean_starts[1] = 1
+      clean_chunk = ""; clean_chunk_size = 0
+      n = split(value, value_bytes, "")
+      for (i = 1; i <= n; i++) {
+        c = value_bytes[i]
+        if (legacy_state && legacy_state != 4 && c == "\r" && ++legacy_cr >= 32) legacy_opaque()
+        if (c == "<") {
+          legacy_flush()
+          legacy_state = 1; legacy_used = 1; legacy_tag[1] = c
+          continue
+        }
+        if (!legacy_state) { legacy_emit(c); continue }
+        if (legacy_state == 4) {
+          if (c == ">") { legacy_emit(c); legacy_clear() }
+          else if (c == "\r") { legacy_emit(c); opaque_marked = 0 }
+          else if (!opaque_marked) { legacy_emit("***MASKED***"); opaque_marked = 1 }
+          continue
+        }
+        if (legacy_state == 1) {
+          width = legacy_letter(i, n)
+          if (width && length(legacy_word) < 13) {
+            legacy_word = legacy_word folded_letter
+            for (j = 0; j < width; j++) legacy_tag[++legacy_used] = value_bytes[i + j]
+            i += width - 1
+            continue
+          }
+          width = legacy_width(i, n)
+          if (legacy_word !~ /^(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)$/ || !width) {
+            legacy_flush(); legacy_emit(c); continue
+          }
+          legacy_state = 2
+        }
+        if (legacy_state == 2) {
+          width = legacy_width(i, n)
+          if (width) {
+            for (j = 0; j < width; j++) legacy_tag[++legacy_used] = value_bytes[i + j]
+            legacy_prefix = legacy_used
+            i += width - 1
+            continue
+          }
+          legacy_state = 3
+        }
+        if (c == ">") {
+          for (j = 1; j <= legacy_prefix; j++) legacy_emit(legacy_tag[j])
+          legacy_emit("***MASKED***"); legacy_emit(">")
+          legacy_clear()
+        } else legacy_tag[++legacy_used] = c
+      }
+      legacy_flush()
+      seal_clean_chunk()
+      clean_ends[clean_segments] = clean_used
+    }
+    function clean_segment(segment,    j) {
+      for (j = clean_starts[segment]; j <= clean_ends[segment]; j++) printf "%s", clean_parts[j]
+    }
+    function render(    j) {
+      legacy_cleanup()
+      if (!selected) {
+        for (j = 1; j <= clean_segments; j++) {
+          if (j > 1) printf "\r"
+          clean_segment(j)
+        }
+        return
+      }
+      for (j = 1; j <= skeleton_count; j++) {
+        if (j > 1) printf "\r"
+        if (clean_segments == skeleton_count && substr(skeleton_segments[j], 1, 1) == "N") clean_segment(j)
+        else printf "%s", substr(skeleton_segments[j], 2)
+      }
+    }
+    BEGIN {
+      profile_count = split(ENVIRON["CON295_LEGACY_PROFILE"], accepted_profile, "\n")
+      for (i = 1; i <= profile_count; i++) {
+        if (substr(accepted_profile[i], 1, 1) == "w") legacy_blanks[substr(accepted_profile[i], 2)] = 1
+        else if (substr(accepted_profile[i], 2, 1) == ":") legacy_folds[substr(accepted_profile[i], 3)] = substr(accepted_profile[i], 1, 1)
+      }
+    }
+    /^F/ {
+      if (pending) { render(); printf "\n"; pending = 0 }
+      selected = substr($0, 2, 1) == "1"
+      if (selected) skeleton_count = split(substr($0, 3), skeleton_segments, "\r")
+      next
+    }
+    /^N/ { value = substr($0, 2); pending = 1; next }
+    /^$/ { final_lf = 1 }
+    END { if (pending) { render(); if (final_lf) printf "\n" } }
+  '
 }
 
 # Title priority: aiTitle (the session title Claude Code generates and keeps
@@ -835,6 +1292,17 @@ fi
 # text turn's fence parity, and refence_jq below, which re-checks the note
 # after mask(). One definition, so the two cannot disagree about it (#228).
 fence_jq='
+  # Normalize before fence sizing and before either side of the post-mask
+  # comparison. BWK awk can truncate a record at NUL; replacing that byte with
+  # a visible non-whitespace character preserves the tail and cannot create a
+  # closing fence. Keep this mapping equal to the byte-mode tr pass in mask().
+  # Dense NULs make both gsub and join rebuild the growing output repeatedly.
+  # A no-NUL fast path preserves ordinary text without allocation; a codepoint
+  # array plus implode bounds replacement work to the input length.
+  def normalize_nul:
+    if contains("\u0000")
+    then explode | map(if . == 0 then 63 else . end) | implode else . end;
+  def may_end_fence: test("^[[:space:]\u180e\ufeff]*$");
   def fence_m: if test("^ {0,3}(~{3,}|`{3,})") then capture("^(?<pad> {0,3})(?<run>~{3,}|`{3,})(?<info>.*)$") else null end;
   # A backtick fence info string cannot hold a backtick (CommonMark), so such a
   # line opens nothing.
@@ -866,7 +1334,7 @@ body_jq="$fence_jq"'
   # Unicode 6.3, so an older reader drops it) -- a superset of every reader rule
   # measured in defang below. Both the fence sizer and the parity machine in
   # defang read THIS definition, so they cannot disagree about which runs close.
-  def may_end_fence: test("^[[:space:]\u180e\ufeff]*$");
+  # may_end_fence is shared with refence in fence_jq above.
   # A tilde run inside the content CLOSES a fixed-length fence (CommonMark: a
   # closing fence is the same character, at least as many, indented <= 3), so
   # the untrusted text escapes the block and becomes top-level Markdown -- a
@@ -923,8 +1391,8 @@ body_jq="$fence_jq"'
   # below): the assembled note no longer passes through
   # strip_ansi, which now covers the frontmatter and title alone. A second pass
   # ran AFTER this measurement and could collapse a nested sequence into a bare
-  # closing fence, so it was moved off the body. Terminal control sequences outside them are untouched
-  # by either pass and do reach the note. It stops at U+000D: U+2028 /
+  # closing fence, so it was moved off the body. Other terminal controls remain
+  # untouched apart from NUL normalization. Line splitting stops at U+000D: U+2028 /
   # U+2029 / U+0085 / form feed are not CommonMark line endings, so folding them
   # would widen fences that no reader could have closed.
   def fence($lang; $text):
@@ -932,7 +1400,7 @@ body_jq="$fence_jq"'
     # 問いを開け直す（F2）。パターンは strip_ansi と同一に保つこと — あちらで
     # 剥がれてこちらで剥がれない列が 1 つでもあると、穴がそのまま戻る。
     # strip_sgr, not gsub: see its definition at the top of this program.
-    (($text // "") | strip_sgr) as $t
+    (($text // "") | normalize_nul | strip_sgr) as $t
     | ([ $t
          | split("\n")[] | split("\r")[]
          | select(startswith("~") or startswith(" "))
@@ -1246,7 +1714,7 @@ body_jq="$fence_jq"'
     # heading to the rule below (the line does not START with `#`) but IS one to
     # a renderer that discards the sequence first -- an unescaped, forged turn.
     # Same sequences as fence and strip_ansi (strip_sgr); keep them in step.
-    (split("\n")
+    (normalize_nul | split("\n")
      | map(strip_sgr | split("\r")
            | if length == 0 then [""] else . end
            | if length > 1 and .[-1] == "" then {l: (.[0:-1]), cr: "\r"} else {l: ., cr: ""} end)) as $g
@@ -1356,14 +1824,16 @@ yaml_seq() {
 # mask() runs on the assembled note AFTER defang has decided each text turn's
 # fence parity, and it can delete a backtick from a run's info string: a line
 # at column 0 that opened nothing becomes an opener, the note's parity flips,
-# and the next tool result's body lands at top level (#228). mask() itself is
-# not changed. This pass compares each line before and after mask() and
-# escapes, with defang's own backslash, only a run that counts as a fence after
-# masking and did not before. A line that already counted is left alone: the
-# renderer's own fences are such lines, and escaping them would break the
-# structure this pass protects. Segments split on CR are compared the way
-# defang reads them; if their number differs, every counting segment is
-# escaped. The pass looks only for a run that became a fence. mask() can
+# and the next tool result's body lands at top level (#228). This pass compares
+# normalized lines before and after mask() and escapes newly counted runs AND
+# runs whose closing ability changes (#295 F1). A tilde run with nonempty info
+# already counts as an opener, but deleting its info makes it a closer too:
+# count and parity alone cannot detect that escape. Compare the exact run and
+# closing trailer: different readers trim different whitespace subsets, so
+# even a change between two may_end_fence trailers must fail closed. Unchanged
+# renderer fences keep their syntax. Segments split on CR are compared the way
+# defang reads them; if their number differs, every
+# counting segment is escaped. mask() can
 # also take one away: a keyword rule's separator matches CR, so a run that
 # follows `key:` and a CR can be masked as the value. That is harmless only
 # because defang gives a run on a line split by a bare CR the absorbing
@@ -1376,13 +1846,21 @@ yaml_seq() {
 # (below).
 refence_jq="$fence_jq"'
   def counts: fence_m as $m | $m != null and (not_a_fence($m) | not);
-  ($a | split("\n")) as $A | ($b | split("\n")) as $B | ($B | length) as $n
+  def closing_role:
+    # NEL + FEFF becoming FEFF changes trim-based closing but not strict or
+    # union closing. Preserve the exact trailer to cover every reader subset.
+    fence_m as $m
+    | if $m != null and ($m.info | may_end_fence)
+      then [$m.run, $m.info] else null end;
+  def newly_closes($before):
+    closing_role as $after | $after != null and $after != ($before | closing_role);
+  ($a | normalize_nul | split("\n")) as $A | ($b | normalize_nul | split("\n")) as $B | ($B | length) as $n
   | if ($A | length) != $n then "mask() changed the line count" | halt_error(9)
     else range(0; $n) as $i
       | (($A[$i] | split("\r")) as $x | ($B[$i] | split("\r")) as $y
          | [ range(0; $y | length) as $j
              | $y[$j]
-             | if counts and ((($x | length) != ($y | length)) or (($x[$j] | counts) | not)) then esc_bs else . end ]
+             | if counts and ((($x | length) != ($y | length)) or (($x[$j] | counts) | not) or newly_closes($x[$j])) then esc_bs else . end ]
          | join("\r"))
         + (if $i < $n - 1 then "\n" else "" end)
     end
