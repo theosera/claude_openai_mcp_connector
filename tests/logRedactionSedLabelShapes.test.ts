@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
@@ -615,4 +615,130 @@ for (const [hook, path] of hooks) {
       });
     }
   });
+}
+
+// Use the actual platform awk in mask(), including BWK awk on the macOS leg.
+// NUL must become visible non-whitespace before any awk can drop its suffix.
+const nulCases = [
+  ["ordinary suffix", "LEFT295\0RIGHT295 KEEP295NUL\n", "LEFT295?RIGHT295 KEEP295NUL\n"],
+  ["leading byte", "\0KEEP295NUL\n", "?KEEP295NUL\n"],
+  ["trailing byte", "KEEP295NUL\0", "KEEP295NUL?"],
+  ["only byte", "\0", "?"],
+  ["numeric zero", "0\0\n0\0\r0", "0?\n0?\r0"],
+  ["CRLF records", "LEFT295\0\r\nRIGHT295\0 KEEP295NUL\r\n", "LEFT295?\r\nRIGHT295? KEEP295NUL\r\n"],
+  ["bare CR records", "LEFT295\0\rRIGHT295\0 KEEP295NUL\r", "LEFT295?\rRIGHT295? KEEP295NUL\r"],
+  [
+    "secrets before and after byte",
+    "token=NUL295BEFORE \0 password=NUL295AFTER KEEP295NUL\n",
+    "token=***MASKED*** ? password=***MASKED*** KEEP295NUL\n"
+  ],
+  ["inside bare value", "token=NUL295BEFORE\0NUL295AFTER KEEP295NUL\n", "token=***MASKED*** KEEP295NUL\n"],
+  [
+    "inside quoted value",
+    '{"api_key":"NUL295BEFORE\0NUL295AFTER"} KEEP295NUL\n',
+    '{"api_key":"***MASKED***"} KEEP295NUL\n'
+  ],
+  ["tilde three info", "~~~\0text\n", "~~~***MASKED***\n"],
+  ["tilde six info", "~~~~~~\0text\n", "~~~~~~***MASKED***\n"],
+  ["tilde seven info", "~~~~~~~\0text\n", "~~~~~~~***MASKED***\n"],
+  ["tilde ten info", "~~~~~~~~~~\0text\n", "~~~~~~~~~~***MASKED***\n"],
+  ["backtick six info", "``````\0text\n", "``````***MASKED***\n"],
+  ["inside tilde run", "~~~\0~~~\n", "~~~***MASKED***\n"],
+  ["inside backtick run", "```\0```text KEEP295NUL\n", "```?```text KEEP295NUL\n"],
+  [
+    "compound attribute value",
+    '<access_token a="NUL295BEFORE\0NUL295AFTER">NUL295BODY</access_token> KEEP295NUL\n',
+    "<access_token ***MASKED*** KEEP295NUL\n"
+  ],
+  [
+    "namespaced attribute value",
+    '<ns:token a="NUL295BEFORE\0NUL295AFTER">NUL295BODY</ns:token> KEEP295NUL\n',
+    "<ns:token ***MASKED*** KEEP295NUL\n"
+  ],
+  [
+    "password input value",
+    '<input value="NUL295BEFORE\0NUL295AFTER" type=password/> KEEP295NUL\n',
+    "<input ***MASKED***> KEEP295NUL\n"
+  ],
+  [
+    "multiline attribute value",
+    '<access_token a="NUL295BEFORE\0\nNUL295AFTER"> KEEP295NUL\n',
+    "<access_token ***MASKED***\n***MASKED***> KEEP295NUL\n"
+  ],
+  [
+    "later quoted angle value",
+    '<access_token a="NUL295BEFORE" b="left>\0NUL295AFTER<right"> KEEP295NUL\n',
+    "<access_token ***MASKED***> KEEP295NUL\n"
+  ]
+] as const;
+
+const requestedNulLocales = ["C", "en_US.UTF-8", "ja_JP.UTF-8"] as const;
+const installedNulLocales = new Set(
+  execFileSync("locale", ["-a"], { encoding: "utf8" })
+    .trim()
+    .split(/\r?\n/)
+    .map((locale) => locale.toLowerCase().replace(/[-_]/g, ""))
+);
+const nulLocaleEvidence = requestedNulLocales.map((locale) => {
+  const listed = installedNulLocales.has(locale.toLowerCase().replace(/[-_]/g, ""));
+  const probe = spawnSync("locale", ["charmap"], {
+    env: { ...process.env, LC_ALL: locale },
+    encoding: "utf8"
+  });
+  return {
+    locale,
+    available: listed && probe.status === 0 && !probe.stderr.trim(),
+    listed,
+    exit: probe.status,
+    charmap: probe.stdout.trim(),
+    stderr: probe.stderr.trim().slice(0, 200)
+  };
+});
+
+it("reports NUL normalization native awk and requested locale evidence", () => {
+  const awk = execFileSync("bash", ["-c", "command -v awk"], { encoding: "utf8" }).trim();
+  const version = spawnSync(awk, process.platform === "darwin" ? ["-version"] : ["-W", "version"], {
+    encoding: "utf8"
+  });
+  const probe = spawnSync(awk, ["{ print }"], { input: "LEFT\0RIGHT\n", encoding: "utf8" });
+  // Evidence only: GNU/mawk need not reproduce BWK's historical truncation.
+  console.info(
+    "NUL_RUNTIME_EVIDENCE " +
+      JSON.stringify({
+        platform: process.platform,
+        awk,
+        version: `${version.stdout}${version.stderr}`.trim().slice(0, 500),
+        probeExit: probe.status,
+        probeHex: Buffer.from(probe.stdout).toString("hex"),
+        tailDropped: !probe.stdout.includes("RIGHT"),
+        locales: nulLocaleEvidence
+      })
+  );
+  expect(probe.status).toBe(0);
+  expect(probe.stdout.length).toBeGreaterThan(0);
+});
+
+for (const [hook, path] of hooks) {
+  for (const { locale, available } of nulLocaleEvidence) {
+    // An absent locale is a visible skip, never a silently substituted locale.
+    describe.skipIf(!available)(`${hook} NUL normalization with native awk in ${locale}`, () => {
+      for (const [name, input, expected] of nulCases) {
+        it(`normalizes ${name} before awk without losing values or leaking secrets`, () => {
+          const env = { ...process.env, LC_ALL: locale };
+          // Keep the platform's final-line completion, not its NUL behavior.
+          const completed = execFileSync("sed", ["-e", ""], { input: expected, encoding: "utf8", env });
+          const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], {
+            input,
+            encoding: "utf8",
+            env
+          });
+          expect(output).toBe(completed);
+          expect(output.length).toBeGreaterThan(0);
+          expect(output).not.toContain("\0");
+          for (const secret of ["NUL295BEFORE", "NUL295AFTER", "NUL295BODY"]) expect(output).not.toContain(secret);
+          if (input.includes("KEEP295NUL")) expect(output).toContain("KEEP295NUL");
+        });
+      }
+    });
+  }
 }
