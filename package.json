@@ -25,7 +25,8 @@
     "format": "prettier --write src tests scripts packages",
     "format:check": "prettier --check src tests scripts packages",
     "dev": "tsx src/index.ts",
-    "oauth:registrations": "node dist/oauthAdmin.js"
+    "oauth:registrations": "node dist/oauthAdmin.js",
+    "init:env": "node dist/initEnv.js"
   },
   "engines": {
     "node": ">=22.12.0"
