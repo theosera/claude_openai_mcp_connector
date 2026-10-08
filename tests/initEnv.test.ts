@@ -424,6 +424,45 @@ describe("init:env — failures leave nothing behind (G9, G11)", () => {
     expect(fs.existsSync(path.join(home, ".config"))).toBe(false);
     expect(listTree(home)).toEqual([]);
   });
+
+  it.each([
+    ["the write", "write"],
+    ["link()", "link"]
+  ])("a failure at %s removes the directories it created and nothing else", async (_stage, at) => {
+    const base = path.join(root, "base");
+    fs.mkdirSync(base, { mode: 0o700 });
+    fs.writeFileSync(path.join(base, "keep.txt"), "keep\n");
+    if (at === "write") {
+      const original = fs.writeFileSync;
+      vi.spyOn(fs, "writeFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+        if (typeof file === "number") throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
+        return (original as (...args: unknown[]) => void)(file, ...rest);
+      }) as typeof fs.writeFileSync);
+    } else {
+      vi.spyOn(fs, "linkSync").mockImplementation(() => {
+        throw Object.assign(new Error("operation not permitted"), { code: "EPERM" });
+      });
+    }
+    const result = await runInProcess(["--out", path.join(base, "new1", "new2", FILE)], [vault, "", "y"]);
+    expect(result.code).toBe(1);
+    expect(listTree(base)).toEqual(["keep.txt"]);
+    expect(fs.readFileSync(path.join(base, "keep.txt"), "utf8")).toBe("keep\n");
+  });
+
+  it("an entry that appears in a directory it created is left alone, and so is that directory", async () => {
+    const base = path.join(root, "base");
+    fs.mkdirSync(base, { mode: 0o700 });
+    vi.spyOn(fs, "linkSync").mockImplementation(((_existing: fs.PathLike, newPath: fs.PathLike) => {
+      fs.writeFileSync(path.join(path.dirname(String(newPath)), "peer.txt"), "peer\n");
+      throw Object.assign(new Error("operation not permitted"), { code: "EPERM" });
+    }) as typeof fs.linkSync);
+    const result = await runInProcess(["--out", path.join(base, "new", FILE)], [vault, "", "y"]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("could not publish");
+    // Its own temporary file is gone; the directory stays because it is not empty.
+    expect(listTree(base)).toEqual(["new", path.join("new", "peer.txt")]);
+    expect(fs.readFileSync(path.join(base, "new", "peer.txt"), "utf8")).toBe("peer\n");
+  });
 });
 
 describe("init:env — the directory that holds the file (G12)", () => {
@@ -613,6 +652,20 @@ describe("init:env — guidance quoted for where it is pasted (PR#308 thread 3)"
     expect(result.stderr).toContain("contains a control character");
     expect(listTree(root).sort()).toEqual(["home", "vault"]);
   });
+
+  it.each([
+    ["a space", " "],
+    ["a no-break space", String.fromCharCode(0xa0)]
+  ])(
+    "refuses an output path that ends with %s (the server trims MCP_ENV_FILE), and creates nothing",
+    async (_name, ws) => {
+      const out = path.join(root, "trail", `${FILE}${ws}`);
+      const result = await runInProcess(["--out", out], [vault, "", "y"]);
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("starts or ends with whitespace");
+      expect(listTree(root).sort()).toEqual(["home", "vault"]);
+    }
+  );
 });
 
 describe("init:env — the checked path is the written path (PR#308 thread 2)", () => {
@@ -660,6 +713,52 @@ describe("init:env — the checked path is the written path (PR#308 thread 2)", 
         }
       ]
     );
+    expect(result.code, result.stderr).toBe(0);
+    expect(fs.existsSync(path.join(outside, "sub", FILE))).toBe(true);
+    expect(listTree(vault)).toEqual(["sub"]);
+  });
+
+  it.each([
+    ["after the directory's descriptor check", "fstat"],
+    ["right before the temporary file is opened", "open"],
+    ["right before link()", "link"]
+  ])("repointing a link on --out into the vault %s does not move the write", async (_when, at) => {
+    const outside = path.join(root, "outside");
+    fs.mkdirSync(outside, { mode: 0o700 });
+    fs.mkdirSync(path.join(outside, "sub"), { mode: 0o700 });
+    fs.mkdirSync(path.join(vault, "sub"), { mode: 0o700 });
+    const link = path.join(root, "link");
+    fs.symlinkSync(outside, link);
+    let repointed = false;
+    const repoint = () => {
+      if (repointed) return;
+      repointed = true;
+      fs.unlinkSync(link);
+      fs.symlinkSync(vault, link);
+    };
+    if (at === "fstat") {
+      const original = fs.fstatSync;
+      vi.spyOn(fs, "fstatSync").mockImplementation(((fd: number, ...rest: unknown[]) => {
+        const stats = (original as (...args: unknown[]) => fs.Stats)(fd, ...rest);
+        if (stats.isDirectory()) repoint();
+        return stats;
+      }) as typeof fs.fstatSync);
+    } else if (at === "open") {
+      const original = fs.openSync;
+      vi.spyOn(fs, "openSync").mockImplementation(((file: fs.PathLike, ...rest: unknown[]) => {
+        if (String(file).endsWith(".tmp")) repoint();
+        return (original as (...args: unknown[]) => number)(file, ...rest);
+      }) as typeof fs.openSync);
+    } else {
+      const original = fs.linkSync;
+      vi.spyOn(fs, "linkSync").mockImplementation(((...args: unknown[]) => {
+        repoint();
+        return (original as (...a: unknown[]) => void)(...args);
+      }) as typeof fs.linkSync);
+    }
+    const result = await runInProcess(["--out", path.join(link, "sub", FILE)], [vault, "", "y"]);
+    // The race was really injected at that point, and the write stayed where it was checked.
+    expect(repointed).toBe(true);
     expect(result.code, result.stderr).toBe(0);
     expect(fs.existsSync(path.join(outside, "sub", FILE))).toBe(true);
     expect(listTree(vault)).toEqual(["sub"]);
@@ -753,6 +852,56 @@ describe("init:env — the checked path is the written path (PR#308 thread 2)", 
     expect(result.stderr).toContain("Do not use the token in it");
     // Not removed: removing by path could hit another file.
     expect(fs.existsSync(out)).toBe(true);
+  });
+
+  it("the read-back reads the file just written: another inode there stops it, and not as a configuration error", async () => {
+    // Once the file is published, the read-back descriptor's stat reports another inode.
+    const outDir = path.join(root, "outdir");
+    fs.mkdirSync(outDir, { mode: 0o700 });
+    const out = path.join(outDir, FILE);
+    let linked = false;
+    const originalLink = fs.linkSync;
+    vi.spyOn(fs, "linkSync").mockImplementation(((...args: unknown[]) => {
+      (originalLink as (...a: unknown[]) => void)(...args);
+      linked = true;
+    }) as typeof fs.linkSync);
+    const originalFstat = fs.fstatSync;
+    vi.spyOn(fs, "fstatSync").mockImplementation(((fd: number, ...rest: unknown[]) => {
+      const stats = (originalFstat as (...a: unknown[]) => fs.Stats)(fd, ...rest);
+      if (!linked) return stats;
+      return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { ino: stats.ino + 1 });
+    }) as typeof fs.fstatSync);
+    const result = await runInProcess(["--out", out], [vault, "http", "", "y"]);
+    expect(linked).toBe(true);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("is not the file init:env just wrote");
+    expect(result.stderr).toContain("Do not use the token in it");
+    expect(result.stderr).not.toContain("would not start");
+    expect(result.stdout).not.toContain("Next steps");
+  });
+
+  it("a direct call resolves the directory first, so a link repointed at link() time cannot misdirect the clean-up", () => {
+    // The caller passes a path through a link. When link() runs, the link is
+    // repointed into the vault, where an entry with the temporary file's name
+    // waits; the clean-up must remove only its own temporary file.
+    const outside = path.join(root, "outside");
+    fs.mkdirSync(outside, { mode: 0o700 });
+    const vaultSub = path.join(vault, "sub");
+    fs.mkdirSync(vaultSub, { mode: 0o700 });
+    const alias = path.join(root, "alias");
+    fs.symlinkSync(outside, alias);
+    let sentinel = "";
+    vi.spyOn(fs, "linkSync").mockImplementation(((existing: fs.PathLike) => {
+      sentinel = path.join(vaultSub, path.basename(String(existing)));
+      fs.writeFileSync(sentinel, "vault note\n");
+      fs.unlinkSync(alias);
+      fs.symlinkSync(vaultSub, alias);
+      throw Object.assign(new Error("operation not permitted"), { code: "EPERM" });
+    }) as typeof fs.linkSync);
+    expect(() => writeEnvFileExclusive(path.join(alias, FILE), 'KNOWLEDGE_ROOT="/x"\n')).toThrow(/could not publish/);
+    expect(sentinel).not.toBe("");
+    expect(fs.readFileSync(sentinel, "utf8")).toBe("vault note\n");
+    expect(listTree(outside)).toEqual([]);
   });
 });
 

@@ -30,7 +30,9 @@
  *   its existing part followed); every later step — the vault check, the
  *   directory checks, the write, the read-back and the printed `MCP_ENV_FILE` —
  *   uses that path. Repointing a link on the original path afterwards does not
- *   move the write. The vault check runs again right before the write.
+ *   move the write. The vault check runs again right before the write. A path
+ *   with a control character, or one that starts or ends with whitespace (the
+ *   server trims `MCP_ENV_FILE`), is refused before anything is created.
  * - **A directory it trusts, and ancestors nobody else controls.** The directory
  *   that will hold the file — or, when it has to be created, its nearest existing
  *   ancestor — must be a real directory (not a link), owned by this account, and
@@ -44,11 +46,21 @@
  * - **No secret on screen, in argv or from the environment.** The bearer token
  *   is generated here and never printed. No option takes a secret, and nothing
  *   but `XDG_CONFIG_HOME` and `HOME` is read from this process's environment.
- * - **Reads back the way the server reads.** After writing, the file goes
- *   through `loadEnvFile` → `loadConfig` → (`loadHttpConfig`) with a fresh
- *   environment holding only `MCP_ENV_FILE`. Those functions put paths, ports
- *   and variable NAMES into their errors, never a token or password value, so
- *   their messages are shown as they are.
+ * - **Reads back the file it wrote, the way the server parses it.** After
+ *   writing, the published file is opened with O_NOFOLLOW and must be the same
+ *   inode that was written; its bytes are parsed as `loadEnvFile` parses them
+ *   (into a fresh environment, never overriding) and go through `loadConfig` →
+ *   (`loadHttpConfig`). Those functions put paths, ports and variable NAMES into
+ *   their errors, never a token or password value, so their messages are shown
+ *   as they are.
+ *
+ * **Trust boundary.** init:env trusts root and the account that runs it, and no
+ * one else: it refuses an output path that another account could change (the
+ * directory and every directory above it), but it does not defend against root
+ * or this same account changing the path while it runs — either can read the
+ * file's token anyway. An MCP client of this server is not "this account" in
+ * that sense: the server's writes stay inside the vault, and the output path is
+ * checked to be outside it.
  *
  * Atomic is not durable: nothing here calls fsync (the same as atomicWrite.ts).
  */
@@ -60,7 +72,7 @@ import process from "node:process";
 import readline from "node:readline";
 import { pathToFileURL } from "node:url";
 import dotenv from "dotenv";
-import { assertOutsideKnowledgeRoots, loadConfig, loadEnvFile, loadHttpConfig, selectedTransport } from "./config.js";
+import { assertOutsideKnowledgeRoots, loadConfig, loadHttpConfig, selectedTransport } from "./config.js";
 
 /** What `main` talks to. Injected so the tests can drive it without a terminal. */
 export interface InitIO {
@@ -412,14 +424,35 @@ function removeCreated(created: readonly string[]): void {
   }
 }
 
+/** The stop for a path that no longer leads to the file just written. */
+function notTheWrittenFile(target: string): Stop {
+  return new Stop(
+    `${target} is not the file init:env just wrote: a directory on the path changed during the write, so the file ` +
+      "may be somewhere else. Do not use the token in it; run init:env again to make a new one."
+  );
+}
+
 /**
- * Publish `content` at `target` without ever replacing what is there.
+ * Publish `content` at `target` without ever replacing what is there, and
+ * return the stat of the file written (its identity, for the read-back).
+ *
+ * The directory is resolved first and every step — the temporary file, the
+ * link and the clean-up — uses that path, so a link on `target` repointed in
+ * the middle cannot send any of them elsewhere. `run()` passes a resolved path
+ * already; this keeps a direct call to the same rule.
  *
  * Exported for the tests, which drive the link step directly: the command also
  * stops early when the target exists, so only a direct call reaches EEXIST here.
  */
-export function writeEnvFileExclusive(target: string, content: string): void {
-  const temp = path.join(path.dirname(target), `.${path.basename(target)}.${crypto.randomUUID()}.tmp`);
+export function writeEnvFileExclusive(target: string, content: string): fs.Stats {
+  let dir: string;
+  try {
+    dir = fs.realpathSync(path.dirname(target));
+  } catch (error) {
+    throw new Stop(`${path.dirname(target)} could not be resolved (${errorCode(error)}). Nothing was written.`);
+  }
+  const file = path.join(dir, path.basename(target));
+  const temp = path.join(dir, `.${path.basename(target)}.${crypto.randomUUID()}.tmp`);
   let fd: number | undefined;
   try {
     fd = fs.openSync(temp, "wx", FILE_MODE);
@@ -431,16 +464,16 @@ export function writeEnvFileExclusive(target: string, content: string): void {
     fs.closeSync(fd);
     fd = undefined;
     try {
-      fs.linkSync(temp, target);
+      fs.linkSync(temp, file);
     } catch (error) {
       const code = errorCode(error);
       if (code === "EEXIST") {
-        throw new Stop(`${target} already exists, and init never overwrites a file. Nothing was written.`);
+        throw new Stop(`${file} already exists, and init never overwrites a file. Nothing was written.`);
       }
       // Every other failure stops as well. Falling back to rename() or a plain
       // write here would be the overwrite path this function exists not to have.
       throw new Stop(
-        `could not publish ${target} (${code}); this filesystem may not support hard links. Nothing was written.`
+        `could not publish ${file} (${code}); this filesystem may not support hard links. Nothing was written.`
       );
     }
     // The path must still lead to the file just written. If a directory on it
@@ -449,16 +482,14 @@ export function writeEnvFileExclusive(target: string, content: string): void {
     // treated as exposed.
     let published: fs.Stats | undefined;
     try {
-      published = fs.lstatSync(target);
+      published = fs.lstatSync(file);
     } catch {
       published = undefined;
     }
     if (!published || published.dev !== written.dev || published.ino !== written.ino) {
-      throw new Stop(
-        `${target} is not the file init:env just wrote: a directory on the path changed during the write, so the file ` +
-          "may be somewhere else. Do not use the token in it; run init:env again to make a new one."
-      );
+      throw notTheWrittenFile(file);
     }
+    return written;
   } finally {
     if (fd !== undefined) {
       try {
@@ -475,12 +506,41 @@ export function writeEnvFileExclusive(target: string, content: string): void {
   }
 }
 
-/** Read the file back the way the server will, and return its transport. */
-function readBack(target: string): string {
+/**
+ * The bytes of the file just published, read through one descriptor opened
+ * with O_NOFOLLOW that must be the inode written. If the path leads anywhere
+ * else now, this stops rather than check some other file.
+ */
+function readPublished(target: string, written: fs.Stats): string {
+  let fd: number;
+  try {
+    fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  } catch {
+    throw notTheWrittenFile(target);
+  }
+  try {
+    const stats = fs.fstatSync(fd);
+    if (stats.dev !== written.dev || stats.ino !== written.ino) {
+      throw notTheWrittenFile(target);
+    }
+    return fs.readFileSync(fd, "utf8");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** Parse the file's bytes the way the server will, and return its transport. */
+function readBack(target: string, contents: string): string {
   // A fresh object rather than process.env: a KNOWLEDGE_ROOT already set in
-  // this shell would win over the file and hide a mistake in it.
+  // this shell would win over the file and hide a mistake in it. The file's
+  // values go in under loadEnvFile's rule (a name already present is kept);
+  // MCP_ENV_FILE stays set so that loadConfig checks it against the vault.
   const env: NodeJS.ProcessEnv = { MCP_ENV_FILE: target };
-  loadEnvFile(env);
+  for (const [key, value] of Object.entries(dotenv.parse(contents))) {
+    if (!Object.prototype.hasOwnProperty.call(env, key)) {
+      env[key] = value;
+    }
+  }
   loadConfig(env);
   const transport = selectedTransport(env);
   if (transport === "http") {
@@ -557,6 +617,13 @@ async function run(args: string[], io: InitIO): Promise<number> {
   if (hasControlCharacter(requested)) {
     // No client setting, shell line or unit file can carry it on one line.
     throw new Stop("the env file's path contains a control character. Choose another --out.", 2);
+  }
+  if (requested.trim() !== requested) {
+    // The server trims MCP_ENV_FILE before reading it, so it would read another path.
+    throw new Stop(
+      "the env file's path starts or ends with whitespace, which the server trims from MCP_ENV_FILE. Choose another --out.",
+      2
+    );
   }
   // Early and for convenience only — the real guard is the link() in
   // writeEnvFileExclusive, which refuses whatever appears in the meantime.
@@ -694,17 +761,23 @@ async function run(args: string[], io: InitIO): Promise<number> {
     // The vault check again, now: the answers took time, and the vault side (a
     // vault given as a link, say) may have changed since the first check.
     assertOutsideVault(target, root);
+    // `created` holds resolved paths only (target is resolved), so the clean-up
+    // removes the directories made here and, being rmdir, nothing in them.
     const created = prepareDirectory(path.dirname(target));
+    let written: fs.Stats;
     try {
-      writeEnvFileExclusive(target, content);
+      written = writeEnvFileExclusive(target, content);
     } catch (error) {
       removeCreated(created);
       throw error;
     }
     io.output.write(`\nWrote ${target} (mode 0600).\n`);
 
+    // Outside the try below: a file that is not the one written is not a
+    // configuration problem, and its message says not to use the token.
+    const contents = readPublished(target, written);
     try {
-      readBack(target);
+      readBack(target, contents);
     } catch (error) {
       io.error.write(
         `init:env: the server would not start with this file: ${(error as Error).message}\n` +
