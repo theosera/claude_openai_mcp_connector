@@ -25,11 +25,22 @@
  *   mode 0600 and set to exactly 0600 through its descriptor before anything is
  *   written (the open mode is cut by the umask, never widened). A directory this
  *   command creates is set to exactly 0700 the same way.
- * - **A directory it trusts.** The directory that will hold the file — or, when
- *   it has to be created, its nearest existing ancestor — must be a real
- *   directory (not a link), owned by this account, and not writable by group or
- *   others: whoever can write there can swap the file before the server reads
- *   it. An existing directory is never re-permissioned; init stops instead.
+ * - **The path that was checked is the path that is written.** The target is
+ *   resolved once, before the first question, to a canonical path (symlinks in
+ *   its existing part followed); every later step — the vault check, the
+ *   directory checks, the write, the read-back and the printed `MCP_ENV_FILE` —
+ *   uses that path. Repointing a link on the original path afterwards does not
+ *   move the write. The vault check runs again right before the write.
+ * - **A directory it trusts, and ancestors nobody else controls.** The directory
+ *   that will hold the file — or, when it has to be created, its nearest existing
+ *   ancestor — must be a real directory (not a link), owned by this account, and
+ *   not writable by group or others: whoever can write there can swap the file
+ *   before the server reads it. Every directory above it must be owned by root or
+ *   this account and not writable by group or others unless it is sticky (the
+ *   owner condition holds for sticky directories too: their owner can rename
+ *   anything in them). An existing directory is never re-permissioned; init stops
+ *   instead. After publishing, the file at the path must still be the one just
+ *   written; if it is not, init stops and says not to use its token.
  * - **No secret on screen, in argv or from the environment.** The bearer token
  *   is generated here and never printed. No option takes a secret, and nothing
  *   but `XDG_CONFIG_HOME` and `HOME` is read from this process's environment.
@@ -149,12 +160,40 @@ export function assertEnvSafeValue(name: string, value: string): void {
   }
   for (const char of value) {
     const code = char.codePointAt(0) ?? 0;
-    if (code < 0x20 || code === 0x7f || char === '"' || char === "\\") {
+    if (isControlCode(code) || char === '"' || char === "\\") {
       throw new Stop(
         `${name} contains a character the env file cannot carry safely (a control character, a double quote or a backslash).`
       );
     }
   }
+}
+
+/** The control characters no value or path here may carry: C0 (below 0x20) and DEL. */
+function isControlCode(code: number): boolean {
+  return code < 0x20 || code === 0x7f;
+}
+
+function hasControlCharacter(value: string): boolean {
+  for (const char of value) {
+    if (isControlCode(char.codePointAt(0) ?? 0)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** One POSIX shell word: single quotes, with each `'` closed, escaped and reopened. */
+export function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * One systemd unit-file word: double quotes, with `\` and `"` escaped and `%`
+ * doubled (unit files expand `%` specifiers). Without the quotes systemd splits
+ * an `Environment=` line at whitespace.
+ */
+export function systemdQuote(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/%/g, "%%")}"`;
 }
 
 /** The file's bytes. Comments only, then one `KEY="value"` line per value. */
@@ -203,12 +242,87 @@ function errorCode(error: unknown): string {
 }
 
 /**
+ * Resolve the target once: the nearest existing ancestor of its directory goes
+ * through `realpath`, and the names that do not exist yet are appended. Every
+ * later step uses this path, so a link on the original path that is repointed
+ * after the checks cannot move the write (PR#308 review). Called before the
+ * first question, so the user's answers do not widen the window either.
+ */
+export function canonicalTarget(target: string): string {
+  const missing: string[] = [];
+  let existing = path.dirname(target);
+  for (;;) {
+    try {
+      fs.lstatSync(existing);
+      break;
+    } catch (error) {
+      if (errorCode(error) !== "ENOENT") {
+        throw new Stop(`${existing} could not be checked (${errorCode(error)}). Nothing was written.`);
+      }
+      missing.unshift(path.basename(existing));
+      const up = path.dirname(existing);
+      if (up === existing) {
+        throw new Stop(`no part of ${target} exists. Nothing was written.`);
+      }
+      existing = up;
+    }
+  }
+  let resolved: string;
+  try {
+    resolved = fs.realpathSync(existing);
+  } catch (error) {
+    throw new Stop(`${existing} could not be resolved (${errorCode(error)}). Nothing was written.`);
+  }
+  return path.join(resolved, ...missing, path.basename(target));
+}
+
+/**
+ * Every directory above `dir` (canonical, existing) must be owned by root or
+ * this account, and not writable by group or others unless it is sticky.
+ * Anyone else who could write to one of them could rename a directory below it
+ * between the checks and the write. The sticky bit only stops others from
+ * renaming entries they do not own; the directory's owner can still rename any
+ * of them, so the owner condition applies to sticky directories as well.
+ * `dir` itself is held to the stricter rule of `assertTrustedDirectory`.
+ */
+function assertSecureAncestors(dir: string): void {
+  const uid = process.geteuid?.();
+  for (let current = path.dirname(dir); ; current = path.dirname(current)) {
+    let stats: fs.Stats;
+    try {
+      stats = fs.lstatSync(current);
+    } catch (error) {
+      throw new Stop(`${current} could not be checked (${errorCode(error)}). Nothing was written.`);
+    }
+    if (stats.isSymbolicLink() || !stats.isDirectory()) {
+      throw new Stop(`${current} is no longer a directory (it changed while init:env ran). Nothing was written.`);
+    }
+    if (uid !== undefined && stats.uid !== 0 && stats.uid !== uid) {
+      throw new Stop(
+        `${current} belongs to uid ${stats.uid}, neither root nor this account, so it could replace the directories below it. ` +
+          "Choose another --out. Nothing was written."
+      );
+    }
+    if ((stats.mode & 0o022) !== 0 && (stats.mode & 0o1000) === 0) {
+      throw new Stop(
+        `${current} is writable by group or others without the sticky bit (mode ${(stats.mode & 0o7777).toString(8)}), ` +
+          "so they could replace the directories below it. Choose another --out. Nothing was written."
+      );
+    }
+    if (path.dirname(current) === current) {
+      return;
+    }
+  }
+}
+
+/**
  * A directory that will hold the file must be a real directory (not a link),
  * owned by this account, and not writable by group or others. Read through one
  * descriptor opened with O_NOFOLLOW, so the answer is about this directory and
- * not about whatever a swapped path points at.
+ * not about whatever a swapped path points at. Exported for the tests: with the
+ * path resolved first, a link here only appears through a race.
  */
-function assertTrustedDirectory(dir: string, what: string): void {
+export function assertTrustedDirectory(dir: string, what: string): void {
   let fd: number;
   try {
     fd = fs.openSync(dir, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
@@ -262,6 +376,7 @@ function prepareDirectory(dir: string): string[] {
     }
   }
   assertTrustedDirectory(existing, missing.length === 0 ? "The directory" : "The nearest existing directory");
+  assertSecureAncestors(existing);
 
   const created: string[] = [];
   try {
@@ -312,6 +427,7 @@ export function writeEnvFileExclusive(target: string, content: string): void {
     // set exactly 0600 through the descriptor before any byte goes in.
     fs.fchmodSync(fd, FILE_MODE);
     fs.writeFileSync(fd, content);
+    const written = fs.fstatSync(fd);
     fs.closeSync(fd);
     fd = undefined;
     try {
@@ -325,6 +441,22 @@ export function writeEnvFileExclusive(target: string, content: string): void {
       // write here would be the overwrite path this function exists not to have.
       throw new Stop(
         `could not publish ${target} (${code}); this filesystem may not support hard links. Nothing was written.`
+      );
+    }
+    // The path must still lead to the file just written. If a directory on it
+    // changed between the checks and the link, the file is somewhere else; it is
+    // not removed (removing by path could hit another file), but its token is
+    // treated as exposed.
+    let published: fs.Stats | undefined;
+    try {
+      published = fs.lstatSync(target);
+    } catch {
+      published = undefined;
+    }
+    if (!published || published.dev !== written.dev || published.ino !== written.ino) {
+      throw new Stop(
+        `${target} is not the file init:env just wrote: a directory on the path changed during the write, so the file ` +
+          "may be somewhere else. Do not use the token in it; run init:env again to make a new one."
       );
     }
   } finally {
@@ -358,7 +490,11 @@ function readBack(target: string): string {
 }
 
 function guidance(target: string, transport: string): string {
-  const quoted = JSON.stringify(target);
+  // Each line is quoted for the syntax it will be pasted into: JSON for the
+  // client's settings, a POSIX shell word for commands, a unit-file word for
+  // systemd. A path with spaces, `%`, `$` or quotes has to survive all three.
+  const json = JSON.stringify(target);
+  const shell = shellQuote(target);
   const common = [
     "",
     `For another endpoint, run this again with --out <another absolute path>: each endpoint gets its own file.`
@@ -367,13 +503,13 @@ function guidance(target: string, transport: string): string {
     return [
       "",
       "Next steps (HTTP):",
-      `1. Give the server MCP_ENV_FILE=${target} in its real environment.`,
+      `1. Give the server MCP_ENV_FILE=${shell} in its real environment.`,
       "   launchd: add it to the plist's EnvironmentVariables, then reload the job:",
       "     launchctl bootout gui/$(id -u)/<label>",
       "     launchctl bootstrap gui/$(id -u) <plist>",
       "   (launchctl kickstart -k restarts without re-reading the plist, so the variable would not reach the job.)",
       "   Confirm that launchctl print gui/$(id -u)/<label> shows MCP_ENV_FILE, then run: pnpm run check:http",
-      `   systemd: Environment=MCP_ENV_FILE=${target}`,
+      `   systemd: Environment=${systemdQuote(`MCP_ENV_FILE=${target}`)}`,
       "2. MCP_AUTH_TOKEN is in the file and was not shown. To read it, open the file in an editor;",
       "   do not print it inside an AI coding session, whose transcript keeps it.",
       "3. The endpoint is read-only. To allow writes, add MCP_HTTP_ALLOW_WRITE=1 by hand, together with the same",
@@ -385,7 +521,7 @@ function guidance(target: string, transport: string): string {
   return [
     "",
     "Next steps (stdio):",
-    `1. In your MCP client's entry for this server, add to its "env" block:  "MCP_ENV_FILE": ${quoted}`,
+    `1. In your MCP client's entry for this server, add to its "env" block:  "MCP_ENV_FILE": ${json}`,
     `   Values already in that "env" block win over the file. If it still sets KNOWLEDGE_ROOT (or any other`,
     "   variable written here), remove it there, or the file's value is not used.",
     "2. This server can write to the vault: two-step edits (plan, then apply only after you approve the diff)",
@@ -396,7 +532,7 @@ function guidance(target: string, transport: string): string {
     "3. To check the tool surface the file declares (after pnpm build, in the repository checkout):",
     // No `--` before --env: pnpm 10 passes it through, and check-stdio.mjs
     // refuses an argument it does not know.
-    `     pnpm run check:stdio --env ${quoted}`,
+    `     pnpm run check:stdio --env ${shell}`,
     "   That check loads the file directly, not through MCP_ENV_FILE, so also start the server once from your client.",
     ...common,
     ""
@@ -417,10 +553,19 @@ async function run(args: string[], io: InitIO): Promise<number> {
   if (options.out !== undefined && !path.isAbsolute(options.out)) {
     throw new Stop("--out must be an absolute path; a relative one would depend on the working directory.", 2);
   }
-  const target = options.out ?? defaultOutputPath(io.env);
+  const requested = options.out ?? defaultOutputPath(io.env);
+  if (hasControlCharacter(requested)) {
+    // No client setting, shell line or unit file can carry it on one line.
+    throw new Stop("the env file's path contains a control character. Choose another --out.", 2);
+  }
   // Early and for convenience only — the real guard is the link() in
   // writeEnvFileExclusive, which refuses whatever appears in the meantime.
-  if (lstatOrUndefined(target)) {
+  if (lstatOrUndefined(requested)) {
+    throw new Stop(`${requested} already exists, and init never overwrites a file. Nothing was written.`);
+  }
+  // From here on, only the resolved path is used (see canonicalTarget).
+  const target = canonicalTarget(requested);
+  if (target !== requested && lstatOrUndefined(target)) {
     throw new Stop(`${target} already exists, and init never overwrites a file. Nothing was written.`);
   }
 
@@ -463,7 +608,11 @@ async function run(args: string[], io: InitIO): Promise<number> {
   };
 
   try {
-    io.output.write(`This writes a server env file at ${target}\n(mode 0600; it never overwrites a file).\n\n`);
+    io.output.write(`This writes a server env file at ${target}\n(mode 0600; it never overwrites a file).\n`);
+    if (target !== requested) {
+      io.output.write(`(${requested} resolves to that path; it is the one checked, written and named below.)\n`);
+    }
+    io.output.write("\n");
 
     let root = "";
     for (;;) {
@@ -495,17 +644,7 @@ async function run(args: string[], io: InitIO): Promise<number> {
     // Before anything else is asked or written: a file inside the vault would be
     // indexed and readable through search / fetch. The server makes the same
     // check on MCP_ENV_FILE, but only after reading the file.
-    try {
-      assertOutsideKnowledgeRoots(
-        `The env file ${target}`,
-        "Choose a location outside the vault with --out <absolute path>. Nothing was written.",
-        target,
-        [{ name: "vault", path: path.resolve(root) }]
-      );
-    } catch (error) {
-      // Its message names the path and the root only.
-      throw new Stop((error as Error).message);
-    }
+    assertOutsideVault(target, root);
 
     io.output.write(
       "\nstdio = a local client starts the server (Claude Code, Codex, Claude Desktop).\n" +
@@ -552,6 +691,9 @@ async function run(args: string[], io: InitIO): Promise<number> {
 
     // From here to the end of the write nothing awaits, so a signal is handled
     // only once the file is either published or not, and the temporary file is gone.
+    // The vault check again, now: the answers took time, and the vault side (a
+    // vault given as a link, say) may have changed since the first check.
+    assertOutsideVault(target, root);
     const created = prepareDirectory(path.dirname(target));
     try {
       writeEnvFileExclusive(target, content);
@@ -586,6 +728,21 @@ function lstatOrUndefined(target: string): fs.Stats | undefined {
   } catch (error) {
     if (errorCode(error) === "ENOENT") return undefined;
     throw new Stop(`${target} could not be checked (${errorCode(error)}). Nothing was written.`);
+  }
+}
+
+/** The server's own containment check on `MCP_ENV_FILE`, applied before the write. */
+function assertOutsideVault(target: string, root: string): void {
+  try {
+    assertOutsideKnowledgeRoots(
+      `The env file ${target}`,
+      "Choose a location outside the vault with --out <absolute path>. Nothing was written.",
+      target,
+      [{ name: "vault", path: path.resolve(root) }]
+    );
+  } catch (error) {
+    // Its message names the path and the root only.
+    throw new Stop((error as Error).message);
   }
 }
 

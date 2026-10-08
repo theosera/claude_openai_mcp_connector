@@ -11,8 +11,12 @@ import { loadConfig, loadEnvFile, loadHttpConfig } from "../src/config.js";
 import {
   assertEnvSafeValue,
   assertRoundTrip,
+  assertTrustedDirectory,
+  canonicalTarget,
   main,
   renderEnvFile,
+  shellQuote,
+  systemdQuote,
   writeEnvFileExclusive,
   type InitIO
 } from "../src/initEnv.js";
@@ -423,25 +427,38 @@ describe("init:env — failures leave nothing behind (G9, G11)", () => {
 });
 
 describe("init:env — the directory that holds the file (G12)", () => {
-  it("refuses an existing directory that is a symbolic link", async () => {
-    const real = path.join(root, "real");
-    fs.mkdirSync(real, { mode: 0o700 });
-    fs.symlinkSync(real, path.join(root, "linked"));
-    const result = await runInProcess(["--out", path.join(root, "linked", FILE)], [vault, "", "y"]);
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain("is a symbolic link or not a directory");
-    expect(listTree(real)).toEqual([]);
-  });
-
-  it("refuses to create under a nearest existing directory that is a symbolic link", async () => {
+  it("a symbolic link on the path is resolved once: the file goes to the real directory, which is what it names", async () => {
     const real = path.join(root, "real");
     fs.mkdirSync(real, { mode: 0o700 });
     fs.symlinkSync(real, path.join(root, "linked"));
     const result = await runInProcess(["--out", path.join(root, "linked", "new", FILE)], [vault, "", "y"]);
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain("The nearest existing directory");
-    expect(result.stderr).toContain("is a symbolic link or not a directory");
-    expect(listTree(real)).toEqual([]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(listTree(real)).toEqual(["new", path.join("new", FILE)]);
+    expect(result.stdout).toContain("resolves to that path");
+    expect(result.stdout).toContain(`"MCP_ENV_FILE": ${JSON.stringify(path.join(real, "new", FILE))}`);
+  });
+
+  it("an --out whose own directory is a symbolic link is written into the real directory it points at", async () => {
+    // The shape the first version refused ("linked/server.env"); it is now
+    // resolved once, and the file and the printed path are the real ones.
+    const real = path.join(root, "real");
+    fs.mkdirSync(real, { mode: 0o700 });
+    fs.symlinkSync(real, path.join(root, "linked"));
+    const result = await runInProcess(["--out", path.join(root, "linked", FILE)], [vault, "", "y"]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(listTree(real)).toEqual([FILE]);
+    expect(result.stdout).toContain("resolves to that path");
+    expect(result.stdout).toContain(`"MCP_ENV_FILE": ${JSON.stringify(path.join(real, FILE))}`);
+  });
+
+  it("the directory check itself refuses a symbolic link (reachable only through a race once the path is resolved)", () => {
+    const real = path.join(root, "real");
+    fs.mkdirSync(real, { mode: 0o700 });
+    fs.symlinkSync(real, path.join(root, "linked"));
+    expect(() => assertTrustedDirectory(path.join(root, "linked"), "The directory")).toThrow(
+      /is a symbolic link or not a directory/
+    );
+    expect(() => assertTrustedDirectory(real, "The directory")).not.toThrow();
   });
 
   it.each([
@@ -542,7 +559,7 @@ describe("init:env — what it tells the operator (G14)", () => {
     expect(result.stdout).toContain("skills=off or audit=off");
     // Without `--`: pnpm 10 passes the separator through, and check-stdio.mjs
     // stops on it ("Unknown argument: --", measured with pnpm 10.33.0).
-    expect(result.stdout).toContain(`pnpm run check:stdio --env ${JSON.stringify(defaultTarget())}`);
+    expect(result.stdout).toContain(`pnpm run check:stdio --env '${defaultTarget()}'`);
     expect(result.stdout).not.toContain("check:stdio -- --env");
   });
 
@@ -553,6 +570,182 @@ describe("init:env — what it tells the operator (G14)", () => {
     expect(result.stdout).toContain("launchctl bootstrap gui/$(id -u) <plist>");
     expect(result.stdout).toContain("pnpm run check:http");
     expect(result.stdout).toContain("The endpoint is read-only");
+  });
+});
+
+describe("init:env — guidance quoted for where it is pasted (PR#308 thread 3)", () => {
+  it("systemdQuote and shellQuote", () => {
+    expect(systemdQuote('MCP_ENV_FILE=/a b/%h/"x"/\\y')).toBe('"MCP_ENV_FILE=/a b/%%h/\\"x\\"/\\\\y"');
+    expect(shellQuote("/a b/$(id)/`x`/it's")).toBe("'/a b/$(id)/`x`/it'\\''s'");
+  });
+
+  it("http: the systemd line keeps a path with spaces, % and quotes as one assignment", async () => {
+    const dir = path.join(root, 'a b %h "q" \\s');
+    fs.mkdirSync(dir, { mode: 0o700 });
+    const out = path.join(dir, FILE);
+    const result = await runInProcess(["--out", out], [vault, "http", "", "y"]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain(`   systemd: Environment=${systemdQuote(`MCP_ENV_FILE=${out}`)}\n`);
+    expect(result.stdout).toContain(`Give the server MCP_ENV_FILE=${shellQuote(out)} in its real environment`);
+  });
+
+  it("stdio: the check:stdio line is one shell word even with $(...), backticks and a quote in the path", async () => {
+    const dir = path.join(root, "c d $(id) `x` it's");
+    fs.mkdirSync(dir, { mode: 0o700 });
+    const out = path.join(dir, FILE);
+    const result = await runInProcess(["--out", out], [vault, "", "y"]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain(`pnpm run check:stdio --env ${shellQuote(out)}\n`);
+    expect(result.stdout).toContain(`"MCP_ENV_FILE": ${JSON.stringify(out)}`);
+  });
+
+  it("refuses an output path with a control character, and creates nothing", async () => {
+    const out = path.join(root, `bad${String.fromCharCode(10)}name`, FILE);
+    const result = await runInProcess(["--out", out], [vault, "", "y"]);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("contains a control character");
+    expect(listTree(root).sort()).toEqual(["home", "vault"]);
+  });
+});
+
+describe("init:env — the checked path is the written path (PR#308 thread 2)", () => {
+  /** Answer each prompt only once it is shown, running `before` first, so a test can change the filesystem between answers. */
+  async function runStepwise(args: string[], steps: Array<{ after: string; answer: string; before?: () => void }>) {
+    const harness = inProcess(null);
+    const pending = main(args, harness.io);
+    for (const step of steps) {
+      await vi.waitFor(() => expect(harness.stdout()).toContain(step.after));
+      step.before?.();
+      harness.input.write(`${step.answer}\n`);
+    }
+    harness.input.end();
+    const code = await pending;
+    return { code, stdout: harness.stdout(), stderr: harness.stderr() };
+  }
+
+  it("canonicalTarget follows links in the existing part and keeps the names that do not exist yet", () => {
+    const real = path.join(root, "real");
+    fs.mkdirSync(real, { mode: 0o700 });
+    fs.symlinkSync(real, path.join(root, "linked"));
+    expect(canonicalTarget(path.join(root, "linked", "a", "b", FILE))).toBe(path.join(real, "a", "b", FILE));
+  });
+
+  it("repointing a link on --out into the vault after the vault check does not move the write", async () => {
+    const outside = path.join(root, "outside");
+    fs.mkdirSync(outside, { mode: 0o700 });
+    fs.mkdirSync(path.join(outside, "sub"), { mode: 0o700 });
+    fs.mkdirSync(path.join(vault, "sub"), { mode: 0o700 });
+    const link = path.join(root, "link");
+    fs.symlinkSync(outside, link);
+    const result = await runStepwise(
+      ["--out", path.join(link, "sub", FILE)],
+      [
+        { after: "Vault location", answer: vault },
+        { after: "Transport", answer: "http" },
+        { after: "HTTP port", answer: "" },
+        {
+          after: "Write ",
+          answer: "y",
+          before: () => {
+            fs.unlinkSync(link);
+            fs.symlinkSync(vault, link);
+          }
+        }
+      ]
+    );
+    expect(result.code, result.stderr).toBe(0);
+    expect(fs.existsSync(path.join(outside, "sub", FILE))).toBe(true);
+    expect(listTree(vault)).toEqual(["sub"]);
+  });
+
+  it("the vault check runs again right before the write", async () => {
+    const vaultA = path.join(root, "vaultA");
+    fs.mkdirSync(vaultA, { mode: 0o700 });
+    const vaultLink = path.join(root, "vault-link");
+    fs.symlinkSync(vaultA, vaultLink);
+    const outDir = path.join(root, "outdir");
+    fs.mkdirSync(outDir, { mode: 0o700 });
+    const result = await runStepwise(
+      ["--out", path.join(outDir, FILE)],
+      [
+        { after: "Vault location", answer: vaultLink },
+        { after: "Transport", answer: "" },
+        {
+          after: "Write ",
+          answer: "y",
+          before: () => {
+            fs.unlinkSync(vaultLink);
+            fs.symlinkSync(root, vaultLink);
+          }
+        }
+      ]
+    );
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("resolves inside the knowledge root");
+    // Nothing written: the read-back would also catch it, but only after the write.
+    expect(result.stdout).not.toContain("Wrote ");
+    expect(listTree(outDir)).toEqual([]);
+  });
+
+  it("refuses an ancestor that group or others can write without the sticky bit", async () => {
+    const shared = path.join(root, "shared");
+    fs.mkdirSync(shared);
+    fs.chmodSync(shared, 0o777);
+    const mine = path.join(shared, "mine");
+    fs.mkdirSync(mine, { mode: 0o700 });
+    const result = await runInProcess(["--out", path.join(mine, FILE)], [vault, "", "y"]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("without the sticky bit");
+    expect(listTree(mine)).toEqual([]);
+  });
+
+  it("accepts a sticky ancestor (like /tmp) that this account owns", async () => {
+    const shared = path.join(root, "shared");
+    fs.mkdirSync(shared);
+    fs.chmodSync(shared, 0o1777);
+    const mine = path.join(shared, "mine");
+    fs.mkdirSync(mine, { mode: 0o700 });
+    const result = await runInProcess(["--out", path.join(mine, FILE)], [vault, "", "y"]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(listTree(mine)).toEqual([FILE]);
+  });
+
+  it("refuses a sticky ancestor owned by another account (its owner can rename anything in it)", async () => {
+    // Another uid cannot be created in a test, so the ancestor's lstat reports one.
+    const shared = path.join(root, "shared");
+    fs.mkdirSync(shared);
+    fs.chmodSync(shared, 0o1777);
+    const mine = path.join(shared, "mine");
+    fs.mkdirSync(mine, { mode: 0o700 });
+    const original = fs.lstatSync;
+    vi.spyOn(fs, "lstatSync").mockImplementation(((target: fs.PathLike, options?: unknown) => {
+      const stats = (original as (...args: unknown[]) => fs.Stats)(target, options);
+      if (target !== shared) return stats;
+      return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { uid: stats.uid + 1 });
+    }) as typeof fs.lstatSync);
+    const result = await runInProcess(["--out", path.join(mine, FILE)], [vault, "", "y"]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("neither root nor this account");
+    expect(listTree(mine)).toEqual([]);
+  });
+
+  it("after publishing, the file at the path must be the one just written, or init stops and says not to use it", async () => {
+    // A directory swapped between the checks and link() makes the path lead
+    // elsewhere; the test makes the path's lstat report another inode.
+    const outDir = path.join(root, "outdir");
+    fs.mkdirSync(outDir, { mode: 0o700 });
+    const out = path.join(outDir, FILE);
+    const original = fs.lstatSync;
+    vi.spyOn(fs, "lstatSync").mockImplementation(((target: fs.PathLike, options?: unknown) => {
+      const stats = (original as (...args: unknown[]) => fs.Stats)(target, options);
+      if (target !== out) return stats;
+      return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { ino: stats.ino + 1 });
+    }) as typeof fs.lstatSync);
+    const result = await runInProcess(["--out", out], [vault, "http", "", "y"]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("Do not use the token in it");
+    // Not removed: removing by path could hit another file.
+    expect(fs.existsSync(out)).toBe(true);
   });
 });
 
