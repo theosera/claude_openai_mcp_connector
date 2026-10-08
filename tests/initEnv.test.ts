@@ -585,8 +585,14 @@ describe("init:env — guidance quoted for where it is pasted (PR#308 thread 3)"
     const out = path.join(dir, FILE);
     const result = await runInProcess(["--out", out], [vault, "http", "", "y"]);
     expect(result.code, result.stderr).toBe(0);
-    expect(result.stdout).toContain(`   systemd: Environment=${systemdQuote(`MCP_ENV_FILE=${out}`)}\n`);
-    expect(result.stdout).toContain(`Give the server MCP_ENV_FILE=${shellQuote(out)} in its real environment`);
+    // Written out by hand, not built with systemdQuote / shellQuote: an
+    // expectation made by the function under test turns with it when it breaks
+    // (the % and quote mutations stayed green here until this was spelled out).
+    // `root` comes from mkdtemp and holds none of the characters being escaped.
+    expect(result.stdout).toContain(`   systemd: Environment="MCP_ENV_FILE=${root}/a b %%h \\"q\\" \\\\s/${FILE}"\n`);
+    expect(result.stdout).toContain(
+      `Give the server MCP_ENV_FILE='${root}/a b %h "q" \\s/${FILE}' in its real environment`
+    );
   });
 
   it("stdio: the check:stdio line is one shell word even with $(...), backticks and a quote in the path", async () => {
@@ -595,7 +601,8 @@ describe("init:env — guidance quoted for where it is pasted (PR#308 thread 3)"
     const out = path.join(dir, FILE);
     const result = await runInProcess(["--out", out], [vault, "", "y"]);
     expect(result.code, result.stderr).toBe(0);
-    expect(result.stdout).toContain(`pnpm run check:stdio --env ${shellQuote(out)}\n`);
+    // Spelled out by hand for the same reason as the systemd case above.
+    expect(result.stdout).toContain(`pnpm run check:stdio --env '${root}/c d $(id) \`x\` it'\\''s/${FILE}'\n`);
     expect(result.stdout).toContain(`"MCP_ENV_FILE": ${JSON.stringify(out)}`);
   });
 
