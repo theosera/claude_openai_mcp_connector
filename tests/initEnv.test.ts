@@ -117,15 +117,13 @@ function runChild(
   for (const [key, value] of Object.entries(env)) {
     if (value === undefined) delete env[key];
   }
-  const nodeArgs = ["--import", tsxLoader, entry, ...args];
-  const child = options.umask
-    ? // spawn has no umask option; a shell sets it and then becomes node.
-      spawn("/bin/sh", ["-c", `umask ${options.umask} && exec "$0" "$@"`, process.execPath, ...nodeArgs], {
-        cwd: options.cwd ?? root,
-        env,
-        stdio: ["pipe", "pipe", "pipe"]
-      })
-    : spawn(process.execPath, nodeArgs, { cwd: options.cwd ?? root, env, stdio: ["pipe", "pipe", "pipe"] });
+  // spawn has no umask option. Rather than a shell, a data: URL preload sets it
+  // inside the child before the entrypoint loads (no command string is built).
+  // That it takes effect is shown by the mutations that drop the chmod calls:
+  // only the 0277 case turns red, which it could not if the umask were not set.
+  const umaskPreload = options.umask ? ["--import", `data:text/javascript,process.umask(0o${options.umask})`] : [];
+  const nodeArgs = ["--import", tsxLoader, ...umaskPreload, entry, ...args];
+  const child = spawn(process.execPath, nodeArgs, { cwd: options.cwd ?? root, env, stdio: ["pipe", "pipe", "pipe"] });
   return new Promise((resolve, reject) => {
     let stdout = "";
     let stderr = "";
