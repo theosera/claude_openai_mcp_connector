@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -106,5 +107,48 @@ describe("replaceFileAtomically", () => {
 
     expect(chown).not.toHaveBeenCalled();
     expect((await inspect()).content).toBe("replaced\n");
+  });
+
+  // Cleanup may only remove a file this call created. When the exclusive create
+  // fails because the name is taken, the entry at that name is not ours.
+  it("leaves an entry it did not create in place when the temp name is already taken", async () => {
+    const fixed = "00000000-0000-4000-8000-000000000000";
+    const uuid = vi.spyOn(crypto, "randomUUID").mockReturnValue(fixed);
+    const taken = path.join(dir, `.note.md.${fixed}.tmp`);
+    await fs.writeFile(taken, "not ours\n", "utf8");
+
+    await expect(replaceFileAtomically(target, "replaced\n", await currentOwner())).rejects.toMatchObject({
+      code: "EEXIST"
+    });
+
+    // The fixed name was the one tried; without this the test could pass
+    // without ever reaching the failed create.
+    expect(uuid).toHaveBeenCalledTimes(1);
+    expect(await fs.readFile(taken, "utf8")).toBe("not ours\n");
+    expect((await inspect()).content).toBe("original\n");
+  });
+
+  it("removes its own temp when the write fails part way", async () => {
+    const realOpen = fs.open.bind(fs);
+    let injected = 0;
+    vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+      const handle = await realOpen(...args);
+      if (args[1] === "wx") {
+        handle.writeFile = async () => {
+          await handle.write("repl");
+          injected += 1;
+          throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+        };
+      }
+      return handle;
+    });
+
+    await expect(replaceFileAtomically(target, "replaced\n", await currentOwner())).rejects.toMatchObject({
+      code: "ENOSPC"
+    });
+
+    expect(injected).toBe(1);
+    expect((await inspect()).content).toBe("original\n");
+    expect((await fs.readdir(dir)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
 });

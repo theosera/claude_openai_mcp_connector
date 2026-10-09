@@ -61,14 +61,14 @@ export async function replaceFileAtomically(
   original: { mode: number; uid: number; gid: number }
 ): Promise<void> {
   const temp = path.join(path.dirname(targetPath), `.${path.basename(targetPath)}.${crypto.randomUUID()}.tmp`);
+  // Creating and writing are separate steps so that cleanup only ever removes a
+  // file this call made. If the exclusive create fails, nothing here was
+  // created — whatever already sits at that name (EEXIST) belongs to someone
+  // else and is left alone.
+  let created: fs.FileHandle;
   try {
-    await fs.writeFile(temp, content, { encoding: "utf8", flag: "wx", mode: original.mode });
+    created = await fs.open(temp, "wx", original.mode);
   } catch (error) {
-    // A create that never happened leaves nothing behind, but a write that
-    // failed PART WAY (ENOSPC, EIO) does — and that debris sits in the user's
-    // vault directory. Clean up on every failure rather than only on the ones
-    // after this point.
-    await fs.rm(temp, { force: true }).catch(() => undefined);
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "EACCES" || code === "EPERM" || code === "EROFS") {
       throw new Error(
@@ -79,6 +79,11 @@ export async function replaceFileAtomically(
     throw error;
   }
   try {
+    try {
+      await created.writeFile(content, "utf8");
+    } finally {
+      await created.close();
+    }
     // Everything below runs on the handle, not the path: the ids that decide
     // whether a chown is needed and the file that receives it are then the same
     // object by construction, with no window between the check and the use.
@@ -104,6 +109,9 @@ export async function replaceFileAtomically(
     }
     await fs.rename(temp, targetPath);
   } catch (error) {
+    // From the exclusive create onward the temp is this call's own, so any
+    // failure here — including a write that failed PART WAY (ENOSPC, EIO) —
+    // removes it rather than leaving debris in the user's vault directory.
     await fs.rm(temp, { force: true }).catch(() => undefined);
     throw error;
   }
