@@ -3031,7 +3031,24 @@ describe("OAuthStore persistence", () => {
       if (kind === "link") await fs.symlink(sentinel, temp);
       if (kind === "dangling link") await fs.symlink(absent, temp);
       if (kind === "directory") await fs.mkdir(temp);
-      const occupied = await fs.lstat(temp);
+      // The entry's identity, and for the regular file its bytes, through one
+      // handle: a stat of the path and a later read of it could be two files.
+      // A link or a directory is looked at without following it.
+      const look = async (): Promise<{ ino: number; mode: number; bytes?: string }> => {
+        if (kind !== "file") {
+          const st = await fs.lstat(temp);
+          return { ino: st.ino, mode: st.mode };
+        }
+        const handle = await fs.open(temp, "r");
+        try {
+          const st = await handle.stat();
+          return { ino: st.ino, mode: st.mode, bytes: await handle.readFile("utf8") };
+        } finally {
+          await handle.close();
+        }
+      };
+      const occupied = await look();
+      if (kind === "file") expect(occupied.bytes).toBe("already here\n");
       const uuid = vi.spyOn(crypto, "randomUUID").mockReturnValue(fixed);
       try {
         expect(store.recordConsent(client.clientId), kind).toBe(false);
@@ -3040,9 +3057,7 @@ describe("OAuthStore persistence", () => {
         uuid.mockRestore();
       }
       expect(await snapshot(file), kind).toEqual(stateBefore);
-      const after = await fs.lstat(temp);
-      expect([after.ino, after.mode], kind).toEqual([occupied.ino, occupied.mode]);
-      if (kind === "file") expect(await fs.readFile(temp, "utf8")).toBe("already here\n");
+      expect(await look(), kind).toEqual(occupied);
       if (kind === "link") expect(await fs.readlink(temp)).toBe(sentinel);
       if (kind === "dangling link") await expect(fs.lstat(absent), kind).rejects.toMatchObject({ code: "ENOENT" });
       expect((await fs.readdir(dir)).sort(), kind).toEqual([`.oauth-state.json.${fixed}.tmp`, "oauth-state.json"]);
