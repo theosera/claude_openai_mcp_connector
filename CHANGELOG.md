@@ -28,6 +28,16 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   bounded without relying on the tool schema. The term cap truncates rather
   than refuses; an ordinary query is far from it (a 73-character Japanese
   sentence tokenizes to 27 terms).
+- **The OAuth state file is saved through a temporary file created
+  exclusively, under a fresh name** (#303). The save wrote through a fixed
+  `<state file>.tmp`. It now creates `.<state file>.<random UUID>.tmp` in the
+  same directory with `wx` (an entry already at the name is refused, not
+  written through) and mode 0600, writes every byte through that descriptor,
+  sets 0600 on the descriptor, closes it and renames it over the state file —
+  the same naming `atomicWrite.ts` uses. A save that fails at any step returns
+  the same failure as before, leaves the state file as it was, and removes only
+  the temporary file it created. The state format, when the server saves, and
+  what each caller does with a failed save are unchanged.
 
 ## [0.10.0] — 2026-09-19
 

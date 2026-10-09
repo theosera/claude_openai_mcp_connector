@@ -211,6 +211,28 @@ async function listToolNamesOverModernHttp(issuer: string, token: string): Promi
   return tools.map((t) => t.name);
 }
 
+/**
+ * Fail the save's last step — the rename onto the state file — with EIO, and
+ * nothing else (#303). The temp file is named afresh on every save, so a failed
+ * save can no longer be arranged by occupying a fixed temp name; this fails the
+ * publish itself, after the temp file was written. `calls()` says how many times
+ * the injection was reached, so a test can assert that it ran; `restore()`
+ * belongs in a `finally`.
+ */
+function failStatePublish(file: string): { calls: () => number; restore: () => void } {
+  const target = path.resolve(file);
+  const realRename = fsSync.renameSync;
+  let calls = 0;
+  const spy = vi.spyOn(fsSync, "renameSync").mockImplementation((from, to) => {
+    if (path.resolve(String(to)) === target) {
+      calls += 1;
+      throw Object.assign(new Error("injected state publish failure"), { code: "EIO" });
+    }
+    return realRename(from, to);
+  });
+  return { calls: () => calls, restore: () => spy.mockRestore() };
+}
+
 describe("RateLimiter", () => {
   it("allows up to the limit, then blocks until the window resets", () => {
     let t = 0;
@@ -2250,6 +2272,10 @@ describe("OAuthStore persistence", () => {
       for (const [label, bytes, password] of cases) {
         await fs.writeFile(file, bytes);
         const before = await snapshot(file);
+        // The directory's entries, not one temp name: the save's temp file is
+        // named afresh on every call (#303), so looking for a fixed name would
+        // find nothing whether or not one was left behind.
+        const entriesBefore = (await fs.readdir(path.dirname(file))).sort();
         const message = refusal(file, password);
         expectUnverifiedRefusal(message, file, password);
         expect(writeAnyway(file, password), label).toEqual({
@@ -2257,7 +2283,7 @@ describe("OAuthStore persistence", () => {
           removal: false
         });
         expect(await snapshot(file), label).toEqual(before);
-        await expect(fs.lstat(`${file}.tmp`), label).rejects.toMatchObject({ code: "ENOENT" });
+        expect((await fs.readdir(path.dirname(file))).sort(), label).toEqual(entriesBefore);
       }
       // Nothing logged carries the path, a password, or a byte of the file.
       const lines = logged.mock.calls.flat().map(String).join("\n");
@@ -2419,13 +2445,20 @@ describe("OAuthStore persistence", () => {
     const file = await stateFilePath();
     const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
     const client = mustRegister(store, ["https://chatgpt.com/cb"]);
-    await fs.mkdir(`${file}.tmp`);
-    expect(store.removeRegistrations([client.clientId])).toBe(false);
-    await fs.rmdir(`${file}.tmp`);
-    // The file still holds it, so the operator can try again.
-    expect(
-      new OAuthStore({ ...opts, persistPath: file, persistSecret: secret }).getClient(client.clientId)
-    ).toBeDefined();
+    const before = await fs.readFile(file);
+    const failure = failStatePublish(file);
+    try {
+      expect(store.removeRegistrations([client.clientId])).toBe(false);
+      expect(failure.calls()).toBe(1); // the injection was reached
+    } finally {
+      failure.restore();
+    }
+    expect(await fs.readFile(file)).toEqual(before);
+    // The file still holds it, so the operator can try again — and once the
+    // save can land, the same removal is reported as done (control).
+    const reloaded = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+    expect(reloaded.getClient(client.clientId)).toBeDefined();
+    expect(reloaded.removeRegistrations([client.clientId])).toBe(true);
   });
 
   it("persists clients and tokens across a restart without raw secrets on disk", async () => {
@@ -2801,8 +2834,8 @@ describe("OAuthStore persistence", () => {
   // and a restart past the deadline would drop a client that was told it was
   // authorized.
   //
-  // The save is made to fail by putting a directory where the store writes its
-  // temporary file.
+  // The save is made to fail at its last step, the rename onto the state file
+  // (`failStatePublish` — the temp file has a fresh name on every save, #303).
   //
   // Reverse-verified: returning true without saving reddens the first assert;
   // skipping the save for a client already `given` reddens the last.
@@ -2812,9 +2845,15 @@ describe("OAuthStore persistence", () => {
     const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => t });
     const client = mustRegister(store, ["https://chatgpt.com/cb"]);
 
-    await fs.mkdir(`${file}.tmp`);
-    expect(store.recordConsent(client.clientId)).toBe(false);
-    await fs.rmdir(`${file}.tmp`);
+    const before = await fs.readFile(file);
+    const failure = failStatePublish(file);
+    try {
+      expect(store.recordConsent(client.clientId)).toBe(false);
+      expect(failure.calls()).toBe(1); // the injection was reached
+    } finally {
+      failure.restore();
+    }
+    expect(await fs.readFile(file)).toEqual(before);
     expect(store.recordConsent(client.clientId)).toBe(true);
 
     t += REGISTRATION_CONSENT_DEADLINE_MS + 1;
@@ -2833,9 +2872,15 @@ describe("OAuthStore persistence", () => {
     const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => 1_000_000 });
     const before = mustRegister(store, ["https://before/cb"]);
 
-    await fs.mkdir(`${file}.tmp`);
-    expect(() => store.registerClient(["https://chatgpt.com/cb"])).toThrow("registration_not_persisted");
-    await fs.rmdir(`${file}.tmp`);
+    const bytesBefore = await fs.readFile(file);
+    const failure = failStatePublish(file);
+    try {
+      expect(() => store.registerClient(["https://chatgpt.com/cb"])).toThrow("registration_not_persisted");
+      expect(failure.calls()).toBe(1); // the injection was reached
+    } finally {
+      failure.restore();
+    }
+    expect(await fs.readFile(file)).toEqual(bytesBefore);
 
     const reloaded = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret, now: () => 1_000_000 });
     expect(reloaded.getClient(before.clientId)).toBeDefined(); // control: the file is readable
@@ -2876,8 +2921,12 @@ describe("OAuthStore persistence", () => {
   // under a restrictive umask (077) a write WITHOUT the mode also comes out
   // 0600, and this test would be vacuous on that host.
   //
-  // Reverse-verified (2026-09-25): dropping `{ mode: 0o600 }` from the
-  // writeFileSync in save() reddens only this test (0644 under umask 022).
+  // Reverse-verified (2026-09-25) against the old fixed-name writer: dropping
+  // `{ mode: 0o600 }` from its writeFileSync reddened only this test. Since
+  // #303 the mode is set twice — at the exclusive open and by fchmod on the
+  // descriptor — and this test sees only the final mode, so removing either one
+  // alone leaves it green. "sets the temp file's mode at the open and again on
+  // the descriptor" below tells the two apart.
   it("writes the state file with owner-only permissions", async () => {
     if (process.platform === "win32") {
       return;
@@ -2920,6 +2969,194 @@ describe("OAuthStore persistence", () => {
     await expect(fs.stat(path.join(dir, "oauth-state.json"))).resolves.toBeTruthy();
     const stat = await fs.stat(dir);
     expect(stat.mode & 0o777).toBe(0o700);
+  });
+
+  // #303: the save's temp file is created exclusively, under a fresh name in the
+  // state file's directory, and only the temp file this save created is removed.
+
+  it("does not write through an entry at the old fixed temp name, and names each temp file afresh (#303)", async () => {
+    const file = await stateFilePath();
+    const dir = path.dirname(file);
+    const elsewhere = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-oauth-elsewhere-"));
+    const sentinel = path.join(elsewhere, "sentinel.txt");
+    await fs.writeFile(sentinel, "sentinel\n");
+    const sentinelBefore = await snapshot(sentinel);
+    await fs.symlink(sentinel, `${file}.tmp`);
+    const created: string[] = [];
+    const realOpen = fsSync.openSync;
+    const open = vi.spyOn(fsSync, "openSync").mockImplementation((...args: Parameters<typeof fsSync.openSync>) => {
+      if (args[1] === "wx") created.push(String(args[0]));
+      return realOpen(...args);
+    });
+    const clientId = (() => {
+      try {
+        const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+        const id = mustRegister(store, ["https://chatgpt.com/cb"]).clientId; // one save
+        store.issueTokens(id, "vault.read", "r"); // and another
+        return id;
+      } finally {
+        open.mockRestore();
+      }
+    })();
+    // The link and the file it points at are as they were; the state is a file of its own.
+    expect(await snapshot(sentinel)).toEqual(sentinelBefore);
+    expect(await fs.readlink(`${file}.tmp`)).toBe(sentinel);
+    expect((await fs.lstat(file)).isFile()).toBe(true);
+    expect(new OAuthStore({ ...opts, persistPath: file, persistSecret: secret }).getClient(clientId)).toBeDefined();
+    // Every save made its own temp file next to the state file, and none is left.
+    expect(created.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(created).size).toBe(created.length);
+    for (const temp of created) {
+      expect(path.dirname(temp)).toBe(dir);
+      expect(path.basename(temp)).toMatch(/^\.oauth-state\.json\.[0-9a-f-]{36}\.tmp$/);
+    }
+    expect((await fs.readdir(dir)).sort()).toEqual(["oauth-state.json", "oauth-state.json.tmp"]);
+  });
+
+  it("refuses, and leaves alone, an entry already at the temp file's own name (#303)", async () => {
+    const fixed = "00000000-0000-4000-8000-000000000303" as const;
+    const elsewhere = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-oauth-elsewhere-"));
+    const sentinel = path.join(elsewhere, "sentinel.txt");
+    await fs.writeFile(sentinel, "sentinel\n");
+    const sentinelBefore = await snapshot(sentinel);
+    for (const kind of ["file", "link", "dangling link", "directory"] as const) {
+      const file = await stateFilePath();
+      const dir = path.dirname(file);
+      const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+      const client = mustRegister(store, ["https://chatgpt.com/cb"]); // a state file to keep
+      const stateBefore = await snapshot(file);
+      const temp = path.join(dir, `.oauth-state.json.${fixed}.tmp`);
+      const absent = path.join(elsewhere, `absent-${kind.replace(" ", "-")}`);
+      if (kind === "file") await fs.writeFile(temp, "already here\n");
+      if (kind === "link") await fs.symlink(sentinel, temp);
+      if (kind === "dangling link") await fs.symlink(absent, temp);
+      if (kind === "directory") await fs.mkdir(temp);
+      const occupied = await fs.lstat(temp);
+      const uuid = vi.spyOn(crypto, "randomUUID").mockReturnValue(fixed);
+      try {
+        expect(store.recordConsent(client.clientId), kind).toBe(false);
+        expect(uuid, kind).toHaveBeenCalled(); // the save reached the name
+      } finally {
+        uuid.mockRestore();
+      }
+      expect(await snapshot(file), kind).toEqual(stateBefore);
+      const after = await fs.lstat(temp);
+      expect([after.ino, after.mode], kind).toEqual([occupied.ino, occupied.mode]);
+      if (kind === "file") expect(await fs.readFile(temp, "utf8")).toBe("already here\n");
+      if (kind === "link") expect(await fs.readlink(temp)).toBe(sentinel);
+      if (kind === "dangling link") await expect(fs.lstat(absent), kind).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await fs.readdir(dir)).sort(), kind).toEqual([`.oauth-state.json.${fixed}.tmp`, "oauth-state.json"]);
+    }
+    expect(await snapshot(sentinel)).toEqual(sentinelBefore);
+  });
+
+  // The open's mode and the fchmod are two guards, and the final mode alone
+  // cannot tell them apart (see "writes the state file with owner-only
+  // permissions"). The mode while the bytes go in comes from the open; under a
+  // umask that strips every bit from the open's mode, only the fchmod brings
+  // the file to 0600 — without it, the next start could not read its own state.
+  it("sets the temp file's mode at the open and again on the descriptor (#303)", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    const file = await stateFilePath();
+    const modes: number[] = [];
+    const realWrite = fsSync.writeSync;
+    const write = vi.spyOn(fsSync, "writeSync").mockImplementation(((fd: number, ...rest: unknown[]) => {
+      modes.push(fsSync.fstatSync(fd).mode & 0o777);
+      return (realWrite as (...args: unknown[]) => number)(fd, ...rest);
+    }) as unknown as typeof fsSync.writeSync);
+    const previous = process.umask(0o022);
+    try {
+      new OAuthStore({ ...opts, persistPath: file, persistSecret: secret }).issueTokens("c", "vault.read", "r");
+    } finally {
+      process.umask(previous);
+      write.mockRestore();
+    }
+    expect(modes.length).toBeGreaterThan(0); // the write was observed
+    expect([...new Set(modes)]).toEqual([0o600]);
+
+    const stripped = await stateFilePath();
+    const tokens = (() => {
+      const before = process.umask(0o777);
+      try {
+        return new OAuthStore({ ...opts, persistPath: stripped, persistSecret: secret }).issueTokens(
+          "c",
+          "vault.read",
+          "r"
+        );
+      } finally {
+        process.umask(before);
+      }
+    })();
+    expect((await fs.stat(stripped)).mode & 0o777).toBe(0o600);
+    const reloaded = new OAuthStore({ ...opts, persistPath: stripped, persistSecret: secret });
+    expect(reloaded.validateAccessToken(tokens.accessToken)?.clientId).toBe("c");
+  });
+
+  it("writes the whole state even when each write takes only a few bytes (#303)", async () => {
+    const file = await stateFilePath();
+    const realWrite = fsSync.writeSync;
+    let calls = 0;
+    const write = vi.spyOn(fsSync, "writeSync").mockImplementation(((
+      fd: number,
+      buffer: NodeJS.ArrayBufferView,
+      offset: number,
+      length: number,
+      position: number | null
+    ) => {
+      calls += 1;
+      return realWrite(fd, buffer, offset, Math.min(length, 7), position);
+    }) as unknown as typeof fsSync.writeSync);
+    const name = "日本語のクライアント 🔐✨";
+    const clientId = (() => {
+      try {
+        const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+        return mustRegister(store, ["https://chatgpt.com/cb"], name).clientId;
+      } finally {
+        write.mockRestore();
+      }
+    })();
+    expect(calls).toBeGreaterThan(1); // the bytes went in over several writes
+    expect(new OAuthStore({ ...opts, persistPath: file, persistSecret: secret }).getClient(clientId)?.clientName).toBe(
+      name
+    );
+  });
+
+  it("fails the save, keeps the old state and leaves no temp file when a step after the open fails (#303)", async () => {
+    const steps = ["writeSync returns 0", "writeSync", "fchmodSync", "closeSync"] as const;
+    for (const step of steps) {
+      const file = await stateFilePath();
+      const dir = path.dirname(file);
+      const store = new OAuthStore({ ...opts, persistPath: file, persistSecret: secret });
+      const client = mustRegister(store, ["https://chatgpt.com/cb"]);
+      const before = await snapshot(file);
+      const entries = (await fs.readdir(dir)).sort();
+      const target = step === "writeSync returns 0" ? "writeSync" : step;
+      const fsFunctions = fsSync as unknown as Record<string, (...args: unknown[]) => unknown>;
+      const real = fsFunctions[target];
+      let reached = 0;
+      const spy = vi.spyOn(fsFunctions, target).mockImplementation((...args: unknown[]) => {
+        reached += 1;
+        if (step === "writeSync returns 0") {
+          // A writer without the progress check calls again on every zero-byte
+          // write, for ever: the old writeFileSync took the worker to its heap
+          // limit here. Stop the second call, so that writer fails on `reached`.
+          if (reached > 1) throw new Error("writeSync called again after a zero-byte write");
+          return 0;
+        }
+        if (step === "closeSync") real(...args); // the descriptor is closed; the call still reports a failure
+        throw Object.assign(new Error(`injected ${step} failure`), { code: "EIO" });
+      });
+      try {
+        expect(store.recordConsent(client.clientId), step).toBe(false);
+        expect(reached, step).toBe(1); // the injection was reached, once
+      } finally {
+        spy.mockRestore();
+      }
+      expect(await snapshot(file), step).toEqual(before);
+      expect((await fs.readdir(dir)).sort(), step).toEqual(entries);
+    }
   });
 
   it("persists an observed revocation, and skips the write when it removes nothing (F1)", async () => {
@@ -3288,11 +3525,17 @@ describe("OAuthProvider flow", () => {
     const form = authorizeParams(clientId, challenge);
     form.set("password", "hunter2");
 
-    await fs.mkdir(`${file}.tmp`);
-    const failed = provider.authorizePost(form);
-    expect(failed.status).toBe(503);
-    expect(failed.headers.location).toBeUndefined();
-    await fs.rmdir(`${file}.tmp`);
+    const before = await fs.readFile(file);
+    const failure = failStatePublish(file);
+    try {
+      const failed = provider.authorizePost(form);
+      expect(failed.status).toBe(503);
+      expect(failed.headers.location).toBeUndefined();
+      expect(failure.calls()).toBe(1); // the injection was reached
+    } finally {
+      failure.restore();
+    }
+    expect(await fs.readFile(file)).toEqual(before);
     expect(provider.authorizePost(form).status).toBe(302);
   });
 
@@ -3339,11 +3582,17 @@ describe("OAuthProvider flow", () => {
     });
     const provider = new OAuthProvider(config, store);
 
-    await fs.mkdir(`${file}.tmp`);
-    const refused = provider.register({ redirect_uris: ["https://chatgpt.com/cb"] });
-    expect(refused.status).toBe(503);
-    expect(JSON.parse(refused.body).error).toBe("temporarily_unavailable");
-    await fs.rmdir(`${file}.tmp`);
+    const failure = failStatePublish(file);
+    try {
+      const refused = provider.register({ redirect_uris: ["https://chatgpt.com/cb"] });
+      expect(refused.status).toBe(503);
+      expect(JSON.parse(refused.body).error).toBe("temporarily_unavailable");
+      expect(failure.calls()).toBe(1); // the injection was reached
+    } finally {
+      failure.restore();
+    }
+    // No state file yet, and the failed save left nothing behind in its directory.
+    expect(await fs.readdir(dir)).toEqual([]);
     expect(provider.register({ redirect_uris: ["https://chatgpt.com/cb"] }).status).toBe(201);
   });
 
