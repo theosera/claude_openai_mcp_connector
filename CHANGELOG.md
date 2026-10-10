@@ -28,6 +28,15 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   bounded without relying on the tool schema. The term cap truncates rather
   than refuses; an ordinary query is far from it (a 73-character Japanese
   sentence tokenizes to 27 terms).
+- **Replacing a note removes only the temporary file that replacement
+  created.** `replaceFileAtomically`, which writes the note for
+  `apply_planned_update`, creates its same-directory temporary file with `wx`
+  as a step of its own and then writes through that descriptor. If the
+  exclusive create fails, the call fails and removes nothing: an entry already
+  at that name is left as it was. Once the file is created, a failure at any
+  later step — including a write that stops part way (ENOSPC, EIO) — removes
+  that temporary file and leaves the note as it was. A successful replacement
+  is unchanged.
 
 ## [0.10.0] — 2026-09-19
 
