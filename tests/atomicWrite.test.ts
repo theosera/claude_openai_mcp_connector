@@ -151,4 +151,24 @@ describe("replaceFileAtomically", () => {
     expect((await inspect()).content).toBe("original\n");
     expect((await fs.readdir(dir)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
+
+  // Between the exclusive create and the rename, the temp is reached only
+  // through the handle that create returned. Reopening it by path would let
+  // whatever sits at that name by then receive the stat, chown and chmod.
+  it("opens the temp only once, by the exclusive create", async () => {
+    const owner = await currentOwner();
+    const realOpen = fs.open.bind(fs);
+    const tempOpens: unknown[] = [];
+    vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+      if (String(args[0]).endsWith(".tmp")) {
+        tempOpens.push(args[1]);
+      }
+      return realOpen(...args);
+    });
+
+    await replaceFileAtomically(target, "replaced\n", owner);
+
+    expect(tempOpens).toEqual(["wx"]);
+    expect((await inspect()).content).toBe("replaced\n");
+  });
 });
