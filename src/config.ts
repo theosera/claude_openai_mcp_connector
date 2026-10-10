@@ -401,8 +401,12 @@ function isInsideRoot(canonicalRoot: string, canonicalTarget: string): boolean {
  * Checked here, at boot, for the same reason as the subtree-disjointness asserts
  * above: a misconfiguration that only shows up as "these files are searchable"
  * is one nobody notices.
+ *
+ * Exported for `src/initEnv.ts`, which applies it to the env file it is about to
+ * write — before the write, where the boot-time check on `MCP_ENV_FILE` can only
+ * run after the file has been read.
  */
-function assertOutsideKnowledgeRoots(
+export function assertOutsideKnowledgeRoots(
   subject: string,
   remedy: string,
   target: string,

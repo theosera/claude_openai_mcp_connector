@@ -6,6 +6,58 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`pnpm run init:env` writes the server's env file interactively** (ROADMAP
+  Onboarding, first part). It asks for the vault and the transport — stdio, or
+  HTTP with a port and a bearer token it generates — and writes
+  `$XDG_CONFIG_HOME/claude-openai-mcp-connector/server.env` (else under
+  `~/.config`, or wherever `--out <absolute path>` says), then prints the
+  `MCP_ENV_FILE` line for the client or supervisor. An offline operator command
+  like `oauth:registrations`, not an MCP tool or an HTTP route.
+
+  The file is published by a single `link()` from a temporary file in the same
+  directory, opened `wx` and set to `0600` through its descriptor before any byte
+  is written, so an existing file, symlink or dangling symlink at the target is
+  never replaced, and no failure falls back to `rename()`. The target is refused
+  inside the vault **before** anything is written — the server's own check on
+  `MCP_ENV_FILE` runs only after it has read the file, so it can stop serving but
+  cannot undo the exposure. The target is resolved once, before the first
+  question, and every later step uses that resolved path, so repointing a link on
+  the given path afterwards does not move the write; the write itself resolves its
+  directory again and creates, links and cleans up the temporary file only there.
+  The vault check also runs again right before writing. The directory that holds the file (or, when it has
+  to be created, its nearest existing ancestor) must be a real directory owned by
+  the operator and not writable by group or others, and every directory above it
+  must be owned by root or the operator and not writable by group or others
+  unless it is sticky; an existing one is never re-permissioned. After `link()`,
+  the file at the path must be the one just written, or the command stops and
+  says not to use its token. The token is never printed, no option takes a secret, and
+  nothing but `XDG_CONFIG_HOME` and `HOME` is read from the environment. Before it
+  reports success, the published file is read back through a descriptor opened
+  with `O_NOFOLLOW` that must be the file just written (otherwise it stops with the
+  same "do not use its token"), and its bytes are parsed the way `loadEnvFile`
+  parses them into a fresh environment and passed through `loadConfig` →
+  `loadHttpConfig`, so a value in the operator's shell cannot mask a mistake in
+  the file.
+
+  Trust boundary: the command trusts root and the account that runs it. It
+  refuses an output path that another account could change, but it does not
+  defend against root or that same account changing the path while it runs —
+  either could read the token anyway. An MCP client of this server is not that
+  account in this sense: the server's writes stay inside the vault, and the
+  output path is checked to be outside it.
+
+  For stdio it also says what the README does not yet: the client's `env` block
+  wins over the file, the server can write (two-step), and a vault shared with
+  other server processes needs the same `MCP_AUDIT_SUBDIR` / `MCP_SKILLS_SUBDIR`
+  here. Each printed line is quoted for where it is pasted — JSON for the client,
+  a shell word for commands, a unit-file word for systemd (with `%` doubled) — and
+  an output path with a control character, or one that starts or ends with
+  whitespace (the server trims `MCP_ENV_FILE`), is refused. The OAuth questions follow
+  separately. Reverse-verified per guard: removing each one turns the tests aimed
+  at it red.
+
 ### Security
 
 - **A heading's closing-hash run is found by a linear scan, not a regex**
