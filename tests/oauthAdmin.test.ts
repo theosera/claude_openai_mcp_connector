@@ -329,19 +329,33 @@ describe("oauth:registrations (#184)", () => {
     expect((await fs.readFile(stateFile)).equals(before)).toBe(true);
   }, 30_000);
 
+  // In process: the write is made to fail at its last step, the rename onto the
+  // state file (#303 — the temp file has a fresh name on every save, so it can
+  // no longer be blocked by occupying a fixed name), and a spawned command
+  // cannot see a spy. The spawned-entrypoint tests above still cover the real
+  // entry.
+  //
   // Reverse-verified: ignoring the store's save result in the command reddens
   // the status and message asserts (it says "Removed").
   it("reports a removal it could not write, and leaves the registration", async () => {
     const { doomed } = seed();
-    await fs.mkdir(`${stateFile}.tmp`);
-    try {
-      const failed = await run(["remove", doomed.clientId, "--apply"]);
-      expect(failed.code).toBe(1);
-      expect(failed.stderr).toContain("could not be written");
-      expect(failed.stdout).not.toContain("Removed");
-    } finally {
-      await fs.rmdir(`${stateFile}.tmp`);
-    }
+    const before = await fs.readFile(stateFile);
+    const target = path.resolve(stateFile);
+    const realRename = fsSync.renameSync;
+    let calls = 0;
+    const rename = vi.spyOn(fsSync, "renameSync").mockImplementation((from, to) => {
+      if (path.resolve(String(to)) === target) {
+        calls += 1;
+        throw Object.assign(new Error("injected state publish failure"), { code: "EIO" });
+      }
+      return realRename(from, to);
+    });
+    const failed = await runInProcess(["remove", doomed.clientId, "--apply"]).finally(() => rename.mockRestore());
+    expect(calls).toBe(1); // the injection was reached
+    expect(failed.code).toBe(1);
+    expect(failed.stderr).toContain("could not be written");
+    expect(failed.stdout).not.toContain("Removed");
+    expect((await fs.readFile(stateFile)).equals(before)).toBe(true);
     expect(reload().getClient(doomed.clientId)).toBeDefined();
   }, 30_000);
 

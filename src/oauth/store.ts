@@ -1495,8 +1495,8 @@ export class OAuthStore {
   }
 
   /**
-   * Atomic save (tmp + rename), 0600 file / 0700 dir. Failures only warn: for
-   * tokens, persistence is an availability feature and a failed save must not
+   * Atomic save (exclusive temp + rename), 0600 file / 0700 dir. Failures only
+   * warn: for tokens, persistence is an availability feature and a failed save must not
    * break auth. The two registration transitions that must not be answered
    * unless they landed call `persist` instead (#184), and so does removing
    * registrations, because an operator must not be told it worked when it did
@@ -1519,6 +1519,10 @@ export class OAuthStore {
     if (this.loadResult === "failed") {
       return false;
     }
+    // The temporary file this call created, and only that one: set after the
+    // exclusive create succeeds, so cleanup never removes an entry that was
+    // already at the name (#303).
+    let ownedTemp: string | undefined;
     try {
       if (!this.hmacKey || !this.hmacSalt) {
         this.hmacSalt = crypto.randomBytes(STATE_SALT_BYTES);
@@ -1539,15 +1543,49 @@ export class OAuthStore {
         payload: payloadJson
       });
       fs.mkdirSync(path.dirname(this.persistPath), { recursive: true, mode: 0o700 });
-      const tmp = `${this.persistPath}.tmp`;
-      fs.writeFileSync(tmp, envelope, { mode: 0o600 });
+      // A fresh, unpredictable name in the same directory, created exclusively
+      // (#303) — the same naming as atomicWrite.ts. `wx` is O_CREAT | O_EXCL: an
+      // entry already at the name, whatever it is, is refused rather than
+      // written through, and the save fails with the state file left as it was.
+      const tmp = path.join(
+        path.dirname(this.persistPath),
+        `.${path.basename(this.persistPath)}.${crypto.randomUUID()}.tmp`
+      );
+      const fd = fs.openSync(tmp, "wx", 0o600);
+      ownedTemp = tmp;
+      try {
+        const bytes = Buffer.from(envelope, "utf8");
+        let offset = 0;
+        while (offset < bytes.length) {
+          const written = fs.writeSync(fd, bytes, offset, bytes.length - offset, null);
+          if (written <= 0) {
+            throw new Error("OAuth state write made no progress");
+          }
+          offset += written;
+        }
+        // The open mode can only be narrowed by the umask; set exactly 0600 on
+        // the descriptor once the bytes are in, as atomicWrite.ts sets the mode
+        // after its write.
+        fs.fchmodSync(fd, 0o600);
+      } finally {
+        fs.closeSync(fd);
+      }
       fs.renameSync(tmp, this.persistPath);
+      ownedTemp = undefined;
       return true;
     } catch {
       // No path/error detail beyond this line (no secrets to leak, but keep the
       // log surface minimal).
       console.error("[oauth] failed to persist OAuth state");
       return false;
+    } finally {
+      if (ownedTemp !== undefined) {
+        try {
+          fs.unlinkSync(ownedTemp);
+        } catch {
+          // Best effort: the result and the single log line stay as they were.
+        }
+      }
     }
   }
 }
