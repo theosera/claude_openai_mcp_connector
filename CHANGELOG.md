@@ -36,7 +36,9 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   at that name is left as it was. Once the file is created, a failure at any
   later step — including a write that stops part way (ENOSPC, EIO) — removes
   that temporary file and leaves the note as it was. A successful replacement
-  is unchanged.
+  is unchanged. The temporary file is also no longer reopened by path: the
+  `stat`, `chown` and `chmod` that restore the note's owner and mode act on
+  the descriptor the exclusive create returned.
 
 ## [0.10.0] — 2026-09-19
 
