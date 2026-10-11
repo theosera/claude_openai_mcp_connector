@@ -90,6 +90,17 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the same failure as before, leaves the state file as it was, and removes only
   the temporary file it created. The state format, when the server saves, and
   what each caller does with a failed save are unchanged.
+- **Replacing a note removes only the temporary file that replacement
+  created.** `replaceFileAtomically`, which writes the note for
+  `apply_planned_update`, creates its same-directory temporary file with `wx`
+  as a step of its own and then writes through that descriptor. If the
+  exclusive create fails, the call fails and removes nothing: an entry already
+  at that name is left as it was. Once the file is created, a failure at any
+  later step — including a write that stops part way (ENOSPC, EIO) — removes
+  that temporary file and leaves the note as it was. A successful replacement
+  is unchanged. The temporary file is also no longer reopened by path: the
+  `stat`, `chown` and `chmod` that restore the note's owner and mode act on
+  the descriptor the exclusive create returned.
 
 ## [0.10.0] — 2026-09-19
 

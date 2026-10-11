@@ -61,14 +61,14 @@ export async function replaceFileAtomically(
   original: { mode: number; uid: number; gid: number }
 ): Promise<void> {
   const temp = path.join(path.dirname(targetPath), `.${path.basename(targetPath)}.${crypto.randomUUID()}.tmp`);
+  // Creating and writing are separate steps so that cleanup only ever removes a
+  // file this call made. If the exclusive create fails, nothing here was
+  // created — whatever already sits at that name (EEXIST) belongs to someone
+  // else and is left alone.
+  let created: fs.FileHandle;
   try {
-    await fs.writeFile(temp, content, { encoding: "utf8", flag: "wx", mode: original.mode });
+    created = await fs.open(temp, "wx", original.mode);
   } catch (error) {
-    // A create that never happened leaves nothing behind, but a write that
-    // failed PART WAY (ENOSPC, EIO) does — and that debris sits in the user's
-    // vault directory. Clean up on every failure rather than only on the ones
-    // after this point.
-    await fs.rm(temp, { force: true }).catch(() => undefined);
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "EACCES" || code === "EPERM" || code === "EROFS") {
       throw new Error(
@@ -79,18 +79,19 @@ export async function replaceFileAtomically(
     throw error;
   }
   try {
-    // Everything below runs on the handle, not the path: the ids that decide
-    // whether a chown is needed and the file that receives it are then the same
-    // object by construction, with no window between the check and the use.
-    const handle = await fs.open(temp, "r");
+    // Until the rename, the temp is touched only through the handle the
+    // exclusive create returned — never reopened by path. The write, the ids
+    // that decide whether a chown is needed, the chown and the chmod therefore
+    // all act on the file this call created, whatever has happened to the name.
     try {
-      const temporary = await handle.stat();
+      await created.writeFile(content, "utf8");
+      const temporary = await created.stat();
       if (temporary.uid !== original.uid || temporary.gid !== original.gid) {
         // The temp belongs to this process; the target belongs to someone else.
         // Publishing it as-is would hand them a note they no longer own, so a
         // chown that cannot restore the original ids has to stop the operation.
         try {
-          await handle.chown(original.uid, original.gid);
+          await created.chown(original.uid, original.gid);
         } catch (error) {
           throw new Error(
             "Cannot apply the update: the note belongs to a different user or group, and this process cannot restore that ownership on the replacement. Applying anyway would silently transfer the note to this process's owner.",
@@ -98,12 +99,18 @@ export async function replaceFileAtomically(
           );
         }
       }
-      await handle.chmod(original.mode);
+      await created.chmod(original.mode);
     } finally {
-      await handle.close();
+      await created.close();
     }
+    // The rename (and the cleanup below) still go by name: Node offers no rename
+    // or unlink relative to an open descriptor, so whatever sits at the temp's
+    // name at that moment is what they act on.
     await fs.rename(temp, targetPath);
   } catch (error) {
+    // From the exclusive create onward the temp is this call's own, so any
+    // failure here — including a write that failed PART WAY (ENOSPC, EIO) —
+    // removes it rather than leaving debris in the user's vault directory.
     await fs.rm(temp, { force: true }).catch(() => undefined);
     throw error;
   }
