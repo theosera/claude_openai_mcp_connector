@@ -1424,7 +1424,7 @@ endpoint's local `/mcp` and compares the live tool surface with that endpoint's
 printed:
 
 ```bash
-pnpm run check:http -- --env ./.env --env /abs/path/to/scan-dir/.env
+pnpm run check:http --env ./.env --env /abs/path/to/scan-dir/.env
 ```
 
 For each endpoint it prints the server info, protocol, and tool counts
@@ -1444,7 +1444,7 @@ while an endpoint is down**, which is what a plist that still lacks
 registration, where there is no listening endpoint to interrogate:
 
 ```bash
-pnpm run check:stdio -- --env ./.env
+pnpm run check:stdio --env ./.env
 ```
 
 It **spawns the real entrypoint** with that file's variables (plus a minimal
