@@ -36,7 +36,7 @@
 //
 // Usage:
 //   node scripts/check-stdio.mjs [--env <path>]... [--entry <path>]
-//   pnpm run check:stdio -- --env ./.env
+//   pnpm run check:stdio --env ./.env
 // With no --env, a single ./.env is checked. --entry defaults to dist/index.js
 // (run `pnpm build` first); a `.ts` entry is run through the local tsx loader so
 // a development checkout can be checked without building.
