@@ -1098,6 +1098,91 @@ describe.each([
       expect(loadHttpConfig({ ...base, [envName]: value }).oauth?.[field]).toBe(fallback);
     }
   );
+
+  // #301: parseInt read only the leading digits of these, and Number alone would
+  // take the exponent, decimal, sign and radix forms. Each must keep the exact
+  // default — not merely differ from 1 or 600 — so a throw or a disabled OAuth
+  // config cannot pass for the fix. "6e2" and "600.0" are here because "3.6e3"
+  // reads as 3600 under Number, which is the access default and would hide that
+  // regression for one of the three variables.
+  it.each([
+    "1e5",
+    "3.6e3",
+    "600abc",
+    "600.0",
+    "600.5",
+    "1E5",
+    "6e2",
+    "0x10",
+    "0b10",
+    "0o10",
+    "+600",
+    "6_00",
+    "600 1",
+    "600\n1",
+    "６００",
+    "600\u0000",
+    "NaN"
+  ])("keeps the default for a value that is not plain decimal digits %j", (value) => {
+    expect(loadHttpConfig({ ...base, [envName]: value }).oauth?.[field]).toBe(fallback);
+  });
+
+  // What parseInt accepted and still should: surrounding whitespace (including
+  // the full-width space, which trim() removes as parseInt skipped it) and
+  // leading zeros.
+  it.each([
+    [" 600 ", 600],
+    ["\t600\r\n", 600],
+    ["000600", 600],
+    ["01", 1],
+    ["　600　", 600]
+  ])("reads %j as %i", (value, expected) => {
+    expect(loadHttpConfig({ ...base, [envName]: value }).oauth?.[field]).toBe(expected);
+  });
+
+  it("keeps the default for zeros only, which pass the digit check", () => {
+    expect(loadHttpConfig({ ...base, [envName]: "000" }).oauth?.[field]).toBe(fallback);
+  });
+});
+
+describe("OAuth TTLs are read one variable at a time (#301)", () => {
+  const base = {
+    MCP_AUTH_TOKEN: "static-bearer",
+    MCP_OAUTH_ENABLED: "1",
+    MCP_HTTP_PUBLIC_URL: "https://vault.example.com",
+    MCP_OAUTH_PASSWORD: "login-password"
+  } satisfies NodeJS.ProcessEnv;
+
+  it("reads each of the three variables into its own field", () => {
+    const oauth = loadHttpConfig({
+      ...base,
+      MCP_OAUTH_ACCESS_TTL: "61",
+      MCP_OAUTH_REFRESH_TTL: "62",
+      MCP_OAUTH_CODE_TTL: "63"
+    }).oauth;
+    expect([oauth?.accessTokenTtlSec, oauth?.refreshTokenTtlSec, oauth?.codeTtlSec]).toEqual([61, 62, 63]);
+  });
+
+  it("keeps the default for the one malformed value and reads the other two", () => {
+    const oauth = loadHttpConfig({
+      ...base,
+      MCP_OAUTH_ACCESS_TTL: "61",
+      MCP_OAUTH_REFRESH_TTL: "1e5",
+      MCP_OAUTH_CODE_TTL: "63"
+    }).oauth;
+    expect([oauth?.accessTokenTtlSec, oauth?.refreshTokenTtlSec, oauth?.codeTtlSec]).toEqual([61, 2592000, 63]);
+  });
+
+  it("builds no OAuth config, and does not throw, for malformed TTLs while OAuth is off", () => {
+    const config = loadHttpConfig({
+      ...base,
+      MCP_OAUTH_ENABLED: undefined,
+      MCP_OAUTH_ACCESS_TTL: "1e5",
+      MCP_OAUTH_REFRESH_TTL: "600abc",
+      MCP_OAUTH_CODE_TTL: "0x10"
+    });
+    expect(config.oauth).toBeUndefined();
+  });
 });
 
 // INV-7 item 4: with MCP_OAUTH_ENABLED set, a missing issuer, a non-https
