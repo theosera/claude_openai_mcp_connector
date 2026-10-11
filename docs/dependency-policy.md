@@ -180,8 +180,10 @@ That has already happened once, and it is the pattern to copy. Two dev-scope
 `high` findings — `brace-expansion` via `eslint`, `nanoid` via `vite` — were
 found by *reading* the full-tree report during review, not by any gate, and
 Dependabot had opened no PR for either. Both were cleared the same way a
-production finding is, with range-scoped overrides. The tree currently reports no
-advisories at all, in either scope.
+production finding is, with range-scoped overrides. When this section was
+written (2026-08-10), the tree reported no advisories at all, in either scope.
+That was the state on that day, not a property of the tree: run both audit steps
+to see the current one.
 
 So the rule this section actually carries is: **when you touch dependencies, read
 the advisory step's output**, because nothing in CI will make you. A dev-scope

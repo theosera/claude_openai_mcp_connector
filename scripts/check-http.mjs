@@ -25,7 +25,7 @@
 //
 // Usage:
 //   node scripts/check-http.mjs [--env <path>]...
-//   pnpm run check:http -- --env ./.env --env /abs/path/to/scan-dir/.env
+//   pnpm run check:http --env ./.env --env /abs/path/to/scan-dir/.env
 // With no --env, a single ./.env (the interactive endpoint) is checked.
 // MCP_CHECK_TIMEOUT_MS (default 10000) bounds each HTTP request.
 
