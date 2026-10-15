@@ -917,8 +917,18 @@ function loadOAuthConfig(
   if (!loginPassword) {
     throw new Error("MCP_OAUTH_ENABLED requires MCP_OAUTH_PASSWORD (the vault login password).");
   }
+  // An OAuth lifetime is read only from a plain decimal (#301): the whole trimmed
+  // value must be ASCII digits before it becomes a number. `parseInt` stopped at
+  // the first character it could not read, so "1e5" became 1 second and "600abc"
+  // 600; `Number` alone would accept "1e5", "600.0", "0x10" and "+600". Anything
+  // else, zero, and an unsafe integer (#299) keep the default, as silently as an
+  // unset value does.
   const ttl = (value: string | undefined, fallback: number): number => {
-    const n = Number.parseInt(value?.trim() || String(fallback), 10);
+    const text = value?.trim();
+    if (!text || !/^[0-9]+$/.test(text)) {
+      return fallback;
+    }
+    const n = Number(text);
     return Number.isSafeInteger(n) && n > 0 ? n : fallback;
   };
   // Optional token persistence (opt-in, like every new capability). Resolved

@@ -30,12 +30,16 @@ import { MASK, redactFragment } from "../packages/log-redaction/src/core.mjs";
  * measured separately, when the hooks are switched over.
  *
  * Each fourfold increase is timed as interleaved pairs -- the smaller input, then the
- * larger, then the other way round -- and judged on the median of the pairs'
- * ratios. Under the old per-doubling rule, timing the two sizes minutes apart
- * let the other test files, running in parallel, load one side and not the other:
+ * larger, then the other way round -- and judged on the fastest larger batch over the
+ * fastest smaller batch. Under the old per-doubling rule, timing the two sizes minutes
+ * apart let the other test files, running in parallel, load one side and not the other:
  * the same linear shape failed two full runs in three with ratios of 3.5 and 4.9,
- * and passed every run on its own. A pair shares its moment, so transient load cancels
- * out of its ratio, while a quadratic walk is over the limit in every pair.
+ * and passed every run on its own. Interleaving keeps both sizes in the same stretch
+ * of time, and load only ever adds time, so the fastest batch of each size is the one
+ * least disturbed. The median of the pairs' ratios, used before, could be pulled under
+ * the limit by load on the smaller side of four pairs out of seven; the fastest
+ * batches need all seven smaller batches slowed, so a quadratic walk can still be
+ * pulled under it, only far less easily.
  *
  * The core is judged on how its time grows, not on how fast this machine is,
  * with one exception: the first call at each size must take under a second per
@@ -43,6 +47,13 @@ import { MASK, redactFragment } from "../packages/log-redaction/src/core.mjs";
  * 64 KiB, and vitest's timeout cannot stop a synchronous loop -- a quadratic
  * mutation once kept this file running for 22 minutes. The ceiling fails it in
  * one call instead.
+ *
+ * The child-process checks below (the shipped masks and the archive's jq) keep
+ * two limits apart. The ceiling is a judgement: a first call over it fails the
+ * test as slow. The runaway cap, RUNAWAY_FACTOR times the ceiling, only stops a
+ * child that would otherwise run on: it is the child's timeout. When the two were
+ * one number, a linear hook that was briefly slow was killed as if it had run
+ * away, on any of up to 42 timed runs per window, and the ratio was never judged.
  */
 
 const KiB = 1024;
@@ -53,6 +64,27 @@ const REPEAT = 4;
 const PAIRS = 7;
 const ATTEMPTS = 3;
 const CEILING_MS_PER_64_KIB = 1000;
+// Provisional: to be set from how long a deliberately quadratic mask takes to be
+// stopped. Each child run gets RUNAWAY_FACTOR times its ceiling; at 1 MiB that must
+// stay well inside the describe blocks' 180 s, since a synchronous call outlives
+// vitest's timeout.
+const RUNAWAY_FACTOR = 4;
+
+/** The first-call ceiling for `bytes` of input: a judgement, not a timeout. */
+const ceilingMs = (bytes: number) => Math.max(1000, (CEILING_MS_PER_64_KIB * bytes) / (64 * KiB));
+/** The child's timeout for `bytes` of input: it stops runaways and judges nothing. */
+const runawayMs = (bytes: number) => RUNAWAY_FACTOR * ceilingMs(bytes);
+
+/** A failed child run, worded so a stopped runaway is not read as a slow run. */
+function childFailure(what: string, bytes: number, startedAt: number, cause: unknown): Error {
+  const ms = (performance.now() - startedAt).toFixed(1);
+  const code = (cause as { code?: unknown } | null)?.code;
+  const how =
+    code === "ETIMEDOUT"
+      ? `stopped by the runaway cap of ${runawayMs(bytes)} ms after ${ms} ms`
+      : `failed after ${ms} ms`;
+  return new Error(`${what}, ${bytes} ASCII bytes, ${how}`, { cause });
+}
 
 const DASH5 = "-".repeat(5);
 const LS = String.fromCharCode(0x2028);
@@ -410,9 +442,14 @@ function median(values: readonly number[]): number {
   return sorted[Math.floor(sorted.length / 2)]!;
 }
 
-/** The median of the pairs' ratios, from pairs of batch times `[smaller, larger]`. */
+/**
+ * The fastest larger batch over the fastest smaller batch, from pairs of batch
+ * times `[smaller, larger]`. Load only adds time, so each side's minimum is its
+ * least disturbed batch, and load on the smaller side lowers the ratio only when it
+ * reaches every smaller batch.
+ */
 function growthRatio(pairs: readonly (readonly [number, number])[]): number {
-  return median(pairs.map(([small, large]) => large / small));
+  return Math.min(...pairs.map(([, large]) => large)) / Math.min(...pairs.map(([small]) => small));
 }
 
 function batchTime(text: string, kind: "command" | "text"): number {
@@ -476,6 +513,30 @@ describe("the two-doubling ratio check itself", () => {
     expect(growthRatio([[1, 8.999]]) < LIMIT).toBe(true);
     expect(growthRatio([[1, 9]]) < LIMIT).toBe(false);
   });
+
+  // A quadratic curve (16 over two doublings) whose smaller side was slowed twofold
+  // in four pairs of seven. The median of the pairs' ratios lands at 8 and would
+  // pass it; the fastest batches still show 16.
+  const slowedSmallerInFour: [number, number][] = [
+    [2, 16],
+    [2, 16],
+    [2, 16],
+    [2, 16],
+    [1, 16],
+    [1, 16],
+    [1, 16]
+  ];
+
+  it("is not pulled under the limit by load on the smaller side of most pairs", () => {
+    expect(median(slowedSmallerInFour.map(([small, large]) => large / small)) < LIMIT).toBe(true);
+    expect(growthRatio(slowedSmallerInFour) < LIMIT).toBe(false);
+  });
+
+  it("is still pulled under the limit when every smaller batch is slowed (a limit, not a guarantee)", () => {
+    // Nothing in the ratio can tell this apart from a faster curve: the retries and
+    // the first-call ceiling are what remain against it.
+    expect(growthRatio(slowedSmallerInFour.map(([, large]) => [2, large] as [number, number])) < LIMIT).toBe(true);
+  });
 });
 
 describe("the core's time over two doublings", { timeout: 180_000 }, () => {
@@ -533,7 +594,8 @@ function shippedMask(path: string): string {
 // The actual two hook functions, including their platform sed/awk programs.
 // One process per measurement avoids timing an artificial helper in isolation.
 // Unlike the synchronous core call, an accidentally quadratic child can be
-// terminated at the first-call ceiling. CI runs these on GNU and macOS tools.
+// stopped, at the runaway cap; the first-call ceiling then judges it as slow
+// before any ratio is taken. CI runs these on GNU and macOS tools.
 describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_000 }, () => {
   for (const [copy, path] of MASK_COPIES) {
     const source = shippedMask(path);
@@ -544,13 +606,10 @@ describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_
           input: text,
           encoding: "utf8",
           maxBuffer: 4 * 1024 * KiB,
-          timeout: Math.max(1000, (CEILING_MS_PER_64_KIB * text.length) / (64 * KiB))
+          timeout: runawayMs(text.length)
         });
       } catch (cause) {
-        throw new Error(
-          `${copy}: ${phase}, ${text.length} ASCII bytes, failed after ${(performance.now() - start).toFixed(1)} ms`,
-          { cause }
-        );
+        throw childFailure(`${copy}: ${phase}`, text.length, start, cause);
       }
     };
     const measure = (text: string, phase: string) => {
@@ -655,16 +714,22 @@ describe("the archive's NUL normalization time over two doublings", { timeout: 1
   for (const stage of ["renderer", "refence"] as const) {
     const program = stage === "renderer" ? renderer : refence;
     const option = stage === "renderer" ? "-r" : "-j";
-    const run = (input: string, size: number) =>
-      execFileSync("jq", [option, program], {
-        input,
-        encoding: "utf8",
-        maxBuffer: 32 * 1024 * KiB,
-        timeout: Math.max(1000, (CEILING_MS_PER_64_KIB * size) / (64 * KiB))
-      });
-    const measure = (input: string, size: number) => {
+    const run = (input: string, size: number, phase: string) => {
       const start = performance.now();
-      run(input, size);
+      try {
+        return execFileSync("jq", [option, program], {
+          input,
+          encoding: "utf8",
+          maxBuffer: 32 * 1024 * KiB,
+          timeout: runawayMs(size)
+        });
+      } catch (cause) {
+        throw childFailure(`${stage}: ${phase}`, size, start, cause);
+      }
+    };
+    const measure = (input: string, size: number, phase: string) => {
+      const start = performance.now();
+      run(input, size, phase);
       return performance.now() - start;
     };
 
@@ -678,9 +743,10 @@ describe("the archive's NUL normalization time over two doublings", { timeout: 1
         // is unrelated to the archive's actual file-input normalization cost.
         const before = `~~~~~~text\n${body}\n~~~~~~\n`;
         const input = stage === "renderer" ? transcript(body) : JSON.stringify({ a: before, b: before });
-        const expected = stage === "renderer" ? run(transcript(normalized), size) : before.replaceAll("\0", "?");
+        const expected =
+          stage === "renderer" ? run(transcript(normalized), size, "expected output") : before.replaceAll("\0", "?");
         const first = performance.now();
-        const output = run(input, size);
+        const output = run(input, size, "first call");
         const firstMs = performance.now() - first;
         expect({ size, firstMs: firstMs < (CEILING_MS_PER_64_KIB * size) / (64 * KiB) ? "under" : firstMs }).toEqual({
           size,
@@ -697,12 +763,13 @@ describe("the archive's NUL normalization time over two doublings", { timeout: 1
           while (ratios.length < ATTEMPTS && !(ratios.at(-1)! < LIMIT)) {
             const pairs: [number, number][] = [];
             for (let p = 0; p < PAIRS; p += 1) {
+              const phase = `ratio attempt ${ratios.length + 1}, pair ${p + 1}`;
               if (p % 2 === 0) {
-                const small = measure(previous.input, previous.size);
-                pairs.push([small, measure(input, size)]);
+                const small = measure(previous.input, previous.size, `${phase}, smaller`);
+                pairs.push([small, measure(input, size, `${phase}, larger`)]);
               } else {
-                const large = measure(input, size);
-                pairs.push([measure(previous.input, previous.size), large]);
+                const large = measure(input, size, `${phase}, larger`);
+                pairs.push([measure(previous.input, previous.size, `${phase}, smaller`), large]);
               }
             }
             ratios.push(growthRatio(pairs));
