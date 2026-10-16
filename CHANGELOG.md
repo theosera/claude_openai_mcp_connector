@@ -58,6 +58,17 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   separately. Reverse-verified per guard: removing each one turns the tests aimed
   at it red.
 
+### Changed
+
+- **The pinned development and CI Node version moves from 24.13.0 to
+  24.22.0.** `.node-version` now names 24.22.0, and the CI matrix runs the full
+  gate on **22.x** (the `engines` floor, unchanged) and the exact **24.22.0**;
+  the macOS job moves to 24.22.0 with it. `engines` stays `>=22.12.0`, so no
+  runtime support is dropped. The required status check the ruleset names
+  follows the matrix leg, from `build (24.13.0)` to `build (24.22.0)`. The 0.7.0
+  entry that introduced the pin, and the timing note in `tests/oauth.test.ts`
+  (measured on 24.13.0), are records of their time and stay as written.
+
 ### Security
 
 - **A heading's closing-hash run is found by a linear scan, not a regex**
