@@ -561,7 +561,10 @@ describe("AuditStore", () => {
       await expect(store.appendAuditReport(report)).rejects.toMatchObject({ code: "ENOSPC" });
 
       expect(injected).toBe(1);
-      await expect(fs.lstat(finalPath)).rejects.toMatchObject({ code: "ENOENT" });
+      // Checked through the listing rather than lstat on finalPath: the file is
+      // read by that path below, and a check-then-use on one path is the shape
+      // CodeQL flags (js/file-system-race).
+      expect(await fs.readdir(reportsDir)).not.toContain(`${report.run_id}.md`);
       expect(await reportTemps()).toEqual([]);
 
       // The same bytes sent again are a new report, not "different content".
