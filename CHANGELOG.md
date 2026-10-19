@@ -143,14 +143,23 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the startup sweep now also removes the `.report-*.tmp` files a killed process
   leaves in `reports/`. Create-only, the idempotent re-send of the same bytes
   and the refusal of different bytes are unchanged. The report's mode is now
-  set by a `chmod` once the bytes are in, so it is 0600 whatever the umask.
+  set by a `chmod` once the bytes are in, so it is 0600 whatever the umask;
+  before, it kept the open mode the umask allowed (000 under a umask of 0777,
+  measured on the code before this change).
   The filesystem holding `MCP_AUDIT_SUBDIR` must now support hard links: a
   process that registers the audit write tools (`audit=on`) makes one link in
   `reports/` at startup and refuses to start if it cannot, and a link that
   fails later fails that append rather than writing the final name directly.
   A process that only reserves the subtree does not check. A report cut off by
   an earlier version is left as it is; `docs/operations.md` §9 gives the
-  manual steps.
+  manual steps. That the direct write left a cut-off report is measured: under
+  a file-size limit (`ulimit -f`, 128 KiB), Node returned EFBIG rather than
+  being killed, the code before this change left the first 128 KiB of a
+  256 KiB report under `reports/<run_id>.md`, and the full re-send was refused
+  as different content; with this change nothing was left under the final name
+  or as a temporary file, and the re-send created the report. That the vault
+  walk indexes such a file is read from how it picks `.md` files; it was not
+  measured.
 
 ## [0.10.0] — 2026-09-19
 
