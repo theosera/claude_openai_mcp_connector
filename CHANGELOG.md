@@ -139,9 +139,13 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`.report-<uuid>.tmp`, created with `wx` as a step of its own and written
   through the descriptor that create returned) and placed under the final name
   with a hard link, which fails with EEXIST when anything already holds the
-  name and never follows it. The temporary file is removed on every path, and
-  the startup sweep now also removes the `.report-*.tmp` files a killed process
-  leaves in `reports/`. Create-only, the idempotent re-send of the same bytes
+  name and never follows it. The temporary file is removed on every path. The
+  `.report-*.tmp` files a killed writer leaves in `reports/` are removed when a
+  process that registers the audit write tools starts; a process that only
+  reserves the subtree leaves them, because it can start while the writer is
+  part way through an append, and removing that temporary file would make the
+  writer's link fail. Their names do not end in `.md`, so nothing indexes
+  them meanwhile. Create-only, the idempotent re-send of the same bytes
   and the refusal of different bytes are unchanged. The report's mode is now
   set by a `chmod` once the bytes are in, so it is 0600 whatever the umask;
   before, it kept the open mode the umask allowed (000 under a umask of 0777,

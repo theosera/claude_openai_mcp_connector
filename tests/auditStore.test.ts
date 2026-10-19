@@ -604,18 +604,37 @@ describe("AuditStore", () => {
       expect(await reportTemps()).toEqual([]);
     });
 
-    it("sweeps stale .report-*.tmp files in reports/ on init", async () => {
+    it("sweeps stale .report-*.tmp files in reports/ when the writer's startup asks", async () => {
       const stale = path.join(reportsDir, ".report-orphan.tmp");
       await fs.writeFile(stale, "junk", "utf8");
       const fresh = new AuditStore({ knowledgeRoot: root, auditSubdir: "90_Audit/vault-scan" });
       await fresh.init();
+      await fresh.sweepReportTemps();
       await expect(fs.stat(stale)).rejects.toMatchObject({ code: "ENOENT" });
     });
 
-    // The temp's name and the init sweep's pattern are written in two places;
+    // init() runs in every process that sets MCP_AUDIT_SUBDIR, including one that
+    // only reserves the subtree and may start while the writer is part way
+    // through an append. It must leave that writer's temp alone, or the writer's
+    // link fails with ENOENT.
+    it("leaves a report temp alone on init, so a reserving process never removes a writer's", async () => {
+      const inFlight = path.join(reportsDir, ".report-in-flight.tmp");
+      await fs.writeFile(inFlight, "being written\n", "utf8");
+      // The same init does sweep a stale state temp, so it ran its sweep.
+      const staleState = path.join(auditRoot, ".state-orphan.tmp");
+      await fs.writeFile(staleState, "junk", "utf8");
+
+      const fresh = new AuditStore({ knowledgeRoot: root, auditSubdir: "90_Audit/vault-scan" });
+      await fresh.init();
+
+      await expect(fs.stat(staleState)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await fs.readFile(inFlight, "utf8")).toBe("being written\n");
+    });
+
+    // The temp's name and the startup sweep's pattern are written in two places;
     // if they drift apart, a temp left by a hard kill is never swept and the
     // sweep test above stays green (it plants its own name).
-    it("names its temp inside reports/, in the shape the init sweep removes", async () => {
+    it("names its temp inside reports/, in the shape the startup sweep removes", async () => {
       const realOpen = fs.open.bind(fs);
       const created: string[] = [];
       vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
@@ -637,6 +656,7 @@ describe("AuditStore", () => {
       await fs.writeFile(path.join(reportsDir, name), "left by a hard kill\n", "utf8");
       const fresh = new AuditStore({ knowledgeRoot: root, auditSubdir: "90_Audit/vault-scan" });
       await fresh.init();
+      await fresh.sweepReportTemps();
       await expect(fs.stat(path.join(reportsDir, name))).rejects.toMatchObject({ code: "ENOENT" });
     });
 
@@ -723,7 +743,7 @@ describe("AuditStore", () => {
       return fs.readdir(path.join(auditRoot, "reports"));
     }
 
-    it("makes one link in reports/, in the shape the init sweep removes, and leaves nothing behind", async () => {
+    it("makes one link in reports/, in the shape the startup sweep removes, and leaves nothing behind", async () => {
       const realLink = fs.link.bind(fs);
       const links: string[] = [];
       vi.spyOn(fs, "link").mockImplementation(async (...args: Parameters<typeof fs.link>) => {

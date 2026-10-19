@@ -1534,8 +1534,11 @@ designated state) and `CHANGELOG.md` `[Unreleased]` for what shipped.
 `append_audit_report` writes a report in full to a temporary file in `reports/`
 (`.report-<uuid>.tmp`) and only then places it under `reports/<run_id>.md` with
 a hard link. A write that stops part way — a full disk, an I/O error, a killed
-process — therefore leaves nothing under the final name, and the next start
-removes any temporary file a killed process left behind.
+process — therefore leaves nothing under the final name. The next start of the
+process that registers the audit write tools removes any temporary file a
+killed writer left behind. A process that only reserves the subtree leaves
+them, because it can start while the writer is part way through an append;
+their names do not end in `.md`, so nothing indexes them.
 
 Earlier versions wrote the final name directly, so a report cut off part way
 stayed under its `run_id`. Reports are never overwritten, so that file refuses

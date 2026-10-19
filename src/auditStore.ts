@@ -107,21 +107,39 @@ export class AuditStore {
     this.reportsRealPath = await fs.realpath(reportsPath);
     relativeToRoot(this.rootRealPath, this.reportsRealPath);
 
-    // Sweep stale temp files a crash may have left: state temps in the audit root
-    // (between the write and the rename) and report temps in reports/ (between the
-    // write and the link, or after the link and before the cleanup). The
-    // caught-error paths clean up; a hard kill does not. Single writer by design,
-    // so nothing is legitimately in flight at startup.
+    // Sweep stale state temp files a crash may have left between the writeFile and
+    // the rename (the caught-error path cleans up; a hard kill does not). Single
+    // writer by design, so nothing is legitimately in flight at startup.
+    //
+    // Report temps are not swept here: see sweepReportTemps.
     for (const entry of await fs.readdir(this.auditRootRealPath)) {
       if (entry.startsWith(".state-") && entry.endsWith(".tmp")) {
         await fs.rm(path.join(this.auditRootRealPath, entry), { force: true }).catch(() => undefined);
       }
     }
-    for (const entry of await fs.readdir(this.reportsRealPath)) {
-      if (entry.startsWith(".report-") && entry.endsWith(".tmp")) {
-        await fs.rm(path.join(this.reportsRealPath, entry), { force: true }).catch(() => undefined);
+  }
+
+  /**
+   * Startup sweep of the report temps a killed writer leaves in reports/
+   * (between the write and the link, or after the link and before the cleanup).
+   *
+   * Only a process that registers the audit write tools runs it (src/index.ts).
+   * It is the one writer, so at its own start nothing of its own is in flight.
+   * A process that only reserves the subtree must not sweep: it can start while
+   * the writer is part way through an append, and removing that temp makes the
+   * writer's link fail with ENOENT. A temp left while only such processes run
+   * does no harm, since its name does not end in ".md" and the walk never
+   * indexes it.
+   */
+  async sweepReportTemps(): Promise<void> {
+    return this.serialize(async () => {
+      const reportsRoot = await this.reportsRoot();
+      for (const entry of await fs.readdir(reportsRoot)) {
+        if (entry.startsWith(".report-") && entry.endsWith(".tmp")) {
+          await fs.rm(path.join(reportsRoot, entry), { force: true }).catch(() => undefined);
+        }
       }
-    }
+    });
   }
 
   /**
@@ -177,7 +195,8 @@ export class AuditStore {
       // Creating the temp sits outside the cleanup, as in compareAndSwapAuditState:
       // if the exclusive create fails, whatever holds that name is not ours. The
       // name starts with "." and does not end in ".md", so the walk never indexes
-      // it, and init() sweeps any a hard kill leaves behind.
+      // it, and the writer's startup sweep (sweepReportTemps) removes any a hard
+      // kill leaves behind.
       const temp = path.join(reportsRoot, `.report-${crypto.randomUUID()}.tmp`);
       const created = await fs.open(temp, "wx", 0o600);
       try {
@@ -314,9 +333,10 @@ export class AuditStore {
    * on such a filesystem to drop MCP_AUDIT_SUBDIR from it -- which lifts the
    * INV-9 reservation for that process's general writes.
    *
-   * Both names have the shape init() sweeps, so a kill part way leaves nothing
-   * a restart does not remove. Any failure refuses, whatever the errno, and the
-   * message carries the variable and the error code only: no path, no cause.
+   * Both names have the shape sweepReportTemps removes, so a kill part way leaves
+   * nothing the next start of the writer does not remove. Any failure refuses,
+   * whatever the errno, and the message carries the variable and the error code
+   * only: no path, no cause.
    */
   async assertReportsCanBeLinked(
     enabledBy: "MCP_HTTP_ALLOW_AUDIT_WRITE" | "MCP_STDIO_ALLOW_AUDIT_WRITE"

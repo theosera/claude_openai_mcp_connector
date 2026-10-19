@@ -467,6 +467,64 @@ describe("startup env boundary (spawned entrypoint)", () => {
     }, 30_000);
   });
 
+  // The report temp sweep (src/index.ts → AuditStore.sweepReportTemps) runs only
+  // in a process that registers the audit write tools. A process that only
+  // reserves the subtree can start while the writer is part way through an
+  // append; if it swept, the writer's link would fail with ENOENT. Each pair
+  // plants a temp in reports/: the reserving process leaves it (the main
+  // assert, and it is negative), the writing process removes it -- which is
+  // what shows the planted name is one the sweep would take.
+  describe("startup sweep of report temps", () => {
+    let inFlight: string;
+
+    beforeEach(async () => {
+      const reports = path.join(vault, "90_Audit", "vault-scan", "reports");
+      await fs.mkdir(reports, { recursive: true });
+      inFlight = path.join(reports, ".report-in-flight.tmp");
+      await fs.writeFile(inFlight, "being written\n", "utf8");
+    });
+
+    const audit = () => ({
+      KNOWLEDGE_ROOT: vault,
+      MCP_PATCH_STATE_DIR: path.join(stateDir, "patches"),
+      MCP_AUDIT_SUBDIR: "90_Audit/vault-scan"
+    });
+
+    it("leaves a report temp alone in a stdio process that only reserves the subtree", async () => {
+      const result = await runServer(audit());
+
+      expect(result.stderr).toContain("audit=reserved-only)");
+      expect(result.code).toBe(0);
+      expect(await fs.readFile(inFlight, "utf8")).toBe("being written\n");
+    }, 30_000);
+
+    it("sweeps it in a stdio process that registers the tools", async () => {
+      const result = await runServer({ ...audit(), MCP_STDIO_ALLOW_AUDIT_WRITE: "1" });
+
+      expect(result.stderr).toContain("audit=on)");
+      expect(result.code).toBe(0);
+      await expect(fs.stat(inFlight)).rejects.toMatchObject({ code: "ENOENT" });
+    }, 30_000);
+
+    it("leaves a report temp alone in an HTTP process that only reserves the subtree", async () => {
+      const stderr = await runHttpServer({ ...audit(), MCP_HTTP_PORT: String(await freePort()) });
+
+      expect(stderr).toContain("audit=reserved-only,");
+      expect(await fs.readFile(inFlight, "utf8")).toBe("being written\n");
+    }, 30_000);
+
+    it("sweeps it in an HTTP process that registers the tools", async () => {
+      const stderr = await runHttpServer({
+        ...audit(),
+        MCP_HTTP_PORT: String(await freePort()),
+        MCP_HTTP_ALLOW_AUDIT_WRITE: "1"
+      });
+
+      expect(stderr).toContain("audit=on,");
+      await expect(fs.stat(inFlight)).rejects.toMatchObject({ code: "ENOENT" });
+    }, 30_000);
+  });
+
   // #184: with OAuth on, the startup line counts client registrations by
   // state. Registrations carried over from a state file written before consent
   // was recorded load as `unknown` and are never reclaimed, so this count is
