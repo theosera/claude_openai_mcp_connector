@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AuditStore } from "../src/auditStore.js";
 import { loadConfig } from "../src/config.js";
 import { KnowledgeStore } from "../src/knowledgeStore.js";
@@ -283,6 +283,242 @@ describe("AuditStore", () => {
     const fresh = new AuditStore({ knowledgeRoot: root, auditSubdir: "90_Audit/vault-scan" });
     await fresh.init();
     await expect(fs.stat(stale)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  // The state write's temp file. Creating and writing are separate steps, as in
+  // replaceFileAtomically (#310): cleanup only ever removes the temp this call
+  // created, and until the rename the temp is reached only through the handle
+  // the exclusive create returned.
+  describe("compare-and-swap temp file", () => {
+    const fixedUuid = "00000000-0000-4000-8000-000000000000";
+    const v2 = { expected_sha256: sha("v1\n"), new_content: "v2\n" };
+
+    /** state.md's bytes and inode, taken from ONE handle (see tests/atomicWrite.test.ts). */
+    async function inspectState(): Promise<{ ino: bigint; content: string }> {
+      const handle = await fs.open(path.join(auditRoot, "state.md"), "r");
+      try {
+        const stats = await handle.stat({ bigint: true });
+        return { ino: stats.ino, content: await handle.readFile("utf8") };
+      } finally {
+        await handle.close();
+      }
+    }
+
+    async function stateTemps(): Promise<string[]> {
+      return (await fs.readdir(auditRoot)).filter((name) => name.startsWith(".state-") && name.endsWith(".tmp"));
+    }
+
+    /** Hand `wrap` the handle of every exclusive create of a state temp. */
+    function onTempHandle(wrap: (handle: fs.FileHandle) => void): void {
+      const realOpen = fs.open.bind(fs);
+      vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+        const handle = await realOpen(...args);
+        if (args[1] === "wx" && path.basename(String(args[0])).startsWith(".state-")) {
+          wrap(handle);
+        }
+        return handle;
+      });
+    }
+
+    beforeEach(async () => {
+      await store.compareAndSwapAuditState({ expected_sha256: EMPTY_SHA, new_content: "v1\n" });
+    });
+
+    it("removes its own temp when the write fails part way", async () => {
+      const before = await inspectState();
+      let injected = 0;
+      onTempHandle((handle) => {
+        handle.writeFile = async () => {
+          await handle.write("v2");
+          injected += 1;
+          throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+        };
+      });
+
+      await expect(store.compareAndSwapAuditState(v2)).rejects.toMatchObject({ code: "ENOSPC" });
+
+      expect(injected).toBe(1);
+      expect(await inspectState()).toEqual(before);
+      expect(await stateTemps()).toEqual([]);
+    });
+
+    it("removes its own temp when the rename fails", async () => {
+      const before = await inspectState();
+      const realRename = fs.rename.bind(fs);
+      let injected = 0;
+      vi.spyOn(fs, "rename").mockImplementation(async (...args: Parameters<typeof fs.rename>) => {
+        if (path.basename(String(args[1])) === "state.md") {
+          injected += 1;
+          throw Object.assign(new Error("EIO: i/o error, rename"), { code: "EIO" });
+        }
+        return realRename(...args);
+      });
+
+      await expect(store.compareAndSwapAuditState(v2)).rejects.toMatchObject({ code: "EIO" });
+
+      expect(injected).toBe(1);
+      expect(await inspectState()).toEqual(before);
+      expect(await stateTemps()).toEqual([]);
+    });
+
+    it("removes its own temp when the chmod fails", async () => {
+      const before = await inspectState();
+      let injected = 0;
+      onTempHandle((handle) => {
+        handle.chmod = async () => {
+          injected += 1;
+          throw Object.assign(new Error("EPERM: operation not permitted, fchmod"), { code: "EPERM" });
+        };
+      });
+
+      await expect(store.compareAndSwapAuditState(v2)).rejects.toMatchObject({ code: "EPERM" });
+
+      expect(injected).toBe(1);
+      expect(await inspectState()).toEqual(before);
+      expect(await stateTemps()).toEqual([]);
+    });
+
+    it("removes its own temp when the close fails", async () => {
+      const before = await inspectState();
+      let injected = 0;
+      onTempHandle((handle) => {
+        const realClose = handle.close.bind(handle);
+        handle.close = async () => {
+          await realClose();
+          injected += 1;
+          throw Object.assign(new Error("EIO: i/o error, close"), { code: "EIO" });
+        };
+      });
+
+      await expect(store.compareAndSwapAuditState(v2)).rejects.toMatchObject({ code: "EIO" });
+
+      expect(injected).toBe(1);
+      expect(await inspectState()).toEqual(before);
+      expect(await stateTemps()).toEqual([]);
+    });
+
+    // Cleanup may only remove a file this call created. When the exclusive create
+    // fails because the name is taken, the entry at that name is not ours.
+    it("leaves an entry it did not create in place when the temp name is already taken", async () => {
+      const before = await inspectState();
+      const uuid = vi.spyOn(crypto, "randomUUID").mockReturnValue(fixedUuid);
+      const taken = path.join(auditRoot, `.state-${fixedUuid}.tmp`);
+      await fs.writeFile(taken, "not ours\n", "utf8");
+
+      await expect(store.compareAndSwapAuditState(v2)).rejects.toMatchObject({ code: "EEXIST" });
+
+      // The fixed name was the one tried; without this the test could pass
+      // without ever reaching the failed create.
+      expect(uuid).toHaveBeenCalledTimes(1);
+      expect(await fs.readFile(taken, "utf8")).toBe("not ours\n");
+      expect(await inspectState()).toEqual(before);
+    });
+
+    // The open mode is filtered by the umask, so a create alone could come out
+    // wider than 0600 under a loose umask, or narrower under a strict one. The
+    // two tests pin both ends: the mode while the bytes are written, and the
+    // exact mode left on state.md.
+    it("holds the temp at 0600 while it is written, under the common 022 umask", async () => {
+      if (process.platform === "win32") {
+        return;
+      }
+      const modes: number[] = [];
+      onTempHandle((handle) => {
+        const realWriteFile = handle.writeFile.bind(handle);
+        handle.writeFile = async (...args: Parameters<typeof realWriteFile>) => {
+          modes.push((await handle.stat()).mode & 0o777);
+          return realWriteFile(...args);
+        };
+      });
+      const previous = process.umask(0o022);
+      try {
+        await store.compareAndSwapAuditState(v2);
+      } finally {
+        process.umask(previous);
+      }
+      // Observed exactly once, so the write went through the wrapped handle.
+      expect(modes).toEqual([0o600]);
+    });
+
+    it("leaves state.md at exactly 0600 even when the umask strips every bit", async () => {
+      if (process.platform === "win32") {
+        return;
+      }
+      const previous = process.umask(0o777);
+      let swapped = "";
+      try {
+        swapped = (await store.compareAndSwapAuditState(v2)).sha256;
+      } finally {
+        process.umask(previous);
+      }
+      // The swap landed, so the mode below is the new state file's.
+      expect(swapped).toBe(sha("v2\n"));
+      expect((await fs.stat(path.join(auditRoot, "state.md"))).mode & 0o777).toBe(0o600);
+    });
+
+    // A shape test: it stops a return to writing the temp by path (the form
+    // before this change). It does not reproduce a different file appearing at
+    // the temp's name -- that threat needs write access to the audit root and is
+    // out of scope here, as it is for replaceFileAtomically.
+    it("never writes the temp by path", async () => {
+      const realWriteFile = fs.writeFile.bind(fs);
+      const written: string[] = [];
+      vi.spyOn(fs, "writeFile").mockImplementation(async (...args: Parameters<typeof fs.writeFile>) => {
+        written.push(String(args[0]));
+        return realWriteFile(...args);
+      });
+
+      const result = await store.compareAndSwapAuditState(v2);
+
+      // The swap landed, so the write step ran under the spy.
+      expect(result.sha256).toBe(sha("v2\n"));
+      expect(written.filter((file) => path.basename(file).startsWith(".state-"))).toEqual([]);
+    });
+
+    it("opens the temp only once, by the exclusive create", async () => {
+      const realOpen = fs.open.bind(fs);
+      const tempOpens: unknown[] = [];
+      vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+        if (path.basename(String(args[0])).startsWith(".state-")) {
+          tempOpens.push(args[1]);
+        }
+        return realOpen(...args);
+      });
+
+      await store.compareAndSwapAuditState(v2);
+
+      expect(tempOpens).toEqual(["wx"]);
+      expect((await inspectState()).content).toBe("v2\n");
+    });
+
+    // The temp's name and the init sweep's pattern are written in two places;
+    // if they drift apart, a temp left by a hard kill is never swept and the
+    // sweep test above stays green (it plants its own name).
+    it("names its temp inside the audit root, in the shape the init sweep removes", async () => {
+      const realOpen = fs.open.bind(fs);
+      const created: string[] = [];
+      vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+        if (args[1] === "wx") {
+          created.push(String(args[0]));
+        }
+        return realOpen(...args);
+      });
+
+      await store.compareAndSwapAuditState(v2);
+
+      expect(created).toHaveLength(1);
+      const name = path.basename(created[0]);
+      expect(path.dirname(created[0])).toBe(await fs.realpath(auditRoot));
+      expect(name.startsWith(".state-") && name.endsWith(".tmp")).toBe(true);
+      // Never indexed by the vault walk, which only reads .md files.
+      expect(name.endsWith(".md")).toBe(false);
+
+      // And the sweep itself removes a file of that name.
+      await fs.writeFile(path.join(auditRoot, name), "left by a hard kill\n", "utf8");
+      const fresh = new AuditStore({ knowledgeRoot: root, auditSubdir: "90_Audit/vault-scan" });
+      await fresh.init();
+      await expect(fs.stat(path.join(auditRoot, name))).rejects.toMatchObject({ code: "ENOENT" });
+    });
   });
 
   // INV-2 (write side) / INV-9. The audit surface is constrained about WHERE it
