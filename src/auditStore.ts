@@ -227,11 +227,31 @@ export class AuditStore {
       // Atomic same-directory replace: write a private temp then rename over the
       // target. rename is atomic and clobber-on-update is the desired behavior
       // for a state file (unlike create-only reports).
+      //
+      // Creating and writing are separate steps so that cleanup only ever
+      // removes a file this call made (the same shape as replaceFileAtomically).
+      // If the exclusive create fails, nothing here was created: whatever already
+      // sits at that name (EEXIST) is not ours and is left alone.
       const temp = path.join(auditRoot, `.state-${crypto.randomUUID()}.tmp`);
-      await fs.writeFile(temp, content, { encoding: "utf8", flag: "wx", mode: 0o600 });
+      const created = await fs.open(temp, "wx", 0o600);
       try {
+        // Until the rename, the temp is reached only through the handle the
+        // exclusive create returned. The open mode is filtered by the umask, so
+        // the chmod after the bytes are in sets the exact mode.
+        try {
+          await created.writeFile(content, "utf8");
+          await created.chmod(0o600);
+        } finally {
+          await created.close();
+        }
+        // The rename (and the cleanup below) still go by name: Node offers no
+        // rename or unlink relative to an open descriptor.
         await fs.rename(temp, target);
       } catch (error) {
+        // From the exclusive create onward the temp is this call's own, so any
+        // failure here -- including a write that stops part way (ENOSPC, EIO) --
+        // removes it rather than leaving it in the audit root until the next
+        // start.
         await fs.rm(temp, { force: true }).catch(() => undefined);
         throw error;
       }
