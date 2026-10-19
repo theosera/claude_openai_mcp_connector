@@ -445,14 +445,9 @@ describe("AuditStore", () => {
         return;
       }
       const previous = process.umask(0o777);
-      let swapped = "";
-      try {
-        swapped = (await store.compareAndSwapAuditState(v2)).sha256;
-      } finally {
-        process.umask(previous);
-      }
+      const swapped = await store.compareAndSwapAuditState(v2).finally(() => process.umask(previous));
       // The swap landed, so the mode below is the new state file's.
-      expect(swapped).toBe(sha("v2\n"));
+      expect(swapped.sha256).toBe(sha("v2\n"));
       expect((await fs.stat(path.join(auditRoot, "state.md"))).mode & 0o777).toBe(0o600);
     });
 
