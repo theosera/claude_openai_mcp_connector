@@ -1528,3 +1528,36 @@ letting an audit file describe itself, and it is worth picking tags that will
 not collide with the vocabulary your own notes are searched by. See
 `docs/threat-model.md` (the row on promoting audit content into a project's
 designated state) and `CHANGELOG.md` `[Unreleased]` for what shipped.
+
+### A report cut off part way, and the hard-link requirement
+
+`append_audit_report` writes a report in full to a temporary file in `reports/`
+(`.report-<uuid>.tmp`) and only then places it under `reports/<run_id>.md` with
+a hard link. A write that stops part way — a full disk, an I/O error, a killed
+process — therefore leaves nothing under the final name, and the next start
+removes any temporary file a killed process left behind.
+
+Earlier versions wrote the final name directly, so a report cut off part way
+stayed under its `run_id`. Reports are never overwritten, so that file refuses
+every re-send of the `run_id` as different content, and it is indexed like any
+other note. Upgrading does not repair such a file. If the scanner keeps getting
+"different content" for one `run_id`:
+
+1. Read `reports/<run_id>.md`. A report that was cut off stops part way — the
+   frontmatter is not closed, or the body ends mid-sentence — and is shorter
+   than what the scanner is sending.
+2. Stop the scan endpoint, so nothing writes the subtree while you change it.
+3. Remove that one file by hand, and nothing else.
+4. Start the endpoint again and let the scanner re-send the report.
+
+A report that is complete but different is not this case: two runs used the
+same `run_id`, and removing the file loses the earlier run's record.
+
+The hard link is a requirement on the filesystem that holds `MCP_AUDIT_SUBDIR`.
+A process that registers the audit write tools (`MCP_HTTP_ALLOW_AUDIT_WRITE=1`
+or `MCP_STDIO_ALLOW_AUDIT_WRITE=1`; startup line `audit=on`) makes one hard link
+in `reports/` at startup and refuses to start if it cannot, naming the variable
+and the error code. A process that only reserves the subtree
+(`audit=reserved-only`) does not try, because it never appends. If a link fails
+later, while the process runs, that one append fails; it never falls back to
+writing the final name directly.

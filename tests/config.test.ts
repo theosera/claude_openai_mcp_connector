@@ -389,6 +389,84 @@ describe("startup env boundary (spawned entrypoint)", () => {
     expect(on).toContain("(write=on, documents=off,");
   }, 60_000);
 
+  // The startup hard-link check (src/index.ts → AuditStore.assertReportsCanBeLinked)
+  // runs only in a process that registers the audit write tools. Here reports/
+  // cannot be written to, so the check fails wherever it runs: a process with the
+  // tools on is refused, and one that only reserves the subtree still starts. The
+  // refused cases are what give the started ones meaning -- a check that never
+  // ran would pass those too. (Permission bits do not bind root. Run as root, the
+  // check would pass and the refused cases go red, rather than all of this
+  // quietly passing.)
+  describe("startup hard-link check for the audit write tools", () => {
+    let reports: string;
+
+    beforeEach(async () => {
+      reports = path.join(vault, "90_Audit", "vault-scan", "reports");
+      await fs.mkdir(reports, { recursive: true });
+      await fs.chmod(reports, 0o500);
+    });
+
+    afterEach(async () => {
+      await fs.chmod(reports, 0o700);
+    });
+
+    const audit = () => ({
+      KNOWLEDGE_ROOT: vault,
+      MCP_PATCH_STATE_DIR: path.join(stateDir, "patches"),
+      MCP_AUDIT_SUBDIR: "90_Audit/vault-scan"
+    });
+
+    it("refuses a stdio process that registers the tools, naming the variable and the code only", async () => {
+      if (process.platform === "win32") {
+        return;
+      }
+      const result = await runServer({ ...audit(), MCP_STDIO_ALLOW_AUDIT_WRITE: "1" });
+
+      expect(result.stderr).toMatch(/MCP_STDIO_ALLOW_AUDIT_WRITE=1 registers append_audit_report[^\n]*\(EACCES\)/);
+      expect(result.stderr).not.toContain(vault);
+      expect(result.stderr).not.toContain(await fs.realpath(vault));
+      expect(result.stderr).not.toMatch(/MCP stdio transport ready/);
+      expect(result.code).not.toBe(0);
+    }, 30_000);
+
+    it("starts a stdio process that only reserves the subtree, without checking", async () => {
+      if (process.platform === "win32") {
+        return;
+      }
+      const result = await runServer(audit());
+
+      expect(result.stderr).toContain("audit=reserved-only)");
+      expect(result.stderr).not.toMatch(/registers append_audit_report/);
+      expect(result.code).toBe(0);
+    }, 30_000);
+
+    it("refuses an HTTP process that registers the tools, naming the variable and the code only", async () => {
+      if (process.platform === "win32") {
+        return;
+      }
+      const stderr = await runHttpServer({
+        ...audit(),
+        MCP_HTTP_PORT: String(await freePort()),
+        MCP_HTTP_ALLOW_AUDIT_WRITE: "1"
+      });
+
+      expect(stderr).toMatch(/MCP_HTTP_ALLOW_AUDIT_WRITE=1 registers append_audit_report[^\n]*\(EACCES\)/);
+      expect(stderr).not.toContain(vault);
+      expect(stderr).not.toContain(await fs.realpath(vault));
+      expect(stderr).not.toMatch(/HTTP transport listening/);
+    }, 30_000);
+
+    it("starts an HTTP process that only reserves the subtree, without checking", async () => {
+      if (process.platform === "win32") {
+        return;
+      }
+      const stderr = await runHttpServer({ ...audit(), MCP_HTTP_PORT: String(await freePort()) });
+
+      expect(stderr).toContain("audit=reserved-only,");
+      expect(stderr).not.toMatch(/registers append_audit_report/);
+    }, 30_000);
+  });
+
   // #184: with OAuth on, the startup line counts client registrations by
   // state. Registrations carried over from a state file written before consent
   // was recorded load as `unknown` and are never reclaimed, so this count is

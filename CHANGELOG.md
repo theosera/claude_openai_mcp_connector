@@ -129,6 +129,28 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is read from how Node's path-based `writeFile` works; it was not measured on
   the code before this change. A successful swap, the compare-and-swap check
   and the startup sweep are unchanged.
+- **An audit report gets its name only once it is written in full.**
+  `append_audit_report` used to write `reports/<run_id>.md` directly with
+  `writeFile(…, { flag: "wx" })`, so a write that stopped part way (ENOSPC,
+  EIO, a killed process) left a cut-off report under the final name. Reports
+  are never overwritten, so that file then refused every re-send of the same
+  `run_id` as different content, and the vault walk indexed it as the run's
+  report. The report is now written to a temporary file in `reports/`
+  (`.report-<uuid>.tmp`, created with `wx` as a step of its own and written
+  through the descriptor that create returned) and placed under the final name
+  with a hard link, which fails with EEXIST when anything already holds the
+  name and never follows it. The temporary file is removed on every path, and
+  the startup sweep now also removes the `.report-*.tmp` files a killed process
+  leaves in `reports/`. Create-only, the idempotent re-send of the same bytes
+  and the refusal of different bytes are unchanged. The report's mode is now
+  set by a `chmod` once the bytes are in, so it is 0600 whatever the umask.
+  The filesystem holding `MCP_AUDIT_SUBDIR` must now support hard links: a
+  process that registers the audit write tools (`audit=on`) makes one link in
+  `reports/` at startup and refuses to start if it cannot, and a link that
+  fails later fails that append rather than writing the final name directly.
+  A process that only reserves the subtree does not check. A report cut off by
+  an earlier version is left as it is; `docs/operations.md` §9 gives the
+  manual steps.
 
 ## [0.10.0] — 2026-09-19
 

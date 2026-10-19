@@ -41,6 +41,10 @@ if (transport === "http") {
   // Remote Streamable HTTP endpoint for Chat connectors (ChatGPT / Claude.ai).
   // Read-only by default; bearer-authenticated; binds to 127.0.0.1.
   const httpConfig = loadHttpConfig();
+  // A process that registers the audit write tools checks, before it serves,
+  // that reports/ can take the hard link every append is placed with. One that
+  // only reserves the subtree does not (see assertReportsCanBeLinked).
+  if (httpConfig.allowAuditWrite) await auditStore?.assertReportsCanBeLinked("MCP_HTTP_ALLOW_AUDIT_WRITE");
   const httpServer = await startHttpServer(
     store,
     httpConfig,
@@ -115,6 +119,9 @@ if (transport === "http") {
   // and the surface below is a constant. Pinned and per-request are therefore
   // observationally identical on stdio. Do not "fix" this for symmetry with
   // HTTP, and do not reintroduce pinning on HTTP by analogy with this.
+  //
+  // The same startup check as the HTTP branch, on this transport's own flag.
+  if (appConfig.stdioAllowAuditWrite) await auditStore?.assertReportsCanBeLinked("MCP_STDIO_ALLOW_AUDIT_WRITE");
   serveStdio(
     () =>
       buildMcpServer(store, {
