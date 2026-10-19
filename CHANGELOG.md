@@ -112,6 +112,23 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is unchanged. The temporary file is also no longer reopened by path: the
   `stat`, `chown` and `chmod` that restore the note's owner and mode act on
   the descriptor the exclusive create returned.
+- **Swapping the audit state removes only the temporary file that swap
+  created.** `compare_and_swap_audit_state` writes `state.md` through a
+  temporary file in the audit root. It used to create and write that file in
+  one `writeFile(…, { flag: "wx" })` and clean up only when the rename failed,
+  so a write that stopped part way (ENOSPC, EIO) left the temporary file in the
+  audit root until the next start. The exclusive create is now a step of its
+  own: if it fails, nothing is removed and an entry already at that name is
+  left as it was. Once the file is created, the bytes and the 0600 mode go
+  through the descriptor the create returned, and a failure at any later step
+  — the write, the `chmod`, the close or the rename — removes that temporary
+  file and leaves `state.md` as it was. The mode is now set by that `chmod`
+  once the bytes are in, so `state.md` is 0600 whatever the umask; before, it
+  kept the open mode the umask allowed (000 under a umask of 0777, measured on
+  the code before this change). That the one-step write left the file behind
+  is read from how Node's path-based `writeFile` works; it was not measured on
+  the code before this change. A successful swap, the compare-and-swap check
+  and the startup sweep are unchanged.
 
 ## [0.10.0] — 2026-09-19
 
