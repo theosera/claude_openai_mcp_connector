@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +11,7 @@ import {
   POLICY_VOCABULARY,
   redactFragment
 } from "../packages/log-redaction/src/core.mjs";
+import { execFileSyncBounded } from "./tools/syncChild.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
@@ -67,7 +67,7 @@ describe("the core's vocabulary", () => {
 
 describe("the core's command line", () => {
   const run = (stdin: string) =>
-    execFileSync("node", ["packages/log-redaction/src/cli.mjs"], { cwd: ROOT, input: stdin, encoding: "utf8" })
+    execFileSyncBounded("node", ["packages/log-redaction/src/cli.mjs"], { cwd: ROOT, input: stdin, encoding: "utf8" })
       .split("\n")
       .filter((line) => line.length > 0)
       .map((line) => JSON.parse(line) as { text: string; status: string; reason?: string });

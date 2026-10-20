@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { commandEngine, type Engine, type EngineResult, MASK, readable } from "./tools/redactionJudge.js";
 import { ARGUMENT_POSITION_CASES } from "./tools/redactionScope.js";
+import { execFileSyncBounded } from "./tools/syncChild.js";
 
 /**
  * Step ②-2 of #249: the migration gate's judge.
@@ -45,7 +45,7 @@ function shippedMask(): string {
 
 const maskFn = shippedMask();
 const sedOutputs = cases.map((c) =>
-  execFileSync("bash", ["-c", `${maskFn}\nmask`], { input: c.input, encoding: "utf8" })
+  execFileSyncBounded("bash", ["-c", `${maskFn}\nmask`], { input: c.input, encoding: "utf8" })
 );
 
 type Gap = { id: string; words: string[] };

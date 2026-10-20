@@ -41,13 +41,13 @@
  * other argument, such as `--count=16000` or a misspelt name, is invalid.
  */
 
-import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { SECRET_LABELS } from "../../packages/log-redaction/src/policy.mjs";
 import { commandEngine, type Engine, judgeCase, MASK, readable } from "./redactionJudge.js";
+import { execFileSyncBounded } from "./syncChild.js";
 
 export type FuzzCase = {
   id: string;
@@ -323,7 +323,7 @@ export function sedEngine(maskFn: string): Engine {
   return (fragments) => {
     const inputs = fragments.map((f) => f.text);
     if (inputs.some((i) => i.includes("\0"))) throw new Error("an input carries a NUL, which is the separator");
-    const out = execFileSync("bash", ["-c", loop], {
+    const out = execFileSyncBounded("bash", ["-c", loop], {
       input: inputs.map((i) => `${i}\0`).join(""),
       encoding: "utf8",
       maxBuffer: 1 << 30

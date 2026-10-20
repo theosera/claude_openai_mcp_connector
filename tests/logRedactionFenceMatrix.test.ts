@@ -1,9 +1,9 @@
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
 import { redactFragment } from "../packages/log-redaction/src/core.mjs";
+import { execFileSyncBounded } from "./tools/syncChild.js";
 
 type Engine = "core-command" | "core-text" | "capture" | "archive";
 type MatrixCase = {
@@ -60,7 +60,7 @@ function runHook(engine: keyof typeof hooks, source: string, input: string) {
   try {
     return {
       status: "ok",
-      text: execFileSync("bash", ["-c", `${source}\nmask`], { input, encoding: "utf8", stdio: "pipe" })
+      text: execFileSyncBounded("bash", ["-c", `${source}\nmask`], { input, encoding: "utf8", stdio: "pipe" })
     };
   } catch (error) {
     const failure = error as {

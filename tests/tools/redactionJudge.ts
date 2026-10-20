@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSyncBounded } from "./syncChild.js";
 
 /**
  * The judge shared by the migration gate (#249 step ②-2) and the differential fuzz.
@@ -81,7 +81,7 @@ export function judgeCase(input: string, result: EngineResult, secrets: string[]
  */
 export function commandEngine(argv: string[], cwd: string): Engine {
   return (fragments) => {
-    const stdout = execFileSync(argv[0]!, argv.slice(1), {
+    const stdout = execFileSyncBounded(argv[0]!, argv.slice(1), {
       cwd,
       input: fragments.map((f) => `${JSON.stringify({ text: f.text, kind: f.kind })}\n`).join(""),
       encoding: "utf8",

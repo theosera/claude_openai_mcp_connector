@@ -1,10 +1,11 @@
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
+
+import { execFileSyncBounded } from "./tools/syncChild.js";
 
 /**
  * The ops log writes one Markdown table row per command. #246: the row was built
@@ -36,7 +37,11 @@ function logRow(hook: string, command: string, description: string): string {
   fs.mkdirSync(path.join(logRepo, ".git"), { recursive: true });
   fs.mkdirSync(work);
   const payload = JSON.stringify({ tool_name: "Bash", cwd: work, tool_input: { command, description } });
-  execFileSync("bash", [hook], { input: payload, env: { ...process.env, OPS_LOG_REPO: logRepo }, encoding: "utf8" });
+  execFileSyncBounded("bash", [hook], {
+    input: payload,
+    env: { ...process.env, OPS_LOG_REPO: logRepo },
+    encoding: "utf8"
+  });
   const folder = path.join(logRepo, "work");
   const [file] = fs.readdirSync(folder);
   return fs.readFileSync(path.join(folder, file), "utf8");

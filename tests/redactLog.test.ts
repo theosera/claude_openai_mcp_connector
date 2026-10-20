@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -24,6 +23,7 @@ import {
   assertUsableVocabulary,
   withoutProtected
 } from "../.claude/skills/_shared/redact-log.mjs";
+import { spawnSyncBounded } from "./tools/syncChild.js";
 
 /**
  * Unit tests for the span machinery, separate from the acceptance tests in
@@ -256,7 +256,7 @@ describe("the command-line entry point", () => {
   // guard that decides whether an import should run the CLI. Importing cannot
   // reach it.
   const runThrough = (scriptPath: string) =>
-    spawnSync(process.execPath, [scriptPath], { input: '"probe"\n', encoding: "utf8" });
+    spawnSyncBounded(process.execPath, [scriptPath], { input: '"probe"\n', encoding: "utf8" });
 
   it("runs when invoked through a symlinked path", () => {
     // `import.meta.url` is already physical while `process.argv[1]` is whatever
@@ -291,7 +291,7 @@ describe("the command-line entry point", () => {
     // "[object Object]" and came back `status: "ok"` -- a line the caller reads as
     // a successfully redacted fragment. Passed as is, redactText's non-string
     // contract answers `non_string_input`, which is what the caller needs to see.
-    const run = spawnSync(process.execPath, [SHIPPED_MODULE], {
+    const run = spawnSyncBounded(process.execPath, [SHIPPED_MODULE], {
       input: '{"a":1}\n[1,2]\n42\n"still a string"\n',
       encoding: "utf8"
     });
@@ -312,7 +312,7 @@ describe("the command-line entry point", () => {
     // the guard into "run whenever argv[1] exists" -- every test in this file
     // imports the module, and a CLI that ran on import would write to stdout
     // during the suite.
-    const probe = spawnSync(
+    const probe = spawnSyncBounded(
       process.execPath,
       ["-e", `import(${JSON.stringify(SHIPPED_MODULE)}).then(() => process.stdout.write("imported"))`],
       { encoding: "utf8" }

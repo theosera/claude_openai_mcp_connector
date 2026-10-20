@@ -1,8 +1,8 @@
-import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { LABEL_SHAPES } from "./tools/logRedactionLabelShapes.js";
+import { execFileSyncBounded, spawnSyncBounded } from "./tools/syncChild.js";
 
 const hooks = [
   ["capture", ".claude/skills/ops-logging/capture-command.sh"],
@@ -24,7 +24,7 @@ for (const [hook, path] of hooks) {
     for (const kind of ["command", "text"] as const) {
       for (const shape of LABEL_SHAPES) {
         it(`${shape.name}, as ${kind}: masks values and preserves the word after the element`, () => {
-          const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], {
+          const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], {
             input: `${shape.input}\n`,
             encoding: "utf8"
           });
@@ -76,21 +76,21 @@ for (const [hook, path] of hooks) {
   describe(`${hook} baseline and bounds around #295`, () => {
     for (const [name, input, secrets, preserve] of baselineShapes) {
       it(`retains the fresh-base masking of ${name}`, () => {
-        const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+        const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
         for (const secret of secrets) expect(output).not.toContain(secret);
         expect(output).toContain(preserve);
       });
     }
     it("masks both words in the direct body before its matching close", () => {
       const input = '<access_token a="S295B1" b="S295B2">S295WORD1 S295WORD2</access_token> KEEP295BODY\n';
-      const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+      const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
       for (const secret of ["S295B1", "S295B2", "S295WORD1", "S295WORD2"]) expect(output).not.toContain(secret);
       expect(output).toContain("KEEP295BODY");
     });
     for (const ending of ["", "<unrelated>VISIBLE295</unrelated>", "</different>", "\n</access_token>"]) {
       it(`preserves following prose without a matching same-line close: ${JSON.stringify(ending)}`, () => {
         const input = `<access_token a="S295B1" b="S295B2"> KEEP295BODY ${ending}\n`;
-        const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+        const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
         expect(output).toContain("KEEP295BODY");
         expect(output.match(/[\r\n]/g) ?? []).toEqual(input.match(/[\r\n]/g) ?? []);
       });
@@ -98,14 +98,14 @@ for (const [hook, path] of hooks) {
     for (const label of ["refresh_token", "ns:secret_key"]) {
       it(`recognizes a secret component of the local name ${label}`, () => {
         const input = `<${label} a="S295C1" b="S295C2">S295C3</${label}> KEEP295COMPONENT\n`;
-        const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+        const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
         for (const secret of ["S295C1", "S295C2", "S295C3"]) expect(output).not.toContain(secret);
         expect(output).toContain("KEEP295COMPONENT");
       });
     }
     it("masks benign lang/class attributes and XML-like prose as the documented cost", () => {
       const input = '<access_token lang="en" class="hint">documentation</access_token> KEEP295PROSE';
-      const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+      const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
       expect(output).not.toContain('lang="en"');
       expect(output).not.toContain('class="hint"');
       expect(output).not.toContain("documentation");
@@ -120,7 +120,7 @@ for (const [hook, path] of hooks) {
       '<password:item a="VISIBLE295" b="VISIBLE295">VISIBLE295</password:item> KEEP295\n'
     ]) {
       it(`keeps separators and ordinary input values: ${JSON.stringify(input)}`, () => {
-        const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+        const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
         expect(output.match(/[\r\n]/g) ?? []).toEqual(input.match(/[\r\n]/g) ?? []);
         if (input.includes("VISIBLE295")) expect(output).toContain("VISIBLE295");
       });
@@ -149,7 +149,7 @@ for (const [hook, path] of hooks) {
     for (const kind of ["command", "text"] as const) {
       for (const [name, input] of selfClosingInputs) {
         it(`${name}, as ${kind}: masks the value and preserves the following word`, () => {
-          const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], {
+          const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], {
             input: `${input}\n`,
             encoding: "utf8"
           });
@@ -160,7 +160,7 @@ for (const [hook, path] of hooks) {
       }
       for (const [name, input] of nonPasswordSlashTypes) {
         it(`retains ${name}, as ${kind}`, () => {
-          const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], {
+          const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], {
             input: `${input}\n`,
             encoding: "utf8"
           });
@@ -205,7 +205,10 @@ for (const [hook, path] of hooks) {
     for (const kind of ["command", "text"] as const) {
       for (const [name, input] of fenceShapes) {
         it(`${name}, as ${kind}: preserves fence syntax, count and parity while masking its content`, () => {
-          const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+          const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], {
+            input,
+            encoding: "utf8"
+          });
           const before = fenceSyntax(input);
           const after = fenceSyntax(output);
           expect(before).toHaveLength(2);
@@ -235,7 +238,10 @@ for (const [hook, path] of hooks) {
                 ...Array.from({ length: 31 }, () => "continued attribute text"),
                 quoted ? 'KEEP295BOUND"> tail' : "KEEP295BOUND> tail"
               ].join(separator) + separator;
-            const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+            const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], {
+              input,
+              encoding: "utf8"
+            });
             expect(output).toContain("KEEP295BOUND");
             expect(output.match(/\r\n|\r|\n/g)).toEqual(input.match(/\r\n|\r|\n/g));
           });
@@ -247,7 +253,10 @@ for (const [hook, path] of hooks) {
               ...Array.from({ length: 30 }, () => ' a="S295LIMIT2"'),
               ' last="S295LIMIT3"> KEEP295LIMIT'
             ].join(separator) + separator;
-          const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+          const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], {
+            input,
+            encoding: "utf8"
+          });
           for (const secret of ["S295LIMIT1", "S295LIMIT2", "S295LIMIT3"]) expect(output).not.toContain(secret);
           expect(output).toContain("KEEP295LIMIT");
         });
@@ -255,17 +264,17 @@ for (const [hook, path] of hooks) {
     }
     it("retains the legacy malformed short-tag fallback on short CR records", () => {
       const input = '<password first="x" a="S295MALFORMED>\rplain\r';
-      const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+      const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
       expect(output).not.toContain("S295MALFORMED");
     });
     it("retains the malformed short-tag fallback on long CR records", () => {
       const input = '<password first="x" a="S295MALFORMED>\r' + "plain\r".repeat(32);
-      const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+      const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
       expect(output).not.toContain("S295MALFORMED");
     });
     it("still masks complete short tags elsewhere on long CR records", () => {
       const input = '<password first="x" a="S295COMPLETE">\r' + "plain\r".repeat(32);
-      const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+      const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
       expect(output).not.toContain("S295COMPLETE");
     });
     it("ages the existing armor window on protected fence records", () => {
@@ -275,13 +284,13 @@ for (const [hook, path] of hooks) {
           ...Array.from({ length: 100 }, () => "~~~~~~"),
           "text KEEP295ARMORBOUND prose"
         ].join("\n") + "\n";
-      const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+      const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
       expect(output).toContain("KEEP295ARMORBOUND");
       expect(fenceSyntax(output)).toEqual(fenceSyntax(input));
     });
     for (const input of ["```token: `S295INVALID`", "```token: `S295INVALID` ```"]) {
       it(`still masks invalid backtick info without a later-run rescue: ${input}`, () => {
-        const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], {
+        const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], {
           input: `${input}\n`,
           encoding: "utf8"
         });
@@ -305,7 +314,10 @@ for (const [hook, path] of hooks) {
       for (const [name, suffix] of mixedInvalidFenceShapes) {
         it(`keeps masking ${name} after invalid backtick info changes, as ${kind}`, () => {
           const input = `\x60\x60\x60token: \x60S295MIX0\x60 ${suffix} KEEP295MIX\n`;
-          const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+          const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], {
+            input,
+            encoding: "utf8"
+          });
           for (const secret of ["S295MIX0", "S295MIX1", "S295MIX2", "S295MIX3"]) expect(output).not.toContain(secret);
           if (name !== "compound markup") expect(output).not.toContain(suffix);
           // Invalid backtick info is ordinary input. The archive refence pass
@@ -323,7 +335,7 @@ for (const [hook, path] of hooks) {
       "P~~~~~~ token=S295PREFIX\n"
     ]) {
       it(`does not treat an input prefix as trusted framing: ${JSON.stringify(input)}`, () => {
-        const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+        const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
         expect(output).toBe(input.replace("S295PREFIX", "***MASKED***"));
         expect(output).not.toContain("S295PREFIX");
       });
@@ -335,13 +347,13 @@ for (const [hook, path] of hooks) {
   describe(`${hook} armor state across original protected records`, () => {
     it("opens the armor window on a protected BEGIN record", () => {
       const input = "~~~~~~ -----BEGIN PRIVATE KEY-----\nbody S295ARMORBEGIN prose\n-----END PRIVATE KEY-----\n";
-      const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+      const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
       expect(output).not.toContain("S295ARMORBEGIN");
       expect(fenceSyntax(output)).toEqual(fenceSyntax(input));
     });
     it("closes the armor window on a protected END record", () => {
       const input = "-----BEGIN PRIVATE KEY-----\n~~~~~~ -----END PRIVATE KEY-----\ntext KEEP295ARMOREND prose\n";
-      const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+      const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
       expect(output).toContain("KEEP295ARMOREND");
       expect(fenceSyntax(output)).toEqual(fenceSyntax(input));
     });
@@ -355,7 +367,7 @@ for (const [hook, path] of hooks) {
         // Model BSD sed final-line completion on this runner. This is a stream
         // composition check; the real GNU/macOS runtime gates remain separate.
         const completeSedLine = "sed() { command sed \"$@\" | awk '{ print }'; }";
-        const output = execFileSync("bash", ["-c", `${completeSedLine}\n${maskFunction(path)}\nmask`], {
+        const output = execFileSyncBounded("bash", ["-c", `${completeSedLine}\n${maskFunction(path)}\nmask`], {
           input,
           encoding: "utf8"
         });
@@ -378,7 +390,10 @@ for (const [hook, path] of hooks) {
     for (const kind of ["command", "text"] as const) {
       for (const [name, input, secret, run] of fenceCredentialShapes) {
         it(`${name}, as ${kind}: masks the credential while retaining fence syntax`, () => {
-          const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+          const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], {
+            input,
+            encoding: "utf8"
+          });
           expect(output).not.toContain(secret);
           // Inline triples are ordinary credential bytes, not fence syntax.
           if (input.startsWith("```")) expect(output).toContain(run);
@@ -403,7 +418,10 @@ for (const [hook, path] of hooks) {
     for (const kind of ["command", "text"] as const) {
       for (const [name, input] of orderedFenceShapes) {
         it(`${name}, as ${kind}: does not restore the original ordinal as syntax`, () => {
-          const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+          const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], {
+            input,
+            encoding: "utf8"
+          });
           expect(output).not.toContain("123456789");
           expect(output).toContain("000000000. ```");
           for (const secret of ["HEAD295", "TAIL295", "S295LISTVALUE"]) expect(output).not.toContain(secret);
@@ -428,14 +446,14 @@ for (const [hook, path] of hooks) {
     for (const [name, suffix] of closingFenceWhitespace) {
       it(`retains a wholly whitespace ${name} closing suffix`, () => {
         const input = `\x60\x60\x60\nPUBLIC295\n\x60\x60\x60${suffix}\n`;
-        const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+        const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
         expect(output).toBe(input);
       });
     }
     for (const suffix of ["\u200b", "\u2060", "\ufeffpassword=S295TRAILER", "\u00a0X"]) {
       it(`does not treat non-whitespace info as a closing suffix: ${JSON.stringify(suffix)}`, () => {
         const input = `\x60\x60\x60${suffix}\n`;
-        const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+        const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
         expect(output).toBe("```***MASKED***\n");
       });
     }
@@ -450,7 +468,10 @@ for (const [hook, path] of hooks) {
     ] as const) {
       for (const kind of ["command", "text"] as const) {
         it(`reads the complete ${name} across a structural line, as ${kind}`, () => {
-          const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+          const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], {
+            input,
+            encoding: "utf8"
+          });
           expect(output).not.toContain("HEAD295");
           expect(output).not.toContain("TAIL295");
           expect(output).toContain("KEEP295CONT");
@@ -460,7 +481,7 @@ for (const [hook, path] of hooks) {
     }
     it("preserves ordinary CR segments when masking did not consume their separators", () => {
       const input = "plain KEEP295CRHEAD\r~~~~~~ password=S295CRINFO\rplain KEEP295CRTAIL\r";
-      const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+      const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
       expect(output).not.toContain("S295CRINFO");
       expect(output).toContain("KEEP295CRHEAD");
       expect(output).toContain("KEEP295CRTAIL");
@@ -468,7 +489,7 @@ for (const [hook, path] of hooks) {
     });
     it("documents the safe skeleton cost when legacy masking consumed CR separators", () => {
       const input = 'password="HEAD295\r~~~~~~\rTAIL295" KEEP295CRCOST\nKEEP295CRAFTER\n';
-      const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+      const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
       for (const text of ["HEAD295", "TAIL295", "KEEP295CRCOST"]) expect(output).not.toContain(text);
       expect(output).toContain("KEEP295CRAFTER");
       expect(output.match(/\r\n|\r|\n/g)).toEqual(input.match(/\r\n|\r|\n/g));
@@ -477,7 +498,7 @@ for (const [hook, path] of hooks) {
     for (const prefix of ["F0", "F1", "F1P~~~", "NF1P~~~"]) {
       it(`cannot forge a metadata frame with literal ${prefix}`, () => {
         const input = `${prefix} token=S295FRAME\n`;
-        const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+        const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
         expect(output).toBe(`${prefix} token=***MASKED***\n`);
       });
     }
@@ -491,7 +512,7 @@ for (const [hook, path] of hooks) {
         const tag = '<password first="C295SHORTA" second="C295SHORTB> KEEP295SHORT';
         const padding = "ordinary\r".repeat(32);
         const input = (placement === "before" ? `${tag}\r${padding}` : `${padding}${tag}`) + "\n";
-        const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+        const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
         expect(output).not.toContain("C295SHORTA");
         expect(output).not.toContain("C295SHORTB");
         expect(output).toContain("KEEP295SHORT");
@@ -500,7 +521,7 @@ for (const [hook, path] of hooks) {
     for (const boundaries of [31, 32]) {
       it(`counts ${boundaries} leading CR separators inside the candidate`, () => {
         const input = "<password" + "\r".repeat(boundaries) + ' first="x" second="C295PREFIXBOUND> KEEP295SHORT\n';
-        const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+        const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
         expect(output).not.toContain("C295PREFIXBOUND");
         expect(output).toContain("KEEP295SHORT");
       });
@@ -516,7 +537,7 @@ for (const [hook, path] of hooks) {
           '<password first="C295BOUNDHEAD"\r' +
           ' x="C295BOUNDMID"\r'.repeat(lines - 2) +
           ' last="C295BOUNDTAIL"> KEEP295BOUND\n';
-        const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+        const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
         for (const secret of ["C295BOUNDHEAD", "C295BOUNDMID", "C295BOUNDTAIL"]) expect(output).not.toContain(secret);
         expect(output).toContain("KEEP295BOUND");
         expect(output.match(/\r\n|\r|\n/g)).toEqual(input.match(/\r\n|\r|\n/g));
@@ -544,8 +565,11 @@ for (const [hook, path] of hooks) {
           const input = `<${label} first="C295FOLDFIRST" second="C295FOLDSECOND"> KEEP295FOLD\n`;
           // The old final rule is the oracle for the current GNU/BSD locale;
           // Unicode case classes differ across those supported runtimes.
-          const baseline = execFileSync("sed", ["-E", legacyLabelRule], { input, encoding: "utf8" });
-          const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+          const baseline = execFileSyncBounded("sed", ["-E", legacyLabelRule], { input, encoding: "utf8" });
+          const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], {
+            input,
+            encoding: "utf8"
+          });
           expect(output).toBe(baseline);
           expect(output).toContain("KEEP295FOLD");
         });
@@ -607,8 +631,8 @@ for (const [hook, path] of hooks) {
       it(name, () => {
         // An identity sed supplies the platform's existing final-line behavior;
         // the content, internal separators, masking and following word are exact.
-        const completed = execFileSync("sed", ["-e", ""], { input: expected, encoding: "utf8" });
-        const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
+        const completed = execFileSyncBounded("sed", ["-e", ""], { input: expected, encoding: "utf8" });
+        const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], { input, encoding: "utf8" });
         expect(output).toBe(completed);
         expect(output).not.toContain("CHUNK295SECRET");
         if (input.includes("KEEP295CHUNK")) expect(output).toContain("KEEP295CHUNK");
@@ -674,14 +698,14 @@ const nulCases = [
 
 const requestedNulLocales = ["C", "en_US.UTF-8", "ja_JP.UTF-8"] as const;
 const installedNulLocales = new Set(
-  execFileSync("locale", ["-a"], { encoding: "utf8" })
+  execFileSyncBounded("locale", ["-a"], { encoding: "utf8" })
     .trim()
     .split(/\r?\n/)
     .map((locale) => locale.toLowerCase().replace(/[-_]/g, ""))
 );
 const nulLocaleEvidence = requestedNulLocales.map((locale) => {
   const listed = installedNulLocales.has(locale.toLowerCase().replace(/[-_]/g, ""));
-  const probe = spawnSync("locale", ["charmap"], {
+  const probe = spawnSyncBounded("locale", ["charmap"], {
     env: { ...process.env, LC_ALL: locale },
     encoding: "utf8"
   });
@@ -696,11 +720,11 @@ const nulLocaleEvidence = requestedNulLocales.map((locale) => {
 });
 
 it("reports NUL normalization native awk and requested locale evidence", () => {
-  const awk = execFileSync("bash", ["-c", "command -v awk"], { encoding: "utf8" }).trim();
-  const version = spawnSync(awk, process.platform === "darwin" ? ["-version"] : ["-W", "version"], {
+  const awk = execFileSyncBounded("bash", ["-c", "command -v awk"], { encoding: "utf8" }).trim();
+  const version = spawnSyncBounded(awk, process.platform === "darwin" ? ["-version"] : ["-W", "version"], {
     encoding: "utf8"
   });
-  const probe = spawnSync(awk, ["{ print }"], { input: "LEFT\0RIGHT\n", encoding: "utf8" });
+  const probe = spawnSyncBounded(awk, ["{ print }"], { input: "LEFT\0RIGHT\n", encoding: "utf8" });
   // Evidence only: GNU/mawk need not reproduce BWK's historical truncation.
   console.info(
     "NUL_RUNTIME_EVIDENCE " +
@@ -726,8 +750,8 @@ for (const [hook, path] of hooks) {
         it(`normalizes ${name} before awk without losing values or leaking secrets`, () => {
           const env = { ...process.env, LC_ALL: locale };
           // Keep the platform's final-line completion, not its NUL behavior.
-          const completed = execFileSync("sed", ["-e", ""], { input: expected, encoding: "utf8", env });
-          const output = execFileSync("bash", ["-c", `${maskFunction(path)}\nmask`], {
+          const completed = execFileSyncBounded("sed", ["-e", ""], { input: expected, encoding: "utf8", env });
+          const output = execFileSyncBounded("bash", ["-c", `${maskFunction(path)}\nmask`], {
             input,
             encoding: "utf8",
             env

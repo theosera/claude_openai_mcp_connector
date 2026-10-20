@@ -27,11 +27,12 @@
  * missing or appears twice fails loudly rather than being skipped: a skipped
  * mutation would print as held having tested nothing.
  */
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { execFileSyncBounded } from "./syncChild.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const hookRelative = path.join(".claude", "skills", "session-archive", "archive-session.sh");
@@ -170,7 +171,7 @@ function runSuite(hook: string): Outcome {
   const report = path.join(dir, "report.json");
   try {
     try {
-      execFileSync(
+      execFileSyncBounded(
         path.join(repoRoot, "node_modules", ".bin", "vitest"),
         ["run", SUITE, "-t", FILTER, "--reporter=json", `--outputFile=${report}`],
         { cwd: dir, stdio: "pipe" }
