@@ -562,6 +562,15 @@ tools scoped to one reserved subtree (`MCP_AUDIT_SUBDIR` +
   `fetch`, the write side in `assertNoServerOwnedFrontmatter`) is on its path —
   **"does not write an `id`" and "cannot write an `id`" are different claims**,
   and only the second one survives an edit to the runner.
+- **A report reaches its name only once it is complete** (unreleased).
+  `append_audit_report` writes each report to a temp in `reports/` and places it
+  with a hard link, so a write that stops part way no longer leaves a cut-off
+  report that refuses every re-send of its `run_id`. That makes hard links a
+  requirement on the filesystem holding `MCP_AUDIT_SUBDIR`: a process with the
+  audit write tools on checks it once at startup and refuses to start without it,
+  and one that only reserves the subtree does not check — refusing it would push
+  an operator on such a filesystem to drop the reservation. See `CHANGELOG.md`
+  `[Unreleased]` and `docs/operations.md` §9.
 
 ### MCP 2026-07-28 (stateless core) adoption — _reliability, not speed_ ✅
 

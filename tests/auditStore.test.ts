@@ -516,6 +516,276 @@ describe("AuditStore", () => {
     });
   });
 
+  // The report write. A report is written in full to a temp in reports/ and then
+  // placed under its name with link(), so a write that stops part way leaves
+  // nothing under the final name. As in the state write above, cleanup only ever
+  // removes the temp this call created, and until the link the temp is reached
+  // only through the handle the exclusive create returned.
+  describe("report temp file", () => {
+    const fixedUuid = "00000000-0000-4000-8000-000000000000";
+    const report = { run_id: "2026-10-19T00-00-00Z--r15", content: "# report\n\nbody\n" };
+    let reportsDir: string;
+    let finalPath: string;
+
+    beforeEach(() => {
+      reportsDir = path.join(auditRoot, "reports");
+      finalPath = path.join(reportsDir, `${report.run_id}.md`);
+    });
+
+    async function reportTemps(): Promise<string[]> {
+      return (await fs.readdir(reportsDir)).filter((name) => name.startsWith(".report-") && name.endsWith(".tmp"));
+    }
+
+    /** Hand `wrap` the handle of every exclusive create of a report temp. */
+    function onReportTempHandle(wrap: (handle: fs.FileHandle) => void): void {
+      const realOpen = fs.open.bind(fs);
+      vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+        const handle = await realOpen(...args);
+        if (args[1] === "wx" && path.basename(String(args[0])).startsWith(".report-")) {
+          wrap(handle);
+        }
+        return handle;
+      });
+    }
+
+    it("leaves nothing under the final name when the write fails part way, so the re-send lands", async () => {
+      let injected = 0;
+      onReportTempHandle((handle) => {
+        handle.writeFile = async () => {
+          await handle.write("# rep");
+          injected += 1;
+          throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+        };
+      });
+
+      await expect(store.appendAuditReport(report)).rejects.toMatchObject({ code: "ENOSPC" });
+
+      expect(injected).toBe(1);
+      // Checked through the listing rather than lstat on finalPath: the file is
+      // read by that path below, and a check-then-use on one path is the shape
+      // CodeQL flags (js/file-system-race).
+      expect(await fs.readdir(reportsDir)).not.toContain(`${report.run_id}.md`);
+      expect(await reportTemps()).toEqual([]);
+
+      // The same bytes sent again are a new report, not "different content".
+      vi.restoreAllMocks();
+      expect(await store.appendAuditReport(report)).toEqual({
+        path: `90_Audit/vault-scan/reports/${report.run_id}.md`,
+        created: true
+      });
+      expect(await fs.readFile(finalPath, "utf8")).toBe(report.content);
+    });
+
+    it("answers a re-send of the same bytes as before, and removes its temp", async () => {
+      await store.appendAuditReport(report);
+      expect(await store.appendAuditReport(report)).toMatchObject({ created: false });
+      expect(await reportTemps()).toEqual([]);
+      expect(await fs.readFile(finalPath, "utf8")).toBe(report.content);
+    });
+
+    it("refuses different bytes under a taken name as before, and removes its temp", async () => {
+      await store.appendAuditReport(report);
+      await expect(store.appendAuditReport({ ...report, content: "# other\n" })).rejects.toThrow(/never overwritten/);
+      expect(await reportTemps()).toEqual([]);
+      expect(await fs.readFile(finalPath, "utf8")).toBe(report.content);
+    });
+
+    it("fails the append closed when the link fails for any other reason, and removes its temp", async () => {
+      let injected = 0;
+      vi.spyOn(fs, "link").mockImplementation(async () => {
+        injected += 1;
+        throw Object.assign(new Error("EPERM: operation not permitted, link"), { code: "EPERM" });
+      });
+
+      await expect(store.appendAuditReport(report)).rejects.toMatchObject({ code: "EPERM" });
+
+      expect(injected).toBe(1);
+      await expect(fs.lstat(finalPath)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await reportTemps()).toEqual([]);
+    });
+
+    it("sweeps stale .report-*.tmp files in reports/ when the writer's startup asks", async () => {
+      const stale = path.join(reportsDir, ".report-orphan.tmp");
+      await fs.writeFile(stale, "junk", "utf8");
+      const fresh = new AuditStore({ knowledgeRoot: root, auditSubdir: "90_Audit/vault-scan" });
+      await fresh.init();
+      await fresh.sweepReportTemps();
+      await expect(fs.stat(stale)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    // init() runs in every process that sets MCP_AUDIT_SUBDIR, including one that
+    // only reserves the subtree and may start while the writer is part way
+    // through an append. It must leave that writer's temp alone, or the writer's
+    // link fails with ENOENT.
+    it("leaves a report temp alone on init, so a reserving process never removes a writer's", async () => {
+      const inFlight = path.join(reportsDir, ".report-in-flight.tmp");
+      await fs.writeFile(inFlight, "being written\n", "utf8");
+      // The same init does sweep a stale state temp, so it ran its sweep.
+      const staleState = path.join(auditRoot, ".state-orphan.tmp");
+      await fs.writeFile(staleState, "junk", "utf8");
+
+      const fresh = new AuditStore({ knowledgeRoot: root, auditSubdir: "90_Audit/vault-scan" });
+      await fresh.init();
+
+      await expect(fs.stat(staleState)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await fs.readFile(inFlight, "utf8")).toBe("being written\n");
+    });
+
+    // The temp's name and the startup sweep's pattern are written in two places;
+    // if they drift apart, a temp left by a hard kill is never swept and the
+    // sweep test above stays green (it plants its own name).
+    it("names its temp inside reports/, in the shape the startup sweep removes", async () => {
+      const realOpen = fs.open.bind(fs);
+      const created: string[] = [];
+      vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+        if (args[1] === "wx") {
+          created.push(String(args[0]));
+        }
+        return realOpen(...args);
+      });
+
+      await store.appendAuditReport(report);
+
+      expect(created).toHaveLength(1);
+      const name = path.basename(created[0]);
+      expect(path.dirname(created[0])).toBe(await fs.realpath(reportsDir));
+      expect(name.startsWith(".report-") && name.endsWith(".tmp")).toBe(true);
+      // Never indexed by the vault walk, which only reads .md files.
+      expect(name.endsWith(".md")).toBe(false);
+
+      await fs.writeFile(path.join(reportsDir, name), "left by a hard kill\n", "utf8");
+      const fresh = new AuditStore({ knowledgeRoot: root, auditSubdir: "90_Audit/vault-scan" });
+      await fresh.init();
+      await fresh.sweepReportTemps();
+      await expect(fs.stat(path.join(reportsDir, name))).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    // A shape test: it stops a return to writing a report by path -- the final
+    // name (the form before this change) or the temp. It does not reproduce a
+    // different file appearing at the temp's name; that threat needs write access
+    // to reports/ and is out of scope here, as it is for the state write.
+    it("never writes the report by path", async () => {
+      const realWriteFile = fs.writeFile.bind(fs);
+      const written: string[] = [];
+      vi.spyOn(fs, "writeFile").mockImplementation(async (...args: Parameters<typeof fs.writeFile>) => {
+        written.push(String(args[0]));
+        return realWriteFile(...args);
+      });
+
+      const result = await store.appendAuditReport(report);
+
+      // The report landed, so the write step ran under the spy.
+      expect(result.created).toBe(true);
+      const reportWrites = written.filter((file) => {
+        const name = path.basename(file);
+        return name.startsWith(".report-") || name === `${report.run_id}.md`;
+      });
+      expect(reportWrites).toEqual([]);
+    });
+
+    // Cleanup may only remove a file this call created. When the exclusive create
+    // fails because the name is taken, the entry at that name is not ours.
+    it("leaves an entry it did not create in place when the temp name is already taken", async () => {
+      const uuid = vi.spyOn(crypto, "randomUUID").mockReturnValue(fixedUuid);
+      const taken = path.join(reportsDir, `.report-${fixedUuid}.tmp`);
+      await fs.writeFile(taken, "not ours\n", "utf8");
+
+      await expect(store.appendAuditReport(report)).rejects.toMatchObject({ code: "EEXIST" });
+
+      // The fixed name was the one tried; without this the test could pass
+      // without ever reaching the failed create.
+      expect(uuid).toHaveBeenCalledTimes(1);
+      expect(await fs.readFile(taken, "utf8")).toBe("not ours\n");
+      await expect(fs.lstat(finalPath)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    // The open mode is filtered by the umask; the chmod after the bytes are in
+    // sets the exact mode, which the final name shares with the temp.
+    it("holds the temp at 0600 while it is written, under the common 022 umask", async () => {
+      if (process.platform === "win32") {
+        return;
+      }
+      const modes: number[] = [];
+      onReportTempHandle((handle) => {
+        const realWriteFile = handle.writeFile.bind(handle);
+        handle.writeFile = async (...args: Parameters<typeof realWriteFile>) => {
+          modes.push((await handle.stat()).mode & 0o777);
+          return realWriteFile(...args);
+        };
+      });
+      const previous = process.umask(0o022);
+      try {
+        await store.appendAuditReport(report);
+      } finally {
+        process.umask(previous);
+      }
+      // Observed exactly once, so the write went through the wrapped handle.
+      expect(modes).toEqual([0o600]);
+    });
+
+    it("leaves the report at exactly 0600 even when the umask strips every bit", async () => {
+      if (process.platform === "win32") {
+        return;
+      }
+      const previous = process.umask(0o777);
+      const appended = await store.appendAuditReport(report).finally(() => process.umask(previous));
+      // The report landed, so the mode below is the new report's.
+      expect(appended.created).toBe(true);
+      expect((await fs.stat(finalPath)).mode & 0o777).toBe(0o600);
+    });
+  });
+
+  // The startup check a process registering the audit write tools runs (see
+  // src/index.ts). Which processes run it is pinned on the spawned entrypoint in
+  // tests/config.test.ts; this pins what the check does.
+  describe("startup hard-link check", () => {
+    async function reportsEntries(): Promise<string[]> {
+      return fs.readdir(path.join(auditRoot, "reports"));
+    }
+
+    it("makes one link in reports/, in the shape the startup sweep removes, and leaves nothing behind", async () => {
+      const realLink = fs.link.bind(fs);
+      const links: string[] = [];
+      vi.spyOn(fs, "link").mockImplementation(async (...args: Parameters<typeof fs.link>) => {
+        links.push(String(args[1]));
+        return realLink(...args);
+      });
+
+      await store.assertReportsCanBeLinked("MCP_HTTP_ALLOW_AUDIT_WRITE");
+
+      expect(links).toHaveLength(1);
+      expect(path.dirname(links[0])).toBe(await fs.realpath(path.join(auditRoot, "reports")));
+      const name = path.basename(links[0]);
+      expect(name.startsWith(".report-") && name.endsWith(".tmp")).toBe(true);
+      expect(await reportsEntries()).toEqual([]);
+    });
+
+    it("refuses with the variable and the error code only, and leaves nothing behind", async () => {
+      let injected = 0;
+      vi.spyOn(fs, "link").mockImplementation(async (...args: Parameters<typeof fs.link>) => {
+        injected += 1;
+        // A real link error names both paths; the refusal must not pass them on.
+        throw Object.assign(new Error(`EPERM: operation not permitted, link '${args[0]}' -> '${args[1]}'`), {
+          code: "EPERM"
+        });
+      });
+
+      const refused = await store.assertReportsCanBeLinked("MCP_STDIO_ALLOW_AUDIT_WRITE").then(
+        () => undefined,
+        (error: Error) => error
+      );
+
+      expect(injected).toBe(1);
+      expect(refused).toBeInstanceOf(Error);
+      expect(refused!.message).toContain("MCP_STDIO_ALLOW_AUDIT_WRITE");
+      expect(refused!.message).toContain("(EPERM)");
+      expect(refused!.message).not.toContain(root);
+      expect(refused!.message).not.toContain(await fs.realpath(root));
+      expect(refused!.cause).toBeUndefined();
+      expect(await reportsEntries()).toEqual([]);
+    });
+  });
+
   // INV-2 (write side) / INV-9. The audit surface is constrained about WHERE it
   // writes. Its bytes still land as .md files that the read side indexes like
   // any other document, so a report could declare another note's `id` and answer

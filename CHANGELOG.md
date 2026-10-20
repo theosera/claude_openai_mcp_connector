@@ -129,6 +129,41 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is read from how Node's path-based `writeFile` works; it was not measured on
   the code before this change. A successful swap, the compare-and-swap check
   and the startup sweep are unchanged.
+- **An audit report gets its name only once it is written in full.**
+  `append_audit_report` used to write `reports/<run_id>.md` directly with
+  `writeFile(…, { flag: "wx" })`, so a write that stopped part way (ENOSPC,
+  EIO, a killed process) left a cut-off report under the final name. Reports
+  are never overwritten, so that file then refused every re-send of the same
+  `run_id` as different content, and the vault walk indexed it as the run's
+  report. The report is now written to a temporary file in `reports/`
+  (`.report-<uuid>.tmp`, created with `wx` as a step of its own and written
+  through the descriptor that create returned) and placed under the final name
+  with a hard link, which fails with EEXIST when anything already holds the
+  name and never follows it. The temporary file is removed on every path. The
+  `.report-*.tmp` files a killed writer leaves in `reports/` are removed when a
+  process that registers the audit write tools starts; a process that only
+  reserves the subtree leaves them, because it can start while the writer is
+  part way through an append, and removing that temporary file would make the
+  writer's link fail. Their names do not end in `.md`, so nothing indexes
+  them meanwhile. Create-only, the idempotent re-send of the same bytes
+  and the refusal of different bytes are unchanged. The report's mode is now
+  set by a `chmod` once the bytes are in, so it is 0600 whatever the umask;
+  before, it kept the open mode the umask allowed (000 under a umask of 0777,
+  measured on the code before this change).
+  The filesystem holding `MCP_AUDIT_SUBDIR` must now support hard links: a
+  process that registers the audit write tools (`audit=on`) makes one link in
+  `reports/` at startup and refuses to start if it cannot, and a link that
+  fails later fails that append rather than writing the final name directly.
+  A process that only reserves the subtree does not check. A report cut off by
+  an earlier version is left as it is; `docs/operations.md` §9 gives the
+  manual steps. That the direct write left a cut-off report is measured: under
+  a file-size limit (`ulimit -f`, 128 KiB), Node returned EFBIG rather than
+  being killed, the code before this change left the first 128 KiB of a
+  256 KiB report under `reports/<run_id>.md`, and the full re-send was refused
+  as different content; with this change nothing was left under the final name
+  or as a temporary file, and the re-send created the report. That the vault
+  walk indexes such a file is read from how it picks `.md` files; it was not
+  measured.
 
 ## [0.10.0] — 2026-09-19
 

@@ -110,11 +110,36 @@ export class AuditStore {
     // Sweep stale state temp files a crash may have left between the writeFile and
     // the rename (the caught-error path cleans up; a hard kill does not). Single
     // writer by design, so nothing is legitimately in flight at startup.
+    //
+    // Report temps are not swept here: see sweepReportTemps.
     for (const entry of await fs.readdir(this.auditRootRealPath)) {
       if (entry.startsWith(".state-") && entry.endsWith(".tmp")) {
         await fs.rm(path.join(this.auditRootRealPath, entry), { force: true }).catch(() => undefined);
       }
     }
+  }
+
+  /**
+   * Startup sweep of the report temps a killed writer leaves in reports/
+   * (between the write and the link, or after the link and before the cleanup).
+   *
+   * Only a process that registers the audit write tools runs it (src/index.ts).
+   * It is the one writer, so at its own start nothing of its own is in flight.
+   * A process that only reserves the subtree must not sweep: it can start while
+   * the writer is part way through an append, and removing that temp makes the
+   * writer's link fail with ENOENT. A temp left while only such processes run
+   * does no harm, since its name does not end in ".md" and the walk never
+   * indexes it.
+   */
+  async sweepReportTemps(): Promise<void> {
+    return this.serialize(async () => {
+      const reportsRoot = await this.reportsRoot();
+      for (const entry of await fs.readdir(reportsRoot)) {
+        if (entry.startsWith(".report-") && entry.endsWith(".tmp")) {
+          await fs.rm(path.join(reportsRoot, entry), { force: true }).catch(() => undefined);
+        }
+      }
+    });
   }
 
   /**
@@ -157,27 +182,65 @@ export class AuditStore {
       // inside reports/ without following any symlink.
       const target = path.join(reportsRoot, `${input.run_id}.md`);
       const relativePath = toPosixPath(relativeToRoot(this.rootRealPath!, target));
+      // The report is written in full to a private temp in reports/ and only then
+      // placed under its final name with link(). Writing the final name directly
+      // left a partial report there when the write stopped part way (ENOSPC, EIO,
+      // a kill): every re-send of that run_id was then refused as different
+      // content, and the vault walk indexed the cut-off file as the run's report.
+      // link() fails with EEXIST when anything -- a file or a symlink -- already
+      // holds the name, and never follows it, so the report stays create-only.
+      // rename() would replace an existing report and copyFile() can itself stop
+      // part way, so neither is used.
+      //
+      // Creating the temp sits outside the cleanup, as in compareAndSwapAuditState:
+      // if the exclusive create fails, whatever holds that name is not ours. The
+      // name starts with "." and does not end in ".md", so the walk never indexes
+      // it, and the writer's startup sweep (sweepReportTemps) removes any a hard
+      // kill leaves behind.
+      const temp = path.join(reportsRoot, `.report-${crypto.randomUUID()}.tmp`);
+      const created = await fs.open(temp, "wx", 0o600);
       try {
-        await fs.writeFile(target, content, { encoding: "utf8", flag: "wx", mode: 0o600 });
-        return { path: relativePath, created: true };
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-          // The slot is taken. Refuse a symlinked report leaf before reading it —
-          // otherwise the idempotency compare would follow the link and read a
-          // file outside reports/, and the audit trail would be ambiguous.
-          await assertNotSymlink(target, "an audit report path");
-          const existing = await fs.readFile(target);
-          if (Buffer.compare(existing, encodedBytes(content)) === 0) {
-            // Idempotent re-submission of the same run: succeed without touching
-            // the file (create-only preserved).
-            return { path: relativePath, created: false };
-          }
-          throw new Error(
-            "An audit report already exists for this run_id with different content; audit reports are never overwritten.",
-            { cause: error }
-          );
+        // Until the link, the temp is reached only through the handle the
+        // exclusive create returned. The open mode is filtered by the umask, so
+        // the chmod after the bytes are in sets the exact mode, which the final
+        // name shares with the temp.
+        try {
+          await created.writeFile(content, "utf8");
+          await created.chmod(0o600);
+        } finally {
+          await created.close();
         }
-        throw error;
+        try {
+          await fs.link(temp, target);
+          return { path: relativePath, created: true };
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+            // The slot is taken. Refuse a symlinked report leaf before reading it —
+            // otherwise the idempotency compare would follow the link and read a
+            // file outside reports/, and the audit trail would be ambiguous.
+            await assertNotSymlink(target, "an audit report path");
+            const existing = await fs.readFile(target);
+            if (Buffer.compare(existing, encodedBytes(content)) === 0) {
+              // Idempotent re-submission of the same run: succeed without touching
+              // the file (create-only preserved).
+              return { path: relativePath, created: false };
+            }
+            throw new Error(
+              "An audit report already exists for this run_id with different content; audit reports are never overwritten.",
+              { cause: error }
+            );
+          }
+          // Any other link failure (a filesystem without hard links: EPERM,
+          // ENOTSUP, EXDEV) fails this append closed. It never falls back to
+          // writing the final name directly -- that is the partial report this
+          // shape removes.
+          throw error;
+        }
+      } finally {
+        // From the exclusive create onward the temp is this call's own, so it goes
+        // on every path: linked (the final name keeps the inode), EEXIST, or a
+        // failure.
+        await fs.rm(temp, { force: true }).catch(() => undefined);
       }
     });
   }
@@ -256,6 +319,56 @@ export class AuditStore {
         throw error;
       }
       return { path: toPosixPath(relativeToRoot(this.rootRealPath!, target)), sha256: sha256(content) };
+    });
+  }
+
+  /**
+   * Startup check for a process that registers the audit write tools: make one
+   * hard link in reports/, the way appendAuditReport places a report, and refuse
+   * to start if that fails. On a filesystem without hard links every append
+   * would fail; this says so once, at startup, instead of on each report.
+   *
+   * Only a process that registers the tools calls this. A process that merely
+   * reserves the subtree never appends, and refusing it would push an operator
+   * on such a filesystem to drop MCP_AUDIT_SUBDIR from it -- which lifts the
+   * INV-9 reservation for that process's general writes.
+   *
+   * Both names have the shape sweepReportTemps removes, so a kill part way leaves
+   * nothing the next start of the writer does not remove. Any failure refuses,
+   * whatever the errno, and the message carries the variable and the error code
+   * only: no path, no cause.
+   */
+  async assertReportsCanBeLinked(
+    enabledBy: "MCP_HTTP_ALLOW_AUDIT_WRITE" | "MCP_STDIO_ALLOW_AUDIT_WRITE"
+  ): Promise<void> {
+    const refusal = (error: unknown) => {
+      const code = (error as NodeJS.ErrnoException).code ?? (error as Error).name;
+      return new Error(
+        `${enabledBy}=1 registers append_audit_report, which places each report with a hard link ` +
+          `in reports/ inside MCP_AUDIT_SUBDIR, and making one there at startup failed (${code}). ` +
+          `Put MCP_AUDIT_SUBDIR on a filesystem that supports hard links, or leave ${enabledBy} unset.`
+      );
+    };
+    return this.serialize(async () => {
+      const reportsRoot = await this.reportsRoot();
+      const name = `.report-${crypto.randomUUID()}`;
+      const temp = path.join(reportsRoot, `${name}.tmp`);
+      const linkPath = path.join(reportsRoot, `${name}-link.tmp`);
+      // As in appendAuditReport, the exclusive create sits outside the cleanup.
+      const created = await fs.open(temp, "wx", 0o600).catch((error: unknown) => {
+        throw refusal(error);
+      });
+      let linked = false;
+      try {
+        await created.close();
+        await fs.link(temp, linkPath);
+        linked = true;
+      } catch (error) {
+        throw refusal(error);
+      } finally {
+        if (linked) await fs.rm(linkPath, { force: true }).catch(() => undefined);
+        await fs.rm(temp, { force: true }).catch(() => undefined);
+      }
     });
   }
 
