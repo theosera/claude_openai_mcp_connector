@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { execFileSyncBounded, RUNAWAY_MS, spawnSyncBounded } from "./tools/syncChild.js";
 
 // This file observes the helper-to-Node boundary without starting a child.
-// Keep it separate from syncChild.test.ts, whose seven tests use real children.
+// Keep it separate from syncChild.test.ts, which uses real children.
 vi.mock("node:child_process", () => ({
   execFileSync: vi.fn(),
   spawnSync: vi.fn()
@@ -53,14 +53,18 @@ describe("bounded child options passed to Node without running a child", () => {
       mockExecFileSync.mockReturnValue(EXEC_RESULT);
       const args = [...ARGS];
       const env = { ...ENV };
-      const options = { ...OPTIONS, ...timeoutOptions, env };
+      const options = { ...OPTIONS, ...timeoutOptions, env, killSignal: "SIGTERM" as const };
       const before = { ...options, env: { ...env } };
       const argsBefore = [...args];
 
       expect(execFileSyncBounded(FILE, args, options)).toBe(EXEC_RESULT);
 
       expect(mockExecFileSync).toHaveBeenCalledTimes(1);
-      expect(mockExecFileSync).toHaveBeenCalledWith(FILE, argsBefore, { ...before, timeout: expectedTimeout });
+      expect(mockExecFileSync).toHaveBeenCalledWith(FILE, argsBefore, {
+        ...before,
+        timeout: expectedTimeout,
+        killSignal: "SIGKILL"
+      });
       expect(mockExecFileSync.mock.calls[0]?.[1]).toBe(args);
       expect(mockExecFileSync.mock.calls[0]?.[2]?.env).toBe(env);
       expect(mockSpawnSync).not.toHaveBeenCalled();
@@ -78,7 +82,7 @@ describe("bounded child options passed to Node without running a child", () => {
       mockSpawnSync.mockReturnValue(result);
       const args = [...ARGS];
       const env = { ...ENV };
-      const options = { ...OPTIONS, ...timeoutOptions, env };
+      const options = { ...OPTIONS, ...timeoutOptions, env, killSignal: "SIGTERM" as const };
       const before = { ...options, env: { ...env } };
       const argsBefore = [...args];
 
@@ -86,7 +90,11 @@ describe("bounded child options passed to Node without running a child", () => {
       expect(result).toEqual(beforeResult);
 
       expect(mockSpawnSync).toHaveBeenCalledTimes(1);
-      expect(mockSpawnSync).toHaveBeenCalledWith(FILE, argsBefore, { ...before, timeout: expectedTimeout });
+      expect(mockSpawnSync).toHaveBeenCalledWith(FILE, argsBefore, {
+        ...before,
+        timeout: expectedTimeout,
+        killSignal: "SIGKILL"
+      });
       expect(mockSpawnSync.mock.calls[0]?.[1]).toBe(args);
       expect(mockSpawnSync.mock.calls[0]?.[2]?.env).toBe(env);
       expect(mockExecFileSync).not.toHaveBeenCalled();
@@ -105,7 +113,7 @@ describe("bounded child options passed to Node without running a child", () => {
     expect(execFileSyncBounded(FILE, options)).toBe(EXEC_RESULT);
 
     expect(mockExecFileSync).toHaveBeenCalledTimes(1);
-    expect(mockExecFileSync).toHaveBeenCalledWith(FILE, [], before);
+    expect(mockExecFileSync).toHaveBeenCalledWith(FILE, [], { ...before, killSignal: "SIGKILL" });
     expect(mockExecFileSync.mock.calls[0]?.[2]?.env).toBe(env);
     expect(mockSpawnSync).not.toHaveBeenCalled();
     expect(env).toEqual(before.env);

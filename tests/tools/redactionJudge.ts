@@ -1,4 +1,4 @@
-import { execFileSyncBounded } from "./syncChild.js";
+import { execFileSyncBounded, RUNAWAY_MS } from "./syncChild.js";
 
 /**
  * The judge shared by the migration gate (#249 step ②-2) and the differential fuzz.
@@ -20,6 +20,21 @@ export type EngineResult = { text: string; status: string };
 export type Fragment = { text: string; kind: string };
 export type Engine = (fragments: Fragment[]) => EngineResult[];
 export type Verdict = { leaked: string[]; broken: string[]; omitted: boolean };
+
+/**
+ * Give every child a finite cap without putting a fixed deadline on the entire
+ * fuzz run. 256 cases is a chosen batch size, not a measured speed requirement.
+ * Keep the empty call too: engines still validate their command and output.
+ */
+export function batchEngine(engine: Engine): Engine {
+  return (fragments) => {
+    const results: EngineResult[] = [];
+    for (let start = 0; start < Math.max(1, fragments.length); start += 256) {
+      results.push(...engine(fragments.slice(start, start + 256)));
+    }
+    return results;
+  };
+}
 
 /**
  * Words still readable in `output`. Each mask token is replaced with a NUL first:
@@ -80,17 +95,17 @@ export function judgeCase(input: string, result: EngineResult, secrets: string[]
  * here.
  */
 export function commandEngine(argv: string[], cwd: string): Engine {
-  return (fragments) => {
+  return batchEngine((fragments) => {
     const stdout = execFileSyncBounded(argv[0]!, argv.slice(1), {
       cwd,
       input: fragments.map((f) => `${JSON.stringify({ text: f.text, kind: f.kind })}\n`).join(""),
       encoding: "utf8",
-      // The default 1 MiB fails a fuzz run of 16,000 cases with ENOBUFS.
-      maxBuffer: 1 << 30
+      maxBuffer: 1 << 30,
+      timeout: RUNAWAY_MS
     });
     return stdout
       .split("\n")
       .filter((line) => line.length > 0)
       .map((line) => JSON.parse(line) as EngineResult);
-  };
+  });
 }

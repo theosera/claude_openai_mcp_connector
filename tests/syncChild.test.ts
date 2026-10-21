@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -47,7 +48,75 @@ function checkRunaway(error: Error, startedAt: number): void {
   expect(error).not.toHaveProperty("stderr");
 }
 
+/** A separate event loop can cut off a worker blocked inside a synchronous call. */
+async function termResistantChild(api: "execFileSyncBounded" | "spawnSyncBounded"): Promise<void> {
+  const ready = join(TEST_HOME, `${api}-ready`);
+  const helper = new URL("./tools/syncChild.ts", import.meta.url).href;
+  // Finite even if the worker or its cleanup fails. No shell or grandchild.
+  const child = [
+    'const { writeFileSync } = require("node:fs");',
+    'process.on("SIGTERM", () => {});',
+    `writeFileSync(${JSON.stringify(ready)}, String(process.pid));`,
+    "setTimeout(() => process.exit(0), 15_000);"
+  ].join("\n");
+  const script = [
+    `import { ${api} } from ${JSON.stringify(helper)};`,
+    "const start = performance.now();",
+    "try {",
+    `  ${api}(process.execPath, ["-e", ${JSON.stringify(child)}], { timeout: 1000, killSignal: "SIGTERM", stdio: "pipe" });`,
+    '  console.log(JSON.stringify({ outcome: "returned" }));',
+    "} catch (error) {",
+    '  console.log(JSON.stringify({ outcome: "threw", message: error.message, elapsed: performance.now() - start }));',
+    "}"
+  ].join("\n");
+  const worker = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
+    cwd: new URL("..", import.meta.url),
+    env: ENV,
+    stdio: "pipe"
+  });
+  let stdout = "";
+  let stderr = "";
+  worker.stdout.setEncoding("utf8").on("data", (part: string) => (stdout += part));
+  worker.stderr.setEncoding("utf8").on("data", (part: string) => (stderr += part));
+  let cutoff = false;
+  const timer = setTimeout(() => {
+    cutoff = true;
+    worker.kill("SIGKILL");
+  }, 5_000);
+  try {
+    const code = await new Promise<number | null>((resolve, reject) => {
+      worker.once("error", reject);
+      worker.once("close", resolve);
+    });
+    expect(cutoff, "the synchronous call did not return before the independent outer cutoff").toBe(false);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    // This proves that the child's TERM handler was installed before the cap.
+    expect(existsSync(ready)).toBe(true);
+    const result = JSON.parse(stdout) as { outcome: string; message: string; elapsed: number };
+    expect(result.outcome).toBe("threw");
+    expect(result.message).toMatch(/runaway cap of 1000 ms/);
+    expect(result.elapsed).toBeLessThan(5_000);
+  } finally {
+    clearTimeout(timer);
+    worker.kill("SIGKILL");
+    if (cutoff && existsSync(ready)) {
+      const pid = Number(readFileSync(ready, "utf8"));
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch (error) {
+        expect(error).toHaveProperty("code", "ESRCH");
+      }
+    }
+  }
+}
+
 describe("bounded synchronous child processes", () => {
+  it.each(["execFileSyncBounded", "spawnSyncBounded"] as const)(
+    "%s sends SIGKILL even when a finite direct child ignores the caller's SIGTERM",
+    { timeout: 10_000 },
+    termResistantChild
+  );
+
   it("stops execFileSync at a small cap without printing input, environment or the original error", () => {
     const startedAt = performance.now();
     checkRunaway(

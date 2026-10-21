@@ -114,16 +114,73 @@ describe("the synchronous-child AST scanner's supported forms", () => {
   });
 
   it.each([
+    'execFileSync("node", [], { ...options, timeout: 500 });',
+    'spawnSync("node", [], { timeout: 0, timeout: 500 });',
+    'execSync("node", { ["timeout"]: 500 });',
+    'execSync("node", { [`timeout`]: 500 });',
+    'execSync("node", { [("timeout")]: 500 });',
+    'execSync("node", { ["timeout"]: 0, timeout: 500 });',
+    'execSync("node", { timeout: 500, ["other"]: 0 });',
+    'execSync("node", { timeout: 500, [1]: 0 });'
+  ])("accepts a final known timeout after resolving literal keys: %s", (source) => {
+    const scan = scanSource("probe.ts", source);
+    expect(scan.calls).toHaveLength(1);
+    expect(scan.calls[0]).toMatchObject({ line: 1, capped: true, why: "its options name a timeout" });
+    expect(violations("probe.ts", scan)).toEqual([]);
+  });
+
+  it.each([
     ['execFileSync("node", [], options);', "its options are not an object literal"],
     ['execFileSync("node", [], { ...options });', "its options spread another object, which may hide the timeout"],
+    [
+      'execFileSync("node", [], { timeout: 500, ...options });',
+      "its options spread another object, which may hide the timeout"
+    ],
+    [
+      'spawnSync("node", [], { ...options, timeout: 500, ...other });',
+      "its options spread another object, which may hide the timeout"
+    ],
     ['spawnSync("node", []);', "it passes no options"],
     ['execFileSync("node", [], { timeout: 0 });', "its options set timeout to 0, which Node treats as no limit"],
+    [
+      'execFileSync("node", [], { timeout: 500, timeout: 0 });',
+      "its options set timeout to 0, which Node treats as no limit"
+    ],
+    [
+      'execSync("node", { timeout: 500, ["timeout"]: 0 });',
+      "its options set timeout to 0, which Node treats as no limit"
+    ],
+    ['execSync("node", { ["timeout"]: 0 });', "its options set timeout to 0, which Node treats as no limit"],
+    ['execSync("node", { timeout: 500, timeout() {} });', "its options define timeout as a method or accessor"],
+    [
+      'execSync("node", { timeout: 500, get ["timeout"]() { return 0; } });',
+      "its options define timeout as a method or accessor"
+    ],
+    [
+      'execSync("node", { timeout: 500, set timeout(value) {} });',
+      "its options define timeout as a method or accessor"
+    ],
     ['execSync("node", { nested: { timeout: 500 } });', "its options name a timeout only inside a nested value"]
   ])("keeps an unresolved cap closed: %s", (source, why) => {
     const scan = scanSource("probe.ts", source);
     expect(scan.calls).toHaveLength(1);
     expect(scan.calls[0]).toMatchObject({ line: 1, capped: false, why });
     expect(violations("probe.ts", scan)).toEqual([`tests/probe.ts:1 ${scan.calls[0].api}: ${why}`]);
+  });
+
+  it.each([
+    'execSync("node", { [s]: 0 });',
+    'execSync("node", { timeout: 500, [s]: 0 });',
+    'execSync("node", { [s]: 0, timeout: 500 });',
+    'execSync("node", { timeout: 500, [timeout]: 0 });',
+    'execSync("node", { timeout: 500, [makeName()]: 0 });',
+    'execSync("node", { timeout: 500, [`time${suffix}`]: 0 });'
+  ])("never proves a cap from an unresolved computed property name: %s", (source) => {
+    const scan = scanSource("probe.ts", source);
+    const why = "its options have an unresolved computed property name";
+    expect(scan.calls).toHaveLength(1);
+    expect(scan.calls[0]).toMatchObject({ line: 1, api: "execSync", capped: false, why });
+    expect(violations("probe.ts", scan)).toEqual([`tests/probe.ts:1 execSync: ${why}`]);
   });
 
   it("reports require and dynamic import without claiming to follow their bindings", () => {

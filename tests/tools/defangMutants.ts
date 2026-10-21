@@ -176,8 +176,20 @@ function runSuite(hook: string): Outcome {
         ["run", SUITE, "-t", FILTER, "--reporter=json", `--outputFile=${report}`],
         { cwd: dir, stdio: "pipe" }
       );
-    } catch {
-      // A red run exits non-zero; the report below is what says which tests.
+    } catch (error) {
+      // Only a normal red vitest exit can be interpreted through its report.
+      // A timeout or a startup failure must keep its original diagnostic.
+      const exit = error as { status?: number; signal?: string | null } | null;
+      if (
+        !exit ||
+        typeof exit.status !== "number" ||
+        !Number.isInteger(exit.status) ||
+        exit.status <= 0 ||
+        exit.signal !== null ||
+        !fs.existsSync(report)
+      ) {
+        throw error;
+      }
     }
     if (!fs.existsSync(report)) {
       throw new Error("vitest wrote no report -- the run did not reach the suite, so it measured nothing.");

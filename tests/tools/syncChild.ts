@@ -9,12 +9,14 @@ import { execFileSync, spawnSync, type ExecFileSyncOptions, type SpawnSyncOption
  * one such call. Every synchronous child in tests/ goes through here, or names
  * its own `timeout`; tests/syncChildTimeout.test.ts holds the suite to that.
  *
- * The cap stops a runaway and judges nothing. A test that wants a judgement
+ * The cap sends SIGKILL to a runaway and judges nothing. A test that wants a judgement
  * (logRedactionPerf's ceilings) keeps its own numbers. A caller's positive
  * `timeout` is used as given; a missing or zero one becomes the cap, since zero
  * means "no limit" to Node.
+ * The helper always sets `killSignal` to SIGKILL, even when the caller supplies
+ * another signal, so a child ignoring SIGTERM cannot keep the call waiting.
  *
- * The cap stops the direct child only. A grandchild, such as one stage of a shell
+ * The cap signals the direct child only. A grandchild, such as one stage of a shell
  * pipeline, can outlive it until its own work ends or its input reaches EOF
  * (measured 2026-10-20). The full run's procedure counts what is left afterwards.
  */
@@ -68,7 +70,7 @@ export const execFileSyncBounded = ((
   const timeout = runawayCapFor(options?.timeout);
   const startedAt = performance.now();
   try {
-    return execFileSync(file, args, { ...options, timeout });
+    return execFileSync(file, args, { ...options, timeout, killSignal: "SIGKILL" });
   } catch (error) {
     if ((error as { code?: unknown } | null)?.code === "ETIMEDOUT") throw runaway(file, args, timeout, startedAt);
     throw error;
@@ -88,7 +90,7 @@ export const spawnSyncBounded = ((
   const [args, options] = splitArgs(argsOrOptions, maybeOptions);
   const timeout = runawayCapFor(options?.timeout);
   const startedAt = performance.now();
-  const result = spawnSync(file, args, { ...options, timeout });
+  const result = spawnSync(file, args, { ...options, timeout, killSignal: "SIGKILL" });
   if ((result.error as { code?: unknown } | undefined)?.code === "ETIMEDOUT")
     throw runaway(file, args, timeout, startedAt);
   return result;

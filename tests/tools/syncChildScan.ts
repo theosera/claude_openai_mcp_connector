@@ -9,9 +9,10 @@ import ts from "typescript";
  * is found by name: the three APIs, any alias or namespace imported from
  * child_process, and any `.execFileSync(` / `.spawnSync(` / `.execSync(` on an
  * object (which covers a namespace or default import). The check leans closed:
- * options that are not an object literal, or an object literal that does not name
- * `timeout` itself (a spread might hide it), count as no cap, and so does any
- * `require` or dynamic `import` of child_process, whose bindings it does not follow.
+ * options must be an object literal with a final known timeout definition: a
+ * later spread may override it, and an unresolved computed key is never accepted.
+ * Any `require` or dynamic `import` of child_process also counts as unsupported,
+ * since the check does not follow its bindings.
  */
 
 export const SYNC_APIS = ["execFileSync", "spawnSync", "execSync"] as const;
@@ -73,7 +74,24 @@ function capOf(api: SyncApi, args: ts.NodeArray<ts.Expression>): { capped: boole
           : undefined;
   if (options === undefined) return { capped: false, why: "it passes no options" };
   if (!ts.isObjectLiteralExpression(options)) return { capped: false, why: "its options are not an object literal" };
-  const own = options.properties.find(namesTimeout);
+  if (
+    options.properties.some(
+      (p) => !ts.isSpreadAssignment(p) && ts.isComputedPropertyName(p.name) && propertyName(p.name) === undefined
+    )
+  ) {
+    return { capped: false, why: "its options have an unresolved computed property name" };
+  }
+  let own: ts.ObjectLiteralElementLike | undefined;
+  let spread = false;
+  for (const property of options.properties) {
+    if (ts.isSpreadAssignment(property)) {
+      own = undefined;
+      spread = true;
+    } else if (namesTimeout(property)) {
+      own = property;
+      spread = false;
+    }
+  }
   if (
     own &&
     ts.isPropertyAssignment(own) &&
@@ -82,8 +100,12 @@ function capOf(api: SyncApi, args: ts.NodeArray<ts.Expression>): { capped: boole
   ) {
     return { capped: false, why: "its options set timeout to 0, which Node treats as no limit" };
   }
-  if (own) return { capped: true, why: "its options name a timeout" };
-  if (options.properties.some(ts.isSpreadAssignment)) {
+  if (own) {
+    return ts.isPropertyAssignment(own) || ts.isShorthandPropertyAssignment(own)
+      ? { capped: true, why: "its options name a timeout" }
+      : { capped: false, why: "its options define timeout as a method or accessor" };
+  }
+  if (spread) {
     return { capped: false, why: "its options spread another object, which may hide the timeout" };
   }
   if (nestedTimeout(options)) return { capped: false, why: "its options name a timeout only inside a nested value" };
@@ -92,10 +114,24 @@ function capOf(api: SyncApi, args: ts.NodeArray<ts.Expression>): { capped: boole
 
 function namesTimeout(p: ts.Node): boolean {
   return (
-    (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
-    (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) &&
-    p.name.text === "timeout"
+    (ts.isPropertyAssignment(p) ||
+      ts.isShorthandPropertyAssignment(p) ||
+      ts.isMethodDeclaration(p) ||
+      ts.isGetAccessorDeclaration(p) ||
+      ts.isSetAccessorDeclaration(p)) &&
+    propertyName(p.name) === "timeout"
   );
+}
+
+/** Resolve syntax-level keys only; an identifier inside `[...]` is a value, not its spelling. */
+function propertyName(name: ts.PropertyName): string | undefined {
+  if (ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name)) return name.text;
+  if (ts.isComputedPropertyName(name)) {
+    let expression = name.expression;
+    while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
+    if (ts.isStringLiteralLike(expression) || ts.isNumericLiteral(expression)) return expression.text;
+  }
+  return undefined;
 }
 
 /** Whether a property named `timeout` sits anywhere below the options' own level. */

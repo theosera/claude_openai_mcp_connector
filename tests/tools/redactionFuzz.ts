@@ -46,8 +46,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { SECRET_LABELS } from "../../packages/log-redaction/src/policy.mjs";
-import { commandEngine, type Engine, judgeCase, MASK, readable } from "./redactionJudge.js";
-import { execFileSyncBounded } from "./syncChild.js";
+import { batchEngine, commandEngine, type Engine, judgeCase, MASK, readable } from "./redactionJudge.js";
+import { execFileSyncBounded, RUNAWAY_MS } from "./syncChild.js";
 
 export type FuzzCase = {
   id: string;
@@ -320,19 +320,23 @@ export function shippedMask(relPath: string, root: string = ROOT): string {
  */
 export function sedEngine(maskFn: string): Engine {
   const loop = `${maskFn}\nwhile IFS= read -r -d '' x; do printf '%s' "$x" | mask; printf '\\0'; done`;
-  return (fragments) => {
+  const runBatches = batchEngine((fragments) => {
     const inputs = fragments.map((f) => f.text);
-    if (inputs.some((i) => i.includes("\0"))) throw new Error("an input carries a NUL, which is the separator");
     const out = execFileSyncBounded("bash", ["-c", loop], {
       input: inputs.map((i) => `${i}\0`).join(""),
       encoding: "utf8",
-      maxBuffer: 1 << 30
+      maxBuffer: 1 << 30,
+      timeout: RUNAWAY_MS
     });
     const parts = out.split("\0");
     if (parts.pop() !== "" || parts.length !== inputs.length) {
       throw new Error(`the sed engine returned ${parts.length} outputs for ${inputs.length} inputs`);
     }
     return parts.map((text) => ({ text, status: "ok" }));
+  });
+  return (fragments) => {
+    if (fragments.some((f) => f.text.includes("\0"))) throw new Error("an input carries a NUL, which is the separator");
+    return runBatches(fragments);
   };
 }
 
