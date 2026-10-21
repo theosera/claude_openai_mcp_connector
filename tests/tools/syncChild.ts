@@ -5,9 +5,11 @@ import { execFileSync, spawnSync, type ExecFileSyncOptions, type SpawnSyncOption
  *
  * vitest's timeout cannot stop a synchronous call: while execFileSync or
  * spawnSync waits, the worker runs no timers, so a child that never exits keeps
- * the whole run from finishing. On 2026-10-19 a full run stood for three hours on
- * one such call. Every synchronous child in tests/ goes through here, or names
- * its own `timeout`; tests/syncChildTimeout.test.ts holds the suite to that.
+ * the whole run from finishing. On 2026-10-19 a full run stood for three hours
+ * while a masking pipeline started by a test sat with no CPU (measured). That it
+ * was started through one such call is our reading; the call was not recorded.
+ * Every synchronous child in tests/ goes through here, or names its own
+ * `timeout`; tests/syncChildTimeout.test.ts holds the suite to that.
  *
  * The cap sends SIGKILL to a runaway and judges nothing. A test that wants a judgement
  * (logRedactionPerf's ceilings) keeps its own numbers. A caller's positive

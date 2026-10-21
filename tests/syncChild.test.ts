@@ -17,6 +17,10 @@ const ENV = {
 const INPUT = "DUMMY_INPUT_NOT_IN_ERROR";
 const CAP = 500;
 const SLEEP = ["-c", "exec sleep 600"];
+// OPTIONS hands every child INPUT. A child that exits without reading it can make
+// Node's write fail with EPIPE (once on Linux CI), so these read their stdin first.
+const SUCCEED = ["-c", "cat >/dev/null; printf ok"];
+const FAIL = ["-c", "cat >/dev/null; printf DUMMY_OUT; printf DUMMY_ERR >&2; exit 3"];
 const OPTIONS = {
   timeout: CAP,
   cwd: TEST_HOME,
@@ -164,9 +168,9 @@ describe("bounded synchronous child processes", () => {
   });
 
   it("preserves successful output for argument and options-only overloads", () => {
-    expect(execFileSyncBounded("bash", ["-c", "printf ok"], OPTIONS)).toBe("ok");
+    expect(execFileSyncBounded("bash", SUCCEED, OPTIONS)).toBe("ok");
     expect(execFileSyncBounded("/usr/bin/true", { ...OPTIONS, input: undefined })).toBe("");
-    const success = spawnSyncBounded("bash", ["-c", "printf ok"], OPTIONS);
+    const success = spawnSyncBounded("bash", SUCCEED, OPTIONS);
     expect(success.status).toBe(0);
     expect(success.stdout).toBe("ok");
     expect(success.error).toBeUndefined();
@@ -179,9 +183,7 @@ describe("bounded synchronous child processes", () => {
   });
 
   it("keeps a non-timeout execFileSync failure's status and output", () => {
-    const error = thrownBy(() =>
-      execFileSyncBounded("bash", ["-c", "printf DUMMY_OUT; printf DUMMY_ERR >&2; exit 3"], OPTIONS)
-    );
+    const error = thrownBy(() => execFileSyncBounded("bash", FAIL, OPTIONS));
     expect(error).toMatchObject({
       status: 3,
       signal: null,
@@ -192,7 +194,7 @@ describe("bounded synchronous child processes", () => {
   });
 
   it("returns a non-timeout spawnSync failure without manufacturing an error", () => {
-    const result = spawnSyncBounded("bash", ["-c", "printf DUMMY_OUT; printf DUMMY_ERR >&2; exit 3"], OPTIONS);
+    const result = spawnSyncBounded("bash", FAIL, OPTIONS);
     expect(result).toMatchObject({
       status: 3,
       signal: null,

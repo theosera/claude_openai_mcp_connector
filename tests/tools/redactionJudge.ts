@@ -100,6 +100,8 @@ export function commandEngine(argv: string[], cwd: string): Engine {
       cwd,
       input: fragments.map((f) => `${JSON.stringify({ text: f.text, kind: f.kind })}\n`).join(""),
       encoding: "utf8",
+      // The default 1 MiB failed a fuzz run of 16,000 cases with ENOBUFS when one
+      // child took them all. Batches of 256 are far smaller; the limit was kept, not re-measured.
       maxBuffer: 1 << 30,
       timeout: RUNAWAY_MS
     });
