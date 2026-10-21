@@ -1,4 +1,4 @@
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parseMarkdownSafe } from "../src/frontmatter.js";
 import { outlineOf } from "../src/markdownSections.js";
+import { execFileSyncBounded, spawnSyncBounded } from "./tools/syncChild.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const hookPath = path.join(repoRoot, ".claude", "skills", "session-archive", "archive-session.sh");
@@ -169,7 +170,7 @@ function withFixedLengthFence(program: string): string {
 }
 
 function render(program: string, transcript: unknown[]): string {
-  return execFileSync("jq", ["-r", program], {
+  return execFileSyncBounded("jq", ["-r", program], {
     input: JSON.stringify(transcript),
     encoding: "utf8"
   });
@@ -485,7 +486,7 @@ describe("session-archive tool-result fencing", () => {
 
   beforeAll(async () => {
     try {
-      execFileSync("jq", ["--version"], { stdio: "pipe" });
+      execFileSyncBounded("jq", ["--version"], { stdio: "pipe" });
     } catch {
       throw new Error(
         "`jq` is not on PATH. The hook renders every note with jq, so skipping here would " +
@@ -678,7 +679,7 @@ describe("session-archive tool-result fencing", () => {
     expect(definition).not.toBeNull();
     const program = `${definition![0]}\n[ .[] | [strip_sgr, gsub("\\u001b\\\\[[0-9;]*[mK]"; "")] ]`;
     const pairs = JSON.parse(
-      execFileSync("jq", ["-c", program], { input: JSON.stringify(inputs), encoding: "utf8" })
+      execFileSyncBounded("jq", ["-c", program], { input: JSON.stringify(inputs), encoding: "utf8" })
     ) as Array<[string, string]>;
 
     expect(pairs).toHaveLength(inputs.length);
@@ -834,7 +835,7 @@ async function shippedMask(hook: string): Promise<string> {
 }
 
 function runMask(maskFn: string, input: string): string {
-  return execFileSync("bash", ["-c", `${maskFn}\nmask`], { input, encoding: "utf8" }).trimEnd();
+  return execFileSyncBounded("bash", ["-c", `${maskFn}\nmask`], { input, encoding: "utf8" }).trimEnd();
 }
 
 function mutate(maskFn: string, from: string, to: string, what: string): string {
@@ -1218,7 +1219,7 @@ describe("session-archive PEM key masking", () => {
 
   beforeAll(async () => {
     try {
-      execFileSync("jq", ["--version"], { stdio: "pipe" });
+      execFileSyncBounded("jq", ["--version"], { stdio: "pipe" });
     } catch {
       throw new Error(
         "`jq` is not on PATH. The structure cases below render with jq, so skipping here would " +
@@ -2499,7 +2500,7 @@ function hookEnv(fixture: Fixture, overrides: Record<string, string> = {}): Node
 }
 
 function git(args: string[], fixture: Fixture): string {
-  return execFileSync("git", args, { env: hookEnv(fixture), encoding: "utf8", stdio: "pipe" });
+  return execFileSyncBounded("git", args, { env: hookEnv(fixture), encoding: "utf8", stdio: "pipe" });
 }
 
 /**
@@ -2535,7 +2536,7 @@ function runHook(
     cwd,
     hook_event_name: "PreCompact"
   });
-  const result = spawnSync("bash", [script, "precompact"], { input: payload, env, encoding: "utf8" });
+  const result = spawnSyncBounded("bash", [script, "precompact"], { input: payload, env, encoding: "utf8" });
   return { status: result.status, stderr: result.stderr ?? "" };
 }
 
@@ -2640,7 +2641,7 @@ async function shippedUrlId(): Promise<(url: string) => string> {
   }
   const fn = lines.slice(start, end + 1).join("\n");
   return (url: string) =>
-    execFileSync("bash", ["-c", `${fn}\ngit_url_id "$1"`, "_", url], { encoding: "utf8", stdio: "pipe" });
+    execFileSyncBounded("bash", ["-c", `${fn}\ngit_url_id "$1"`, "_", url], { encoding: "utf8", stdio: "pipe" });
 }
 
 /**
@@ -2753,7 +2754,7 @@ async function hostGitHandsToCurl(spelling: string): Promise<string> {
   fixtureRoots.push(dir);
   const proxy = await recordingProxy(dir);
   try {
-    spawnSync("git", ["ls-remote", spelling], {
+    spawnSyncBounded("git", ["ls-remote", spelling], {
       env: {
         PATH: process.env.PATH ?? "",
         HOME: dir,
@@ -2785,7 +2786,7 @@ async function hostGitHandsToSsh(spelling: string): Promise<string> {
   const ssh = await recordingSsh(dir);
   // Hermetic, so a `url.<base>.insteadOf` in the developer's config cannot
   // rewrite the spelling under measurement.
-  spawnSync("git", ["ls-remote", spelling], {
+  spawnSyncBounded("git", ["ls-remote", spelling], {
     env: {
       PATH: process.env.PATH ?? "",
       HOME: dir,
@@ -3332,7 +3333,7 @@ describe("session-archive vault authorization", () => {
   beforeAll(() => {
     for (const tool of ["jq", "git"]) {
       try {
-        execFileSync(tool, ["--version"], { stdio: "pipe" });
+        execFileSyncBounded(tool, ["--version"], { stdio: "pipe" });
       } catch {
         throw new Error(
           `\`${tool}\` is not on PATH. The hook exits 0 without it, so every "nothing was pushed" ` +
@@ -3668,7 +3669,7 @@ describe("session-archive vault authorization", () => {
       try {
         // Positive control for the absence asserted below: the instrument
         // reaches this clone, and git's transport names `evil.example`.
-        spawnSync("git", ["-C", planted.dir, "ls-remote", "origin"], {
+        spawnSyncBounded("git", ["-C", planted.dir, "ls-remote", "origin"], {
           env: hookEnv(fixture, recorder.env),
           stdio: "pipe"
         });
@@ -4947,10 +4948,10 @@ describe("session-archive fence re-check after masking (#228)", () => {
   });
 
   /** mask() over exactly the bytes given, untrimmed: the re-check compares line counts. */
-  const maskRaw = (input: string) => execFileSync("bash", ["-c", `${mask}\nmask`], { input, encoding: "utf8" });
+  const maskRaw = (input: string) => execFileSyncBounded("bash", ["-c", `${mask}\nmask`], { input, encoding: "utf8" });
   const refence = (program: string, before: string, after: string) =>
     // JSON stdin preserves NUL; process arguments cannot contain it.
-    execFileSync("jq", ["-j", `.a as $a | .b as $b | ${program}`], {
+    execFileSyncBounded("jq", ["-j", `.a as $a | .b as $b | ${program}`], {
       input: JSON.stringify({ a: before, b: after }),
       encoding: "utf8"
     });
@@ -4996,7 +4997,7 @@ describe("session-archive fence re-check after masking (#228)", () => {
       // the old pure-sed pipeline even in a shallow native-macOS CI checkout.
       const baseline = mainFenceBaseline(await fs.readFile(hookPath, "utf8"));
       const input = `${render(baseline.renderer, nulTranscript(line))}\n`;
-      const masked = execFileSync("bash", ["-c", `${baseline.mask}\nmask`], { input, encoding: "utf8" });
+      const masked = execFileSyncBounded("bash", ["-c", `${baseline.mask}\nmask`], { input, encoding: "utf8" });
       const note = refence(baseline.refence, input, masked);
       expect(note).toContain("\0");
       expect(note).toContain("KEEP_NUL_TAIL");
@@ -5305,7 +5306,7 @@ describe("session-archive fence re-check after masking (#228)", () => {
       const payload = `<${label} first="C295LOCALEHEAD" second="C295LOCALETAIL> KEEP295LOCALE`;
       // Match the ambient sed locale, including native BSD. A locale that never
       // folded this spelling has no corresponding legacy masking requirement.
-      const legacy = execFileSync(
+      const legacy = execFileSyncBounded(
         "sed",
         [
           "-E",
@@ -5367,7 +5368,7 @@ describe("session-archive fence re-check after masking (#228)", () => {
         "the syntax-only restoration boundary"
       );
     const countAfter = (program: string) => {
-      const masked = execFileSync("bash", ["-c", `${program}\nmask`], { input, encoding: "utf8" });
+      const masked = execFileSyncBounded("bash", ["-c", `${program}\nmask`], { input, encoding: "utf8" });
       return forgedTurnsAtTopLevel(refence(refenceProgram, input, masked));
     };
     expect(countAfter(withoutInfoCheck(mask))).toBe(0);
@@ -5463,7 +5464,8 @@ describe("session-archive fence re-check after masking (#228)", () => {
   // with a line fewer would line up silently, one line off.
   it("refuses to line up two texts whose line counts differ", () => {
     const status = (before: string, after: string) =>
-      spawnSync("jq", ["-jn", "--arg", "a", before, "--arg", "b", after, refenceProgram], { encoding: "utf8" }).status;
+      spawnSyncBounded("jq", ["-jn", "--arg", "a", before, "--arg", "b", after, refenceProgram], { encoding: "utf8" })
+        .status;
     expect(status("a\nb\n", "a\nb\nc\n")).toBe(9);
     expect(status("a\nb\nc\n", "a\nb\n")).toBe(9);
     expect(refence(refenceProgram, "a\nb\n", "a\nb\n")).toBe("a\nb\n");

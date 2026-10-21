@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -18,6 +18,7 @@ import {
   shippedMask
 } from "./tools/redactionFuzz.js";
 import { broken, type Engine, type EngineResult, readable } from "./tools/redactionJudge.js";
+import { spawnSyncBounded } from "./tools/syncChild.js";
 
 /**
  * The differential fuzz, on the committed sample (seed 1, 290 cases = 10 of each
@@ -274,7 +275,7 @@ describe("the fuzz runner against the shipped sed mask()", { timeout: 60_000 }, 
 describe("the fuzz runner's exit status", { timeout: 120_000 }, () => {
   const ROOT = join(HERE, "..");
   const run = (engine: string) =>
-    spawnSync(
+    spawnSyncBounded(
       "pnpm",
       ["exec", "tsx", "tests/tools/redactionFuzz.ts", "--seed", "1", "--count", ONE_EACH, "--engine", engine],
       { cwd: ROOT, encoding: "utf8" }

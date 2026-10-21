@@ -1,7 +1,7 @@
-import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
 import { MASK, redactText } from "../.claude/skills/_shared/redact-log.mjs";
+import { execFileSyncBounded } from "./tools/syncChild.js";
 
 /**
  * Acceptance tests for log redaction, written against the protection the repair
@@ -120,7 +120,7 @@ describe("log redactor: private key armor", () => {
     // and 8 is what a narrow terminal or an editor produces.
     let real: string;
     try {
-      real = execFileSync("openssl", ["genpkey", "-algorithm", "ed25519"], { encoding: "utf8" });
+      real = execFileSyncBounded("openssl", ["genpkey", "-algorithm", "ed25519"], { encoding: "utf8" });
     } catch {
       // No openssl here: fall back to the synthetic body. The width behaviour is
       // what this case is about, and it does not depend on the bytes being a key.

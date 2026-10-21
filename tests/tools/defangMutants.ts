@@ -27,11 +27,12 @@
  * missing or appears twice fails loudly rather than being skipped: a skipped
  * mutation would print as held having tested nothing.
  */
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { execFileSyncBounded } from "./syncChild.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const hookRelative = path.join(".claude", "skills", "session-archive", "archive-session.sh");
@@ -170,13 +171,25 @@ function runSuite(hook: string): Outcome {
   const report = path.join(dir, "report.json");
   try {
     try {
-      execFileSync(
+      execFileSyncBounded(
         path.join(repoRoot, "node_modules", ".bin", "vitest"),
         ["run", SUITE, "-t", FILTER, "--reporter=json", `--outputFile=${report}`],
         { cwd: dir, stdio: "pipe" }
       );
-    } catch {
-      // A red run exits non-zero; the report below is what says which tests.
+    } catch (error) {
+      // Only a normal red vitest exit can be interpreted through its report.
+      // A timeout or a startup failure must keep its original diagnostic.
+      const exit = error as { status?: number; signal?: string | null } | null;
+      if (
+        !exit ||
+        typeof exit.status !== "number" ||
+        !Number.isInteger(exit.status) ||
+        exit.status <= 0 ||
+        exit.signal !== null ||
+        !fs.existsSync(report)
+      ) {
+        throw error;
+      }
     }
     if (!fs.existsSync(report)) {
       throw new Error("vitest wrote no report -- the run did not reach the suite, so it measured nothing.");
