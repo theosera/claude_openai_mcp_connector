@@ -190,6 +190,8 @@ describe("bounded synchronous child processes", () => {
       stdout: "DUMMY_OUT",
       stderr: "DUMMY_ERR"
     });
+    // Node copies status and output onto a spawn error such as EPIPE too, so name the exit.
+    expect(error.message).toMatch(/^Command failed: /);
     expect(error.message).not.toContain("runaway cap");
   });
 
