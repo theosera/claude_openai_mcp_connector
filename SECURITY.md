@@ -70,10 +70,11 @@ review request and blocks nothing. Merges of CODEOWNERS-owned paths with zero
 approvals are the expected behaviour under that configuration, not an anomaly.
 
 **What does block**, on the same ruleset and the same measurement:
-`required_status_checks` — `build (22.x)`, `build (24.22.0)`, `CodeQL` (the
-second was renamed from `build (24.13.0)` when the pinned development and CI
-Node moved to 24.22.0, decided 2026-10-16; the measurement above saw the old
-name), with
+`required_status_checks` — `build (22.x)`, `build (24.22.1)`, `CodeQL` (the
+second was renamed from `build (24.22.0)` when the pinned development and CI
+Node moved to 24.22.1, decided 2026-10-24, and before that from
+`build (24.13.0)` when it moved to 24.22.0, decided 2026-10-16; the measurement
+above saw the oldest name), with
 `strict_required_status_checks_policy` `true`, so a branch that has fallen
 behind its base is stopped until it is updated — and
 `required_review_thread_resolution` `true`, so one unresolved review thread

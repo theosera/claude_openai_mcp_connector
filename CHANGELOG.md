@@ -60,6 +60,13 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The pinned development and CI Node version moves from 24.22.0 to
+  24.22.1**, the 24.x line's fix in the Node.js security release of
+  2026-10-21. `.node-version`, the exact matrix leg and the macOS job name
+  24.22.1; `engines` stays `>=22.12.0` and the 22.x leg is unchanged. The
+  required status check follows the matrix leg, from `build (24.22.0)` to
+  `build (24.22.1)`. The entry below, which moved the pin to 24.22.0, is a
+  record of its time and stays as written.
 - **The pinned development and CI Node version moves from 24.13.0 to
   24.22.0.** `.node-version` now names 24.22.0, and the CI matrix runs the full
   gate on **22.x** (the `engines` floor, unchanged) and the exact **24.22.0**;
