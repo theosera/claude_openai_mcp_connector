@@ -463,9 +463,9 @@ CAS は読んだ版一致時のみ更新、append/CAS は in-process mutex で�
   (bot の review は付くが `COMMENTED` = 承認ではない)。
   ⇒ **`.github/` や `src/pathSafety.ts` を触る変更のレビューは、規約であって強制ではない。**
 - **実際に merge を止めているのは 2 つ** — `required_status_checks`
-  (`build (22.x)` / `build (24.22.0)` / `CodeQL`、`strict` なので base に追随していないと止まる。
-  2 つ目は 2026-10-16 の決定で開発と CI の Node を 24.22.0 に替えたのに合わせて付け替えた名で、
-  上の 09-01 の実測の時点では `build (24.13.0)` だった) と
+  (`build (22.x)` / `build (24.22.1)` / `CodeQL`、`strict` なので base に追随していないと止まる。
+  2 つ目は 2026-10-24 の決定で開発と CI の Node を 24.22.1 に替えたのに合わせて付け替えた名で、
+  その前は `build (24.22.0)`（2026-10-16 の決定）、上の 09-01 の実測の時点では `build (24.13.0)` だった) と
   **`required_review_thread_resolution`** (未解決の review thread が 1 本でもあると止まる。
   実測: #156 は 6 本、#161 は 1 本で止まっていた)。
   ⚠️ **強制を増やしたいなら触るのは CODEOWNERS ではなく `required_approving_review_count`。**

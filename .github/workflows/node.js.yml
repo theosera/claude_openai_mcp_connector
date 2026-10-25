@@ -21,14 +21,14 @@ jobs:
     runs-on: ubuntu-latest
 
     # Test the engines floor (22.x = latest 22 line) and the EXACT pinned dev/
-    # runtime version (24.22.0, see .node-version). The pinned leg is exact, not
+    # runtime version (24.22.1, see .node-version). The pinned leg is exact, not
     # a 24.x range: setup-node resolves ranges to whatever 24.y.z the runner has
     # cached, which would not actually exercise the version we pinned. fail-fast
     # off so one leg's failure does not mask the other's result.
     strategy:
       fail-fast: false
       matrix:
-        node-version: [22.x, 24.22.0]
+        node-version: [22.x, 24.22.1]
 
     steps:
       # Actions are pinned to a full 40-char commit SHA (+ trailing version
@@ -86,14 +86,14 @@ jobs:
   # where they run in CI.
   #
   # A SEPARATE job, not an `os` axis on the matrix above: the ruleset requires
-  # the checks by name ("build (22.x)", "build (24.22.0)"), and an extra matrix
+  # the checks by name ("build (22.x)", "build (24.22.1)"), and an extra matrix
   # key renames every leg ("build (22.x, ubuntu-latest)"), after which the
   # required checks never report and every PR blocks. An `include` entry that
-  # adds `os` to 24.22.0 would instead merge into that existing leg and move it
+  # adds `os` to 24.22.1 would instead merge into that existing leg and move it
   # to macOS. Whether this job becomes a required check is a ruleset decision,
   # made separately.
   #
-  # Only the pinned runtime (24.22.0): the engines floor is covered on Linux,
+  # Only the pinned runtime (24.22.1): the engines floor is covered on Linux,
   # and what this leg adds is the platform, not another Node line. Lint, format
   # and the audits are platform-independent and already run above.
   build-macos:
@@ -104,10 +104,10 @@ jobs:
 
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413  # v6.1.0
 
-      - name: Use Node.js 24.22.0
+      - name: Use Node.js 24.22.1
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
-          node-version: 24.22.0
+          node-version: 24.22.1
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
