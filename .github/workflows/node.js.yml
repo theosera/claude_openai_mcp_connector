@@ -2,9 +2,9 @@ name: Node.js CI
 
 on:
   push:
-    branches: [ "main", "integration/cx-1026" ]
+    branches: [ "main" ]
   pull_request:
-    branches: [ "main", "integration/cx-1026" ]
+    branches: [ "main" ]
 
 # Least privilege: the default GITHUB_TOKEN is read-only. Elevate per-job only
 # where a job actually needs write access (none does here).

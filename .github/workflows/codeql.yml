@@ -2,9 +2,9 @@ name: CodeQL
 
 on:
   push:
-    branches: [ "main", "integration/cx-1026" ]
+    branches: [ "main" ]
   pull_request:
-    branches: [ "main", "integration/cx-1026" ]
+    branches: [ "main" ]
   schedule:
     # Weekly re-scan so newly-shipped query patterns catch already-merged code.
     - cron: "30 4 * * 1"  # Mondays 04:30 UTC
