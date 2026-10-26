@@ -15,9 +15,8 @@
  *   (`lexQuotes`): shell quoting for a `command`, YAML-style scalars for `text`.
  *   `passwd` and `passphrase` are labels like the others.
  *
- * Not yet here: secrets in argument position (`mysql -p`, `redis-cli -a`,
- * `curl -u`), which the next step adds; `tests/tools/redactionScope.ts` lists
- * the cases waiting for it.
+ * Named clients' credential flags are read as words too, including commands
+ * quoted in JSON or `sh -c`, repeated flags and continued physical lines.
  *
  * The shared file is left as it is: the hooks and their mirrors keep it until
  * the adapter step switches them over.
@@ -547,9 +546,13 @@ function closingQuote(original, open, kind, labelAt) {
  * @param {RegExp} labelAt a sticky regex of the labels (see `escapedBeforeBlank`)
  * @returns {Segment[]}
  */
-function lexQuotes(original, kind, labelAt) {
+function lexQuotes(original, kind, labelAt, argument = false) {
   const segments = [];
   let lastClose = -2;
+  let wordStart = 0;
+  let previousWord = "";
+  let joinedQuote = false;
+  let valueWord = false;
   // Where the last unclosed scan of each quote ended (its line end). A later quote
   // of the same kind before that point is read as a plain character without being
   // scanned again: a line of `a\"a\"…` rescanned to the line end from every quote
@@ -565,8 +568,36 @@ function lexQuotes(original, kind, labelAt) {
   while (index < original.length) {
     const ch = original[index];
     if (kind === "command" && ch === "\\") {
+      if (argument && index === wordStart && isLineEnd(original[index + 1])) {
+        index += original[index + 1] === "\r" && original[index + 2] === "\n" ? 3 : 2;
+        wordStart = index;
+        continue;
+      }
       index += 2;
       continue;
+    }
+    if (argument) {
+      if (COMMAND_STOP.test(ch)) {
+        if (index > wordStart) previousWord = original.slice(wordStart, index);
+        if (!BLANK.test(ch)) previousWord = "";
+        wordStart = index + 1;
+        joinedQuote = false;
+        valueWord = false;
+      } else if (ch === ":" || ch === "=") valueWord = true;
+      // Command-like prose has contractions too. Keep shell joins inside
+      // credential-shaped words, while `won't ... here's` opens no quote.
+      if (
+        ch === "'" &&
+        WORD_CHAR.test(original[index - 1] ?? "") &&
+        WORD_CHAR.test(original[index + 1] ?? "") &&
+        !joinedQuote &&
+        !valueWord &&
+        !["-p", "-a", "--pass", "-u", "--user"].includes(previousWord) &&
+        original[wordStart] !== "-"
+      ) {
+        index += 1;
+        continue;
+      }
     }
     if (ch !== "'" && ch !== '"') {
       index += 1;
@@ -604,7 +635,10 @@ function lexQuotes(original, kind, labelAt) {
       }
     }
     segments.push({ open: index, close: at, closed });
-    if (closed) lastClose = at;
+    if (closed) {
+      lastClose = at;
+      joinedQuote = true;
+    }
     index = closed ? at + 1 : at;
   }
   return segments;
@@ -814,7 +848,7 @@ function collectMarkupLabelSpans(original, labels) {
  * @param {Vocabulary} vocabulary
  * @returns {Span[]}
  */
-function collectLabelSpans(original, kind, vocabulary) {
+function collectLabelSpans(original, kind, vocabulary, segments) {
   const labels = vocabulary.labels ?? SECRET_LABELS;
   if (labels.length === 0) return [];
   const markup = collectMarkupLabelSpans(original, labels);
@@ -824,7 +858,6 @@ function collectLabelSpans(original, kind, vocabulary) {
     .map(escapeRegExp)
     .join("|");
   const labelAt = new RegExp(`(?:${labelSource})`, "iy");
-  const segments = lexQuotes(original, kind, labelAt);
   const opened = new Map(segments.map((segment) => [segment.open, segment]));
   const closes = new Set(segments.filter((segment) => segment.closed).map((segment) => segment.close));
   const schemeWords = vocabulary.schemeWords ?? [];
@@ -1467,6 +1500,190 @@ function collectLabelSpans(original, kind, vocabulary) {
 }
 
 /**
+ * Argument values from named clients. This pass only ADDS spans; labels, token
+ * shapes and armor still read the original independently. A quoted SQL argument
+ * is one word, so `-price` in it cannot become another mysql password flag.
+ *
+ * Each outer quote is also inspected as a logged command (JSON / `sh -c`). Its
+ * inner quote reading is bounded by that outer quote. Encoded quote delimiters
+ * are decoded in that view only; boundary offsets map every decision back to
+ * the untouched source. Nested logged commands share a budget of four input
+ * lengths (UTF-16 units). Exceeding it omits the fragment explicitly, instead
+ * of allowing repeated quote decoding to make analysis quadratic.
+ *
+ * Text can describe a command too (`the mysql client won't ... -pVALUE`), but
+ * an unrelated `mkdir -p`, `ssh -p2222` or `sort -u` has no matching client.
+ */
+function collectArgumentSpans(original, segments, labelAt) {
+  const spans = [];
+  const client = /(?:^|\/)(mysql|mysqldump|mysqladmin|mariadb|mariadb-dump|redis-cli|curl)$/;
+  const embeddedClient = /\b(?:mysql|mysqldump|mysqladmin|mariadb|mariadb-dump|redis-cli|curl)\b/;
+
+  const scan = (text, reading, sourceAt) => {
+    const opened = new Map(reading.map((segment) => [segment.open, segment]));
+    const closes = new Set(reading.map((segment) => segment.close));
+    const opaque = new Set();
+    const add = (from, to) => {
+      if (from >= to) return;
+      if (opened.has(from) || text[from] === "'" || text[from] === '"') from += 1;
+      if (closes.has(to - 1)) to -= 1;
+      let start = sourceAt(from);
+      const end = sourceAt(to);
+      // A continued value must not remove a physical separator from a log.
+      for (let index = start; index < end; index += 1) {
+        if (!isLineEnd(original[index])) continue;
+        if (index > start) spans.push({ start, end: index, kind: "credential:argument" });
+        start = index + 1;
+      }
+      if (end > start) spans.push({ start, end, kind: "credential:argument" });
+    };
+    const continuationEnd = (at) =>
+      text[at] === "\\" && isLineEnd(text[at + 1]) ? at + (text[at + 1] === "\r" && text[at + 2] === "\n" ? 3 : 2) : at;
+    const wordEnd = (from) => {
+      let at = from;
+      while (at < text.length) {
+        const segment = opened.get(at);
+        if (segment) {
+          at = segment.close + 1;
+          continue;
+        }
+        if (text[at] === "\\" && at + 1 < text.length) {
+          at = Math.max(at + 2, continuationEnd(at));
+          continue;
+        }
+        if (COMMAND_STOP.test(text[at])) break;
+        at += 1;
+      }
+      return at;
+    };
+    // An argument that opens a quote but never closes it holds the rest of its
+    // physical line. This is deliberately fail-closed for a truncated log value.
+    const valueEnd = (from, end) => {
+      if ((text[from] === "'" || text[from] === '"') && !opened.has(from) && !closes.has(from)) {
+        while (end < text.length && !isLineEnd(text[end])) end += 1;
+      }
+      return end;
+    };
+    let active = "";
+    let pending = "";
+    let queryNext = false;
+    let at = 0;
+    while (at < text.length) {
+      const continued = continuationEnd(at);
+      if (continued > at) {
+        at = continued;
+        continue;
+      }
+      if (COMMAND_STOP.test(text[at])) {
+        if (!BLANK.test(text[at])) {
+          active = "";
+          pending = "";
+          queryNext = false;
+        }
+        at += 1;
+        continue;
+      }
+      const from = at;
+      let end = wordEnd(from);
+      if (pending) {
+        let start = from;
+        if (pending === "curl") {
+          const colon = text.slice(from, end).indexOf(":");
+          start = colon >= 0 ? from + colon + 1 : end;
+        }
+        end = valueEnd(start, end);
+        add(start, end);
+        pending = "";
+        at = end;
+        continue;
+      }
+      const word = text.slice(from, end);
+      // A mysql query is data even when it names mysql itself. Do not inspect
+      // its quoted body later as a second command (`SELECT mysql -price ...`).
+      if (queryNext) {
+        opaque.add(from);
+        queryNext = false;
+        at = end;
+        continue;
+      }
+      const name = client.exec(word.replace(/^(['"])(.*)\1$/, "$2"));
+      if (name) active = name[1];
+      else if (active === "curl" && (word === "-u" || word === "--user")) pending = "curl";
+      else if (active === "curl" && word.startsWith("--user=")) {
+        const colon = word.indexOf(":", 7);
+        if (colon >= 7) {
+          end = valueEnd(from + colon + 1, end);
+          add(from + colon + 1, end);
+        }
+      } else if (active === "redis-cli" && (word === "-a" || word === "--pass")) pending = "redis";
+      else if (active && active !== "redis-cli" && active !== "curl" && word.startsWith("-p")) {
+        if (word.length === 2) pending = "mysql";
+        else {
+          end = valueEnd(from + 2, end);
+          add(from + 2, end);
+        }
+      } else if (active && active !== "redis-cli" && active !== "curl") {
+        if (word === "-e" || word === "--execute" || word === "--where") queryNext = true;
+        else {
+          const prefix = word.startsWith("-e")
+            ? 2
+            : word.startsWith("--execute=")
+              ? 10
+              : word.startsWith("--where=")
+                ? 8
+                : 0;
+          if (prefix && opened.has(from + prefix)) opaque.add(from + prefix);
+        }
+      }
+      at = end;
+    }
+    return opaque;
+  };
+
+  let remaining = original.length * 4;
+  const visit = (text, reading, sourceAt) => {
+    remaining -= text.length;
+    if (remaining < 0) throw new RedactionOmitted("argument_nesting_limit");
+    const opaque = scan(text, reading, sourceAt);
+    for (const segment of reading) {
+      if (opaque.has(segment.open)) continue;
+      const body = text.slice(segment.open + 1, segment.close);
+      if (!embeddedClient.test(body)) continue;
+      // Most quoted commands need no decoding or per-character offset array.
+      if (!body.includes("\\")) {
+        visit(body, lexQuotes(body, "command", labelAt, true), (at) => sourceAt(segment.open + 1 + at));
+        continue;
+      }
+      const chars = [];
+      const offsets = [];
+      // A quoted JSON value (or a whole quoted fragment) has JSON line escapes.
+      // A shell's double-quoted string leaves those two-character runs literal.
+      let before = segment.open - 1;
+      while (before >= 0 && /\s/.test(text[before])) before -= 1;
+      const json = text[segment.open] === '"' && (before < 0 || ":[,".includes(text[before]));
+      for (let at = segment.open + 1; at < segment.close; at += 1) {
+        offsets.push(at);
+        const next = text[at + 1];
+        if (text[at] === "\\" && (next === "\\" || next === '"' || next === "'")) {
+          chars.push(next);
+          at += 1;
+        } else if (json && text[at] === "\\" && (next === "n" || next === "r" || next === "t")) {
+          chars.push(next === "n" ? "\n" : next === "r" ? "\r" : "\t");
+          at += 1;
+        } else {
+          chars.push(text[at]);
+        }
+      }
+      offsets.push(segment.close);
+      const inner = chars.join("");
+      visit(inner, lexQuotes(inner, "command", labelAt, true), (at) => sourceAt(offsets[at]));
+    }
+  };
+  visit(original, segments, (at) => at);
+  return spans;
+}
+
+/**
  * The value inside a URL's authority section -- the part after the separator
  * that follows the user name, up to the host boundary. Written as a pattern
  * only; an illustrative example would itself be a literal secret shape, which is
@@ -1565,7 +1782,22 @@ export function collectCredentialSpans(original, options = {}) {
   // One at a time, not `push(...spans)`: spreading passes every span as an
   // argument, and at about 130,000 of them (1 MiB of short labelled values) the
   // call overflowed the stack, so the whole fragment came back omitted.
-  for (const span of collectLabelSpans(original, options.kind, vocabulary)) spans.push(span);
+  const labels = vocabulary.labels ?? SECRET_LABELS;
+  const labelAt = new RegExp(
+    labels.length
+      ? [...labels]
+          .sort((a, b) => b.length - a.length)
+          .map(escapeRegExp)
+          .join("|")
+      : "(?!)",
+    "iy"
+  );
+  const segments = lexQuotes(original, options.kind, labelAt);
+  for (const span of collectLabelSpans(original, options.kind, vocabulary, segments)) spans.push(span);
+  // Named command snippets keep shell quoting even in prose; the label reader
+  // above still uses the fragment kind's YAML/shell distinction unchanged.
+  const argumentQuotes = lexQuotes(original, "command", labelAt, true);
+  for (const span of collectArgumentSpans(original, argumentQuotes, labelAt)) spans.push(span);
   return spans;
 }
 
