@@ -520,23 +520,31 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   // Bounds how many files a vault scan opens at once. Left undefined (the store
   // applies a safe default) unless a positive integer override is provided.
-  const parsedScanConcurrency = Number.parseInt(env.MCP_SCAN_CONCURRENCY?.trim() || "", 10);
+  //
+  // Read only from plain decimal digits, as the OAuth lifetimes are (#301).
+  // `parseInt` stopped at the first character it could not read, so "8abc" became
+  // 8 and "1.5e3" became 1 — a typo that quietly throttled every scan instead of
+  // falling back to the default. Anything that is not wholly ASCII digits after
+  // trimming, zero, and an unsafe integer keep the default.
+  const rawScanConcurrency = env.MCP_SCAN_CONCURRENCY?.trim();
+  const parsedScanConcurrency =
+    rawScanConcurrency && /^[0-9]+$/.test(rawScanConcurrency) ? Number(rawScanConcurrency) : Number.NaN;
   const scanConcurrency =
-    Number.isInteger(parsedScanConcurrency) && parsedScanConcurrency > 0 ? parsedScanConcurrency : undefined;
+    Number.isSafeInteger(parsedScanConcurrency) && parsedScanConcurrency > 0 ? parsedScanConcurrency : undefined;
 
   // Same shape as the line above, and the same reason for leaving a bad value
   // undefined: the store's own default is a measured figure, so degrading to it
   // is strictly better than honouring a typo that would make every query
   // re-parse the vault.
   //
-  // `Number` rather than `parseInt`, which is the one difference from the
-  // sibling above and is the point of the whole change. `parseInt("1.5e9", 10)`
-  // is 1 — a mistyped budget would not fail, it would silently become a cache
-  // of one character, which is the same class of defect as the mis-sized
-  // default this override exists to escape. `Number` reads "1.5e9" as
-  // 1,500,000,000, and refuses "1.5" outright rather than guessing which
-  // integer was meant. The sibling is left alone deliberately: bounding
-  // concurrency at 1 is slow, not silently 7x slower per query.
+  // `Number` rather than `parseInt`, which is the point of the whole change.
+  // `parseInt("1.5e9", 10)` is 1 — a mistyped budget would not fail, it would
+  // silently become a cache of one character, which is the same class of defect
+  // as the mis-sized default this override exists to escape. `Number` reads
+  // "1.5e9" as 1,500,000,000, and refuses "1.5" outright rather than guessing
+  // which integer was meant. The sibling above takes plain digits only and so
+  // refuses "1.5e9": a budget this size is plausibly typed in exponent form, a
+  // concurrency is not.
   const rawDocumentCacheMaxChars = env.MCP_DOCUMENT_CACHE_MAX_CHARS?.trim();
   const parsedDocumentCacheMaxChars = rawDocumentCacheMaxChars ? Number(rawDocumentCacheMaxChars) : Number.NaN;
   const documentCacheMaxChars =
@@ -837,7 +845,13 @@ export function loadHttpConfig(env: NodeJS.ProcessEnv = process.env): HttpConfig
   }
 
   const host = env.MCP_HTTP_HOST?.trim() || "127.0.0.1";
-  const port = Number.parseInt(env.MCP_HTTP_PORT?.trim() || "8787", 10);
+  // Read only from plain decimal digits (#301's rule). `parseInt` stopped at the
+  // first character it could not read, so "8787abc" bound 8787 and "1.5e3" bound
+  // port 1. Unlike the OAuth lifetimes, a malformed port does not fall back to the
+  // default: it is refused like any other invalid port, so a typo cannot start
+  // the server listening somewhere the operator did not ask for.
+  const rawPort = env.MCP_HTTP_PORT?.trim() || "8787";
+  const port = /^[0-9]+$/.test(rawPort) ? Number(rawPort) : Number.NaN;
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error(`Invalid MCP_HTTP_PORT="${env.MCP_HTTP_PORT}". Must be 1-65535.`);
   }
