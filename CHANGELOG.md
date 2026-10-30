@@ -76,6 +76,20 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   entry that introduced the pin, and the timing note in `tests/oauth.test.ts`
   (measured on 24.13.0), are records of their time and stay as written.
 
+### Fixed
+
+- **`MCP_HTTP_PORT` and `MCP_SCAN_CONCURRENCY` are read only from plain decimal
+  digits**, the rule the OAuth lifetimes have followed since #301 (#314): the
+  whole trimmed value must be ASCII digits before it becomes a number. Both went
+  through `parseInt`, which stopped at the first character it could not read, so
+  `MCP_HTTP_PORT="8787abc"` bound 8787 and `"1.5e3"` bound port 1. Such a value
+  is now refused at startup like any other invalid port, not rounded to a port
+  nobody asked for; an unset or blank value still means 8787.
+  `MCP_SCAN_CONCURRENCY` given the same kind of value (`"8abc"`, `"1.5e3"`),
+  zero, or an integer too large to be exact keeps the store's default instead of
+  throttling every scan to its leading digits. An env file that sets such a port
+  has to be corrected before upgrading, or the server will not start.
+
 ### Security
 
 - **A heading's closing-hash run is found by a linear scan, not a regex**
