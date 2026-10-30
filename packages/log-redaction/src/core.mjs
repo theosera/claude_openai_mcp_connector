@@ -1539,11 +1539,14 @@ function collectArgumentSpans(original, segments, labelAt) {
     };
     const continuationEnd = (at) =>
       text[at] === "\\" && isLineEnd(text[at + 1]) ? at + (text[at + 1] === "\r" && text[at + 2] === "\n" ? 3 : 2) : at;
+    const wordQuotes = [];
     const wordEnd = (from) => {
+      wordQuotes.length = 0;
       let at = from;
       while (at < text.length) {
         const segment = opened.get(at);
         if (segment) {
+          wordQuotes.push(at);
           at = segment.close + 1;
           continue;
         }
@@ -1600,8 +1603,9 @@ function collectArgumentSpans(original, segments, labelAt) {
       const word = text.slice(from, end);
       // A mysql query is data even when it names mysql itself. Do not inspect
       // its quoted body later as a second command (`SELECT mysql -price ...`).
+      // A shell word can join a bare prefix and several quoted segments.
       if (queryNext) {
-        opaque.add(from);
+        for (const open of wordQuotes) opaque.add(open);
         queryNext = false;
         at = end;
         continue;
@@ -1632,7 +1636,7 @@ function collectArgumentSpans(original, segments, labelAt) {
               : word.startsWith("--where=")
                 ? 8
                 : 0;
-          if (prefix && opened.has(from + prefix)) opaque.add(from + prefix);
+          if (prefix) for (const open of wordQuotes) opaque.add(open);
         }
       }
       at = end;

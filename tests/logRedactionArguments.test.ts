@@ -98,6 +98,14 @@ describe("argument-position credentials (#279)", () => {
     }
   });
 
+  it.each(["command", "text"])("keeps prefix-joined SQL words opaque in %s", (kind) => {
+    for (const flag of ["-e ", "-e", "--execute ", "--execute=", "--where=", "--where "]) {
+      const query = `X'SELECT mysql -price '"FROM mysql -price KEEP048"`;
+      const line = `mysql -pFKARG048 ${flag}${query}`;
+      expect(redact(line, kind)).toEqual({ text: `mysql -p${MASK} ${flag}${query}`, status: "ok" });
+    }
+  });
+
   it.each(["\n", "\r\n", "\r"])("continues a client across an escaped %j", (separator) => {
     const line = `redis-cli \\${separator}  -a FKARG016 KEEP016`;
     expect(redact(line)).toEqual({ text: `redis-cli \\${separator}  -a ${MASK} KEEP016`, status: "ok" });
@@ -214,5 +222,18 @@ describe("argument-position credentials (#279)", () => {
       broken: [],
       omitted: false
     });
+  });
+
+  it.each(["command", "text"])("keeps nonempty passwd and passphrase masked alongside flags in %s", (kind) => {
+    for (const command of ["mysql -pFKARG049", "redis-cli -a FKARG049", "curl -u user:FKARG049"]) {
+      const line = `${command} --passphrase 'FKARG050 FKARG051' --passwd='FKARG052 FKARG053' KEEP049`;
+      expect(
+        judgeCase(line, redact(line, kind), ["FKARG049", "FKARG050", "FKARG051", "FKARG052", "FKARG053"], ["KEEP049"])
+      ).toEqual({
+        leaked: [],
+        broken: [],
+        omitted: false
+      });
+    }
   });
 });
