@@ -186,20 +186,26 @@ describe("the fuzz runner's argument reader", () => {
   });
 });
 
-describe("the shared judge on a real over-mask of the shipped sed mask()", { timeout: 60_000 }, () => {
-  // B-N1: the sed mask() swallows the first `gpg` into the mask token and keeps
-  // the second, so asking "is gpg still there" says yes. Counting says one is gone.
-  it("charges the sed mask() with the gpg it swallows in corpus case B-N1", () => {
+describe("the shared judge on the historical B-N1 over-mask", { timeout: 60_000 }, () => {
+  it("preserves both gpg occurrences and still detects one being removed", () => {
     const corpus = readFileSync(join(HERE, "fixtures", "redaction-corpus", "corpus.jsonl"), "utf8")
       .split("\n")
       .filter((line) => line.length > 0)
       .map((line) => JSON.parse(line) as FuzzCase);
     const bn1 = corpus.find((c) => c.id === "B-N1")!;
     const out = capture([{ text: bn1.input, kind: bn1.kind }])[0]!.text;
-    expect(out.includes("gpg")).toBe(true);
-    expect(broken(bn1.input, out, bn1.preserve)).toEqual(["gpg"]);
-    // The runner reports it as the sed mask()'s own over-mask, which no red column carries.
-    const col = compare([bn1], capture, archive, capture);
+    expect(out.match(/\bgpg\b/g)).toHaveLength(2);
+    expect(broken(bn1.input, out, bn1.preserve)).toEqual([]);
+    expect(readable(out, bn1.secrets)).toEqual([]);
+    // Recreate the historical damage from a strictly checked current output.
+    // Presence alone still sees the second gpg; the occurrence judge must charge
+    // removal of the first, even after S1 stopped making that over-mask itself.
+    const historicalDamage = out.replace("; gpg ", "; ");
+    expect(historicalDamage).not.toBe(out);
+    expect(historicalDamage.match(/\bgpg\b/g)).toHaveLength(1);
+    expect(broken(bn1.input, historicalDamage, bn1.preserve)).toEqual(["gpg"]);
+    const damaged: Engine = (fragments) => fragments.map(() => ({ text: historicalDamage, status: "ok" }));
+    const col = compare([bn1], damaged, damaged, damaged);
     expect(col.main_broken).toEqual(["B-N1"]);
     expect(col.new_broken).toEqual([]);
   });
@@ -248,15 +254,22 @@ describe("the fuzz runner against the shipped sed mask()", { timeout: 60_000 }, 
   });
 
   // The copy check must see a drift between the two hooks, not only report none.
-  // The bare passwd / passphrase rule is taken out of a scratch copy of the capture
-  // hook; the mutation is asserted to have landed before its effect is read.
+  // The bare passwd / passphrase rule and its S1 collector path are taken out
+  // of a scratch capture copy; both mutations must land before their effect is read.
   it("reports a copy mismatch when one hook's mask() loses a rule", () => {
     const hook = readFileSync(join(HERE, "..", SED_COPIES.capture), "utf8");
     const lines = hook.split("\n");
     const target = lines.filter((line) => line.includes("(passwd|passphrase)[=:[:space:]]+)"));
     expect(target).toHaveLength(1);
-    const mutated = lines.filter((line) => line !== target[0]).join("\n");
-    expect(mutated.split("\n")).toHaveLength(lines.length - 1);
+    const withoutLegacy = lines.filter((line) => line !== target[0]).join("\n");
+    expect(withoutLegacy.split("\n")).toHaveLength(lines.length - 1);
+    // Both independent paths must be removed for this drift control: S1 now
+    // masks these bare labels before the compatibility rule sees the input.
+    expect(withoutLegacy.split("      s1_collect()\n")).toHaveLength(2);
+    const mutated = withoutLegacy.replace(
+      "      s1_collect()\n",
+      "      # S1 disabled only in this scratch drift control\n"
+    );
 
     const root = mkdtempSync(join(tmpdir(), "fuzz-copy-"));
     mkdirSync(join(root, dirname(SED_COPIES.capture)), { recursive: true });

@@ -33,6 +33,36 @@ function changed(source: string, before: string, after: string): string {
 type Case = { id: string; input: string; secrets: string[]; preserve: string[] };
 const REGRESSION_CASES: Case[] = [
   {
+    id: "curl-attached-short-user",
+    input: "curl -uadmin:HEADZZ9 https://example.invalid KEEP_CURL",
+    secrets: ["HEADZZ9"],
+    preserve: ["https://example.invalid", "KEEP_CURL"]
+  },
+  {
+    id: "curl-clustered-short-user",
+    input: "curl -su admin:HEADZZ9 https://example.invalid KEEP_CURL",
+    secrets: ["HEADZZ9"],
+    preserve: ["https://example.invalid", "KEEP_CURL"]
+  },
+  {
+    id: "curl-attached-quoted-short-user",
+    input: "curl -uadmin:'HEADZZ9 TAILZZ9' https://example.invalid KEEP_CURL",
+    secrets: ["HEADZZ9", "TAILZZ9"],
+    preserve: ["https://example.invalid", "KEEP_CURL"]
+  },
+  {
+    id: "curl-clustered-attached-user",
+    input: "curl -suadmin:'HEADZZ9 TAILZZ9' https://example.invalid KEEP_CURL",
+    secrets: ["HEADZZ9", "TAILZZ9"],
+    preserve: ["https://example.invalid", "KEEP_CURL"]
+  },
+  {
+    id: "quoted-empty-label-before-command",
+    input: "echo 'passwd: ' \"passphrase: \"; gpg --passphrase \"FKa'FKb\"; gpg --passphrase '$FKc'",
+    secrets: ["FKa", "FKb", "FKc"],
+    preserve: ["echo", "gpg"]
+  },
+  {
     id: "env-glued-unquoted-tail",
     input: 'PASSWORD="HEADZZ9"TAILZZ9 KEEP_S1_ENV',
     secrets: ["HEADZZ9", "TAILZZ9"],
@@ -352,6 +382,24 @@ for (const [index, file] of COPIES.entries()) {
       expect(output).not.toContain("S1TAIL");
       expect(output).not.toContain("S1SECOND");
       expect(output).not.toContain("***MASKEDP***");
+    });
+
+    it("requires the attached curl credential guard", () => {
+      const input = "curl -uadmin:HEADZZ9 https://example.invalid KEEP_CURL";
+      const mutant = changed(source, "(word ~ /^--user=/ || word ~ /^-s?u./)", "(word ~ /^--user=/)");
+      expect(run(source, input)).not.toContain("HEADZZ9");
+      expect(run(mutant, input)).toContain("HEADZZ9");
+    });
+
+    it("does not use a shell closing quote as a new keyword value opener", () => {
+      const input = REGRESSION_CASES.find((c) => c.id === "quoted-empty-label-before-command")!.input;
+      const mutant = changed(
+        source,
+        "if (s1_shell_closing[j] && (j == n || original_bytes[j + 1] ~ /^[[:space:];|&)}]$/)) { s1_range(j, j); return }",
+        "if (0) return"
+      );
+      expect(broken(input, run(source, input), ["gpg"])).toEqual([]);
+      expect(broken(input, run(mutant, input), ["gpg"])).toEqual(["gpg"]);
     });
 
     it("does not cap closed quoted values at the BSD repetition limit", () => {
