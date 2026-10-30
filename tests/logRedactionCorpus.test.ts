@@ -9,10 +9,10 @@ import { judgeCase } from "./tools/redactionJudge.js";
 import { ARGUMENT_POSITION_CASES, ARGUMENT_POSITION_FAMILIES } from "./tools/redactionScope.js";
 
 /**
- * Step ②-3 of #249: the core against the corpus, through its public entry point.
+ * Steps ②-3 and ②-4 of #249: the complete corpus through the public entry point.
  *
  * The migration gate asks whether the core is worse than the sed `mask()`. This
- * asks whether it is right: in every case outside the argument-position list,
+ * asks whether it is right: in every case, including argument position,
  * no secret word is readable and no preserve word is lost. The sed `mask()`'s own
  * leaks are not an allowance -- sections E, K, M and O are here because it leaves
  * them readable.
@@ -45,28 +45,17 @@ function verdict(c: Case) {
 }
 
 describe("the core on the corpus", () => {
-  it("names only argument-position cases that exist", () => {
-    const ids = new Set(corpus.map((c) => c.id));
-    expect([...ARGUMENT_POSITION_CASES].filter((id) => !ids.has(id))).toEqual([]);
-    expect(ARGUMENT_POSITION_CASES.size).toBe(39);
+  it("allows no argument-position exemptions", () => {
+    expect([...ARGUMENT_POSITION_CASES]).toEqual([]);
+    expect([...ARGUMENT_POSITION_FAMILIES]).toEqual([]);
   });
 
-  it("masks every secret and keeps every preserve word outside argument position", () => {
-    const inScope = corpus.filter((c) => !ARGUMENT_POSITION_CASES.has(c.id));
-    expect(inScope).toHaveLength(178);
-    const failures = inScope
+  it("masks every secret and keeps every preserve word", () => {
+    expect(corpus).toHaveLength(217);
+    const failures = corpus
       .map((c) => ({ id: c.id, ...verdict(c) }))
       .filter((v) => v.result.status !== "ok" || v.leaked.length > 0 || v.broken.length > 0)
       .map(({ id, leaked, broken, result }) => ({ id, status: result.status, leaked, broken }));
-    expect(failures).toEqual([]);
-  });
-
-  it("keeps every preserve word in argument position too", () => {
-    const failures = corpus
-      .filter((c) => ARGUMENT_POSITION_CASES.has(c.id))
-      .map((c) => ({ id: c.id, ...verdict(c) }))
-      .filter((v) => v.result.status !== "ok" || v.broken.length > 0)
-      .map(({ id, broken, result }) => ({ id, status: result.status, broken }));
     expect(failures).toEqual([]);
   });
 });
@@ -80,30 +69,27 @@ describe("the core on the fuzz sample", () => {
     expect(fuzzSample.filter((c) => c.input.includes("&lt;")).map((c) => c.id)).toEqual([]);
   });
 
-  it("masks every secret outside the argument-position families, and keeps every preserve word", () => {
+  it("masks every secret and keeps every preserve word in every family", () => {
     expect(new Set(fuzzSample.map((c) => c.family)).size).toBe(29);
     const failures = fuzzSample
       .map((c) => ({ id: c.id, family: c.family!, ...verdict(c) }))
-      .filter(
-        (v) =>
-          v.result.status !== "ok" ||
-          v.broken.length > 0 ||
-          (v.leaked.length > 0 && !ARGUMENT_POSITION_FAMILIES.has(v.family))
-      )
+      .filter((v) => v.result.status !== "ok" || v.broken.length > 0 || v.leaked.length > 0)
       .map(({ id, family, leaked, broken }) => ({ id, family, leaked, broken }));
     expect(failures).toEqual([]);
   });
 });
 
 /**
- * Exact outputs for seven of the ten H cases, from the reference expectations
+ * Exact outputs for all ten H cases, from the reference expectations
  * Codex wrote down for #249 (2026-09-29). Checking that a secret word is gone
- * does not see a mask that ate too much or a quote that moved; these do. H03 to
- * H05 are argument-position cases and wait for step ②-4.
+ * does not see a mask that ate too much or a quote that moved; these do.
  */
 const EXACT: readonly (readonly [string, string])[] = [
   ["H-H01", `gpg --passphrase "${MASK}" --decrypt f`],
   ["H-H02", `passwd: '${MASK}'`],
+  ["H-H03", `mysql -p'${MASK}' db`],
+  ["H-H04", `redis-cli \\\n  -a ${MASK}`],
+  ["H-H05", `curl -u user:'${MASK}' https://example.test/`],
   ["H-H06", `{'password': '${MASK}'}`],
   ["H-H07", `export DB_PASSWORD='${MASK}'`],
   ["H-H08", `grep -q "token: " f || echo "token: ${MASK}" >> f`],

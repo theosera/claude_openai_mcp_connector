@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { commandEngine, type Engine, type EngineResult, MASK, readable } from "./tools/redactionJudge.js";
-import { ARGUMENT_POSITION_CASES } from "./tools/redactionScope.js";
 import { execFileSyncBounded } from "./tools/syncChild.js";
 
 /**
@@ -19,9 +18,7 @@ import { execFileSyncBounded } from "./tools/syncChild.js";
  * line on stdin, one `{text, status}` per line on stdout. The judge does not
  * import it, so it does not depend on the language the engine is written in.
  *
- * Step ②-3 points the gate at the core's command line and gives it a
- * threshold: a gap may appear only in a case whose secret sits in argument
- * position, which step ②-4 takes on (`tools/redactionScope.ts`).
+ * Step ②-4 removes the argument-position allowance: no corpus gap is allowed.
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -139,9 +136,7 @@ describe("the core, through its command line", () => {
     expect(results.filter((r) => r.status !== "ok")).toEqual([]);
   });
 
-  // The gate's threshold for step ②-3. Measured against the shared engine before
-  // this step, 73 cases had a gap, 40 of them outside the argument-position list.
-  it("leaves readable no secret the sed mask() hides, except in argument position", () => {
-    expect(gaps.filter((gap) => !ARGUMENT_POSITION_CASES.has(gap.id))).toEqual([]);
+  it("leaves readable no secret the sed mask() hides", () => {
+    expect(gaps).toEqual([]);
   });
 });
