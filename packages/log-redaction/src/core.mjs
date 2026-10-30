@@ -1551,7 +1551,64 @@ function collectArgumentSpans(original, segments, labelAt) {
     mysql: new Set(["-h", "--host", "-u", "--user", "-P", "--port", "-S", "--socket", "-D", "--database"])
   };
 
-  const scan = (text, reading, sourceAt, optionValues = false) => {
+  // Match direct substitutions in one forward walk. Each substitution has its
+  // own quote context; an inner quote or ')' cannot close its enclosing quote.
+  // JSON/logged quote bodies are visited after decoding below, rather than
+  // interpreting their serialization quotes as shell double quotes here.
+  const substitutions = (text, reading) => {
+    const opened = new Map(reading.map((segment) => [segment.open, segment]));
+    const ranges = [];
+    const stack = [];
+    let quote = "";
+    for (let at = 0; at < text.length; at += 1) {
+      const ch = text[at];
+      if (ch === "\\" && quote !== "'") {
+        at += 1;
+        continue;
+      }
+      if (quote === "'") {
+        if (ch === quote) quote = "";
+        else if (isLineEnd(ch)) quote = "";
+        continue;
+      }
+      if (ch === "$" && text[at + 1] === "(" && text[at + 2] !== "(") {
+        stack.push({ open: at, quote, parentheses: 0 });
+        quote = "";
+        at += 1;
+        continue;
+      }
+      if (quote === '"') {
+        if (ch === quote || isLineEnd(ch)) quote = "";
+        continue;
+      }
+      if (ch === "'" || ch === '"') {
+        const segment = opened.get(at);
+        // Retain the argument lexer's apostrophe treatment in the outer view.
+        if (!stack.length && !segment) continue;
+        if (!stack.length && ch === '"') {
+          let before = at - 1;
+          while (before >= 0 && /\s/.test(text[before])) before -= 1;
+          if (before < 0 || ":[,".includes(text[before])) {
+            at = segment.close - Number(!segment.closed);
+            continue;
+          }
+        }
+        quote = ch;
+      } else if (stack.length && ch === "(") stack[stack.length - 1].parentheses += 1;
+      else if (stack.length && ch === ")") {
+        const frame = stack[stack.length - 1];
+        if (frame.parentheses) frame.parentheses -= 1;
+        else {
+          stack.pop();
+          quote = frame.quote;
+          if (!stack.length) ranges.push({ open: frame.open, close: at });
+        }
+      }
+    }
+    return ranges;
+  };
+
+  const scan = (text, reading, sourceAt, optionValues = false, shell = null) => {
     const opened = new Map(reading.map((segment) => [segment.open, segment]));
     const closes = new Set(reading.filter((segment) => segment.closed).map((segment) => segment.close));
     const opaque = new Set();
@@ -1576,6 +1633,11 @@ function collectArgumentSpans(original, segments, labelAt) {
       wordQuotes.length = 0;
       let at = from;
       while (at < text.length) {
+        const substitution = shell?.get(at);
+        if (substitution !== undefined) {
+          at = substitution;
+          continue;
+        }
         const segment = opened.get(at);
         if (segment) {
           wordQuotes.push(at);
@@ -1591,6 +1653,14 @@ function collectArgumentSpans(original, segments, labelAt) {
       }
       return at;
     };
+    const credentialFlagAt = (at, active) => {
+      const flag = (word) =>
+        text.startsWith(word, at) && (at + word.length === text.length || COMMAND_STOP.test(text[at + word.length]));
+      // Adjacent-line reading is limited to curl's credential flags. Other
+      // clients retain their existing unescaped physical-line boundary.
+      if (active === "curl") return flag("-u") || flag("--user") || text.startsWith("--user=", at);
+      return false;
+    };
     let active = "";
     let pending = "";
     let queryNext = false;
@@ -1603,6 +1673,16 @@ function collectArgumentSpans(original, segments, labelAt) {
         continue;
       }
       if (COMMAND_STOP.test(text[at])) {
+        if (shell && active && isLineEnd(text[at])) {
+          let next = at + (text[at] === "\r" && text[at + 1] === "\n" ? 2 : 1);
+          while (text[next] === " " || text[next] === "\t") next += 1;
+          if (!credentialFlagAt(next, active)) active = "";
+          pending = "";
+          queryNext = false;
+          ordinaryNext = false;
+          at = next;
+          continue;
+        }
         if (active && !BLANK.test(text[at])) {
           active = "";
           pending = "";
@@ -1679,9 +1759,11 @@ function collectArgumentSpans(original, segments, labelAt) {
   };
 
   let remaining = original.length * 4;
+  const visitedSubstitutions = new Set();
   const visit = (text, reading, sourceAt) => {
     remaining -= text.length;
     if (remaining < 0) throw new RedactionOmitted("argument_nesting_limit");
+    reading ??= lexQuotes(text, "command", labelAt, true);
     const opaque = scan(text, reading, sourceAt);
     // An ordinary option value can itself name another client (`curl -o mysql`).
     // Add a reading that consumes known ordinary option values without replacing
@@ -1689,13 +1771,35 @@ function collectArgumentSpans(original, segments, labelAt) {
     // Only the original reading controls recursion/SQL opacity, so this extra
     // pass cannot withdraw its spans or open a previously opaque SQL argument.
     scan(text, reading, sourceAt, true);
+    const ranges = text.includes("$(") ? substitutions(text, reading) : [];
+    if (ranges.length || /[\r\n]/.test(text)) {
+      const shell = new Map(ranges.map((range) => [range.open, range.close + 1]));
+      // Hide substitution bodies only from the supplemental quote reading.
+      // Offsets and the scanner's input remain those of the untouched source.
+      const parts = [];
+      let end = 0;
+      for (const range of ranges) {
+        parts.push(text.slice(end, range.open), "x".repeat(range.close + 1 - range.open));
+        end = range.close + 1;
+      }
+      parts.push(text.slice(end));
+      const shellReading = ranges.length ? lexQuotes(parts.join(""), "command", labelAt, true) : reading;
+      scan(text, shellReading, sourceAt, true, shell);
+      for (const range of ranges) {
+        const key = `${sourceAt(range.open)}:${sourceAt(range.close)}`;
+        if (visitedSubstitutions.has(key)) continue;
+        visitedSubstitutions.add(key);
+        const body = text.slice(range.open + 2, range.close);
+        if (embeddedClient.test(body)) visit(body, null, (at) => sourceAt(range.open + 2 + at));
+      }
+    }
     for (const segment of reading) {
       if (opaque.has(segment.open)) continue;
       const body = text.slice(segment.open + 1, segment.close);
       if (!embeddedClient.test(body)) continue;
       // Most quoted commands need no decoding or per-character offset array.
       if (!body.includes("\\")) {
-        visit(body, lexQuotes(body, "command", labelAt, true), (at) => sourceAt(segment.open + 1 + at));
+        visit(body, null, (at) => sourceAt(segment.open + 1 + at));
         continue;
       }
       const chars = [];
@@ -1720,7 +1824,7 @@ function collectArgumentSpans(original, segments, labelAt) {
       }
       offsets.push(segment.close);
       const inner = chars.join("");
-      visit(inner, lexQuotes(inner, "command", labelAt, true), (at) => sourceAt(offsets[at]));
+      visit(inner, null, (at) => sourceAt(offsets[at]));
     }
   };
   visit(original, segments, (at) => at);

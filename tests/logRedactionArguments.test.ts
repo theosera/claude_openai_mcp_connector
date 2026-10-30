@@ -341,4 +341,81 @@ describe("argument-position credentials (#279)", () => {
       });
     });
   }
+
+  it.each(["command", "text"])("keeps inert substitutions in quoted SQL readable in %s", (kind) => {
+    const queries = [
+      "mysql -e 'SELECT $(mysql -pKEEP_INERT) FROM KEEP_SQL'",
+      'mysql -e "SELECT \\$(mysql -pKEEP_ESCAPED) FROM KEEP_SQL"'
+    ];
+    for (const query of queries) {
+      for (const line of [query, JSON.stringify({ command: query }), JSON.stringify(query)]) {
+        expect(redact(line, kind)).toEqual({ text: line, status: "ok" });
+      }
+    }
+  });
+
+  it.each(["command", "text"])("keeps quoted parentheses and joined substitutions bounded in %s", (kind) => {
+    for (const line of [
+      "curl $(mysql -pFKARG068 'app)KEEP_CLOSE') -u user:FKARG069",
+      'curl "$(mysql -pFKARG068 "app)KEEP_CLOSE")" -u user:FKARG069',
+      "curl PRE$(mysql -pFKARG068 app)POST -u user:FKARG069",
+      "curl $(printf KEEP_OUTER $(mysql -pFKARG068 app)) -u user:FKARG069"
+    ]) {
+      const preserve = ["app", "user", ...["KEEP_CLOSE", "PRE", "POST", "KEEP_OUTER"].filter((w) => line.includes(w))];
+      expect(judgeCase(line, redact(line, kind), ["FKARG068", "FKARG069"], preserve)).toEqual({
+        leaked: [],
+        broken: [],
+        omitted: false
+      });
+    }
+    const line = JSON.stringify({ command: 'curl "$(mysql -pFKARG068 app)" -u user:FKARG069' });
+    expect(judgeCase(line, redact(line, kind), ["FKARG068", "FKARG069"], ["app", "user"])).toEqual({
+      leaked: [],
+      broken: [],
+      omitted: false
+    });
+  });
+
+  it.each(["command", "text"])("keeps a new command or empty line outside adjacent-line flag reading in %s", (kind) => {
+    for (const line of [
+      "mysql and curl\nsort -u user:KEEP_SORT",
+      "mysql\nmkdir -p KEEP_DIRECTORY",
+      "mysql and curl\n\n-u user:KEEP_EMPTY_LINE",
+      "mysql and curl;\n-u user:KEEP_SEMICOLON",
+      "curl -u\nuser:KEEP_PENDING"
+    ]) {
+      expect(redact(line, kind)).toEqual({ text: line, status: "ok" });
+    }
+    for (const separator of ["\n", "\r\n", "\r"]) {
+      const line = `mysql and curl${separator}  -u user:FKARG070 KEEP070`;
+      expect(redact(line, kind)).toEqual({
+        text: `mysql and curl${separator}  -u user:${MASK} KEEP070`,
+        status: "ok"
+      });
+    }
+  });
+
+  it.each(["command", "text"])("keeps line-separated mysql and redis operands readable in %s", (kind) => {
+    for (const line of [
+      "mysql\n-p PUBLICDB",
+      "mysql\n-pPUBLICVALUE",
+      "mysql\n-price FROM PUBLICTABLE",
+      "mysqldump\n-p PUBLICDUMP",
+      "redis-cli\n-a PUBLICCOMMAND",
+      "redis-cli\n--pass PUBLICOPERAND"
+    ]) {
+      expect(redact(line, kind)).toEqual({ text: line, status: "ok" });
+    }
+  });
+
+  it.each(["command", "text"])("keeps a shared quoted substitution within its decoding budget in %s", (kind) => {
+    const line = `curl "$(printf $(mysql -pFKDEDUP app ${"x ".repeat(64)}KEEP_BODY))" -u user:FKOUT KEEP`;
+    const result = redact(line, kind);
+    expect(result.status).toBe("ok");
+    expect(judgeCase(line, result, ["FKDEDUP", "FKOUT"], ["app", "KEEP_BODY", "user", "KEEP"])).toEqual({
+      leaked: [],
+      broken: [],
+      omitted: false
+    });
+  });
 });
