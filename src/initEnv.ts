@@ -44,8 +44,11 @@
  *   instead. After publishing, the file at the path must still be the one just
  *   written; if it is not, init stops and says not to use its token.
  * - **No secret on screen, in argv or from the environment.** The bearer token
- *   is generated here and never printed. No option takes a secret, and nothing
- *   but `XDG_CONFIG_HOME` and `HOME` is read from this process's environment.
+ *   is generated here and never printed. The OAuth login password is asked only
+ *   in a terminal, twice, with nothing written back while it is typed, and
+ *   never printed; readline keeps no history, so a later prompt cannot recall
+ *   it. No option takes a secret, and nothing but `XDG_CONFIG_HOME` and `HOME`
+ *   is read from this process's environment.
  * - **Reads back the file it wrote, the way the server parses it.** After
  *   writing, the published file is opened with O_NOFOLLOW and must be the same
  *   inode that was written; its bytes are parsed as `loadEnvFile` parses them
@@ -70,6 +73,7 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import readline from "node:readline";
+import { Writable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import dotenv from "dotenv";
 import { assertOutsideKnowledgeRoots, loadConfig, loadHttpConfig, selectedTransport } from "./config.js";
@@ -92,13 +96,23 @@ const FILE_NAME = "server.env";
 const FILE_MODE = 0o600;
 const DIR_MODE = 0o700;
 const DEFAULT_PORT = "8787";
+// init's own floor for the OAuth login password. The server has none: this
+// gate faces a public tunnel, and the scrypt check only slows each guess.
+const MIN_PASSWORD_LENGTH = 12;
+const STATE_FILE_SUFFIX = ".oauth-state.json";
+/** What the summary before the write shows in place of a secret's value. */
+const HIDDEN_VALUES = new Map([
+  ["MCP_AUTH_TOKEN", "(generated; not shown)"],
+  ["MCP_OAUTH_PASSWORD", "(entered; not shown)"]
+]);
 const SIGNAL_EXIT: Record<string, number> = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143 };
 
 const USAGE = `Usage: pnpm run init:env [--out <absolute path>]
 
 Asks a few questions and writes a server env file (mode 0600) for the server to
 read through MCP_ENV_FILE. It never overwrites an existing file, never writes
-inside the vault, and never prints the bearer token it generates.
+inside the vault, and never prints the bearer token it generates or the OAuth
+login password you type (asked only in a terminal).
 
 Default location: $XDG_CONFIG_HOME/${APP_DIR}/${FILE_NAME}
   (or ~/.config/${APP_DIR}/${FILE_NAME})
@@ -234,6 +248,70 @@ export function assertRoundTrip(content: string, values: ReadonlyArray<readonly 
   if (!same) {
     throw new Stop("the env file would not read back as written. Nothing was written.");
   }
+}
+
+/**
+ * The OAuth issuer: https only, nothing secret in it, and nothing the server
+ * would not use. The server quotes the URL in its own error when it rejects
+ * one, so a user name or password in it would be printed back; it is refused
+ * here instead. Trailing slashes are dropped, as the server drops them. The
+ * value is never put into the message.
+ */
+export function checkPublicUrl(value: string): string {
+  assertEnvSafeValue("MCP_HTTP_PUBLIC_URL", value);
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Stop("MCP_HTTP_PUBLIC_URL is not a URL.");
+  }
+  if (url.protocol !== "https:") {
+    throw new Stop("MCP_HTTP_PUBLIC_URL must be https: web connectors reach the server only over https.");
+  }
+  if (url.username !== "" || url.password !== "") {
+    throw new Stop("MCP_HTTP_PUBLIC_URL must not carry a user name or password.");
+  }
+  // An empty `?` or `#` parses to an empty search or hash, so the text is checked too.
+  if (url.search !== "" || url.hash !== "" || /[?#]/.test(value)) {
+    throw new Stop("MCP_HTTP_PUBLIC_URL must not have a query or a fragment.");
+  }
+  return value.replace(/\/+$/, "");
+}
+
+/** The env file's rules, and init's own minimum length (the server has none). */
+export function checkLoginPassword(value: string): void {
+  assertEnvSafeValue("MCP_OAUTH_PASSWORD", value);
+  if ([...value].length < MIN_PASSWORD_LENGTH) {
+    throw new Stop(`MCP_OAUTH_PASSWORD needs at least ${MIN_PASSWORD_LENGTH} characters.`);
+  }
+}
+
+/** Beside the env file, named after it: one state file per endpoint, in a directory init has checked. */
+export function defaultStateFile(target: string): string {
+  return path.join(path.dirname(target), `${path.basename(target, path.extname(target))}${STATE_FILE_SUFFIX}`);
+}
+
+/**
+ * The server creates the state file; init only names it. Nothing may be at the
+ * path yet: a state file is keyed to the password it was written under, so one
+ * left from an earlier setup would stop the server from starting with the new
+ * password (it refuses rather than overwrite).
+ */
+export function checkStateFile(value: string, target: string, root: string): void {
+  assertEnvSafeValue("MCP_OAUTH_STATE_FILE", value);
+  if (!path.isAbsolute(value)) {
+    throw new Stop("MCP_OAUTH_STATE_FILE must be an absolute path.");
+  }
+  if (path.resolve(value) === target) {
+    throw new Stop("MCP_OAUTH_STATE_FILE must not be the env file itself.");
+  }
+  if (lstatOrUndefined(value)) {
+    throw new Stop(
+      `${value} already exists. A state file is keyed to the password it was written under, so the server would not ` +
+        "start on it: answer another path, or stop the server, move that file somewhere else outside the vault and run init:env again."
+    );
+  }
+  assertOutsideVault(value, root, `MCP_OAUTH_STATE_FILE=${value}`, "Answer a path outside the vault.");
 }
 
 /** `$XDG_CONFIG_HOME/claude-openai-mcp-connector/server.env`, else under `~/.config`. */
@@ -549,7 +627,13 @@ function readBack(target: string, contents: string): string {
   return transport;
 }
 
-function guidance(target: string, transport: string): string {
+/** What the OAuth questions settled, for the guidance. Nothing secret. */
+interface OAuthAnswers {
+  publicUrl: string;
+  stateFile?: string;
+}
+
+function guidance(target: string, transport: string, oauth?: OAuthAnswers): string {
   // Each line is quoted for the syntax it will be pasted into: JSON for the
   // client's settings, a POSIX shell word for commands, a unit-file word for
   // systemd. A path with spaces, `%`, `$` or quotes has to survive all three.
@@ -559,6 +643,24 @@ function guidance(target: string, transport: string): string {
     "",
     `For another endpoint, run this again with --out <another absolute path>: each endpoint gets its own file.`
   ];
+  // URLs, paths and variable names only: the login password is never put into a line.
+  const oauthSteps = oauth
+    ? [
+        `4. OAuth is on for web connectors. Put an https tunnel in front of the server at ${oauth.publicUrl}`,
+        `   (init does not create it), and add the connector in ChatGPT or Claude.ai with the URL ${oauth.publicUrl}/mcp.`,
+        "   Sign in with the login password you typed. It is in the file and was not shown; read it as step 2 says.",
+        `   init asked for at least ${MIN_PASSWORD_LENGTH} characters; the server itself enforces no minimum.`,
+        ...(oauth.stateFile
+          ? [
+              `   Sign-ins survive restarts through ${oauth.stateFile}, which the server creates. To change the password`,
+              "   later: stop the server, move that file somewhere else outside the vault, then start with the new password.",
+              "   The file is keyed to the password it was written under, and the server refuses to start on another."
+            ]
+          : [
+              "   With no state file, every restart signs web connectors out; MCP_OAUTH_STATE_FILE keeps them signed in."
+            ])
+      ]
+    : [];
   if (transport === "http") {
     return [
       "",
@@ -574,6 +676,7 @@ function guidance(target: string, transport: string): string {
       "   do not print it inside an AI coding session, whose transcript keeps it.",
       "3. The endpoint is read-only. To allow writes, add MCP_HTTP_ALLOW_WRITE=1 by hand, together with the same",
       "   MCP_AUDIT_SUBDIR / MCP_SKILLS_SUBDIR as the other server processes that write to this vault.",
+      ...oauthSteps,
       ...common,
       ""
     ].join("\n");
@@ -636,7 +739,20 @@ async function run(args: string[], io: InitIO): Promise<number> {
     throw new Stop(`${target} already exists, and init never overwrites a file. Nothing was written.`);
   }
 
-  const rl = readline.createInterface({ input: io.input, output: io.output, terminal: io.isTTY });
+  // readline writes through this, so that while a secret is typed its echo and
+  // line redraws are dropped here instead of reaching the terminal (askSecret).
+  let muted = false;
+  const echo = new Writable({
+    write(chunk: Buffer, _encoding, callback) {
+      if (!muted) io.output.write(chunk);
+      callback();
+    }
+  });
+  // Line editing wraps at the terminal's width, which readline reads from its output.
+  Object.defineProperty(echo, "columns", { get: () => (io.output as NodeJS.WriteStream).columns });
+  // No history: in a terminal the up arrow would otherwise bring an earlier
+  // answer, the login password included, back into a later prompt in plain text.
+  const rl = readline.createInterface({ input: io.input, output: echo, terminal: io.isTTY, historySize: 0 });
   const lines = rl[Symbol.asyncIterator]();
   let interrupt: ((signal: string) => void) | undefined;
   const interrupted = new Promise<never>((_, reject) => {
@@ -672,6 +788,39 @@ async function run(args: string[], io: InitIO): Promise<number> {
       throw new Stop("input ended before every question was answered. Nothing was written.");
     }
     return next.value;
+  };
+
+  // Terminal only (the caller has checked). The prompt goes out as usual; from
+  // then until the line is in, nothing readline writes reaches the terminal.
+  // Ctrl-C still arrives as readline's SIGINT, and Ctrl-D on an empty line still
+  // closes it; either way `muted` is cleared before anything else is written.
+  const askSecret = async (prompt: string): Promise<string> => {
+    if (closed) {
+      throw new Stop("input ended before every question was answered. Nothing was written.");
+    }
+    rl.setPrompt(prompt);
+    rl.prompt();
+    muted = true;
+    try {
+      const next = await Promise.race([lines.next(), interrupted]);
+      if (next.done) {
+        throw new Stop("input ended before every question was answered. Nothing was written.");
+      }
+      return next.value;
+    } finally {
+      muted = false;
+      io.output.write("\n");
+    }
+  };
+
+  const askYesNo = async (prompt: string, fallback: boolean): Promise<boolean> => {
+    for (;;) {
+      const answer = (await ask(prompt)).trim().toLowerCase();
+      if (answer === "") return fallback;
+      if (answer === "y" || answer === "yes") return true;
+      if (answer === "n" || answer === "no") return false;
+      io.error.write('init:env: answer "y" or "n".\n');
+    }
   };
 
   try {
@@ -727,6 +876,7 @@ async function run(args: string[], io: InitIO): Promise<number> {
     }
 
     const values: Array<readonly [string, string]> = [["KNOWLEDGE_ROOT", root]];
+    let oauth: OAuthAnswers | undefined;
     if (transport === "http") {
       let port = "";
       while (port === "") {
@@ -738,6 +888,71 @@ async function run(args: string[], io: InitIO): Promise<number> {
       // Generated here, never asked for and never shown.
       const token = crypto.randomBytes(32).toString("base64url");
       values.push(["MCP_TRANSPORT", "http"], ["MCP_HTTP_PORT", port], ["MCP_AUTH_TOKEN", token]);
+
+      if (await askYesNo("Web connectors (ChatGPT, Claude.ai) sign in through OAuth. Set it up? [y/N]: ", false)) {
+        if (!io.isTTY) {
+          // Whether piped input is echoed somewhere cannot be checked, so the
+          // login password is not read from it.
+          throw new Stop(
+            "the OAuth login password is asked only in a terminal, where it is not echoed. Run init:env in a terminal. Nothing was written."
+          );
+        }
+        let publicUrl = "";
+        while (publicUrl === "") {
+          const answer = await ask("Public https URL of the server (the address your tunnel serves): ");
+          try {
+            publicUrl = checkPublicUrl(answer);
+          } catch (error) {
+            if (!(error instanceof Stop)) throw error;
+            io.error.write(`init:env: ${error.message}\n`);
+          }
+        }
+        io.output.write(
+          `The login password needs at least ${MIN_PASSWORD_LENGTH} characters, no double quote, backslash or control character,\n` +
+            "and no space at either end. It is not shown while you type.\n"
+        );
+        let loginPassword = "";
+        while (loginPassword === "") {
+          const first = await askSecret("Login password: ");
+          try {
+            checkLoginPassword(first);
+          } catch (error) {
+            if (!(error instanceof Stop)) throw error;
+            io.error.write(`init:env: ${error.message}\n`);
+            continue;
+          }
+          if ((await askSecret("Login password again: ")) !== first) {
+            io.error.write("init:env: the two entries differ. Enter it again.\n");
+            continue;
+          }
+          loginPassword = first;
+        }
+        let stateFile: string | undefined;
+        if (
+          await askYesNo("Keep web sign-ins across server restarts (a state file the server writes)? [Y/n]: ", true)
+        ) {
+          const suggested = defaultStateFile(target);
+          while (stateFile === undefined) {
+            const answer = (await ask(`State file (${suggested}): `)) || suggested;
+            try {
+              checkStateFile(answer, target, root);
+              stateFile = answer;
+            } catch (error) {
+              if (!(error instanceof Stop)) throw error;
+              io.error.write(`init:env: ${error.message}\n`);
+            }
+          }
+        }
+        values.push(
+          ["MCP_OAUTH_ENABLED", "1"],
+          ["MCP_HTTP_PUBLIC_URL", publicUrl],
+          ["MCP_OAUTH_PASSWORD", loginPassword]
+        );
+        if (stateFile !== undefined) {
+          values.push(["MCP_OAUTH_STATE_FILE", stateFile]);
+        }
+        oauth = { publicUrl, stateFile };
+      }
     }
 
     for (const [key, value] of values) {
@@ -748,7 +963,7 @@ async function run(args: string[], io: InitIO): Promise<number> {
 
     io.output.write(`\nThe file will hold:\n`);
     for (const [key, value] of values) {
-      io.output.write(`  ${key}=${key === "MCP_AUTH_TOKEN" ? "(generated; not shown)" : value}\n`);
+      io.output.write(`  ${key}=${HIDDEN_VALUES.get(key) ?? value}\n`);
     }
     const confirm = (await ask(`Write ${target}? [y/N]: `)).trim().toLowerCase();
     if (confirm !== "y" && confirm !== "yes") {
@@ -785,7 +1000,7 @@ async function run(args: string[], io: InitIO): Promise<number> {
       );
       return 1;
     }
-    io.output.write(guidance(target, transport));
+    io.output.write(guidance(target, transport, oauth));
     return 0;
   } finally {
     for (const [name, listener] of listeners) {
@@ -804,15 +1019,15 @@ function lstatOrUndefined(target: string): fs.Stats | undefined {
   }
 }
 
-/** The server's own containment check on `MCP_ENV_FILE`, applied before the write. */
-function assertOutsideVault(target: string, root: string): void {
+/** The server's own containment check on `MCP_ENV_FILE` (or the state file), applied before the write. */
+function assertOutsideVault(
+  target: string,
+  root: string,
+  subject = `The env file ${target}`,
+  remedy = "Choose a location outside the vault with --out <absolute path>. Nothing was written."
+): void {
   try {
-    assertOutsideKnowledgeRoots(
-      `The env file ${target}`,
-      "Choose a location outside the vault with --out <absolute path>. Nothing was written.",
-      target,
-      [{ name: "vault", path: path.resolve(root) }]
-    );
+    assertOutsideKnowledgeRoots(subject, remedy, target, [{ name: "vault", path: path.resolve(root) }]);
   } catch (error) {
     // Its message names the path and the root only.
     throw new Stop((error as Error).message);

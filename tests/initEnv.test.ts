@@ -13,6 +13,10 @@ import {
   assertRoundTrip,
   assertTrustedDirectory,
   canonicalTarget,
+  checkLoginPassword,
+  checkPublicUrl,
+  checkStateFile,
+  defaultStateFile,
   main,
   renderEnvFile,
   shellQuote,
@@ -22,8 +26,9 @@ import {
 } from "../src/initEnv.js";
 
 // `pnpm run init:env` (ROADMAP Onboarding: a guided init that writes the file
-// MCP_ENV_FILE names). Each describe block is one guard from the design (G1-G14,
-// PR-1: no OAuth). Cases that depend on the real process — the umask, the real
+// MCP_ENV_FILE names). Each describe block is one guard from the design (G1-G14
+// for the first part; the OAuth questions add G6, G6b, G7, G13a and G15-G17 at
+// the end). Cases that depend on the real process — the umask, the real
 // stdout / stderr, real signals, the working directory — spawn the entrypoint;
 // the rest drive `main` in-process with injected streams.
 
@@ -170,7 +175,7 @@ describe("init:env — the file it writes (G10)", () => {
   });
 
   it("http: writes a generated bearer token that loadHttpConfig accepts, and never prints it", async () => {
-    const result = await runInProcess([], [vault, "http", "", "y"]);
+    const result = await runInProcess([], [vault, "http", "", "", "y"]);
     expect(result.code, result.stderr).toBe(0);
     const target = defaultTarget();
     const parsed = dotenv.parse(fs.readFileSync(target, "utf8"));
@@ -323,7 +328,7 @@ describe("init:env — paths (G3, G4)", () => {
 describe("init:env — secrets (G5, F5)", () => {
   it("never prints the token, does not take one from its environment, and keeps the readback error free of it", async () => {
     const fromEnvironment = "token-from-the-environment-0123456789abcdef";
-    const result = await runChild([], `${vault}\nhttp\n\ny\n`, { env: { MCP_AUTH_TOKEN: fromEnvironment } });
+    const result = await runChild([], `${vault}\nhttp\n\n\ny\n`, { env: { MCP_AUTH_TOKEN: fromEnvironment } });
     expect(result.code, result.stderr).toBe(0);
     const token = dotenv.parse(fs.readFileSync(defaultTarget(), "utf8")).MCP_AUTH_TOKEN;
     expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
@@ -335,7 +340,7 @@ describe("init:env — secrets (G5, F5)", () => {
     const insideHome = path.join(vault, "home");
     fs.mkdirSync(insideHome, { mode: 0o700 });
     const out = path.join(root, "second", FILE);
-    const failed = await runChild(["--out", out], `${vault}\nhttp\n\ny\n`, { env: { HOME: insideHome } });
+    const failed = await runChild(["--out", out], `${vault}\nhttp\n\n\ny\n`, { env: { HOME: insideHome } });
     expect(failed.code).toBe(1);
     expect(failed.stderr).toContain("the server would not start with this file");
     expect(failed.stderr).toContain("MCP_PATCH_STATE_DIR");
@@ -603,7 +608,7 @@ describe("init:env — what it tells the operator (G14)", () => {
   });
 
   it("http: the launchd reload, the check:http line, and the read-only default", async () => {
-    const result = await runInProcess([], [vault, "http", "", "y"]);
+    const result = await runInProcess([], [vault, "http", "", "", "y"]);
     expect(result.code, result.stderr).toBe(0);
     expect(result.stdout).toContain("launchctl bootout gui/$(id -u)/<label>");
     expect(result.stdout).toContain("launchctl bootstrap gui/$(id -u) <plist>");
@@ -622,7 +627,7 @@ describe("init:env — guidance quoted for where it is pasted (PR#308 thread 3)"
     const dir = path.join(root, 'a b %h "q" \\s');
     fs.mkdirSync(dir, { mode: 0o700 });
     const out = path.join(dir, FILE);
-    const result = await runInProcess(["--out", out], [vault, "http", "", "y"]);
+    const result = await runInProcess(["--out", out], [vault, "http", "", "", "y"]);
     expect(result.code, result.stderr).toBe(0);
     // Written out by hand, not built with systemdQuote / shellQuote: an
     // expectation made by the function under test turns with it when it breaks
@@ -703,6 +708,7 @@ describe("init:env — the checked path is the written path (PR#308 thread 2)", 
         { after: "Vault location", answer: vault },
         { after: "Transport", answer: "http" },
         { after: "HTTP port", answer: "" },
+        { after: "Web connectors", answer: "" },
         {
           after: "Write ",
           answer: "y",
@@ -847,7 +853,7 @@ describe("init:env — the checked path is the written path (PR#308 thread 2)", 
       if (target !== out) return stats;
       return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { ino: stats.ino + 1 });
     }) as typeof fs.lstatSync);
-    const result = await runInProcess(["--out", out], [vault, "http", "", "y"]);
+    const result = await runInProcess(["--out", out], [vault, "http", "", "", "y"]);
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("Do not use the token in it");
     // Not removed: removing by path could hit another file.
@@ -871,7 +877,7 @@ describe("init:env — the checked path is the written path (PR#308 thread 2)", 
       if (!linked) return stats;
       return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { ino: stats.ino + 1 });
     }) as typeof fs.fstatSync);
-    const result = await runInProcess(["--out", out], [vault, "http", "", "y"]);
+    const result = await runInProcess(["--out", out], [vault, "http", "", "", "y"]);
     expect(linked).toBe(true);
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("is not the file init:env just wrote");
@@ -988,5 +994,259 @@ describe("init:env — the rest of the command", () => {
     expect(result.code, result.stderr).toBe(0);
     expect(fs.existsSync(path.join(xdg, APP, FILE))).toBe(true);
     expect(fs.existsSync(path.join(home, ".config"))).toBe(false);
+  });
+});
+
+// The OAuth questions. The login password is read only in a terminal, so the
+// flows drive `main` with `isTTY: true`: readline then edits the line itself and
+// writes its echo through init's output, which is what the muting is tested on.
+//
+// Reverse-verified (2026-10-30, one mutation per guard, each confirmed applied
+// and the source restored byte-identical afterwards): writing readline's output
+// while muted reddened G6 (and G13a, G17 and G5, which also look for the
+// password) but not G6b; dropping `historySize: 0` reddened only G6b; dropping
+// the terminal check reddened only G7; not clearing `muted` after an answer
+// reddened the four terminal flows (the next prompt never showed); dropping the
+// https, user-name and query/fragment checks each reddened only its own G15
+// cases; dropping the length floor reddened G17's two short cases; dropping
+// the "already there" check reddened G16's three cases and the vault check its
+// one; showing values in the summary reddened the token tests and G6, G17, G5.
+describe("init:env — the OAuth questions (G6, G6b, G7, G13a, G15-G17)", () => {
+  const PUBLIC_URL = "https://vault.example.com";
+  const LOGIN = "violet-lantern-orchard-42";
+  const UP = "\x1b[A";
+  const CLEAR_LINE = "\x15";
+
+  function count(text: string, part: string): number {
+    return text.split(part).length - 1;
+  }
+
+  /** Types each answer once its prompt is on screen; a repeated prompt is answered on its n-th showing. */
+  async function runTerminal(
+    steps: Array<{ after: string; answer: string }>,
+    harness = inProcess(null, { isTTY: true })
+  ) {
+    const pending = main([], harness.io);
+    const shown = new Map<string, number>();
+    for (const step of steps) {
+      const n = (shown.get(step.after) ?? 0) + 1;
+      shown.set(step.after, n);
+      await vi.waitFor(() => expect(count(harness.stdout(), step.after)).toBeGreaterThanOrEqual(n));
+      harness.input.write(step.answer);
+    }
+    const code = await pending;
+    return { code, stdout: harness.stdout(), stderr: harness.stderr() };
+  }
+
+  function stepsToPassword(url = PUBLIC_URL) {
+    return [
+      { after: "Vault location", answer: `${vault}\r` },
+      { after: "Transport", answer: "http\r" },
+      { after: "HTTP port", answer: "\r" },
+      { after: "Web connectors", answer: "y\r" },
+      { after: "Public https URL", answer: `${url}\r` }
+    ];
+  }
+
+  it("writes the OAuth settings the server accepts, and never draws the password as it is typed (G6, G10)", async () => {
+    const result = await runTerminal([
+      // Typed with two trailing slashes: only readline's echo of the typing can
+      // put that form on screen (the summary and the guidance drop them).
+      ...stepsToPassword(`${PUBLIC_URL}//`),
+      { after: "Login password: ", answer: `${LOGIN}\r` },
+      { after: "Login password again: ", answer: `${LOGIN}\r` },
+      { after: "Keep web sign-ins", answer: "\r" },
+      { after: "State file (", answer: "\r" },
+      { after: "Write ", answer: "y\r" }
+    ]);
+    expect(result.code, result.stderr).toBe(0);
+    const target = defaultTarget();
+    const written = dotenv.parse(fs.readFileSync(target, "utf8"));
+    // Positive controls: the password was typed and reached the file, and an
+    // answer typed the same way is drawn — so its absence below is the muting,
+    // not a harness that draws nothing.
+    expect(written.MCP_OAUTH_PASSWORD).toBe(LOGIN);
+    expect(result.stdout).toContain(`${PUBLIC_URL}//`);
+    expect(result.stdout + result.stderr).not.toContain(LOGIN);
+    expect(result.stdout).toContain("(entered; not shown)");
+
+    expect(written.MCP_OAUTH_ENABLED).toBe("1");
+    expect(written.MCP_HTTP_PUBLIC_URL).toBe(PUBLIC_URL);
+    expect(written.MCP_OAUTH_STATE_FILE).toBe(path.join(path.dirname(target), "server.oauth-state.json"));
+    const env: NodeJS.ProcessEnv = { MCP_ENV_FILE: target };
+    loadEnvFile(env);
+    const oauth = loadHttpConfig(env).oauth;
+    expect(oauth?.issuer).toBe(PUBLIC_URL);
+    expect(oauth?.stateFile).toBe(written.MCP_OAUTH_STATE_FILE);
+
+    expect(result.stdout).toContain(`${PUBLIC_URL}/mcp`);
+    expect(result.stdout).toContain("the server itself enforces no minimum");
+  });
+
+  it("keeps no history, so the up arrow at a later prompt cannot bring the password back (G6b)", async () => {
+    const result = await runTerminal([
+      ...stepsToPassword(),
+      { after: "Login password: ", answer: `${LOGIN}\r` },
+      { after: "Login password again: ", answer: `${LOGIN}\r` },
+      { after: "Keep web sign-ins", answer: "n\r" },
+      // Three steps back would reach the password: the state answer, then the
+      // second entry. The line is cleared before answering.
+      { after: "Write ", answer: `${UP}${UP}${UP}${CLEAR_LINE}y\r` }
+    ]);
+    expect(result.code, result.stderr).toBe(0);
+    // Only the output from the confirmation on: the typing itself is G6's case.
+    expect(result.stdout.slice(result.stdout.indexOf("Write "))).not.toContain(LOGIN);
+    expect(dotenv.parse(fs.readFileSync(defaultTarget(), "utf8")).MCP_OAUTH_STATE_FILE).toBeUndefined();
+  });
+
+  it("does not read the password from piped input (G7)", async () => {
+    const result = await runInProcess([], [vault, "http", "", "y", PUBLIC_URL, LOGIN, LOGIN]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("asked only in a terminal");
+    expect(listTree(home)).toEqual([]);
+    expect(result.stdout + result.stderr).not.toContain(LOGIN);
+  });
+
+  it("Ctrl-C while the password is typed ends the run, writes nothing and leaves raw mode (G13a)", async () => {
+    const rawModes: boolean[] = [];
+    const harness = inProcess(null, { isTTY: true });
+    Object.assign(harness.input, {
+      setRawMode: (mode: boolean) => {
+        rawModes.push(mode);
+        return harness.input;
+      }
+    });
+    const pending = runTerminal(
+      [...stepsToPassword(), { after: "Login password: ", answer: `${LOGIN.slice(0, 6)}${CTRL_C}` }],
+      harness
+    );
+    const result = await pending;
+    expect(result.code).toBe(130);
+    expect(listTree(home)).toEqual([]);
+    expect(rawModes).toContain(true);
+    expect(rawModes.at(-1)).toBe(false);
+    // The prompt's line was ended (askSecret's finally ran) and the typing never
+    // drawn. readline follows the prompt with a cursor-position sequence, so
+    // control sequences are dropped before looking.
+    const tail = result.stdout
+      .slice(result.stdout.lastIndexOf("Login password: ") + "Login password: ".length)
+      // eslint-disable-next-line no-control-regex -- readline's cursor sequences start with ESC
+      .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+    expect(tail.startsWith("\n")).toBe(true);
+    expect(tail).not.toContain(LOGIN.slice(0, 6));
+  });
+
+  it("Ctrl-D on an empty password line ends the run and writes nothing (G13a)", async () => {
+    const result = await runTerminal([...stepsToPassword(), { after: "Login password: ", answer: "\x04" }]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("input ended");
+    expect(listTree(home)).toEqual([]);
+  });
+
+  it("asks again when the two entries differ or the password is too short, and shows neither (G17)", async () => {
+    const result = await runTerminal([
+      ...stepsToPassword(),
+      { after: "Login password: ", answer: "eleven-char\r" },
+      { after: "Login password: ", answer: `${LOGIN}\r` },
+      { after: "Login password again: ", answer: `${LOGIN}-other\r` },
+      { after: "Login password: ", answer: `${LOGIN}\r` },
+      { after: "Login password again: ", answer: `${LOGIN}\r` },
+      { after: "Keep web sign-ins", answer: "n\r" },
+      { after: "Write ", answer: "y\r" }
+    ]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stderr).toContain("at least 12 characters");
+    expect(result.stderr).toContain("the two entries differ");
+    expect(result.stdout + result.stderr).not.toContain("eleven-char");
+    expect(result.stdout + result.stderr).not.toContain(LOGIN);
+    expect(dotenv.parse(fs.readFileSync(defaultTarget(), "utf8")).MCP_OAUTH_PASSWORD).toBe(LOGIN);
+  });
+
+  it("keeps the password out of a read-back failure (G5)", async () => {
+    // HOME inside the vault puts the default plan directory inside it, so the
+    // server — and so the read-back — refuses the file. No guard is removed.
+    const insideHome = path.join(vault, "home");
+    fs.mkdirSync(insideHome, { mode: 0o700 });
+    vi.spyOn(os, "homedir").mockReturnValue(insideHome);
+    const result = await runTerminal([
+      ...stepsToPassword(),
+      { after: "Login password: ", answer: `${LOGIN}\r` },
+      { after: "Login password again: ", answer: `${LOGIN}\r` },
+      { after: "Keep web sign-ins", answer: "n\r" },
+      { after: "Write ", answer: "y\r" }
+    ]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("the server would not start with this file");
+    expect(result.stderr).toContain("MCP_PATCH_STATE_DIR");
+    expect(dotenv.parse(fs.readFileSync(defaultTarget(), "utf8")).MCP_OAUTH_PASSWORD).toBe(LOGIN);
+    expect(result.stdout + result.stderr).not.toContain(LOGIN);
+  });
+
+  it("drops trailing slashes and keeps a path (G15)", () => {
+    expect(checkPublicUrl(`${PUBLIC_URL}/`)).toBe(PUBLIC_URL);
+    expect(checkPublicUrl(`${PUBLIC_URL}/prefix//`)).toBe(`${PUBLIC_URL}/prefix`);
+  });
+
+  it.each([
+    ["http://vault.example.com", /must be https/],
+    ["https://operator@vault.example.com", /user name or password/],
+    ["https://vault.example.com?x=1", /query or a fragment/],
+    ["https://vault.example.com?", /query or a fragment/],
+    ["https://vault.example.com#top", /query or a fragment/],
+    ["not a url", /not a URL/],
+    [" https://vault.example.com", /whitespace/]
+  ])("refuses the public URL %j without quoting it (G15)", (value, message) => {
+    let text = "";
+    try {
+      checkPublicUrl(value);
+    } catch (error) {
+      text = (error as Error).message;
+    }
+    expect(text).toMatch(message);
+    expect(text).not.toContain(value.trim());
+  });
+
+  it.each([
+    ["eleven-char", /at least 12 characters/],
+    ['twelve"chars', /cannot carry/],
+    ["twelve\\chars", /cannot carry/],
+    [" twelve-chars", /whitespace/],
+    ["", /empty/]
+  ])("refuses the login password %j (G17)", (value, message) => {
+    expect(() => checkLoginPassword(value)).toThrow(message);
+  });
+
+  it("takes a login password of exactly 12 characters (G17)", () => {
+    expect(() => checkLoginPassword("twelve-chars")).not.toThrow();
+  });
+
+  it("names the state file after the env file, beside it (G16)", () => {
+    expect(defaultStateFile(path.join(root, "conf", FILE))).toBe(path.join(root, "conf", "server.oauth-state.json"));
+  });
+
+  it.each(["file", "link", "dangling link"])("refuses a state file path where a %s already is (G16)", (kind) => {
+    const conf = path.join(root, "conf");
+    fs.mkdirSync(conf, { mode: 0o700 });
+    const state = path.join(conf, "server.oauth-state.json");
+    if (kind === "file") fs.writeFileSync(state, "{}");
+    if (kind === "link") {
+      fs.writeFileSync(path.join(root, "real.json"), "{}");
+      fs.symlinkSync(path.join(root, "real.json"), state);
+    }
+    if (kind === "dangling link") fs.symlinkSync(path.join(root, "missing.json"), state);
+    expect(() => checkStateFile(state, path.join(conf, FILE), vault)).toThrow(/already exists/);
+  });
+
+  it("refuses a state file inside the vault, a relative one, or the env file itself (G16)", () => {
+    const target = path.join(root, "conf", FILE);
+    expect(() => checkStateFile(path.join(vault, "state.json"), target, vault)).toThrow(
+      /resolves inside the knowledge root/
+    );
+    expect(() => checkStateFile("state.json", target, vault)).toThrow(/absolute/);
+    expect(() => checkStateFile(target, target, vault)).toThrow(/env file itself/);
+  });
+
+  it("takes an absolute state file path outside the vault with nothing there (G16)", () => {
+    expect(() => checkStateFile(path.join(root, "conf", "s.json"), path.join(root, "conf", FILE), vault)).not.toThrow();
   });
 });
