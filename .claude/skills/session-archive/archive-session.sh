@@ -649,6 +649,7 @@ mask() {
     }
     function s1_range(first, last, suppress) {
       if (first <= last) {
+        s1_has_ranges = 1
         s1_marks[first]++; s1_marks[last + 1]--
         if (suppress) { s1_suppressed[first]++; s1_suppressed[last + 1]-- }
       }
@@ -690,10 +691,13 @@ mask() {
       }
       if (end - first >= minimum) s1_range(at, exact ? first + minimum - 1 : end - 1, kind == "gh" || kind == "pat")
     }
+    function s1_original_needed() {
+      return index($0, "://") || $0 ~ /gh[pousr]_|github_pat_|sk-|AKIA|AIza|xox[baprs]-|[Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]/
+    }
     function s1_original_shapes(    i, j, first, end, c, prefix) {
       # This precheck includes every prefix recognized below. An absent prefix
       # skips only this full-record scan, never keyword or client collection.
-      if (!index($0, "://") && $0 !~ /gh[pousr]_|github_pat_|sk-|AKIA|AIza|xox[baprs]-|[Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]/) return
+      if (!s1_original_needed()) return
       split("", s1_runend)
       for (i = 1; i <= n; i++) {
         c = original_bytes[i]
@@ -759,11 +763,18 @@ mask() {
         scheme = scheme tolower(original_bytes[nextword]); nextword++
       }
       if (scheme ~ /^(basic|digest|token|apikey|oauth|ssws)$/ && original_bytes[nextword] ~ /[[:space:]]/) {
+        if (s1_probe_only) { s1_probe_needed = 1; return }
         while (nextword <= n && original_bytes[nextword] ~ /[[:space:]]/) nextword++
         last = nextword
         while (last <= n && original_bytes[last] !~ /[[:space:],"\047]/ && !s1_at(last, "-----")) last++
         s1_range(nextword, last - 1)
         s1_bare_start = nextword; s1_bare_end = last - 1
+        return
+      }
+      # Probe only the metadata-independent prefix. Any potentially active
+      # quoted/outside-tag value keeps the full collector and its guards.
+      if (s1_probe_only) {
+        if (!in_tag || q == "\"" || q == s1_apostrophe) s1_probe_needed = 1
         return
       }
       if (q == "\"" || q == s1_apostrophe) {
@@ -901,7 +912,34 @@ mask() {
         i = end
       }
     }
-    function s1_collect(    i, j, c, q, slash, ending, active, masked, protected, chunk, size, last, label, previous, tick, top, open, covered, in_tag, tag_quote, brace_top, shell_next, group_quote, group_quote_start, next_double) {
+    function s1_keywords(probe,    i, c, covered, in_tag, tag_quote) {
+      s1_probe_only = probe; s1_probe_needed = 0
+      for (i = 1; i <= n; i++) {
+        c = original_bytes[i]
+        if (in_tag) {
+          if (tag_quote) { if (c == tag_quote) tag_quote = "" }
+          else if (c == "\"" || c == s1_apostrophe) tag_quote = c
+          else if (c == ">") in_tag = 0
+        } else if (c == "<" && original_bytes[i + 1] ~ /[A-Za-z\/!?]/) in_tag = 1
+        if (i in s1_suppressed) covered += s1_suppressed[i]
+        if (!covered && c ~ /[tTkKsSpPaAbB]/ && tolower(c original_bytes[i + 1]) ~ /^(to|ke|se|pa|au|be)$/) s1_keyword(i, in_tag)
+        if (probe && s1_probe_needed) break
+      }
+      s1_probe_only = 0
+      return s1_probe_needed
+    }
+    function s1_can_skip_collection(    probe) {
+      # Quote-only records have no recursion beyond one double-quoted span.
+      # Exclude live continuation state and every possible token/flag family.
+      if (s1_has_single || index($0, "\\") || $0 ~ /[`$(){}]/ || s1_original_needed() || s1_expected[0] || s1_clients[0, "mysql"] || s1_clients[0, "curl"] || s1_clients[0, "redis-cli"]) return 0
+      probe = $0
+      gsub(/"/, "", probe)
+      if (probe ~ /curl|mysql|mariadb|redis-cli|--passphrase|--passwd/) return 0
+      return !s1_keywords(1)
+    }
+    function s1_collect(    i, j, c, q, slash, ending, active, masked, protected, chunk, size, last, label, previous, tick, top, open, brace_top, shell_next, group_quote, group_quote_start, next_double) {
+      s1_has_ranges = 0
+      s1_probe_only = 0
       split("", s1_marks); split("", s1_protect); split("", s1_suppressed)
       split("", s1_double); split("", s1_single); split("", s1_words)
       split("", s1_escaped); split("", s1_dash)
@@ -918,6 +956,8 @@ mask() {
       # Continuation carries context without removing LF (archive refence and
       # PEM counters still see the same physical records). Ordinary LF resets.
       if (!s1_continued) { split("", s1_clients); split("", s1_expected) }
+      # Proven inactive S1 records still pass through all downstream maskers.
+      if (s1_can_skip_collection()) { s1_continued = 0; printf "%s", $0; return }
       if (index($0, "\\")) for (i = 1; i <= n; i++) {
         if (slash) s1_escaped[i] = 1
         if (original_bytes[i] == "\\") slash = !slash; else slash = 0
@@ -1003,16 +1043,10 @@ mask() {
       s1_original_shapes()
       s1_scan(1, ending, 0)
       s1_blank_first = n + 1; s1_blank_last = 0
-      for (i = 1; i <= n; i++) {
-        c = original_bytes[i]
-        if (in_tag) {
-          if (tag_quote) { if (c == tag_quote) tag_quote = "" }
-          else if (c == "\"" || c == s1_apostrophe) tag_quote = c
-          else if (c == ">") in_tag = 0
-        } else if (c == "<" && original_bytes[i + 1] ~ /[A-Za-z\/!?]/) in_tag = 1
-        if (i in s1_suppressed) covered += s1_suppressed[i]
-        if (!covered && c ~ /[tTkKsSpPaAbB]/ && tolower(c original_bytes[i + 1]) ~ /^(to|ke|se|pa|au|be)$/) s1_keyword(i, in_tag)
-      }
+      s1_keywords(0)
+      # With no selected range, weaving would emit the unchanged record.
+      # Keep every scan/state update above and every downstream masker intact.
+      if (!s1_has_ranges) { printf "%s", $0; return }
       for (i = 1; i <= n; i++) {
         if (i in s1_marks) active += s1_marks[i]
         if (i in s1_protect) protected += s1_protect[i]
