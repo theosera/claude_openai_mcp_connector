@@ -1004,7 +1004,8 @@ describe("init:env — the rest of the command", () => {
 // Reverse-verified (2026-10-30, one mutation per guard, each confirmed applied
 // and the source restored byte-identical afterwards): dropping the terminal
 // check reddened only G7; dropping the https, user-name and query/fragment
-// checks each reddened only its own G15 cases; dropping the length floor
+// checks each reddened only its own G15 cases (the literal "https://" start,
+// added for the review's URL finding, reddened its two); dropping the length floor
 // reddened G17's two short cases; dropping the "already there" check reddened
 // G16's three cases and the vault check its one; showing values in the summary
 // reddened the token tests and G6, G17, G5.
@@ -1244,6 +1245,9 @@ describe("init:env — the OAuth questions (G6, G6b, G7, G13a, G15-G17)", () => 
 
   it.each([
     ["http://vault.example.com", /must be https/],
+    // Read as https by new URL, refused by the server's literal check.
+    ["HTTPS://vault.example.com", /must start with "https:\/\/"/],
+    ["https:vault.example.com", /must start with "https:\/\/"/],
     ["https://operator@vault.example.com", /user name or password/],
     ["https://vault.example.com?x=1", /query or a fragment/],
     ["https://vault.example.com?", /query or a fragment/],

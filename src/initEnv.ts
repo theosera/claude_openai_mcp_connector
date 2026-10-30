@@ -268,6 +268,13 @@ export function checkPublicUrl(value: string): string {
   if (url.protocol !== "https:") {
     throw new Stop("MCP_HTTP_PUBLIC_URL must be https: web connectors reach the server only over https.");
   }
+  // new URL also reads "HTTPS://host" and "https:host" as https, but the value
+  // is written as typed and the server checks its start literally.
+  if (!value.startsWith("https://")) {
+    throw new Stop(
+      'MCP_HTTP_PUBLIC_URL must start with "https://", written that way: the server checks the start as written.'
+    );
+  }
   if (url.username !== "" || url.password !== "") {
     throw new Stop("MCP_HTTP_PUBLIC_URL must not carry a user name or password.");
   }

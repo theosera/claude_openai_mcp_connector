@@ -64,7 +64,10 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   restarts in a state file (by default beside the env file, named after it). The
   URL may not carry a user name, a password, a query or a fragment — the server
   quotes the URL in its own error, so a secret in it would be printed back — and
-  its trailing slashes are dropped as the server drops them. The login password is
+  its trailing slashes are dropped as the server drops them. It must start with
+  `https://` as written: a URL parser also reads `HTTPS://host` or `https:host` as
+  https, but the server checks the start literally and would refuse the file. The
+  login password is
   asked only in a terminal, twice; nothing is drawn while it is typed. Each entry is
   read on a readline interface of its own, closed once the answer is in, so nothing
   of the password reaches a later prompt: not through the up arrow, not as text typed
