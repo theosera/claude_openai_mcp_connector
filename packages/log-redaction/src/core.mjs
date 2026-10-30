@@ -1603,7 +1603,7 @@ function collectArgumentSpans(original, segments, labelAt) {
         continue;
       }
       if (COMMAND_STOP.test(text[at])) {
-        if (!BLANK.test(text[at])) {
+        if (active && !BLANK.test(text[at])) {
           active = "";
           pending = "";
           queryNext = false;
