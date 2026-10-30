@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { afterAll, describe, expect, it } from "vitest";
 
+import { redactFragment } from "../packages/log-redaction/src/core.mjs";
 import { SECRET_LABELS } from "../packages/log-redaction/src/policy.mjs";
 import {
   compare,
@@ -21,7 +22,7 @@ import { broken, type Engine, type EngineResult, readable } from "./tools/redact
 import { spawnSyncBounded } from "./tools/syncChild.js";
 
 /**
- * The differential fuzz, on the committed sample (seed 1, 290 cases = 10 of each
+ * The differential fuzz, on the committed sample (seed 1, 490 cases = 10 of each
  * family). The full runs (several seeds x 16,000 cases) are the tool's job; this
  * pins the generator and shows the runner can see what it claims to compare.
  */
@@ -56,7 +57,7 @@ const identity: Engine = (fragments) => fragments.map(({ text }) => ({ text, sta
 
 describe("the fuzz generator", () => {
   it("regenerates the committed sample byte for byte", () => {
-    const text = generate(1, 290)
+    const text = generate(1, 490)
       .map((c) => JSON.stringify(c))
       .join("\n");
     expect(`${text}\n`).toBe(readFileSync(SAMPLE, "utf8"));
@@ -90,6 +91,173 @@ describe("the fuzz generator", () => {
       .flatMap((c) => [...c.secrets, ...c.preserve]);
     expect(markers.length).toBeGreaterThan(64_000);
     expect(markers.filter(endsWithLabel)).toEqual([]);
+  });
+});
+
+// Independent shapes/counts: changing the family list cannot shrink this gate.
+const D1_SHAPES: readonly (readonly [string, readonly number[], RegExp])[] = [
+  ["delimiter-label", [2], /password=FK[A-Z0-9]{8}[}\])](?:token|Bearer) FK[A-Z0-9]{8} KEEP[A-Z0-9]{6}/],
+  [
+    "label-element-attributes",
+    [2, 3],
+    /<(password|token) a=(["'])FK[A-Z0-9]{8}\2 b=FK[A-Z0-9]{8}>(?:FK[A-Z0-9]{8})?<\/\1>/
+  ],
+  ["label-attributes-unclosed", [2], /<password a=(["'])FK[A-Z0-9]{8}\1 b=\1FK[A-Z0-9]{8}\1> KEEP[A-Z0-9]{6}$/],
+  [
+    "label-attributes-child",
+    [3],
+    /<password a=(["'])FK[A-Z0-9]{8}\1 b=\1FK[A-Z0-9]{8}\1><value>FK[A-Z0-9]{8}<\/value><\/password>/
+  ],
+  [
+    "label-attributes-next-line",
+    [3],
+    /<password a=(["'])FK[A-Z0-9]{8}\1 b=\1FK[A-Z0-9]{8}\1>FK[A-Z0-9]{8}\r?\n<\/password>/
+  ],
+  [
+    "compound-label-element",
+    [3],
+    /<(access_token|api_key|client_secret) a=(["'])FK[A-Z0-9]{8}\2 b=\2FK[A-Z0-9]{8}\2>FK[A-Z0-9]{8}<\/\1>/
+  ],
+  [
+    "namespaced-label-element",
+    [3],
+    /<ns:password a=(["'])FK[A-Z0-9]{8}\1 b=\1FK[A-Z0-9]{8}\1>FK[A-Z0-9]{8}<\/ns:password>/
+  ],
+  [
+    "password-input",
+    [1],
+    /<input (?:type=(["']?)password\1 value=\1FK[A-Z0-9]{8}\1|value=(["']?)FK[A-Z0-9]{8}\2 type=\2password\2)\/>/i
+  ],
+  [
+    "multiline-label-start",
+    [3],
+    /<password a=(["'])FK[A-Z0-9]{8}\1\r?\n b=\1FK[A-Z0-9]{8}\1>FK[A-Z0-9]{8}<\/password>/
+  ],
+  [
+    "angled-label-attribute",
+    [4],
+    /<password a=(["'])FK[A-Z0-9]{8}\1 b=\1FK[A-Z0-9]{8}[<>]tail\1 c=\1FK[A-Z0-9]{8}\1>FK[A-Z0-9]{8}<\/password>/
+  ]
+];
+
+describe("committed #296 coverage", () => {
+  it.each(
+    D1_SHAPES.flatMap(([shape, counts, pattern]) =>
+      (["command", "text"] as const).map((kind) => [`${shape}-${kind}`, kind, counts, pattern] as const)
+    )
+  )("%s retains its shape and markers", (family, kind, counts, pattern) => {
+    const cases = sample.filter((c) => c.family === family);
+    expect(cases, `missing ${family}`).toHaveLength(10);
+    for (const c of cases) {
+      expect(c.kind, c.id).toBe(kind);
+      expect(c.input, c.id).toMatch(pattern);
+      expect(counts, c.id).toContain(c.secrets.length);
+      expect(c.preserve, c.id).toHaveLength(2);
+      expect(c.input, c.id).toMatch(/KEEP[A-Z0-9]{6} (?:<|password=)/);
+      expect(c.input, c.id).toMatch(/ KEEP[A-Z0-9]{6}$/);
+    }
+  });
+});
+
+// Mutants are imported from memory. The shipped core and sed files are never
+// edited, and the runner still uses their actual public engines.
+function replaceOnce(source: string, before: string, after: string): string {
+  expect(source.split(before), `mutation anchor: ${before}`).toHaveLength(2);
+  return source.replace(before, after);
+}
+
+const CORE_MUTANTS: readonly (readonly [string, string, string])[] = [
+  ["label-element-attributes", "        maskElementAttributes(element);", "        void element;"],
+  [
+    "compound-label-element",
+    "const compound = !simple && attributes.length > 0 && localName.split(/[_.-]/).some((part) => labelNames.has(part));",
+    "const compound = false;"
+  ],
+  ["namespaced-label-element", 'const localName = name.slice(name.lastIndexOf(":") + 1);', "const localName = name;"],
+  ["password-input", 'const input = name === "input" && passwordInput;', "const input = false;"],
+  [
+    "multiline-label-start",
+    "if (!compound && !input && !(simple && (multiline || laterAngle))) continue;",
+    "if (!compound && !input && !(simple && laterAngle)) continue;"
+  ],
+  [
+    "angled-label-attribute",
+    "if (!compound && !input && !(simple && (multiline || laterAngle))) continue;",
+    "if (!compound && !input && !(simple && multiline)) continue;"
+  ]
+];
+
+describe("generated #296 cases discriminate matching core rollbacks", () => {
+  const mutations = [
+    ...CORE_MUTANTS.flatMap(([family, before, after]) =>
+      (["command", "text"] as const).map((kind) => [`${family}-${kind}`, before, after] as const)
+    ),
+    [
+      "delimiter-label-command",
+      'if ((ch === "," || ch === "}" || ch === "]") && labelKeyAt(index + 1)) break;',
+      'if (ch === "," && labelKeyAt(index + 1)) break;'
+    ] as const,
+    [
+      "delimiter-label-text",
+      'if ((ch === "," || ch === ";" || ch === "&" || ch === "}" || ch === "]" || ch === ")") && labelKeyAt(end + 1))',
+      'if ((ch === "," || ch === ";" || ch === "&") && labelKeyAt(end + 1))'
+    ] as const
+  ];
+
+  it.each(mutations)("%s", async (family, before, after) => {
+    const corePath = join(HERE, "..", "packages", "log-redaction", "src", "core.mjs");
+    const policy = pathToFileURL(join(dirname(corePath), "policy.mjs")).href;
+    const source = replaceOnce(readFileSync(corePath, "utf8"), before, after);
+    const bound = replaceOnce(source, '"./policy.mjs"', JSON.stringify(policy));
+    const mutant = (await import(`data:text/javascript;base64,${Buffer.from(bound).toString("base64")}`)) as {
+      redactFragment: typeof redactFragment;
+    };
+    const cases = sample.filter((c) => c.family === family);
+    expect(cases).toHaveLength(10);
+    const discriminating = cases.filter((c) => {
+      const fragment = { text: c.input, kind: c.kind };
+      const current = redactFragment(fragment);
+      const removed = mutant.redactFragment(fragment);
+      expect(current.status, c.id).toBe("ok");
+      expect(removed.status, c.id).toBe("ok");
+      return readable(removed.text, c.secrets).some((s) => !readable(current.text, c.secrets).includes(s));
+    });
+    expect(discriminating.length, family).toBeGreaterThan(0);
+  });
+});
+
+describe("generated #291 cases discriminate both redundant sed paths removed", { timeout: 60_000 }, () => {
+  it.each(
+    (Object.keys(SED_COPIES) as (keyof typeof SED_COPIES)[]).flatMap((copy) =>
+      ["label-attributes-unclosed", "label-attributes-child", "label-attributes-next-line"].flatMap((shape) =>
+        (["command", "text"] as const).map((kind) => [copy, `${shape}-${kind}`] as const)
+      )
+    )
+  )("%s: %s", (copy, family) => {
+    const original = shippedMask(SED_COPIES[copy]);
+    // #295 streaming now overlaps #293 cleanup. Removing only the legacy path
+    // is not an inverse check for #291, so roll both paths back explicitly.
+    const stream = replaceOnce(
+      original,
+      "label = local_secret || secret_component(component)",
+      "label = namespaced || local_secret"
+    );
+    const removed = replaceOnce(
+      stream,
+      "if (legacy_word !~ /^(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)$/ || !width) {",
+      "if (1 || legacy_word !~ /^(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)$/ || !width) {"
+    );
+    const cases = sample.filter((c) => c.family === family);
+    expect(cases).toHaveLength(10);
+    const fragments = cases.map((c) => ({ text: c.input, kind: c.kind }));
+    const current = (copy === "capture" ? capture : archive)(fragments);
+    const mutated = sedEngine(removed)(fragments);
+    expect(
+      cases.filter((c, i) =>
+        readable(mutated[i]!.text, c.secrets).some((s) => !readable(current[i]!.text, c.secrets).includes(s))
+      ).length,
+      family
+    ).toBeGreaterThan(0);
   });
 });
 

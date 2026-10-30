@@ -71,17 +71,17 @@ describe("the core on the corpus", () => {
   });
 });
 
-// The committed fuzz sample: ten cases from each of the 29 families. The full
+// The committed fuzz sample: ten cases from each of the 49 families. The full
 // runs (several seeds, 16,000 cases each) are run by hand; see the fuzz README.
 describe("the core on the fuzz sample", () => {
-  it("contains no less-than character, so does not exercise the markup rules", () => {
-    expect(fuzzSample).toHaveLength(290);
-    expect(fuzzSample.filter((c) => c.input.includes("<")).map((c) => c.id)).toEqual([]);
+  it("covers literal markup without encoded less-than entities", () => {
+    expect(fuzzSample).toHaveLength(490);
+    expect(fuzzSample.filter((c) => c.input.includes("<"))).toHaveLength(180);
     expect(fuzzSample.filter((c) => c.input.includes("&lt;")).map((c) => c.id)).toEqual([]);
   });
 
   it("masks every secret outside the argument-position families, and keeps every preserve word", () => {
-    expect(new Set(fuzzSample.map((c) => c.family)).size).toBe(29);
+    expect(new Set(fuzzSample.map((c) => c.family)).size).toBe(49);
     const failures = fuzzSample
       .map((c) => ({ id: c.id, family: c.family!, ...verdict(c) }))
       .filter(

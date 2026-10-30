@@ -4,7 +4,7 @@ Generated inputs for the differential fuzz of the log redactor (#249). The gener
 
 ## `seed-1.jsonl`
 
-290 cases from `generate(1, 290)`: ten of each of the 29 families, in turn. `tests/redactionFuzz.test.ts` regenerates it and requires the same bytes, so a change to the generator that changes these 290 cases shows up as a change to this file. The ten families added for #280 change the index-to-family assignment and random draws, and `dash-armor` now draws an immediate preserve word. Full runs from before this change are not reproduced case by case. A change that only reaches later cases need not change the sample: when the label redraw below was introduced with 19 families, it left the then-190-case sample as it was, while seed 1 differed from case 5139 on (seed 13 from case 8216). Those positions describe the old grammar, not this 29-family version.
+490 cases from `generate(1, 490)`: ten of each of the 49 families, in turn. `tests/redactionFuzz.test.ts` regenerates it and requires the same bytes, so a change to the generator that changes these 490 cases shows up as a change to this file. The ten families added for #280 changed the index-to-family assignment and random draws, and `dash-armor` gained an immediate preserve word. #296 adds another 20 families, changing that assignment and the random draws again. Full runs from either earlier grammar are not reproduced case by case. A change that only reaches later cases need not change the sample: when the label redraw below was introduced with 19 families, it left the then-190-case sample as it was, while seed 1 differed from case 5139 on (seed 13 from case 8216). Those positions describe the old grammar, not this 49-family version.
 
 Each line has the corpus fields a judge reads, plus the case's origin:
 
@@ -43,6 +43,29 @@ The original `url-userinfo` (L-1) and `dash-armor` (M-4, with M-1's five-dash va
 | M-6    | `passwd-armor`            | text    | Quoted passwd without dashes, private-key block, then a preserve word on the next line |
 
 All M families, including the existing `dash-armor`, place a preserve word immediately after the quoted value; block families also keep a word after the block. Quoted families draw both quote directions. L-6 draws ports 8443/8080 and L-7 draws 5432/5433. These negatives measure over-masking independently of secret leakage; they do not relax the judge or the core-only sample gate.
+
+## Label and markup coverage (#296)
+
+Each row below has a `-command` and a `-text` family, with ten sample cases per family. The original 29 families keep their order; the ten command families follow, then the ten text families. A preserve word sits immediately before and after every new shape. Every credential value has a secret marker, including values the current core fails to hide.
+
+| Family stem                  | Shape                                                                                            | Reference   |
+| ---------------------------- | ------------------------------------------------------------------------------------------------ | ----------- |
+| `delimiter-label`            | Unquoted password, closing `}` or `]`, then token/Bearer and another secret; text also draws `)` | #276        |
+| `label-element-attributes`   | Same-line closed password/token element, quoted and bare attributes, empty or secret body        | #276        |
+| `label-attributes-unclosed`  | Two attributes without a closing tag                                                             | #291 / #293 |
+| `label-attributes-child`     | Two attributes followed by a child value                                                         | #291 / #293 |
+| `label-attributes-next-line` | Two attributes and direct text, with the closing tag on the next line                            | #291 / #293 |
+| `compound-label-element`     | `access_token`, `api_key` or `client_secret`, two attributes and direct text                     | #295        |
+| `namespaced-label-element`   | `ns:password`, two attributes and direct text                                                    | #295        |
+| `password-input`             | Password input with quoted/bare values, case variation, reordered type/value, self-closing end   | #295        |
+| `multiline-label-start`      | Simple label start tag split between attributes                                                  | #295        |
+| `angled-label-attribute`     | `<` or `>` inside the second quoted attribute, followed by another attribute and direct text     | #295        |
+
+Quoted attributes draw both quote directions. The two line-spanning shapes draw LF and CRLF. A command `)` is excluded from `delimiter-label-command` because it already ends a shell word without the #276 fix; it would not discriminate that fix.
+
+The coverage tests check input shapes and marker counts independently of `FAMILY_NAMES`. Matching core rollbacks must expose an additional generated secret, rather than merely change formatting. For the three #291 shapes, both shipped sed copies are tested with two overlapping attribute paths removed: the #295 streaming simple-label path and the older #293 cleanup. Removing only the cleanup leaves the newer path active and is not evidence that the grammar misses the shape. Mutants are constructed in memory; tracked engine files are not edited.
+
+At integration base `4178facf55caf54de82f3382b9835425dc5f6656`, the core still leaks later attribute values in all three #291 shapes, and can also leak child/direct text. The generated cases retain those secrets. They are findings for the core owner, not new argument-position exceptions. This grammar update does not change the judge, suppress failing cases, or relax the core-only sample gate. The core owner supplies the companion corpus-test commit: its fixed values change from 290/29/no-`<` to 490/49/180 markup inputs in the same D1 PR. The strict gate still rejects all 60 #291 sample cases until C4 fixes them. Acceptance and merge wait for C1 → C2 → C3 → C4 in the owner-approved order; no case or exception is removed or added to bypass that dependency. D1 edits only its generator, generator tests and sample/README, and imports the core-authored corpus-test commit without independently editing that file.
 
 ## How cases are judged
 

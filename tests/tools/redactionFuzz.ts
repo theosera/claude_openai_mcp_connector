@@ -80,6 +80,86 @@ type Family = { name: string; kind: "command" | "text"; make: (p: Parts) => stri
 const Q = ['"', "'"] as const;
 const LABELS = ["password", "token", "secret", "api_key", "pat"] as const;
 
+/** #296: keep each shape and input kind visible in the differential report. */
+const MARKUP_FAMILIES: readonly Omit<Family, "kind">[] = [
+  {
+    name: "label-element-attributes",
+    make: (p) => {
+      const label = p.pick(["password", "token"]);
+      const q = p.pick(Q);
+      const body = p.pick([true, false]) ? p.S() : "";
+      return `${p.K()} <${label} a=${q}${p.S()}${q} b=${p.S()}>${body}</${label}> ${p.K()}`;
+    }
+  },
+  {
+    name: "label-attributes-unclosed",
+    make: (p) => {
+      const q = p.pick(Q);
+      return `${p.K()} <password a=${q}${p.S()}${q} b=${q}${p.S()}${q}> ${p.K()}`;
+    }
+  },
+  {
+    name: "label-attributes-child",
+    make: (p) => {
+      const q = p.pick(Q);
+      return `${p.K()} <password a=${q}${p.S()}${q} b=${q}${p.S()}${q}><value>${p.S()}</value></password> ${p.K()}`;
+    }
+  },
+  {
+    name: "label-attributes-next-line",
+    make: (p) => {
+      const q = p.pick(Q);
+      const eol = p.pick(["\n", "\r\n"]);
+      return `${p.K()} <password a=${q}${p.S()}${q} b=${q}${p.S()}${q}>${p.S()}${eol}</password> ${p.K()}`;
+    }
+  },
+  {
+    name: "compound-label-element",
+    make: (p) => {
+      const label = p.pick(["access_token", "api_key", "client_secret"]);
+      const q = p.pick(Q);
+      return `${p.K()} <${label} a=${q}${p.S()}${q} b=${q}${p.S()}${q}>${p.S()}</${label}> ${p.K()}`;
+    }
+  },
+  {
+    name: "namespaced-label-element",
+    make: (p) => {
+      const q = p.pick(Q);
+      return `${p.K()} <ns:password a=${q}${p.S()}${q} b=${q}${p.S()}${q}>${p.S()}</ns:password> ${p.K()}`;
+    }
+  },
+  {
+    name: "password-input",
+    make: (p) => {
+      const [tag, type, password] = p.pick([
+        ["input", "type", "password"],
+        ["INPUT", "TYPE", "PASSWORD"]
+      ] as const);
+      const q = p.pick([...Q, ""]);
+      const value = `value=${q}${p.S()}${q}`;
+      const selector = `${type}=${q}${password}${q}`;
+      const attributes = p.pick([`${selector} ${value}`, `${value} ${selector}`]);
+      return `${p.K()} <${tag} ${attributes}/> ${p.K()}`;
+    }
+  },
+  {
+    name: "multiline-label-start",
+    make: (p) => {
+      const q = p.pick(Q);
+      const eol = p.pick(["\n", "\r\n"]);
+      return `${p.K()} <password a=${q}${p.S()}${q}${eol} b=${q}${p.S()}${q}>${p.S()}</password> ${p.K()}`;
+    }
+  },
+  {
+    name: "angled-label-attribute",
+    make: (p) => {
+      const q = p.pick(Q);
+      const angle = p.pick(["<", ">"]);
+      return `${p.K()} <password a=${q}${p.S()}${q} b=${q}${p.S()}${angle}tail${q} c=${q}${p.S()}${q}>${p.S()}</password> ${p.K()}`;
+    }
+  }
+];
+
 /**
  * The shapes #249 names: both quote directions, a label whose closing quote comes
  * first, dash runs of 4 to 8, an unclosed quote from prose, the shell's `'\''` and
@@ -88,7 +168,10 @@ const LABELS = ["password", "token", "secret", "api_key", "pat"] as const;
  * over-reaching rule eats them first. The requested additions from sections L and
  * M of the redaction corpus each have a named family: URL userinfo (including password-free negatives
  * and ports), quoted five-dash values, and adjacent certificate / private-key
- * armor. Each M family keeps a word immediately after the quoted value.
+ * armor. Each M family keeps a word immediately after the quoted value. #296
+ * adds #276 delimiter/attribute shapes, all three #291 shapes, and #295's five
+ * markup shapes, independently for command and text. Known core leaks stay in
+ * the generated input and retain their secret markers.
  */
 const FAMILIES: readonly Family[] = [
   { name: "mysql-p", kind: "command", make: (p) => `mysql -u app -p${p.S()} ${p.K()}` },
@@ -230,7 +313,20 @@ const FAMILIES: readonly Family[] = [
       const block = p.pick(["RSA PRIVATE KEY", "OPENSSH PRIVATE KEY", "PGP PRIVATE KEY BLOCK"]);
       return `passwd=${q}${p.S()}${q} ${p.K()}\n-----BEGIN ${block}-----\n${p.S()}\n-----END ${block}-----\n${p.K()}`;
     }
-  }
+  },
+  ...(["command", "text"] as const).flatMap((kind): Family[] => [
+    {
+      name: `delimiter-label-${kind}`,
+      kind,
+      make: (p) => {
+        // A command ')' already ends a shell word, so use the #276 guards here.
+        const delimiter = p.pick(kind === "command" ? ["}", "]"] : ["}", "]", ")"]);
+        const label = p.pick(["token", "Bearer"]);
+        return `${p.K()} password=${p.S()}${delimiter}${label} ${p.S()} ${p.K()}`;
+      }
+    },
+    ...MARKUP_FAMILIES.map((family) => ({ ...family, name: `${family.name}-${kind}`, kind }))
+  ])
 ];
 
 /** The family names in the order `generate` takes them: that many cases hold one of each. */
