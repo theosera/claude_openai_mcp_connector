@@ -999,29 +999,32 @@ describe("init:env — the rest of the command", () => {
 
 // The OAuth questions. The login password is read only in a terminal, so the
 // flows drive `main` with `isTTY: true`: readline then edits the line itself and
-// writes its echo through init's output, which is what the muting is tested on.
+// writes its echo through init's output, which is where the password must not show.
 //
 // Reverse-verified (2026-10-30, one mutation per guard, each confirmed applied
-// and the source restored byte-identical afterwards): writing readline's output
-// while muted reddened G6 (and G13a, G17 and G5, which also look for the
-// password) but not G6b; dropping `historySize: 0` reddened only G6b; dropping
-// the terminal check reddened only G7; not clearing `muted` after an answer
-// reddened the four terminal flows (the next prompt never showed); dropping the
-// https, user-name and query/fragment checks each reddened only its own G15
-// cases; dropping the length floor reddened G17's two short cases; dropping
-// the "already there" check reddened G16's three cases and the vault check its
-// one; showing values in the summary reddened the token tests and G6, G17, G5.
-// For type-ahead (the change scan's F1, the same day, the same way): not
-// dropping it after a hidden entry reddened only the "next question" case;
-// prompting before muting reddened nothing, because the drop leaves the line
-// empty; both together, which is the form before the fix, reddened both type-ahead
-// cases, each on the password being drawn.
+// and the source restored byte-identical afterwards): dropping the terminal
+// check reddened only G7; dropping the https, user-name and query/fragment
+// checks each reddened only its own G15 cases; dropping the length floor
+// reddened G17's two short cases; dropping the "already there" check reddened
+// G16's three cases and the vault check its one; showing values in the summary
+// reddened the token tests and G6, G17, G5.
+// The password's own interface (after the change scan's F1 and the review's
+// kill-ring finding, the same day, the same way): giving it the terminal as its
+// output, or not closing the visible interface before it, each reddened every
+// flow that looks for the password (G6, both type-ahead cases, the kill-ring
+// case, G17, G5, and G13a's line end), on the password being drawn; not closing
+// it after the answer reddened only G13a (raw mode left on); the visible
+// interface's `historySize: 0` reddened nothing on its own, as the password
+// never enters that interface, and G6b with the visible interface left open;
+// the source before this form (one shared, muted interface) reddened only the
+// kill-ring case, on the password being drawn.
 describe("init:env — the OAuth questions (G6, G6b, G7, G13a, G15-G17)", () => {
   const PUBLIC_URL = "https://vault.example.com";
   const LOGIN = "violet-lantern-orchard-42";
   const UP = "\x1b[A";
   const CLEAR_LINE = "\x15";
   const LINE_END = "\x05";
+  const YANK = "\x19";
 
   function count(text: string, part: string): number {
     return text.split(part).length - 1;
@@ -1129,6 +1132,21 @@ describe("init:env — the OAuth questions (G6, G6b, G7, G13a, G15-G17)", () => 
       { after: "Login password: ", answer: `${LOGIN}\r` },
       { after: "Login password again: ", answer: `${LOGIN}\r${LOGIN}` },
       { after: "Keep web sign-ins", answer: `${LINE_END}${CLEAR_LINE}n\r` },
+      { after: "Write ", answer: "y\r" }
+    ]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout + result.stderr).not.toContain(LOGIN);
+    expect(dotenv.parse(fs.readFileSync(defaultTarget(), "utf8")).MCP_OAUTH_PASSWORD).toBe(LOGIN);
+  });
+
+  it("keeps no text erased while the password was typed, so Ctrl-Y at a later prompt cannot draw it (G6)", async () => {
+    // Typed, erased with Ctrl-U (which puts it in readline's kill ring), typed
+    // again. Ctrl-Y at the next question pastes the kill ring into the line.
+    const result = await runTerminal([
+      ...stepsToPassword(),
+      { after: "Login password: ", answer: `${LOGIN}${CLEAR_LINE}${LOGIN}\r` },
+      { after: "Login password again: ", answer: `${LOGIN}\r` },
+      { after: "Keep web sign-ins", answer: `${YANK}${LINE_END}${CLEAR_LINE}n\r` },
       { after: "Write ", answer: "y\r" }
     ]);
     expect(result.code, result.stderr).toBe(0);

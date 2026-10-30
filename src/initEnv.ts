@@ -739,21 +739,6 @@ async function run(args: string[], io: InitIO): Promise<number> {
     throw new Stop(`${target} already exists, and init never overwrites a file. Nothing was written.`);
   }
 
-  // readline writes through this, so that while a secret is typed its echo and
-  // line redraws are dropped here instead of reaching the terminal (askSecret).
-  let muted = false;
-  const echo = new Writable({
-    write(chunk: Buffer, _encoding, callback) {
-      if (!muted) io.output.write(chunk);
-      callback();
-    }
-  });
-  // Line editing wraps at the terminal's width, which readline reads from its output.
-  Object.defineProperty(echo, "columns", { get: () => (io.output as NodeJS.WriteStream).columns });
-  // No history: in a terminal the up arrow would otherwise bring an earlier
-  // answer, the login password included, back into a later prompt in plain text.
-  const rl = readline.createInterface({ input: io.input, output: echo, terminal: io.isTTY, historySize: 0 });
-  const lines = rl[Symbol.asyncIterator]();
   let interrupt: ((signal: string) => void) | undefined;
   const interrupted = new Promise<never>((_, reject) => {
     interrupt = (signal) => reject(new Interrupted(signal));
@@ -765,65 +750,84 @@ async function run(args: string[], io: InitIO): Promise<number> {
   for (const [name, listener] of listeners) {
     io.signals?.on(name, listener);
   }
-  // In a terminal, readline reads in raw mode, where Ctrl-C arrives as input
-  // and is reported here instead of as a signal.
-  rl.on("SIGINT", () => onSignal("SIGINT"));
 
   // Piped input can be read to its end, closing the interface, while lines are
   // still waiting in the iterator; prompting a closed interface throws.
   let closed = false;
-  rl.on("close", () => {
-    closed = true;
-  });
+  // Visible answers are read on this interface. askSecret closes it and reads
+  // the password on one of its own; the next question opens a new one.
+  let visible: readline.Interface | undefined;
+  let lines: AsyncIterator<string> | undefined;
+  const openVisible = (): readline.Interface => {
+    // No history: the up arrow would otherwise bring an earlier answer back.
+    const rl = readline.createInterface({ input: io.input, output: io.output, terminal: io.isTTY, historySize: 0 });
+    // In a terminal, readline reads in raw mode, where Ctrl-C arrives as input
+    // and is reported here instead of as a signal.
+    rl.on("SIGINT", () => onSignal("SIGINT"));
+    rl.on("close", () => {
+      // askSecret clears `visible` before it closes this one; that is not the input ending.
+      if (visible === rl) closed = true;
+    });
+    visible = rl;
+    lines = rl[Symbol.asyncIterator]();
+    return rl;
+  };
+  openVisible();
 
   const ask = async (prompt: string): Promise<string> => {
     if (closed) {
       io.output.write(prompt);
     } else {
+      const rl = visible ?? openVisible();
       rl.setPrompt(prompt);
       rl.prompt();
     }
-    const next = await Promise.race([lines.next(), interrupted]);
+    const next = lines === undefined ? { done: true as const } : await Promise.race([lines.next(), interrupted]);
     if (next.done) {
       throw new Stop("input ended before every question was answered. Nothing was written.");
     }
     return next.value;
   };
 
-  // Typing that arrives in the same read as an Enter stays in readline's line
-  // without being entered, and the next prompt draws that line again. This takes
-  // it back one character at a time, as getpass drops type-ahead: Ctrl-U would
-  // put it where Ctrl-Y brings it back.
-  const dropTypeAhead = () => {
-    rl.write(null, { ctrl: true, name: "e" });
-    for (let left = rl.line.length; left > 0 && rl.line !== ""; left--) {
-      rl.write(null, { name: "backspace" });
+  // Where the password's interface writes: nowhere, so its echo and redraws never reach the terminal.
+  const nowhere = new Writable({
+    write(_chunk: Buffer, _encoding, callback) {
+      callback();
     }
-  };
+  });
 
-  // Terminal only (the caller has checked). Muted from before the prompt until
-  // the line is in and the type-ahead behind it is dropped, so nothing readline
-  // writes or redraws in that time reaches the terminal; the prompt itself is
-  // written directly. Ctrl-C still arrives as readline's SIGINT, and Ctrl-D on
-  // an empty line still closes it; either way `muted` is cleared before anything
-  // else is written.
+  // Terminal only (the caller has checked). readline keeps, for as long as an
+  // interface is open, the line not yet entered and the text Ctrl-U or Ctrl-W
+  // erased (its kill ring, which Ctrl-Y brings back at any later prompt). So the
+  // password never passes through the visible interface: that one is closed
+  // first, the password is read on an interface of its own, and that is closed
+  // once the answer is in, taking type-ahead and erased text with it. The order
+  // keeps the terminal in raw mode while the password is typed (closing an
+  // interface leaves raw mode, opening one enters it). Ctrl-C still arrives as
+  // readline's SIGINT, and Ctrl-D on an empty line still closes it.
   const askSecret = async (prompt: string): Promise<string> => {
     if (closed) {
       throw new Stop("input ended before every question was answered. Nothing was written.");
     }
-    muted = true;
+    const shown = visible;
+    visible = undefined;
+    shown?.close();
+    io.output.write(prompt);
+    const hidden = readline.createInterface({ input: io.input, output: nowhere, terminal: true, historySize: 0 });
+    hidden.on("SIGINT", () => onSignal("SIGINT"));
+    let done = false;
+    hidden.on("close", () => {
+      if (!done) closed = true;
+    });
     try {
-      rl.setPrompt(prompt);
-      rl.prompt();
-      io.output.write(prompt);
-      const next = await Promise.race([lines.next(), interrupted]);
+      const next = await Promise.race([hidden[Symbol.asyncIterator]().next(), interrupted]);
       if (next.done) {
         throw new Stop("input ended before every question was answered. Nothing was written.");
       }
       return next.value;
     } finally {
-      if (!closed) dropTypeAhead();
-      muted = false;
+      done = true;
+      hidden.close();
       io.output.write("\n");
     }
   };
@@ -1021,7 +1025,7 @@ async function run(args: string[], io: InitIO): Promise<number> {
     for (const [name, listener] of listeners) {
       io.signals?.off(name, listener);
     }
-    rl.close();
+    visible?.close();
   }
 }
 
