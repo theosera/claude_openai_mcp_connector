@@ -359,7 +359,7 @@ const ISSUE279_SHAPES: readonly PerfShape[] = [
   [
     "issue279-curl-long-unclosed-quote",
     ["FKPERF279U1", "FKPERF279U2"],
-    (n) => enclosed('curl -u "user:FKPERF279U1 ', "x\\\" ", "FKPERF279U2\nKEEP279U1", n),
+    (n) => enclosed('curl -u "user:FKPERF279U1 ', 'x\\" ', "FKPERF279U2\nKEEP279U1", n),
     "KEEP279U1"
   ],
   [
