@@ -877,9 +877,12 @@ mask() {
           s1_clients[level, "mysql"] = s1_clients[level, "curl"] = s1_clients[level, "redis-cli"] = 0
           s1_expected[level] = ""; continue
         }
-        end = s1_words[i]; if (end > last) end = last
+        if (s1_simple) {
+          end = i
+          while (end < last && original_bytes[end + 1] !~ /[[:space:]|;&()]/) end++
+        } else { end = s1_words[i]; if (end > last) end = last }
         s1_token(i, end, level)
-        if (!s1_handled) {
+        if (!s1_handled && !s1_simple) {
           for (j = i; j <= end; j++) {
             c = original_bytes[j]; qend = 0
             if ((c == "\"" || c == s1_apostrophe) && !(j in s1_escaped)) {
@@ -909,6 +912,9 @@ mask() {
       s1_apostrophe = sprintf("%c", 39)
       s1_has_dash = index($0, "-----")
       s1_has_single = index($0, s1_apostrophe)
+      # Without quote/escape/group bytes, forward word boundaries need no
+      # dense end table, and there can be no nested command to discover.
+      s1_simple = !s1_has_single && $0 !~ /["\\`$(){}]/
       # Continuation carries context without removing LF (archive refence and
       # PEM counters still see the same physical records). Ordinary LF resets.
       if (!s1_continued) { split("", s1_clients); split("", s1_expected) }
@@ -938,7 +944,7 @@ mask() {
       }
       # Build group ends with shell quote state. $() starts a command even
       # inside double quotes; single quotes and escaped bytes remain literal.
-      for (i = 1; i <= ending; i++) {
+      if (!s1_simple) for (i = 1; i <= ending; i++) {
         c = original_bytes[i]
         if (group_quote == s1_apostrophe) {
           if (c == s1_apostrophe) { s1_shell_single[group_quote_start] = i; s1_shell_closing[i] = 1; group_quote = ""; group_quote_start = 0 }
@@ -963,8 +969,8 @@ mask() {
         if (c == "{") s1_brace_stack[++brace_top] = i
         else if (c == "}" && brace_top) { open = s1_brace_stack[brace_top--]; s1_braces[open] = i }
       }
-      s1_words[ending + 1] = ending
-      for (i = ending; i >= 1; i--) {
+      if (!s1_simple) s1_words[ending + 1] = ending
+      if (!s1_simple) for (i = ending; i >= 1; i--) {
         c = original_bytes[i]
         if (c == "$" && original_bytes[i + 1] == "(" && !(i in s1_escaped)) {
           j = s1_parens[i + 1]; s1_words[i] = j ? s1_words[j + 1] : ending
