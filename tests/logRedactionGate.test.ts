@@ -75,6 +75,20 @@ const hiddenBySed: Gap[] = cases
   .filter((gap) => gap.words.length > 0);
 
 describe("the migration gate's judge", () => {
+  // S1 strengthens the hook side of this comparison. Pin its intended coverage
+  // independently so a hook regression cannot make this one-way gate vacuous.
+  it("observes full S1 hook coverage for the issue and newly added corpus rows", () => {
+    const selected = cases
+      .map((c, index) => ({ c, index }))
+      .filter(({ c }) => /^(G-230-|G-234-|K-|M-|O-|S1-)/.test(c.id));
+    expect(selected).toHaveLength(32);
+    expect(
+      selected
+        .map(({ c, index }) => ({ id: c.id, words: readable(sedOutputs[index]!, c.secrets) }))
+        .filter(({ words }) => words.length > 0)
+    ).toEqual([]);
+  });
+
   // Positive control. An engine that returns its input unchanged must be charged
   // with every word the sed mask() hides. A judge that reports less than that
   // is not reading the outputs it claims to compare.

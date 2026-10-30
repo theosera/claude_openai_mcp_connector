@@ -588,152 +588,25 @@ mask() {
   #     written out in the clear while the line reads as masked (change-scan
   #     finding on this change, 2026-09-17; pinned with the anchoring taken out).
   #
-  # Shapes added on 2026-09-24, each a residue a scan named against this
-  # function (A-47 = the 2026-09-18 change-scan F3, and the 2026-09-19
-  # whole-repo scan's F6), and two that were tried and taken out again:
-  #   * NOT here: the CHECK-THEN-APPEND value (`grep -q "token: " f || echo
-  #     "token: V" >> f`, the 2026-09-18 change scan's F2) and YAML's doubled
-  #     apostrophe (`'pre''fix'`, #186). Every rule tried for either one ran
-  #     BEFORE the keyword fallback, and every one of them reached a credential
-  #     the old rules masked, because a rule that runs before the fallback can
-  #     move where the fallback's value ends or erase a keyword label the
-  #     fallback would have read: a quote-bounded keyword pass (unanchored it
-  #     took the `key` inside `--key` and ate the next `token:`; anchored on a
-  #     quote it still ate `key:` after `"secret `), `''` in the single-quoted
-  #     class (a stray `'` carried a value into the next one), and a
-  #     continuation after a masked value (its escape alternative deleted an
-  #     escaped space). Owner decision on this change took all of them out;
-  #     they are tracked for a change of their own (#232, #186).
-  #     #186 is now handled (#232): one rule reads a masked value that sits
-  #     right after an opening single quote and is followed by `''` and the
-  #     rest of the scalar (`'***MASKED***''fix'`), and masks it to the closing
-  #     quote. The opening quote is required: a marker another rule left
-  #     (`curl -u user:***MASKED***'' https://x; echo 'done'`) is followed by a
-  #     shell's empty `''`, not a YAML escape, and without it the rule deleted
-  #     everything up to the next apostrophe (Codex on #250). It runs AFTER every rule that reads a value -- right
-  #     after the quoted passwd / passphrase rules -- so it can only mask more,
-  #     and it reads no backslash escapes (YAML single quotes have none). The
-  #     same rule placed before the keyword fallback, where the tried
-  #     continuation ran, turned about 1,050 of 4,000 random lines per seed
-  #     into regressions against main; placed last, none.
-  #   * `PGP PRIVATE KEY BLOCK` and the RFC 4716 armor
-  #     (`---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----`, four dashes and spaces)
-  #     never opened the range. The first is broken by the keyword rules before
-  #     the range's address sees it -- `KEY BLOCK` reads as keyword, separator,
-  #     value -- and the second is not five-dash armor at all. Widening the
-  #     shared marker regex is NOT the fix: that regex is also the line-skip
-  #     address on the unbounded quoted halves, and widening it makes them skip
-  #     a one-line JSON value that carries the PGP armor, which they mask whole
-  #     today. So these two armors get their own pair of rules instead: the
-  #     FIRST rule of all opens the window on the untouched line, before any
-  #     keyword rule can reach the marker, and a rule right after the in-range
-  #     body rule closes it on the END line, in the spelling the keyword rules
-  #     leave behind as well as the original. The shared regex, and so the
-  #     address, are unchanged.
-  #   * A diff `-` joins the prefixes the prefixed catch-all admits, so a
-  #     `-`-prefixed 32+ body line is masked outside any range too. That is the
-  #     prefix the scan named, and it is also what the line cap used to cost: a
-  #     single body longer than 100 lines behind a `-` kept its tail.
-  #   * Credentials in an ARGUMENT position, which no keyword precedes: a
-  #     `-u` / `--user` value that joins a name and a secret with a colon, a
-  #     MySQL-family client's `-p` with the password attached, and
-  #     `redis-cli`'s `-a` / `--pass`. Each is anchored on its flag (the `-p`
-  #     and `-a` rules on the client's name too, because `-p` alone is
-  #     `mkdir -p`, `cp -pR` and `ssh -p2222`), and each value class is the
-  #     dash-bounded one, so none of them can take a marker. The words allowed
-  #     between the client's name and its flag are capped at twelve: an
-  #     unbounded word run let every start on a line of repeated client names
-  #     scan to the end before failing, quadratic under glibc's regex (the
-  #     change scan's F1; BSD sed stays linear either way). `passwd` and
-  #     `passphrase` (`--passphrase V`, `--passphrase=V`) get a rule of
-  #     their OWN, right after the keyword fallback, and are NOT in
-  #     the shared alternation: there, a leftmost match starting on them took
-  #     the real keyword after them as their value -- `--passphrase --key S`,
-  #     or a prompt's closing quote before `PASSWORD="a b c"` -- and the secret
-  #     after it went to the log (the second change scan on this change, F2 /
-  #     F3). Running after every older keyword rule, they only ever meet a
-  #     value that is already masked. `auth` and `credential` do NOT join at
-  #     all: they are subcommands
-  #     (`gh auth status`, `git credential fill`) and the keyword rule would
-  #     mask the word after them in every such command. Logs written before
-  #     this change can still hold argument-position credentials in the clear.
-  #     Other argument spellings (`openssl -passin pass:V`, `sshpass -p V`) are
-  #     still unnamed.
-  # What the series costs, measured 2026-09-24 by passing every tracked text file
-  # here (101 files / 40,479 lines) and the live ops-log clone (70 files /
-  # 27,487 lines), one whole-file stream each, through the old and new mask():
-  # no line anywhere is masked LESS. What is masked MORE, beyond the shapes
-  # above: the word after `passwd` / `passphrase` in prose (`a passwd entry`,
-  # `a strong passphrase you choose`) -- the same cost `password` has always
-  # had -- and, where a comment QUOTES one of the two new armors, the window's
-  # usual reach: 12+ runs and short whole lines for up to 100 lines after it,
-  # the planted-marker cost the range already carries for the shared marker.
-  # Every rule these additions brought carries the address /```|~~~/! -- it
-  # does not run on a line that holds a fence run at all. mask() runs over the
-  # assembled note AFTER the fence balance of each turn has been decided, and a
-  # backtick fence's info string cannot hold a backtick, so "```mysql -p`x`" is
-  # not a fence until a rule deletes the backticks and leaves
-  # "```mysql -p***MASKED***", which is (the second change scan's F1). Keeping
-  # the two characters out of the value classes was tried first and was not
-  # enough -- an escape alternative still took "\`" (the third scan's F1) --
-  # and it cost the other direction: a value holding either character was
-  # masked only up to it (its F2). On any OTHER line a substitution cannot make
-  # a fence run, because it always inserts `***MASKED***`, never nothing, so
-  # it cannot join two backtick runs into one. The cost is the line guard's
-  # usual one: a credential on a line that also holds a fence run is left to
-  # the older rules, as it was before this change. The older keyword rules
-  # share the deletion root and are left as they were here; it is tracked on
-  # its own.
-  # An over-reach the measurement caught was fixed rather than accepted: the
-  # `-u` rule read `date -u '+%Y-%m-%dT%H:%M'` as a name and a secret, so its
-  # name class excludes `%` and `+`.
-  # REPEATED -p / -a flags (#234, 2026-09-25): of `mysql -p<A> -p<B>` only the
-  # last value was masked -- the greedy word run before the flag swallowed the
-  # earlier ones. The two rules now run in a loop (`:m` ... `tm`, `:r` ...
-  # `tr`) until they match nothing, and each pass is global, so a pass masks
-  # the last reachable flag in every client's window at once and the passes
-  # are bounded by the flags in one twelve-word window, not by the line. (A
-  # pass WITHOUT `g` restarts at the start of the line once per occurrence:
-  # measured on a first spelling, 4,000 `redis-cli -a x` on one line took
-  # 195 s under BSD sed; a test pins the ratio.)
-  # Inside the loops a value is replaced by a SENTINEL, `***MASKEDP***`, not by
-  # the marker, and a value that begins with the sentinel is not a value to
-  # the looped rules -- that is what stops a pass from matching its own output:
-  # a masked occurrence is backtracked past and the next pass reaches the one
-  # before it. One rule right after the second loop turns every sentinel into
-  # `***MASKED***`, so the sentinel never leaves mask(); it is delimited with
-  # `#` so the shared redactor's lift of `s/<shape>/***MASKED***/g` rules does
-  # not read the sentinel as a secret shape. The exclusion is
-  # spelled as the complement of the sentinel's one prefix (a leading part of
-  # it, then any other character), so `***abc` and `*abc` are values. It is not
-  # keyed on the marker itself: the earlier token rules (`sk-`, `AKIA`, ...)
-  # and the in-range run rule leave `***MASKED***` at the START of a value
-  # with the rest of it after, and an exclusion on the marker left that rest
-  # in the clear where main masked it (change scan r4 on #243, reproduced).
-  # That complement needs a character after the leading part, so a value
-  # that IS a leading part (`*`, `**`), optionally followed by dashes (`*-`,
-  # `***M-`), matched nothing (Codex P1 on #243); a rule of its own inside each
-  # loop takes such a value when it ends there, and re-emits what ended it. It
-  # cannot take the sentinel, which is thirteen characters and is not followed
-  # by a dash. A run of five or more dashes also ends it (`-p*-----`,
-  # `-p***MASK-----rest`): the value class cannot cross that run, so without
-  # it such a value matched nothing and came out whole, where main masked the
-  # part before the run (Codex on the copies of #243, reproduced). The cost: a secret that begins with the literal `***MASKEDP***`
-  # is not masked by the looped rules (pinned).
-  # The word run and the value class are otherwise unchanged -- quoted values
-  # with spaces and flag-shaped words inside quoted arguments are left for
-  # #232, where a shell-aware reading of both was measured to need escapes, a
-  # fallback for unclosed quotes and bounded quoted pieces.
-  # A QUOTED passwd / passphrase value (#232: `--passphrase "a b"`,
-  # `passwd: 'a b'`) is taken to its closing quote by one rule per quote,
-  # placed AFTER the argument-position loops. A quoted rule can start at the
-  # closing quote of a label (`"Enter passwd: "`) and take everything up to
-  # the next quote; placed before the `-u`, mysql and redis-cli rules, that
-  # span removed the flag or client name they key on, and the quoted
-  # credential after it -- masked on main -- was written out (change scan F1 /
-  # F2 on #232 a, reproduced). After every rule that reads a value, the span
-  # can only mask more. The cost: text between a label's closing quote and
-  # the next quote is masked too (`grep "passwd:"***MASKED***"...`).
+  # S1 (#230/#232/#234/#249): collect quoted, keyword and credential-argument
+  # spans from the original bytes before the legacy substitutions. The byte
+  # scanner below unions overlapping ranges, recognizes complete shell words,
+  # and carries client/flag context only over backslash-LF continuations. It
+  # does not remove physical newlines: PEM counters and archive refence retain
+  # their existing record boundaries. There is no client-distance, quote-piece
+  # or sentinel-prefix exclusion. Curl -u is scoped to curl; quoted SQL remains
+  # one argument and cannot introduce a MySQL -p flag.
+  #
+  # Unclosed values use the existing whitespace/five-dash fallback extent. They
+  # are masked before the compatibility quoted sed rules see them, removing the
+  # unclosed escaped-quote input responsible for GNU quadratic behavior. Quote
+  # lookup tables also memoize failed closes instead of rescanning suffixes.
+  # Armor delimiters are protected during this initial weave so the existing
+  # PEM counter still opens/closes. Structural fence metadata is taken BEFORE
+  # any S1 changes, and the final weave/refence retain their existing duties.
+  #
+  # This changes newly written logs only. Historical logs and the separate core
+  # are not covered, and copies in other repositories require separate work.
   # #295: after the existing value/armor rules, a streaming tag pass precedes
   # #291s final physical-line substitution. Only a quote after an attribute =
   # opens a quoted value: earlier keyword rules may remove an entire first
@@ -768,6 +641,299 @@ mask() {
   # turning fence info into closing whitespace. The archive renderer and
   # refence comparisons apply the same mapping before measuring structure.
   { LC_ALL=C tr '\000' '?'; printf '\n'; } | LC_ALL=C awk '
+    # S1 takes ranges from original bytes. No rewritten value can erase a later
+    # label. Quote and word-end tables are built once, including failed quotes.
+    function s1_at(at, text,    j) {
+      for (j = 1; j <= length(text); j++) if (original_bytes[at + j - 1] != substr(text, j, 1)) return 0
+      return 1
+    }
+    function s1_range(first, last, suppress) {
+      if (first <= last) {
+        s1_marks[first]++; s1_marks[last + 1]--
+        if (suppress) { s1_suppressed[first]++; s1_suppressed[last + 1]-- }
+      }
+    }
+    function s1_quoted(at) {
+      return original_bytes[at] == "\"" ? s1_double[at + 1] : s1_single[at + 1]
+    }
+    function s1_value(first, last,    q) {
+      q = original_bytes[first]
+      if ((q == "\"" || q == s1_apostrophe) && s1_quoted(first) == last) { first++; last-- }
+      else if (q != "\"" && q != s1_apostrophe) {
+        while (last >= first && (original_bytes[last] == "\"" || original_bytes[last] == s1_apostrophe)) last--
+      }
+      s1_range(first, last)
+    }
+    function s1_fixed(at, kind, prefix, minimum, alphabet, exact,    first, end) {
+      if (!s1_at(at, prefix)) return
+      first = at + length(prefix)
+      end = s1_runend[kind]
+      if (end < first) {
+        end = first
+        while (end <= n && original_bytes[end] ~ alphabet) end++
+        s1_runend[kind] = end
+      }
+      if (end - first >= minimum) s1_range(at, exact ? first + minimum - 1 : end - 1, kind == "gh" || kind == "pat")
+    }
+    function s1_original_shapes(    i, j, first, end, c, prefix) {
+      split("", s1_runend)
+      for (i = 1; i <= n; i++) {
+        c = original_bytes[i]
+        if (c == "g") {
+          if (s1_at(i, "gh") && original_bytes[i + 2] ~ /^[pousr]$/ && original_bytes[i + 3] == "_") {
+            prefix = "gh" original_bytes[i + 2] "_"
+            s1_fixed(i, "gh", prefix, 20, "[A-Za-z0-9]", 0)
+          }
+          s1_fixed(i, "pat", "github_pat_", 20, "[A-Za-z0-9_]", 0)
+        } else if (c == "s") s1_fixed(i, "sk", "sk-", 20, "[A-Za-z0-9_-]", 0)
+        else if (c == "A") {
+          s1_fixed(i, "aws", "AKIA", 16, "[0-9A-Z]", 1)
+          s1_fixed(i, "google", "AIza", 35, "[0-9A-Za-z_-]", 1)
+        } else if (c == "x" && s1_at(i, "xox") && original_bytes[i + 3] ~ /^[baprs]$/ && original_bytes[i + 4] == "-") {
+          prefix = "xox" original_bytes[i + 3] "-"
+          s1_fixed(i, "slack", prefix, 10, "[A-Za-z0-9-]", 0)
+        }
+        if (c == "B" || c == "b") {
+          prefix = ""
+          for (j = i; j < i + 6; j++) prefix = prefix tolower(original_bytes[j])
+          if (prefix == "bearer" && original_bytes[i + 6] ~ /[[:space:]]/) {
+            j = i + 6
+            while (j <= n && original_bytes[j] ~ /[[:space:]]/) j++
+            end = s1_blank[j] - 1
+            if (s1_dash[j] && s1_dash[j] <= end) end = s1_dash[j] - 1
+            s1_range(j, end)
+          }
+        }
+        # Read URL userinfo before a keyword substitution can remove its @.
+        if (!s1_at(i, "://")) continue
+        j = i + 3
+        while (j <= n && original_bytes[j] !~ /[\/:@[:space:]]/) j++
+        if (j == i + 3 || original_bytes[j] != ":") continue
+        first = ++j
+        while (j <= n && original_bytes[j] !~ /[\/@[:space:]]/) j++
+        if (j > first && original_bytes[j] == "@") s1_range(first, j - 1, 1)
+      }
+    }
+    function s1_keyword(at, in_tag,    j, word, after, first, last, q, scheme, nextword, explicit, assigned) {
+      # Preserve the legacy suffix-label coverage too; overlapping ranges are
+      # unioned, so an inner label cannot expose part of an outer passphrase.
+      j = at
+      while (j <= n && j - at < 14 && original_bytes[j] ~ /[A-Za-z]/) j++
+      word = ""
+      for (after = at; after < j; after++) word = word tolower(original_bytes[after])
+      if (word !~ /^(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)$/) return
+      if (original_bytes[j] == "\"" || original_bytes[j] == s1_apostrophe) j++
+      after = j
+      while (j <= n && original_bytes[j] ~ /[=:[:space:]]/) {
+        if (original_bytes[j] == "=" || original_bytes[j] == ":") explicit = 1
+        if (original_bytes[j] == "=") assigned = 1
+        j++
+      }
+      if (j == after || j > n) return
+      first = j; q = original_bytes[j]
+      scheme = ""; nextword = j
+      while (nextword <= n && nextword - j < 7 && original_bytes[nextword] ~ /[A-Za-z]/) {
+        scheme = scheme tolower(original_bytes[nextword]); nextword++
+      }
+      if (scheme ~ /^(basic|digest|token|apikey|oauth|ssws)$/ && original_bytes[nextword] ~ /[[:space:]]/) {
+        while (nextword <= n && original_bytes[nextword] ~ /[[:space:]]/) nextword++
+        last = nextword
+        while (last <= n && original_bytes[last] !~ /[[:space:],"\047]/ && !s1_at(last, "-----")) last++
+        s1_range(nextword, last - 1)
+        s1_bare_start = nextword; s1_bare_end = last - 1
+        return
+      }
+      if (q == "\"" || q == s1_apostrophe) {
+        last = s1_quoted(j)
+        if (last) {
+          # Shell values can glue quoted/unquoted pieces and substitutions.
+          # JSON/YAML separators end the value instead of joining the next key.
+          if (!in_tag && s1_words[j] > last && original_bytes[last + 1] !~ /^[<>]$/ && !s1_at(last + 1, "/>") && (assigned || original_bytes[last + 1] !~ /^[[:space:],;:}\]]$/)) s1_range(j, s1_words[j])
+          else s1_range(j + 1, last - 1)
+          return
+        }
+      }
+      if (in_tag && q != "\"" && q != s1_apostrophe) return
+      # The original bare rule took the leftmost value, then skipped any
+      # keyword-looking suffix inside that value. Closing-key quotes belong
+      # require a quoted value, including its unmatched-quote fallback.
+      if ((at <= s1_bare_end && !explicit && (at == s1_bare_start || original_bytes[at - 1] ~ /[A-Za-z0-9]/)) || ((original_bytes[after - 1] == "\"" || original_bytes[after - 1] == s1_apostrophe) && q != "\"" && q != s1_apostrophe)) return
+      # Same fallback extent as the shipped bare rule: whitespace and a run
+      # of five dashes stop it. All labels are read before any range is woven.
+      last = s1_blank[j] - 1
+      if (s1_dash[j] && s1_dash[j] <= last) last = s1_dash[j] - 1
+      s1_range(first, last)
+      if (word != "passwd" && word != "passphrase") { s1_bare_start = first; s1_bare_end = last }
+    }
+    function s1_token(first, last, level,    j, c, word, count, start, finish, colon, client) {
+      # Names have bounded cooked spellings; values keep their full extent.
+      word = ""; client = ""; count = 0; s1_handled = 0
+      for (j = first; j <= last; j++) {
+        c = original_bytes[j]
+        if (c == "\"" || c == s1_apostrophe) continue
+        if (c == "\\" && j < last) c = original_bytes[++j]
+        if (c == "\"" || c == s1_apostrophe) continue
+        if (count < 32) { s1_positions[++count] = j; word = word c }
+        if (c ~ /^[\/<>:{}\[\]]$/) client = ""
+        else if (length(client) <= 32) client = client c
+      }
+      if (s1_expected[level]) {
+        if (s1_expected[level] == "curl") {
+          colon = first
+          while (colon <= last && original_bytes[colon] != ":") colon++
+          if (colon <= last) {
+            finish = last
+            if (original_bytes[colon + 1] != "\"" && original_bytes[colon + 1] != s1_apostrophe) {
+              while (finish > colon && (original_bytes[finish] == "\"" || original_bytes[finish] == s1_apostrophe)) finish--
+            }
+            s1_value(colon + 1, finish)
+          }
+        } else s1_value(first, last)
+        s1_expected[level] = ""; s1_handled = 1; return
+      }
+      if (client ~ /^(curl|mysql|mysqldump|mysqladmin|mariadb|mariadb-dump|redis-cli)$/) {
+        if (client ~ /^(mysql|mysqldump|mysqladmin|mariadb|mariadb-dump)$/) client = "mysql"
+        s1_clients[level, client] = 1; s1_handled = 1; return
+      }
+      if (word == "--passphrase" || word == "--passwd") { s1_expected[level] = "keyword"; return }
+      if (s1_clients[level, "curl"] && (word == "-u" || word == "--user")) { s1_expected[level] = "curl"; return }
+      if (s1_clients[level, "curl"] && word ~ /^--user=/) {
+        start = s1_positions[8]; colon = start
+        while (colon <= last && original_bytes[colon] != ":") colon++
+        if (colon <= last) s1_value(colon + 1, last)
+        s1_handled = 1
+      }
+      if (s1_clients[level, "mysql"] && word ~ /^-p./) {
+        s1_value(s1_positions[2] + 1, last); s1_handled = 1
+      }
+      if (s1_clients[level, "redis-cli"] && (word == "-a" || word == "--pass")) s1_expected[level] = "redis"
+    }
+    function s1_scan(first, last, level,    i, j, c, end, qend) {
+      # Nested command text (bash -c, ssh, JSON, substitutions) is inspected in
+      # its own client context. A credential word is masked whole, including
+      # glued shell substitutions. At depth 32, mask the remaining word rather
+      # than dropping coverage or allowing unbounded recursive rescanning.
+      if (level >= 32) { s1_range(first, last); return }
+      if (level) {
+        s1_clients[level, "mysql"] = s1_clients[level, "curl"] = s1_clients[level, "redis-cli"] = 0
+        s1_expected[level] = ""
+      }
+      for (i = first; i <= last; i++) {
+        c = original_bytes[i]
+        if (c ~ /[[:space:]]/) continue
+        if (c ~ /[|;&(){}]/) {
+          s1_clients[level, "mysql"] = s1_clients[level, "curl"] = s1_clients[level, "redis-cli"] = 0
+          s1_expected[level] = ""; continue
+        }
+        end = s1_words[i]; if (end > last) end = last
+        s1_token(i, end, level)
+        if (!s1_handled) {
+          for (j = i; j <= end; j++) {
+            c = original_bytes[j]; qend = 0
+            if ((c == "\"" || c == s1_apostrophe) && !s1_escaped[j]) {
+              qend = s1_quoted(j)
+              if (qend && qend <= end) s1_scan(j + 1, qend - 1, level + 1)
+            } else if (c == "`" && !s1_escaped[j]) {
+              qend = s1_ticks[j]
+              if (qend && qend <= end) s1_scan(j + 1, qend - 1, level + 1)
+            } else if (c == "$" && original_bytes[j + 1] == "(" && !s1_escaped[j]) {
+              qend = s1_parens[j + 1]
+              if (qend && qend <= end) s1_scan(j + 2, qend - 1, level + 1)
+            }
+            if (qend && qend <= end) j = qend
+          }
+        }
+        i = end
+      }
+    }
+    function s1_collect(    i, j, c, q, slash, ending, active, masked, protected, chunk, size, last, label, previous, tick, top, open, covered, in_tag, tag_quote, brace_top) {
+      split("", s1_marks); split("", s1_protect); split("", s1_suppressed)
+      split("", s1_double); split("", s1_single); split("", s1_words)
+      split("", s1_escaped); split("", s1_blank); split("", s1_dash)
+      split("", s1_ticks); split("", s1_parens); split("", s1_stack)
+      split("", s1_braces); split("", s1_brace_stack); s1_bare_end = 0
+      s1_apostrophe = sprintf("%c", 39)
+      # Continuation carries context without removing LF (archive refence and
+      # PEM counters still see the same physical records). Ordinary LF resets.
+      if (!s1_continued) { split("", s1_clients); split("", s1_expected) }
+      for (i = 1; i <= n; i++) {
+        s1_escaped[i] = slash
+        if (original_bytes[i] == "\\") slash = !slash; else slash = 0
+      }
+      ending = n
+      s1_continued = n && original_bytes[n] == "\\" && !s1_escaped[n]
+      if (s1_continued) ending--
+      s1_blank[n + 1] = n + 1
+      for (i = n; i >= 1; i--) {
+        c = original_bytes[i]
+        s1_blank[i] = c ~ /[[:space:]]/ ? i : s1_blank[i + 1]
+        s1_dash[i] = s1_at(i, "-----") ? i : s1_dash[i + 1]
+        if (c == "`" && !s1_escaped[i]) { s1_ticks[i] = tick; tick = i }
+        s1_double[i] = c == "\"" && !s1_escaped[i] ? i : s1_double[i + 1]
+        if (c == s1_apostrophe && !s1_escaped[i]) {
+          s1_single[i] = original_bytes[i + 1] == s1_apostrophe ? s1_single[i + 2] : i
+        } else s1_single[i] = s1_single[i + 1]
+      }
+      for (i = 1; i <= ending; i++) {
+        c = original_bytes[i]
+        if (s1_escaped[i]) continue
+        if ((c == "\"" || c == s1_apostrophe) && (j = s1_quoted(i))) { i = j; continue }
+        if (c == "(") s1_stack[++top] = i
+        else if (c == ")" && top) { open = s1_stack[top--]; s1_parens[open] = i }
+        if (c == "{") s1_brace_stack[++brace_top] = i
+        else if (c == "}" && brace_top) { open = s1_brace_stack[brace_top--]; s1_braces[open] = i }
+      }
+      s1_words[ending + 1] = ending
+      for (i = ending; i >= 1; i--) {
+        c = original_bytes[i]
+        if (c == "$" && original_bytes[i + 1] == "(" && !s1_escaped[i]) {
+          j = s1_parens[i + 1]; s1_words[i] = j ? s1_words[j + 1] : ending
+        } else if (c == "{" && (j = s1_braces[i])) s1_words[i] = s1_words[j + 1]
+        else if (c == "`" && !s1_escaped[i] && (j = s1_ticks[i])) s1_words[i] = s1_words[j + 1]
+        else if (c ~ /[[:space:]|;&()]/) s1_words[i] = i - 1
+        else if (c == "\\" && i < ending) s1_words[i] = s1_words[i + 2]
+        else if ((c == "\"" || c == s1_apostrophe) && (j = s1_quoted(i)) && j <= ending) s1_words[i] = s1_words[j + 1]
+        else s1_words[i] = s1_words[i + 1]
+      }
+      # Keep armor syntax available to the existing bounded PEM counter, even
+      # when a labelled quoted value includes its opening/closing delimiter.
+      for (i = 1; i <= n; i++) {
+        if (s1_at(i, "-----BEGIN ") || s1_at(i, "-----END ")) {
+          j = i + (s1_at(i, "-----BEGIN ") ? 11 : 9); label = ""
+          while (j <= n && original_bytes[j] ~ /[A-Z0-9 ]/) {
+            label = label original_bytes[j]; if (length(label) > 21) label = substr(label, 2); j++
+          }
+          if (s1_at(j, "-----") && (label ~ /PRIVATE KEY$/ || label == "PGP MESSAGE" || label == "PGP PRIVATE KEY BLOCK")) {
+            s1_protect[i]++; s1_protect[j + 5]--; i = j + 4
+          }
+        } else if (s1_at(i, "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----") || s1_at(i, "---- END SSH2 ENCRYPTED PRIVATE KEY ----")) {
+          last = i + (s1_at(i, "---- BEGIN") ? 42 : 40)
+          s1_protect[i]++; s1_protect[last]--; i = last - 1
+        }
+      }
+      s1_original_shapes()
+      s1_scan(1, ending, 0)
+      for (i = 1; i <= n; i++) {
+        c = original_bytes[i]
+        if (in_tag) {
+          if (tag_quote) { if (c == tag_quote) tag_quote = "" }
+          else if (c == "\"" || c == s1_apostrophe) tag_quote = c
+          else if (c == ">") in_tag = 0
+        } else if (c == "<" && original_bytes[i + 1] ~ /[A-Za-z\/!?]/) in_tag = 1
+        if (i in s1_suppressed) covered += s1_suppressed[i]
+        if (!covered && c ~ /[A-Za-z]/) s1_keyword(i, in_tag)
+      }
+      for (i = 1; i <= n; i++) {
+        if (i in s1_marks) active += s1_marks[i]
+        if (i in s1_protect) protected += s1_protect[i]
+        if (active && !protected) {
+          if (!masked) chunk = chunk "***MASKED***"
+          masked = 1
+        } else { chunk = chunk original_bytes[i]; masked = 0 }
+        if (length(chunk) >= 256) { printf "%s", chunk; chunk = "" }
+      }
+      printf "%s", chunk
+    }
     # Byte widths for the renderer closing-whitespace union. Only a wholly
     # whitespace suffix is structural; a partial UTF-8 sequence never matches.
     function blank_width(at, last,    c, pair, triple) {
@@ -856,7 +1022,9 @@ mask() {
       }
       # Terminate every framed record; BSD sed must not create an extra record
       # by completing a missing final LF. The input sentinel tracks EOF instead.
-      printf "\nN%s\n", $0
+      printf "\nN"
+      s1_collect()
+      printf "\n"
     }
   ' |
   sed -E \
@@ -872,7 +1040,7 @@ mask() {
     -e "/-----(BEGIN|END) ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/!s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\]|\\\\.)*'/\1***MASKED***'/Ig" \
     -e "s/((token|key|secret|password|pat|authorization|bearer)['\"]?[=:[:space:]]+')([^'\\\\-]|\\\\.|-{1,4}([^'\\\\-]|\\\\.))*-{0,4}'/\1***MASKED***'/Ig" \
     -e "s/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+(Basic|Digest|Token|ApiKey|OAuth|SSWS)[[:space:]]+)([^[:space:],\"'-]|-{1,4}[^[:space:],\"'-])+/\1***MASKED***/Ig" \
-    -e 's/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]-]|-{1,4}[^[:space:]-])+/\1***MASKED***/Ig' \
+    -e "s/((token|key|secret|password|pat|authorization|bearer)[=:[:space:]]+)([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])+/\\1***MASKED***/Ig" \
     -e "/\`\`\`|~~~/!s/((passwd|passphrase)[=:[:space:]]+)([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])+/\1***MASKED***/Ig" \
     -e '/-----BEGIN ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/{x;s/.*/o/;x;}' \
     -e 'x;/^ox{0,100}$/{s/$/x/;x;s/[A-Za-z0-9+\/=]{12,}/***MASKED***/g;s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*)?)[A-Za-z0-9+\/=]{1,11}[[:space:]]*$/\1***MASKED***/;/-----END ([A-Z0-9 ]*PRIVATE KEY|PGP MESSAGE)-----/{x;s/.*//;x;};x;};x' \
@@ -883,18 +1051,6 @@ mask() {
     -e 's/sk-[A-Za-z0-9_-]{20,}/***MASKED***/g' \
     -e 's/AIza[0-9A-Za-z_-]{35}/***MASKED***/g' \
     -e 's/xox[baprs]-[A-Za-z0-9-]{10,}/***MASKED***/g' \
-    -e "/\`\`\`|~~~/!s/((^|[[:space:]])(-u|--user)(=|[[:space:]]+)[\"']?[^[:space:]:\"'/%+]+:)([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])+/\1***MASKED***/g" \
-    -e ':m' \
-    -e "/\`\`\`|~~~/!s/((mysql|mysqldump|mysqladmin|mariadb|mariadb-dump)([[:space:]]+[^[:space:]|;&]+){0,12}[[:space:]]+-p[\"']?)([^[:space:]\"'*-]|\\*[^[:space:]\"'*-]|\\*-{1,4}[^[:space:]\"'-]|\\*\\*[^[:space:]\"'*-]|\\*\\*-{1,4}[^[:space:]\"'-]|\\*\\*\\*[^[:space:]\"'M-]|\\*\\*\\*-{1,4}[^[:space:]\"'-]|\\*\\*\\*M[^[:space:]\"'A-]|\\*\\*\\*M-{1,4}[^[:space:]\"'-]|\\*\\*\\*MA[^[:space:]\"'S-]|\\*\\*\\*MA-{1,4}[^[:space:]\"'-]|\\*\\*\\*MAS[^[:space:]\"'K-]|\\*\\*\\*MAS-{1,4}[^[:space:]\"'-]|\\*\\*\\*MASK[^[:space:]\"'E-]|\\*\\*\\*MASK-{1,4}[^[:space:]\"'-]|\\*\\*\\*MASKE[^[:space:]\"'D-]|\\*\\*\\*MASKE-{1,4}[^[:space:]\"'-]|\\*\\*\\*MASKED[^[:space:]\"'P-]|\\*\\*\\*MASKED-{1,4}[^[:space:]\"'-]|\\*\\*\\*MASKEDP[^[:space:]\"'*-]|\\*\\*\\*MASKEDP-{1,4}[^[:space:]\"'-]|\\*\\*\\*MASKEDP\\*[^[:space:]\"'*-]|\\*\\*\\*MASKEDP\\*-{1,4}[^[:space:]\"'-]|\\*\\*\\*MASKEDP\\*\\*[^[:space:]\"'*-]|\\*\\*\\*MASKEDP\\*\\*-{1,4}[^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])*/\1***MASKEDP***/g" \
-    -e "/\`\`\`|~~~/!s/((mysql|mysqldump|mysqladmin|mariadb|mariadb-dump)([[:space:]]+[^[:space:]|;&]+){0,12}[[:space:]]+-p[\"']?)(\\*|\\*\\*|\\*\\*\\*|\\*\\*\\*M|\\*\\*\\*MA|\\*\\*\\*MAS|\\*\\*\\*MASK|\\*\\*\\*MASKE|\\*\\*\\*MASKED|\\*\\*\\*MASKEDP|\\*\\*\\*MASKEDP\\*|\\*\\*\\*MASKEDP\\*\\*)-{0,4}([[:space:]\"'|;&]|-----|$)/\1***MASKEDP***\5/g" \
-    -e 'tm' \
-    -e ':r' \
-    -e "/\`\`\`|~~~/!s/(redis-cli([[:space:]]+[^[:space:]|;&]+){0,12}[[:space:]]+(-a|--pass)[[:space:]]+[\"']?)([^[:space:]\"'*-]|\\*[^[:space:]\"'*-]|\\*-{1,4}[^[:space:]\"'-]|\\*\\*[^[:space:]\"'*-]|\\*\\*-{1,4}[^[:space:]\"'-]|\\*\\*\\*[^[:space:]\"'M-]|\\*\\*\\*-{1,4}[^[:space:]\"'-]|\\*\\*\\*M[^[:space:]\"'A-]|\\*\\*\\*M-{1,4}[^[:space:]\"'-]|\\*\\*\\*MA[^[:space:]\"'S-]|\\*\\*\\*MA-{1,4}[^[:space:]\"'-]|\\*\\*\\*MAS[^[:space:]\"'K-]|\\*\\*\\*MAS-{1,4}[^[:space:]\"'-]|\\*\\*\\*MASK[^[:space:]\"'E-]|\\*\\*\\*MASK-{1,4}[^[:space:]\"'-]|\\*\\*\\*MASKE[^[:space:]\"'D-]|\\*\\*\\*MASKE-{1,4}[^[:space:]\"'-]|\\*\\*\\*MASKED[^[:space:]\"'P-]|\\*\\*\\*MASKED-{1,4}[^[:space:]\"'-]|\\*\\*\\*MASKEDP[^[:space:]\"'*-]|\\*\\*\\*MASKEDP-{1,4}[^[:space:]\"'-]|\\*\\*\\*MASKEDP\\*[^[:space:]\"'*-]|\\*\\*\\*MASKEDP\\*-{1,4}[^[:space:]\"'-]|\\*\\*\\*MASKEDP\\*\\*[^[:space:]\"'*-]|\\*\\*\\*MASKEDP\\*\\*-{1,4}[^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])([^[:space:]\"'-]|-{1,4}[^[:space:]\"'-])*/\1***MASKEDP***/g" \
-    -e "/\`\`\`|~~~/!s/(redis-cli([[:space:]]+[^[:space:]|;&]+){0,12}[[:space:]]+(-a|--pass)[[:space:]]+[\"']?)(\\*|\\*\\*|\\*\\*\\*|\\*\\*\\*M|\\*\\*\\*MA|\\*\\*\\*MAS|\\*\\*\\*MASK|\\*\\*\\*MASKE|\\*\\*\\*MASKED|\\*\\*\\*MASKEDP|\\*\\*\\*MASKEDP\\*|\\*\\*\\*MASKEDP\\*\\*)-{0,4}([[:space:]\"'|;&]|-----|$)/\1***MASKEDP***\5/g" \
-    -e 'tr' \
-    -e 's#\*\*\*MASKEDP\*\*\*#***MASKED***#g' \
-    -e "/\`\`\`|~~~/!s/((passwd|passphrase)['\"]?[=:[:space:]]+\")([^\"\\\\-]|\\\\.|-{1,4}([^\"\\\\-]|\\\\.))*-{0,4}\"/\1***MASKED***\"/Ig" \
-    -e "/\`\`\`|~~~/!s/((passwd|passphrase)['\"]?[=:[:space:]]+')([^'\\\\-]|\\\\.|-{1,4}([^'\\\\-]|\\\\.))*-{0,4}'/\1***MASKED***'/Ig" \
     -e "/\`\`\`|~~~/!s/'\\*\\*\\*MASKED\\*\\*\\*''([^']|'')*'/'***MASKED***'/g" \
     -e '/^[[:space:]]*[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/.*/***MASKED***/' \
     -e '/^[[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-)[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-))[A-Za-z0-9+\/=]{32,}([[:space:]]*)$/\1***MASKED***\3/' \
