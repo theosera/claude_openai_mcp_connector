@@ -107,8 +107,15 @@ describe("argument-position credentials (#279)", () => {
   });
 
   it.each(["\n", "\r\n", "\r"])("continues a client across an escaped %j", (separator) => {
-    const line = `redis-cli \\${separator}  -a FKARG016 KEEP016`;
-    expect(redact(line)).toEqual({ text: `redis-cli \\${separator}  -a ${MASK} KEEP016`, status: "ok" });
+    for (const indentation of ["", "  "]) {
+      for (const kind of ["command", "text"]) {
+        const line = `redis-cli \\${separator}${indentation}-a FKARG016 KEEP016`;
+        expect(redact(line, kind)).toEqual({
+          text: `redis-cli \\${separator}${indentation}-a ${MASK} KEEP016`,
+          status: "ok"
+        });
+      }
+    }
   });
 
   it("retains separators inside a continued credential", () => {
