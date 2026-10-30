@@ -123,6 +123,22 @@ describe("argument-position credentials (#279)", () => {
     expect(redact(line)).toEqual({ text: `mysql -p${quote}${MASK}\necho KEEP019`, status: "ok" });
   });
 
+  it.each(["command", "text"])("masks truncated joined credentials through their physical line in %s", (kind) => {
+    for (const quote of ["'", '"']) {
+      for (const flag of ["-u ", "--user ", "--user="]) {
+        for (const before of [`${quote}user:`, `user:${quote}`, `${quote}user: `]) {
+          const line = `curl ${flag}${before}FKARG054 FKARG055\necho KEEP054`;
+          const expected = `curl ${flag}${before.trimEnd()}${MASK}\necho KEEP054`;
+          expect(redact(line, kind)).toEqual({ text: expected, status: "ok" });
+        }
+      }
+      for (const command of ["mysql -p", "redis-cli -a ", "redis-cli --pass "]) {
+        const line = `${command}FKARG056${quote}FKARG057 FKARG058\necho KEEP056`;
+        expect(redact(line, kind)).toEqual({ text: `${command}${MASK}\necho KEEP056`, status: "ok" });
+      }
+    }
+  });
+
   it("keeps the named-client requirement and command boundaries", () => {
     const line = "mkdir -p KEEP020; ssh -p2222 KEEP021; sort -u source:dest; date -u '+%Y-%m-%dT%H:%M:%SZ'";
     expect(redact(line)).toEqual({ text: line, status: "ok" });

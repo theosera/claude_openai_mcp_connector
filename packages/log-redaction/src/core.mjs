@@ -592,7 +592,7 @@ function lexQuotes(original, kind, labelAt, argument = false) {
         WORD_CHAR.test(original[index + 1] ?? "") &&
         !joinedQuote &&
         !valueWord &&
-        !["-p", "-a", "--pass", "-u", "--user"].includes(previousWord) &&
+        !["-p", "-a", "--pass", "-u", "--user", "-e", "--execute", "--where"].includes(previousWord) &&
         original[wordStart] !== "-"
       ) {
         index += 1;
@@ -618,7 +618,10 @@ function lexQuotes(original, kind, labelAt, argument = false) {
     const { at, closed } = closingQuote(original, index, kind, labelAt);
     if (!closed) {
       unclosedUntil[ch] = at;
-      index += 1;
+      // A truncated argument owns the rest of its physical line, even when
+      // the quote starts after a bare password prefix or before curl's user.
+      if (argument) segments.push({ open: index, close: at, closed: false });
+      index = argument ? at : index + 1;
       continue;
     }
     if (kind === "command") {
@@ -1521,7 +1524,7 @@ function collectArgumentSpans(original, segments, labelAt) {
 
   const scan = (text, reading, sourceAt) => {
     const opened = new Map(reading.map((segment) => [segment.open, segment]));
-    const closes = new Set(reading.map((segment) => segment.close));
+    const closes = new Set(reading.filter((segment) => segment.closed).map((segment) => segment.close));
     const opaque = new Set();
     const add = (from, to) => {
       if (from >= to) return;
@@ -1547,7 +1550,7 @@ function collectArgumentSpans(original, segments, labelAt) {
         const segment = opened.get(at);
         if (segment) {
           wordQuotes.push(at);
-          at = segment.close + 1;
+          at = segment.close + Number(segment.closed);
           continue;
         }
         if (text[at] === "\\" && at + 1 < text.length) {
@@ -1558,14 +1561,6 @@ function collectArgumentSpans(original, segments, labelAt) {
         at += 1;
       }
       return at;
-    };
-    // An argument that opens a quote but never closes it holds the rest of its
-    // physical line. This is deliberately fail-closed for a truncated log value.
-    const valueEnd = (from, end) => {
-      if ((text[from] === "'" || text[from] === '"') && !opened.has(from) && !closes.has(from)) {
-        while (end < text.length && !isLineEnd(text[end])) end += 1;
-      }
-      return end;
     };
     let active = "";
     let pending = "";
@@ -1587,14 +1582,13 @@ function collectArgumentSpans(original, segments, labelAt) {
         continue;
       }
       const from = at;
-      let end = wordEnd(from);
+      const end = wordEnd(from);
       if (pending) {
         let start = from;
         if (pending === "curl") {
           const colon = text.slice(from, end).indexOf(":");
           start = colon >= 0 ? from + colon + 1 : end;
         }
-        end = valueEnd(start, end);
         add(start, end);
         pending = "";
         at = end;
@@ -1616,14 +1610,12 @@ function collectArgumentSpans(original, segments, labelAt) {
       else if (active === "curl" && word.startsWith("--user=")) {
         const colon = word.indexOf(":", 7);
         if (colon >= 7) {
-          end = valueEnd(from + colon + 1, end);
           add(from + colon + 1, end);
         }
       } else if (active === "redis-cli" && (word === "-a" || word === "--pass")) pending = "redis";
       else if (active && active !== "redis-cli" && active !== "curl" && word.startsWith("-p")) {
         if (word.length === 2) pending = "mysql";
         else {
-          end = valueEnd(from + 2, end);
           add(from + 2, end);
         }
       } else if (active && active !== "redis-cli" && active !== "curl") {
