@@ -304,4 +304,41 @@ describe("argument-position credentials (#279)", () => {
       });
     }
   });
+
+  const contexts = [
+    {
+      name: "restores the outer client after a command substitution",
+      input: "curl $(/usr/bin/mysql -pFKARG966 app) -u user:FKARG965",
+      secrets: ["FKARG966", "FKARG965"],
+      preserve: ["curl", "mysql", "app", "user"]
+    },
+    {
+      name: "reads a command substitution inside a double-quoted argument",
+      input: 'curl https://example.test "$(mysql -pFKARG980 app)" -u user:FKARG979',
+      secrets: ["FKARG980", "FKARG979"],
+      preserve: ["curl", "mysql", "https://example.test", "app", "user"]
+    },
+    {
+      name: "reads an active substitution inside an opaque SQL argument",
+      input: 'mysql -h curl -e "$(curl -u user:FKARG978 https://example.test)" -pFKARG977',
+      secrets: ["FKARG978", "FKARG977"],
+      preserve: ["mysql", "curl", "https://example.test", "user"]
+    },
+    {
+      name: "reads an adjacent-line credential flag in command-like prose",
+      input: "mysql and curl\n-u user:FKARG967 KEEP999",
+      secrets: ["FKARG967"],
+      preserve: ["mysql", "curl", "user", "KEEP999"]
+    }
+  ];
+
+  for (const c of contexts) {
+    it.each(["command", "text"])(`${c.name} in %s`, (kind) => {
+      expect(judgeCase(c.input, redact(c.input, kind), c.secrets, c.preserve)).toEqual({
+        leaked: [],
+        broken: [],
+        omitted: false
+      });
+    });
+  }
 });
