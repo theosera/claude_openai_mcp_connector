@@ -357,12 +357,12 @@ mask() {
       }
     }
     function s1_quoted(at) {
-      return original_bytes[at] == "\"" ? s1_double[at + 1] : s1_single[at + 1]
+      return original_bytes[at] == "\"" ? s1_double[at] : s1_single[at + 1]
     }
     # Shell single quotes treat backslashes literally; keyword/YAML ranges
     # keep their separate escape-aware/doubled-apostrophe lookup.
     function s1_word_quoted(at) {
-      if (original_bytes[at] == "\"") return (at in s1_shell_double) ? s1_shell_double[at] : s1_double[at + 1]
+      if (original_bytes[at] == "\"") return (at in s1_shell_double) ? s1_shell_double[at] : s1_double[at]
       return s1_shell_single[at]
     }
     function s1_value(first, last,    q) {
@@ -385,6 +385,9 @@ mask() {
       if (end - first >= minimum) s1_range(at, exact ? first + minimum - 1 : end - 1, kind == "gh" || kind == "pat")
     }
     function s1_original_shapes(    i, j, first, end, c, prefix) {
+      # This precheck includes every prefix recognized below. An absent prefix
+      # skips only this full-record scan, never keyword or client collection.
+      if (!index($0, "://") && $0 !~ /gh[pousr]_|github_pat_|sk-|AKIA|AIza|xox[baprs]-|[Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]/) return
       split("", s1_runend)
       for (i = 1; i <= n; i++) {
         c = original_bytes[i]
@@ -567,7 +570,7 @@ mask() {
         i = end
       }
     }
-    function s1_collect(    i, j, c, q, slash, ending, active, masked, protected, chunk, size, last, label, previous, tick, top, open, covered, in_tag, tag_quote, brace_top, shell_next, group_quote, group_quote_start) {
+    function s1_collect(    i, j, c, q, slash, ending, active, masked, protected, chunk, size, last, label, previous, tick, top, open, covered, in_tag, tag_quote, brace_top, shell_next, group_quote, group_quote_start, next_double) {
       split("", s1_marks); split("", s1_protect); split("", s1_suppressed)
       split("", s1_double); split("", s1_single); split("", s1_words)
       split("", s1_escaped); split("", s1_blank); split("", s1_dash)
@@ -577,7 +580,7 @@ mask() {
       split("", s1_braces); split("", s1_brace_stack); s1_bare_end = 0
       s1_apostrophe = sprintf("%c", 39)
       s1_has_dash = index($0, "-----")
-      s1_has_double = index($0, "\""); s1_has_single = index($0, s1_apostrophe)
+      s1_has_single = index($0, s1_apostrophe)
       # Continuation carries context without removing LF (archive refence and
       # PEM counters still see the same physical records). Ordinary LF resets.
       if (!s1_continued) { split("", s1_clients); split("", s1_expected) }
@@ -595,7 +598,12 @@ mask() {
         if (s1_has_dash) s1_dash[i] = c == "-" && s1_at(i, "-----") ? i : s1_dash[i + 1]
         if (c == s1_apostrophe) { s1_shell_single[i] = shell_next; shell_next = i }
         if (c == "`" && !(i in s1_escaped)) { s1_ticks[i] = tick; tick = i }
-        if (s1_has_double) s1_double[i] = c == "\"" && !(i in s1_escaped) ? i : s1_double[i + 1]
+        # Both consumers query actual quote positions. Keep their next close
+        # only there, including escaped quotes, and memoize a missing close as 0.
+        if (c == "\"") {
+          s1_double[i] = next_double
+          if (!(i in s1_escaped)) next_double = i
+        }
         if (s1_has_single) {
           if (c == s1_apostrophe && !(i in s1_escaped)) {
             s1_single[i] = original_bytes[i + 1] == s1_apostrophe ? s1_single[i + 2] : i
@@ -643,7 +651,8 @@ mask() {
       }
       # Keep armor syntax available to the existing bounded PEM counter, even
       # when a labelled quoted value includes its opening/closing delimiter.
-      for (i = 1; i <= n; i++) {
+      # Four dashes retain the RFC4716 spelling as well as five-dash armor.
+      if (index($0, "----")) for (i = 1; i <= n; i++) {
         if (original_bytes[i] != "-") continue
         if (s1_at(i, "-----BEGIN ") || s1_at(i, "-----END ")) {
           j = i + (s1_at(i, "-----BEGIN ") ? 11 : 9); label = ""
@@ -1097,6 +1106,9 @@ mask() {
       for (j = clean_starts[segment]; j <= clean_ends[segment]; j++) printf "%s", clean_parts[j]
     }
     function render(    j) {
+      # Cleanup can begin rewriting only at < and flushes state per record.
+      # Keep selected fence records on the original segment/skeleton path.
+      if (!selected && !legacy_state && !index(value, "<")) { printf "%s", value; return }
       legacy_cleanup()
       if (!selected) {
         for (j = 1; j <= clean_segments; j++) {
