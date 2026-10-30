@@ -254,22 +254,26 @@ describe("the fuzz runner against the shipped sed mask()", { timeout: 60_000 }, 
   });
 
   // The copy check must see a drift between the two hooks, not only report none.
-  // The bare passwd / passphrase rule and its S1 collector path are taken out
-  // of a scratch capture copy; both mutations must land before their effect is read.
-  it("reports a copy mismatch when one hook's mask() loses a rule", () => {
+  // The original collector and the compatibility rule both mask bare passwd.
+  // Remove both paths from one scratch hook, then require actual canary exposure
+  // before asking the copy detector to report the drift.
+  it("reports a copy mismatch when one hook's passwd masking paths are removed", () => {
     const hook = readFileSync(join(HERE, "..", SED_COPIES.capture), "utf8");
     const lines = hook.split("\n");
     const target = lines.filter((line) => line.includes("(passwd|passphrase)[=:[:space:]]+)"));
     expect(target).toHaveLength(1);
-    const withoutLegacy = lines.filter((line) => line !== target[0]).join("\n");
-    expect(withoutLegacy.split("\n")).toHaveLength(lines.length - 1);
-    // Both independent paths must be removed for this drift control: S1 now
-    // masks these bare labels before the compatibility rule sees the input.
-    expect(withoutLegacy.split("      s1_collect()\n")).toHaveLength(2);
-    const mutated = withoutLegacy.replace(
-      "      s1_collect()\n",
-      "      # S1 disabled only in this scratch drift control\n"
-    );
+    const collectorGuard =
+      "if (word !~ /^(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)$/) return";
+    const withoutPasswdGuard =
+      "if (word !~ /^(token|key|secret|password|passphrase|pat|authorization|bearer)$/) return";
+    expect(hook.split(collectorGuard)).toHaveLength(2);
+    const mutated = lines
+      .filter((line) => line !== target[0])
+      .join("\n")
+      .replace(collectorGuard, withoutPasswdGuard);
+    expect(mutated.split("\n")).toHaveLength(lines.length - 1);
+    expect(mutated).not.toContain(collectorGuard);
+    expect(mutated.split(withoutPasswdGuard)).toHaveLength(2);
 
     const root = mkdtempSync(join(tmpdir(), "fuzz-copy-"));
     mkdirSync(join(root, dirname(SED_COPIES.capture)), { recursive: true });
@@ -277,7 +281,17 @@ describe("the fuzz runner against the shipped sed mask()", { timeout: 60_000 }, 
     const drifted = sedEngine(shippedMask(SED_COPIES.capture, root));
 
     const probe = sample.filter((c) => c.family === "passwd-label");
-    expect(probe.length).toBeGreaterThan(0);
+    expect(probe).toHaveLength(10);
+    const fragments = probe.map((c) => ({ text: c.input, kind: c.kind }));
+    const original = capture(fragments);
+    const changed = drifted(fragments);
+    probe.forEach((c, i) => {
+      expect(readable(original[i]!.text, c.secrets), c.id).toEqual([]);
+      expect(broken(c.input, original[i]!.text, c.preserve), c.id).toEqual([]);
+      expect(readable(changed[i]!.text, c.secrets), c.id).toEqual(c.secrets);
+      expect(broken(c.input, changed[i]!.text, c.preserve), c.id).toEqual([]);
+      expect(changed[i]!.text, c.id).not.toBe(original[i]!.text);
+    });
     expect(compare(probe, drifted, archive, archive).copy_mismatch).toEqual(probe.map((c) => c.id));
     expect(compare(probe, capture, archive, archive).copy_mismatch).toEqual([]);
   });
