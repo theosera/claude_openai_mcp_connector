@@ -356,6 +356,15 @@ mask() {
         if (suppress) { s1_suppressed[first]++; s1_suppressed[last + 1]-- }
       }
     }
+    function s1_blank_after(at,    j) {
+      # Calls advance within each collection pass. Cache the whole nonblank
+      # suffix instead of storing a next-blank entry for every input byte.
+      if (at >= s1_blank_first && at <= s1_blank_last) return s1_blank_last
+      j = at
+      while (j <= n && original_bytes[j] !~ /[[:space:]]/) j++
+      s1_blank_first = at; s1_blank_last = j
+      return j
+    }
     function s1_quoted(at) {
       return original_bytes[at] == "\"" ? s1_double[at] : s1_single[at + 1]
     }
@@ -411,7 +420,7 @@ mask() {
           if (prefix == "bearer" && original_bytes[i + 6] ~ /[[:space:]]/) {
             j = i + 6
             while (j <= n && original_bytes[j] ~ /[[:space:]]/) j++
-            end = s1_blank[j] - 1
+            end = s1_blank_after(j) - 1
             if (s1_has_dash && s1_dash[j] && s1_dash[j] <= end) end = s1_dash[j] - 1
             s1_range(j, end)
           }
@@ -480,12 +489,12 @@ mask() {
       if ((at <= s1_bare_end && !explicit && (at == s1_bare_start || original_bytes[at - 1] ~ /[A-Za-z0-9]/)) || ((original_bytes[after - 1] == "\"" || original_bytes[after - 1] == s1_apostrophe) && q != "\"" && q != s1_apostrophe)) return
       # Same fallback extent as the shipped bare rule: whitespace and a run
       # of five dashes stop it. All labels are read before any range is woven.
-      last = s1_blank[j] - 1
+      last = s1_blank_after(j) - 1
       if (s1_has_dash && s1_dash[j] && s1_dash[j] <= last) last = s1_dash[j] - 1
       s1_range(first, last)
       if (word != "passwd" && word != "passphrase") { s1_bare_start = first; s1_bare_end = last }
     }
-    function s1_token(first, last, level,    j, c, word, count, start, finish, colon, client) {
+    function s1_token(first, last, level,    j, c, word, count, start, finish, colon, client, probe, probe_count) {
       # Names have bounded cooked spellings; values keep their full extent.
       word = ""; client = ""; count = 0; s1_handled = 0
       if (s1_expected[level]) {
@@ -501,6 +510,28 @@ mask() {
           }
         } else s1_value(first, last)
         s1_expected[level] = ""; s1_handled = 1; return
+      }
+      # The common plain client needs no quote cooking or position table.
+      # Expected values above still take priority over a client-shaped value.
+      if (last - first == 4 && s1_at(first, "mysql")) {
+        s1_clients[level, "mysql"] = 1; s1_handled = 1; return
+      }
+      # Every flag begins with a cooked dash; every client ends in one of
+      # these names. Removing all quotes/backslashes can only add candidates.
+      # Probe bounded byte-array ends, never a per-token slice of the record.
+      for (j = first; j <= last; j++) {
+        c = original_bytes[j]
+        if (c != "\"" && c != s1_apostrophe && c != "\\") break
+      }
+      if (j > last || original_bytes[j] != "-") {
+        probe = ""; probe_count = 0
+        for (j = last; j >= first && probe_count < 12; j--) {
+          c = original_bytes[j]
+          if (c == "\"" || c == s1_apostrophe || c == "\\") continue
+          probe = c probe; probe_count++
+        }
+        # Keep handled false so nested commands and the depth floor still run.
+        if (probe !~ /(curl|mysql|mysqldump|mysqladmin|mariadb|mariadb-dump|redis-cli)$/) return
       }
       for (j = first; j <= last; j++) {
         c = original_bytes[j]
@@ -573,7 +604,7 @@ mask() {
     function s1_collect(    i, j, c, q, slash, ending, active, masked, protected, chunk, size, last, label, previous, tick, top, open, covered, in_tag, tag_quote, brace_top, shell_next, group_quote, group_quote_start, next_double) {
       split("", s1_marks); split("", s1_protect); split("", s1_suppressed)
       split("", s1_double); split("", s1_single); split("", s1_words)
-      split("", s1_escaped); split("", s1_blank); split("", s1_dash)
+      split("", s1_escaped); split("", s1_dash)
       split("", s1_ticks); split("", s1_parens); split("", s1_stack)
       split("", s1_shell_single); split("", s1_shell_double)
       split("", s1_group_quotes); split("", s1_group_quote_starts); split("", s1_shell_closing)
@@ -584,17 +615,15 @@ mask() {
       # Continuation carries context without removing LF (archive refence and
       # PEM counters still see the same physical records). Ordinary LF resets.
       if (!s1_continued) { split("", s1_clients); split("", s1_expected) }
-      for (i = 1; i <= n; i++) {
+      if (index($0, "\\")) for (i = 1; i <= n; i++) {
         if (slash) s1_escaped[i] = 1
         if (original_bytes[i] == "\\") slash = !slash; else slash = 0
       }
       ending = n
       s1_continued = n && original_bytes[n] == "\\" && !(n in s1_escaped)
       if (s1_continued) ending--
-      s1_blank[n + 1] = n + 1
-      for (i = n; i >= 1; i--) {
+      if (s1_has_dash || s1_has_single || index($0, "\"") || index($0, "`")) for (i = n; i >= 1; i--) {
         c = original_bytes[i]
-        s1_blank[i] = c ~ /[[:space:]]/ ? i : s1_blank[i + 1]
         if (s1_has_dash) s1_dash[i] = c == "-" && s1_at(i, "-----") ? i : s1_dash[i + 1]
         if (c == s1_apostrophe) { s1_shell_single[i] = shell_next; shell_next = i }
         if (c == "`" && !(i in s1_escaped)) { s1_ticks[i] = tick; tick = i }
@@ -667,8 +696,10 @@ mask() {
           s1_protect[i]++; s1_protect[last]--; i = last - 1
         }
       }
+      s1_blank_first = n + 1; s1_blank_last = 0
       s1_original_shapes()
       s1_scan(1, ending, 0)
+      s1_blank_first = n + 1; s1_blank_last = 0
       for (i = 1; i <= n; i++) {
         c = original_bytes[i]
         if (in_tag) {
@@ -1105,10 +1136,22 @@ mask() {
     function clean_segment(segment,    j) {
       for (j = clean_starts[segment]; j <= clean_ends[segment]; j++) printf "%s", clean_parts[j]
     }
-    function render(    j) {
-      # Cleanup can begin rewriting only at < and flushes state per record.
-      # Keep selected fence records on the original segment/skeleton path.
-      if (!selected && !legacy_state && !index(value, "<")) { printf "%s", value; return }
+    function render(    j, raw_count) {
+      # ASCII cleanup rewrites only a complete keyword followed by whitespace.
+      # Any non-ASCII byte keeps the ambient Unicode fold/blank profile path.
+      if (!legacy_state && (!index(value, "<") || (value !~ /[^[:print:][:space:]]/ && tolower(value) !~ /<(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[[:space:]]/))) {
+        if (!selected) { printf "%s", value; return }
+        # With no rewrite, cleanup would preserve every CR and value byte.
+        # Retain the same skeleton decision, including its mismatch fallback.
+        raw_count = split(value, raw_segments, "\r")
+        if (!raw_count) { raw_count = 1; raw_segments[1] = "" }
+        for (j = 1; j <= skeleton_count; j++) {
+          if (j > 1) printf "\r"
+          if (raw_count == skeleton_count && substr(skeleton_segments[j], 1, 1) == "N") printf "%s", raw_segments[j]
+          else printf "%s", substr(skeleton_segments[j], 2)
+        }
+        return
+      }
       legacy_cleanup()
       if (!selected) {
         for (j = 1; j <= clean_segments; j++) {
