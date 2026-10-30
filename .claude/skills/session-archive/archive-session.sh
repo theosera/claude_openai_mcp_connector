@@ -656,6 +656,12 @@ mask() {
     function s1_quoted(at) {
       return original_bytes[at] == "\"" ? s1_double[at + 1] : s1_single[at + 1]
     }
+    # Shell single quotes treat backslashes literally; keyword/YAML ranges
+    # keep their separate escape-aware/doubled-apostrophe lookup.
+    function s1_word_quoted(at) {
+      if (original_bytes[at] == "\"") return (at in s1_shell_double) ? s1_shell_double[at] : s1_double[at + 1]
+      return s1_shell_single[at]
+    }
     function s1_value(first, last,    q) {
       q = original_bytes[first]
       if ((q == "\"" || q == s1_apostrophe) && s1_quoted(first) == last) { first++; last-- }
@@ -831,7 +837,7 @@ mask() {
           for (j = i; j <= end; j++) {
             c = original_bytes[j]; qend = 0
             if ((c == "\"" || c == s1_apostrophe) && !s1_escaped[j]) {
-              qend = s1_quoted(j)
+              qend = s1_word_quoted(j)
               if (qend && qend <= end) s1_scan(j + 1, qend - 1, level + 1)
             } else if (c == "`" && !s1_escaped[j]) {
               qend = s1_ticks[j]
@@ -846,11 +852,13 @@ mask() {
         i = end
       }
     }
-    function s1_collect(    i, j, c, q, slash, ending, active, masked, protected, chunk, size, last, label, previous, tick, top, open, covered, in_tag, tag_quote, brace_top) {
+    function s1_collect(    i, j, c, q, slash, ending, active, masked, protected, chunk, size, last, label, previous, tick, top, open, covered, in_tag, tag_quote, brace_top, shell_next, group_quote, group_quote_start) {
       split("", s1_marks); split("", s1_protect); split("", s1_suppressed)
       split("", s1_double); split("", s1_single); split("", s1_words)
       split("", s1_escaped); split("", s1_blank); split("", s1_dash)
       split("", s1_ticks); split("", s1_parens); split("", s1_stack)
+      split("", s1_shell_single); split("", s1_shell_double)
+      split("", s1_group_quotes); split("", s1_group_quote_starts)
       split("", s1_braces); split("", s1_brace_stack); s1_bare_end = 0
       s1_apostrophe = sprintf("%c", 39)
       # Continuation carries context without removing LF (archive refence and
@@ -868,18 +876,37 @@ mask() {
         c = original_bytes[i]
         s1_blank[i] = c ~ /[[:space:]]/ ? i : s1_blank[i + 1]
         s1_dash[i] = s1_at(i, "-----") ? i : s1_dash[i + 1]
+        if (c == s1_apostrophe) { s1_shell_single[i] = shell_next; shell_next = i }
         if (c == "`" && !s1_escaped[i]) { s1_ticks[i] = tick; tick = i }
         s1_double[i] = c == "\"" && !s1_escaped[i] ? i : s1_double[i + 1]
         if (c == s1_apostrophe && !s1_escaped[i]) {
           s1_single[i] = original_bytes[i + 1] == s1_apostrophe ? s1_single[i + 2] : i
         } else s1_single[i] = s1_single[i + 1]
       }
+      # Build group ends with shell quote state. $() starts a command even
+      # inside double quotes; single quotes and escaped bytes remain literal.
       for (i = 1; i <= ending; i++) {
         c = original_bytes[i]
-        if (s1_escaped[i]) continue
-        if ((c == "\"" || c == s1_apostrophe) && (j = s1_quoted(i))) { i = j; continue }
-        if (c == "(") s1_stack[++top] = i
-        else if (c == ")" && top) { open = s1_stack[top--]; s1_parens[open] = i }
+        if (group_quote == s1_apostrophe) {
+          if (c == s1_apostrophe) { s1_shell_single[group_quote_start] = i; group_quote = ""; group_quote_start = 0 }
+          continue
+        }
+        if (c == "\\") { i++; continue }
+        if (c == "$" && original_bytes[i + 1] == "(") {
+          s1_stack[++top] = i + 1; s1_group_quotes[top] = group_quote
+          s1_group_quote_starts[top] = group_quote_start
+          group_quote = ""; group_quote_start = 0; i++; continue
+        }
+        if (group_quote == "\"") {
+          if (c == "\"") { s1_shell_double[group_quote_start] = i; group_quote = ""; group_quote_start = 0 }
+          continue
+        }
+        if (c == "\"" || c == s1_apostrophe) { group_quote = c; group_quote_start = i; continue }
+        if (c == "(") { s1_stack[++top] = i; s1_group_quotes[top] = ""; s1_group_quote_starts[top] = 0 }
+        else if (c == ")" && top) {
+          open = s1_stack[top]; group_quote = s1_group_quotes[top]
+          group_quote_start = s1_group_quote_starts[top--]; s1_parens[open] = i
+        }
         if (c == "{") s1_brace_stack[++brace_top] = i
         else if (c == "}" && brace_top) { open = s1_brace_stack[brace_top--]; s1_braces[open] = i }
       }
@@ -892,7 +919,7 @@ mask() {
         else if (c == "`" && !s1_escaped[i] && (j = s1_ticks[i])) s1_words[i] = s1_words[j + 1]
         else if (c ~ /[[:space:]|;&()]/) s1_words[i] = i - 1
         else if (c == "\\" && i < ending) s1_words[i] = s1_words[i + 2]
-        else if ((c == "\"" || c == s1_apostrophe) && (j = s1_quoted(i)) && j <= ending) s1_words[i] = s1_words[j + 1]
+        else if ((c == "\"" || c == s1_apostrophe) && (j = s1_word_quoted(i)) && j <= ending) s1_words[i] = s1_words[j + 1]
         else s1_words[i] = s1_words[i + 1]
       }
       # Keep armor syntax available to the existing bounded PEM counter, even

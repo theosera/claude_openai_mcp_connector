@@ -193,6 +193,39 @@ for (const [client, prefix] of [
 }
 REGRESSION_CASES.push(
   {
+    id: "review-r4419430597-double-quoted-substitution",
+    input: 'echo "$(mysql -pHEADZZ9 db)" KEEP_S1_SUB',
+    secrets: ["HEADZZ9"],
+    preserve: ["db", "KEEP_S1_SUB"]
+  },
+  {
+    id: "review-r4419430597-nested-double-quotes",
+    input: 'echo "$(mysql -p"HEADZZ9 TAILZZ9" db)" KEEP_S1_SUB',
+    secrets: ["HEADZZ9", "TAILZZ9"],
+    preserve: ["db", "KEEP_S1_SUB"]
+  },
+  {
+    id: "review-r4419430597-redis",
+    input: 'echo "$(redis-cli -a "HEADZZ9 TAILZZ9" ping)" KEEP_S1_SUB',
+    secrets: ["HEADZZ9", "TAILZZ9"],
+    preserve: ["ping", "KEEP_S1_SUB"]
+  },
+  {
+    id: "review-r4419430597-curl",
+    input: 'echo "$(curl -u "user:HEADZZ9 TAILZZ9" https://host/)" KEEP_S1_SUB',
+    secrets: ["HEADZZ9", "TAILZZ9"],
+    preserve: ["https://host/", "KEEP_S1_SUB"]
+  },
+  {
+    id: "review-r4419430602-literal-single-quote-backslash",
+    input: "mysql -e 'a\\' -pHEADZZ9 'public' KEEP_S1_SQL",
+    secrets: ["HEADZZ9"],
+    preserve: ["public", "KEEP_S1_SQL"]
+  }
+);
+
+REGRESSION_CASES.push(
+  {
     id: "multiline-html-passphrase-attribute",
     input: '<input value="HEADZZ9"\n type="password" data-passphrase="PUBLICZZ9"> KEEP_S1_HTML',
     secrets: ["HEADZZ9"],
@@ -349,6 +382,24 @@ for (const [index, file] of COPIES.entries()) {
         expect(run(source, input!)).not.toContain("S1FIRST");
         expect(run(mutant, input!)).toContain("S1FIRST");
       }
+    });
+
+    it("detects skipping command substitutions inside double quotes", () => {
+      const input = 'echo "$(mysql -pHEADZZ9 db)"';
+      const mutant = changed(
+        source,
+        'if (c == "$" && original_bytes[i + 1] == "(") {',
+        String.raw`if (c == "$" && original_bytes[i + 1] == "(" && group_quote != "\"") {`
+      );
+      expect(run(source, input)).not.toContain("HEADZZ9");
+      expect(run(mutant, input)).toContain("HEADZZ9");
+    });
+
+    it("detects using escape-aware keyword quote ends for shell single-quoted words", () => {
+      const input = "mysql -e 'a\\' -pHEADZZ9 'public'";
+      const mutant = changed(source, "return s1_shell_single[at]", "return s1_single[at + 1]");
+      expect(run(source, input)).not.toContain("HEADZZ9");
+      expect(run(mutant, input)).toContain("HEADZZ9");
     });
 
     it("loses the YAML tail when the original quoted-range guard is removed", () => {
