@@ -790,24 +790,39 @@ async function run(args: string[], io: InitIO): Promise<number> {
     return next.value;
   };
 
-  // Terminal only (the caller has checked). The prompt goes out as usual; from
-  // then until the line is in, nothing readline writes reaches the terminal.
-  // Ctrl-C still arrives as readline's SIGINT, and Ctrl-D on an empty line still
-  // closes it; either way `muted` is cleared before anything else is written.
+  // Typing that arrives in the same read as an Enter stays in readline's line
+  // without being entered, and the next prompt draws that line again. This takes
+  // it back one character at a time, as getpass drops type-ahead: Ctrl-U would
+  // put it where Ctrl-Y brings it back.
+  const dropTypeAhead = () => {
+    rl.write(null, { ctrl: true, name: "e" });
+    for (let left = rl.line.length; left > 0 && rl.line !== ""; left--) {
+      rl.write(null, { name: "backspace" });
+    }
+  };
+
+  // Terminal only (the caller has checked). Muted from before the prompt until
+  // the line is in and the type-ahead behind it is dropped, so nothing readline
+  // writes or redraws in that time reaches the terminal; the prompt itself is
+  // written directly. Ctrl-C still arrives as readline's SIGINT, and Ctrl-D on
+  // an empty line still closes it; either way `muted` is cleared before anything
+  // else is written.
   const askSecret = async (prompt: string): Promise<string> => {
     if (closed) {
       throw new Stop("input ended before every question was answered. Nothing was written.");
     }
-    rl.setPrompt(prompt);
-    rl.prompt();
     muted = true;
     try {
+      rl.setPrompt(prompt);
+      rl.prompt();
+      io.output.write(prompt);
       const next = await Promise.race([lines.next(), interrupted]);
       if (next.done) {
         throw new Stop("input ended before every question was answered. Nothing was written.");
       }
       return next.value;
     } finally {
+      if (!closed) dropTypeAhead();
       muted = false;
       io.output.write("\n");
     }

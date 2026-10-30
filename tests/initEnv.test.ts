@@ -1011,11 +1011,17 @@ describe("init:env — the rest of the command", () => {
 // cases; dropping the length floor reddened G17's two short cases; dropping
 // the "already there" check reddened G16's three cases and the vault check its
 // one; showing values in the summary reddened the token tests and G6, G17, G5.
+// For type-ahead (the change scan's F1, the same day, the same way): not
+// dropping it after a hidden entry reddened only the "next question" case;
+// prompting before muting reddened nothing, because the drop leaves the line
+// empty; both together, which is the form before the fix, reddened both type-ahead
+// cases, each on the password being drawn.
 describe("init:env — the OAuth questions (G6, G6b, G7, G13a, G15-G17)", () => {
   const PUBLIC_URL = "https://vault.example.com";
   const LOGIN = "violet-lantern-orchard-42";
   const UP = "\x1b[A";
   const CLEAR_LINE = "\x15";
+  const LINE_END = "\x05";
 
   function count(text: string, part: string): number {
     return text.split(part).length - 1;
@@ -1097,6 +1103,37 @@ describe("init:env — the OAuth questions (G6, G6b, G7, G13a, G15-G17)", () => 
     // Only the output from the confirmation on: the typing itself is G6's case.
     expect(result.stdout.slice(result.stdout.indexOf("Write "))).not.toContain(LOGIN);
     expect(dotenv.parse(fs.readFileSync(defaultTarget(), "utf8")).MCP_OAUTH_STATE_FILE).toBeUndefined();
+  });
+
+  // Type-ahead: one read carries an entry, its Enter and the next entry, as a
+  // paste or an auto-typer can, and the next Enter comes later. Each prompt is
+  // answered after clearing the line (from its end: a prompt puts the cursor at
+  // the start), so the flow is the same whether or not the type-ahead was
+  // dropped, and only the drawing can fail these.
+  it("does not draw the second entry typed behind the first at the next hidden prompt (G6)", async () => {
+    const result = await runTerminal([
+      ...stepsToPassword(),
+      { after: "Login password: ", answer: `${LOGIN}\r${LOGIN}` },
+      { after: "Login password again: ", answer: `${LINE_END}${CLEAR_LINE}${LOGIN}\r` },
+      { after: "Keep web sign-ins", answer: "n\r" },
+      { after: "Write ", answer: "y\r" }
+    ]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout + result.stderr).not.toContain(LOGIN);
+    expect(dotenv.parse(fs.readFileSync(defaultTarget(), "utf8")).MCP_OAUTH_PASSWORD).toBe(LOGIN);
+  });
+
+  it("does not draw what was typed behind the last hidden entry at the next question (G6)", async () => {
+    const result = await runTerminal([
+      ...stepsToPassword(),
+      { after: "Login password: ", answer: `${LOGIN}\r` },
+      { after: "Login password again: ", answer: `${LOGIN}\r${LOGIN}` },
+      { after: "Keep web sign-ins", answer: `${LINE_END}${CLEAR_LINE}n\r` },
+      { after: "Write ", answer: "y\r" }
+    ]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout + result.stderr).not.toContain(LOGIN);
+    expect(dotenv.parse(fs.readFileSync(defaultTarget(), "utf8")).MCP_OAUTH_PASSWORD).toBe(LOGIN);
   });
 
   it("does not read the password from piped input (G7)", async () => {

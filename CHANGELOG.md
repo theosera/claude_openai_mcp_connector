@@ -66,8 +66,10 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   quotes the URL in its own error, so a secret in it would be printed back — and
   its trailing slashes are dropped as the server drops them. The login password is
   asked only in a terminal, twice; nothing is drawn while it is typed, and readline
-  keeps no history, so the up arrow at a later prompt cannot bring it back. Piped
-  input is refused before the password is asked. It needs at least 12 characters:
+  keeps no history, so the up arrow at a later prompt cannot bring it back. What is
+  typed after an entry's Enter but not yet entered is dropped, as getpass drops
+  type-ahead, so the next prompt cannot draw it. Piped input is refused before the
+  password is asked. It needs at least 12 characters:
   that floor is init's own, and the server enforces no minimum. A state file path
   where anything already is — a file, a link, a dangling link — is refused, because
   a state file is keyed to the password it was written under and the server will
