@@ -125,6 +125,18 @@ describe("argument-position credentials (#279)", () => {
     });
   });
 
+  it.each(["\n", "\r\n", "\r"])("follows an escaped %j inside double-quoted credentials", (separator) => {
+    for (const kind of ["command", "text"]) {
+      for (const prefix of ['mysql -p"', 'redis-cli -a "', 'curl -u KEEPUSER:"']) {
+        const line = `${prefix}FKARG060\\${separator}FKARG061" KEEP060`;
+        expect(redact(line, kind)).toEqual({
+          text: `${prefix}${MASK}${separator}${MASK}" KEEP060`,
+          status: "ok"
+        });
+      }
+    }
+  });
+
   it.each(["'", '"'])("masks the remaining line after an unclosed %s argument", (quote) => {
     const line = `mysql -p${quote}FKARG019 FKARG020\necho KEEP019`;
     expect(redact(line)).toEqual({ text: `mysql -p${quote}${MASK}\necho KEEP019`, status: "ok" });
@@ -158,6 +170,39 @@ describe("argument-position credentials (#279)", () => {
   it("leaves a curl user without a password readable", () => {
     const line = "curl --user KEEPUSER https://example.test/KEEP023";
     expect(redact(line)).toEqual({ text: line, status: "ok" });
+  });
+
+  it.each(["command", "text"])("keeps credentials covered when option values name another client in %s", (kind) => {
+    for (const [line, expected] of [
+      ["curl -o mysql -u user:FKARG062 KEEP062", `curl -o mysql -u user:${MASK} KEEP062`],
+      ["curl --data mysql -u user:FKARG062 KEEP062", `curl --data mysql -u user:${MASK} KEEP062`],
+      ["curl --output mysql --user=user:FKARG062 KEEP062", `curl --output mysql --user=user:${MASK} KEEP062`],
+      ["redis-cli -h curl -a FKARG062 KEEP062", `redis-cli -h curl -a ${MASK} KEEP062`],
+      ["redis-cli --host curl --pass FKARG062 KEEP062", `redis-cli --host curl --pass ${MASK} KEEP062`],
+      ["mysql -h curl -pFKARG062 KEEP062", `mysql -h curl -p${MASK} KEEP062`]
+    ]) {
+      expect(redact(line, kind)).toEqual({ text: expected, status: "ok" });
+    }
+    for (const line of [
+      "the mysql client and curl use -u user:FKARG063 KEEP063",
+      "curl $(/usr/bin/mysql -pFKARG063 KEEP063)"
+    ]) {
+      expect(judgeCase(line, redact(line, kind), ["FKARG063"], ["KEEP063"])).toEqual({
+        leaked: [],
+        broken: [],
+        omitted: false
+      });
+    }
+    const query = "curl -o mysql -e 'SELECT mysql -pKEEP064'";
+    expect(redact(query, kind)).toEqual({ text: query, status: "ok" });
+    const prose = "mysql then curl -p KEEP065";
+    expect(redact(prose, kind)).toEqual({ text: prose, status: "ok" });
+    // As for ordinary spaced mysql -p, the public database operand cannot be
+    // distinguished from a password here. This conservative cost is named in PR.
+    expect(redact("mysql -h curl -p PUBLICDB066", kind)).toEqual({
+      text: `mysql -h curl -p ${MASK}`,
+      status: "ok"
+    });
   });
 
   it("reads logged command strings with source offsets and encoded inner quotes", () => {

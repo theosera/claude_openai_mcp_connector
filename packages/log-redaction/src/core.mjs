@@ -485,8 +485,10 @@ function escapedBeforeBlank(original, from, labelAt) {
 /**
  * Finds the quote that closes the segment opened at `open`. Returns its index,
  * or the index of the line end (or of the end of input) when there is none.
+ * Argument-only reading follows escaped physical continuations inside double
+ * quotes; the label reading keeps its existing physical-line boundary.
  */
-function closingQuote(original, open, kind, labelAt) {
+function closingQuote(original, open, kind, labelAt, argument = false) {
   const quote = original[open];
   for (let index = open + 1; index < original.length; index += 1) {
     const ch = original[index];
@@ -506,6 +508,10 @@ function closingQuote(original, open, kind, labelAt) {
             (next === "'" && index + 2 < original.length && escapedBeforeBlank(original, index + 2, labelAt))));
       if (escapes) {
         if (index + 1 >= original.length) return { at: original.length, closed: false };
+        if (argument && quote === '"' && isLineEnd(next)) {
+          index += next === "\r" && original[index + 2] === "\n" ? 2 : 1;
+          continue;
+        }
         if (isLineEnd(original[index + 1])) return { at: index + 1, closed: false };
         index += 1;
         continue;
@@ -615,7 +621,7 @@ function lexQuotes(original, kind, labelAt, argument = false) {
       index += 1;
       continue;
     }
-    const { at, closed } = closingQuote(original, index, kind, labelAt);
+    const { at, closed } = closingQuote(original, index, kind, labelAt, argument);
     if (!closed) {
       unclosedUntil[ch] = at;
       // A truncated argument owns the rest of its physical line, even when
@@ -628,7 +634,6 @@ function lexQuotes(original, kind, labelAt, argument = false) {
       const reopened = lastClose === index - 1 && original[lastClose] === ch;
       const boundary =
         reopened &&
-        closed &&
         (original[index + 1] === " " || original[index + 1] === "\t") &&
         (original[at - 1] === " " || original[at - 1] === "\t") &&
         WORD_CHAR.test(original[at + 1] ?? "");
@@ -637,12 +642,10 @@ function lexQuotes(original, kind, labelAt, argument = false) {
         continue;
       }
     }
-    segments.push({ open: index, close: at, closed });
-    if (closed) {
-      lastClose = at;
-      joinedQuote = true;
-    }
-    index = closed ? at + 1 : at;
+    segments.push({ open: index, close: at, closed: true });
+    lastClose = at;
+    joinedQuote = true;
+    index = at + 1;
   }
   return segments;
 }
@@ -1521,8 +1524,34 @@ function collectArgumentSpans(original, segments, labelAt) {
   const spans = [];
   const client = /(?:^|\/)(mysql|mysqldump|mysqladmin|mariadb|mariadb-dump|redis-cli|curl)$/;
   const embeddedClient = /\b(?:mysql|mysqldump|mysqladmin|mariadb|mariadb-dump|redis-cli|curl)\b/;
+  const ordinaryOptions = {
+    curl: new Set([
+      "-o",
+      "--output",
+      "-x",
+      "--proxy",
+      "-H",
+      "--header",
+      "-A",
+      "--user-agent",
+      "-e",
+      "--referer",
+      "-X",
+      "--request",
+      "-d",
+      "--data",
+      "--data-raw",
+      "--data-binary",
+      "--data-urlencode",
+      "--url",
+      "-T",
+      "--upload-file"
+    ]),
+    redis: new Set(["-h", "--host", "-p", "--port", "-n", "--dbnum", "-s", "--socket", "--user"]),
+    mysql: new Set(["-h", "--host", "-u", "--user", "-P", "--port", "-S", "--socket", "-D", "--database"])
+  };
 
-  const scan = (text, reading, sourceAt) => {
+  const scan = (text, reading, sourceAt, optionValues = false) => {
     const opened = new Map(reading.map((segment) => [segment.open, segment]));
     const closes = new Set(reading.filter((segment) => segment.closed).map((segment) => segment.close));
     const opaque = new Set();
@@ -1565,6 +1594,7 @@ function collectArgumentSpans(original, segments, labelAt) {
     let active = "";
     let pending = "";
     let queryNext = false;
+    let ordinaryNext = false;
     let at = 0;
     while (at < text.length) {
       const continued = continuationEnd(at);
@@ -1577,12 +1607,18 @@ function collectArgumentSpans(original, segments, labelAt) {
           active = "";
           pending = "";
           queryNext = false;
+          ordinaryNext = false;
         }
         at += 1;
         continue;
       }
       const from = at;
       const end = wordEnd(from);
+      if (ordinaryNext) {
+        ordinaryNext = false;
+        at = end;
+        continue;
+      }
       if (pending) {
         let start = from;
         if (pending === "curl") {
@@ -1606,6 +1642,12 @@ function collectArgumentSpans(original, segments, labelAt) {
       }
       const name = client.exec(word.replace(/^(['"])(.*)\1$/, "$2"));
       if (name) active = name[1];
+      else if (
+        optionValues &&
+        active &&
+        ordinaryOptions[active === "curl" ? "curl" : active === "redis-cli" ? "redis" : "mysql"].has(word)
+      )
+        ordinaryNext = true;
       else if (active === "curl" && (word === "-u" || word === "--user")) pending = "curl";
       else if (active === "curl" && word.startsWith("--user=")) {
         const colon = word.indexOf(":", 7);
@@ -1641,6 +1683,12 @@ function collectArgumentSpans(original, segments, labelAt) {
     remaining -= text.length;
     if (remaining < 0) throw new RedactionOmitted("argument_nesting_limit");
     const opaque = scan(text, reading, sourceAt);
+    // An ordinary option value can itself name another client (`curl -o mysql`).
+    // Add a reading that consumes known ordinary option values without replacing
+    // the existing reading: prose and nested commands can name further clients.
+    // Only the original reading controls recursion/SQL opacity, so this extra
+    // pass cannot withdraw its spans or open a previously opaque SQL argument.
+    scan(text, reading, sourceAt, true);
     for (const segment of reading) {
       if (opaque.has(segment.open)) continue;
       const body = text.slice(segment.open + 1, segment.close);
