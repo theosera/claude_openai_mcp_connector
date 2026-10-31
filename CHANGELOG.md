@@ -77,7 +77,9 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   that floor is init's own, and the server enforces no minimum. A state file path
   where anything already is — a file, a link, a dangling link — is refused, because
   a state file is keyed to the password it was written under and the server will
-  not start on one written under another; it must also be outside the vault.
+  not start on one written under another; it must also be outside the vault, and
+  not the env file itself, which is checked on the path resolved the way the env
+  file's own is, so a linked directory does not hide it.
   Reverse-verified per guard: removing each one turns the tests aimed at it red.
 
 ### Changed

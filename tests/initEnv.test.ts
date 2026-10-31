@@ -1007,7 +1007,9 @@ describe("init:env — the rest of the command", () => {
 // checks each reddened only its own G15 cases (the literal "https://" start,
 // added for the review's URL finding, reddened its two); dropping the length floor
 // reddened G17's two short cases; dropping the "already there" check reddened
-// G16's three cases and the vault check its one; showing values in the summary
+// G16's three cases and the vault check its one; comparing the state file with
+// the env file as typed instead of resolved (2026-10-31, the review's alias
+// finding) reddened only the linked-directory case; showing values in the summary
 // reddened the token tests and G6, G17, G5.
 // The password's own interface (after the change scan's F1 and the review's
 // kill-ring finding, the same day, the same way): giving it the terminal as its
@@ -1303,6 +1305,19 @@ describe("init:env — the OAuth questions (G6, G6b, G7, G13a, G15-G17)", () => 
     );
     expect(() => checkStateFile("state.json", target, vault)).toThrow(/absolute/);
     expect(() => checkStateFile(target, target, vault)).toThrow(/env file itself/);
+  });
+
+  it("refuses the env file named through a linked directory (G16, PR#334 thread 3)", () => {
+    // --out went through the link and was made canonical; the answer names the
+    // same file through the link, and the env file is not written yet.
+    fs.mkdirSync(path.join(root, "conf"), { mode: 0o700 });
+    fs.symlinkSync(path.join(root, "conf"), path.join(root, "conf-link"));
+    const target = canonicalTarget(path.join(root, "conf-link", FILE));
+    expect(target).toBe(path.join(root, "conf", FILE));
+    expect(() => checkStateFile(path.join(root, "conf-link", FILE), target, vault)).toThrow(/env file itself/);
+    // A directory that does not exist yet, below the link, resolves the same way.
+    const deeper = canonicalTarget(path.join(root, "conf-link", "new", FILE));
+    expect(() => checkStateFile(path.join(root, "conf-link", "new", FILE), deeper, vault)).toThrow(/env file itself/);
   });
 
   it("takes an absolute state file path outside the vault with nothing there (G16)", () => {

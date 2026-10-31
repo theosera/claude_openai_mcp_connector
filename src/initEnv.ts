@@ -309,7 +309,9 @@ export function checkStateFile(value: string, target: string, root: string): voi
   if (!path.isAbsolute(value)) {
     throw new Stop("MCP_OAUTH_STATE_FILE must be an absolute path.");
   }
-  if (path.resolve(value) === target) {
+  // `target` is canonical, so the answer is resolved the same way: through a
+  // linked directory it can name the env file under another spelling.
+  if (canonicalTarget(value) === target) {
     throw new Stop("MCP_OAUTH_STATE_FILE must not be the env file itself.");
   }
   if (lstatOrUndefined(value)) {
