@@ -3199,6 +3199,14 @@ describe("session-archive masking: S1 repeated argument flags", () => {
       expect(out, line).not.toContain("MASKEDP");
       expect(out, line).toContain("***MASKED***");
     }
+    // Restore the public suffixes retained by the base's full-output checks,
+    // while the assertions above still require the whole credential to hide.
+    for (const [line, expectedSuffix] of [
+      ["mysql -p***MASK-----rest appdb", " appdb"],
+      ["redis-cli -a **----- ping", " ping"]
+    ] as const) {
+      expect(runMask(mask, line).endsWith(expectedSuffix), line).toBe(true);
+    }
   });
 
   it("keeps the original argument walk linear and detects a repeated full-line walk", () => {
