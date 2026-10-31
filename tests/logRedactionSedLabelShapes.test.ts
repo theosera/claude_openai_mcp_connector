@@ -672,12 +672,12 @@ const nulCases = [
   [
     "compound attribute value",
     '<access_token a="NUL295BEFORE\0NUL295AFTER">NUL295BODY</access_token> KEEP295NUL\n',
-    "<access_token ***MASKED*** KEEP295NUL\n"
+    "<access_token ***MASKED***>***MASKED***</access_token> KEEP295NUL\n"
   ],
   [
     "namespaced attribute value",
     '<ns:token a="NUL295BEFORE\0NUL295AFTER">NUL295BODY</ns:token> KEEP295NUL\n',
-    "<ns:token ***MASKED*** KEEP295NUL\n"
+    "<ns:token ***MASKED***>***MASKED***</ns:token> KEEP295NUL\n"
   ],
   [
     "password input value",

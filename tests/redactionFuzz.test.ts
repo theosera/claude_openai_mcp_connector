@@ -186,20 +186,26 @@ describe("the fuzz runner's argument reader", () => {
   });
 });
 
-describe("the shared judge on a real over-mask of the shipped sed mask()", { timeout: 60_000 }, () => {
-  // B-N1: the sed mask() swallows the first `gpg` into the mask token and keeps
-  // the second, so asking "is gpg still there" says yes. Counting says one is gone.
-  it("charges the sed mask() with the gpg it swallows in corpus case B-N1", () => {
+describe("the shared judge on the historical B-N1 over-mask", { timeout: 60_000 }, () => {
+  it("preserves both gpg occurrences and still detects one being removed", () => {
     const corpus = readFileSync(join(HERE, "fixtures", "redaction-corpus", "corpus.jsonl"), "utf8")
       .split("\n")
       .filter((line) => line.length > 0)
       .map((line) => JSON.parse(line) as FuzzCase);
     const bn1 = corpus.find((c) => c.id === "B-N1")!;
     const out = capture([{ text: bn1.input, kind: bn1.kind }])[0]!.text;
-    expect(out.includes("gpg")).toBe(true);
-    expect(broken(bn1.input, out, bn1.preserve)).toEqual(["gpg"]);
-    // The runner reports it as the sed mask()'s own over-mask, which no red column carries.
-    const col = compare([bn1], capture, archive, capture);
+    expect(out.match(/\bgpg\b/g)).toHaveLength(2);
+    expect(broken(bn1.input, out, bn1.preserve)).toEqual([]);
+    expect(readable(out, bn1.secrets)).toEqual([]);
+    // Recreate the historical damage from a strictly checked current output.
+    // Presence alone still sees the second gpg; the occurrence judge must charge
+    // removal of the first, even after S1 stopped making that over-mask itself.
+    const historicalDamage = out.replace("; gpg ", "; ");
+    expect(historicalDamage).not.toBe(out);
+    expect(historicalDamage.match(/\bgpg\b/g)).toHaveLength(1);
+    expect(broken(bn1.input, historicalDamage, bn1.preserve)).toEqual(["gpg"]);
+    const damaged: Engine = (fragments) => fragments.map(() => ({ text: historicalDamage, status: "ok" }));
+    const col = compare([bn1], damaged, damaged, damaged);
     expect(col.main_broken).toEqual(["B-N1"]);
     expect(col.new_broken).toEqual([]);
   });
@@ -248,15 +254,26 @@ describe("the fuzz runner against the shipped sed mask()", { timeout: 60_000 }, 
   });
 
   // The copy check must see a drift between the two hooks, not only report none.
-  // The bare passwd / passphrase rule is taken out of a scratch copy of the capture
-  // hook; the mutation is asserted to have landed before its effect is read.
-  it("reports a copy mismatch when one hook's mask() loses a rule", () => {
+  // The original collector and the compatibility rule both mask bare passwd.
+  // Remove both paths from one scratch hook, then require actual canary exposure
+  // before asking the copy detector to report the drift.
+  it("reports a copy mismatch when one hook's passwd masking paths are removed", () => {
     const hook = readFileSync(join(HERE, "..", SED_COPIES.capture), "utf8");
     const lines = hook.split("\n");
     const target = lines.filter((line) => line.includes("(passwd|passphrase)[=:[:space:]]+)"));
     expect(target).toHaveLength(1);
-    const mutated = lines.filter((line) => line !== target[0]).join("\n");
+    const collectorGuard =
+      "if (word !~ /^(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)$/) return";
+    const withoutPasswdGuard =
+      "if (word !~ /^(token|key|secret|password|passphrase|pat|authorization|bearer)$/) return";
+    expect(hook.split(collectorGuard)).toHaveLength(2);
+    const mutated = lines
+      .filter((line) => line !== target[0])
+      .join("\n")
+      .replace(collectorGuard, withoutPasswdGuard);
     expect(mutated.split("\n")).toHaveLength(lines.length - 1);
+    expect(mutated).not.toContain(collectorGuard);
+    expect(mutated.split(withoutPasswdGuard)).toHaveLength(2);
 
     const root = mkdtempSync(join(tmpdir(), "fuzz-copy-"));
     mkdirSync(join(root, dirname(SED_COPIES.capture)), { recursive: true });
@@ -264,7 +281,17 @@ describe("the fuzz runner against the shipped sed mask()", { timeout: 60_000 }, 
     const drifted = sedEngine(shippedMask(SED_COPIES.capture, root));
 
     const probe = sample.filter((c) => c.family === "passwd-label");
-    expect(probe.length).toBeGreaterThan(0);
+    expect(probe).toHaveLength(10);
+    const fragments = probe.map((c) => ({ text: c.input, kind: c.kind }));
+    const original = capture(fragments);
+    const changed = drifted(fragments);
+    probe.forEach((c, i) => {
+      expect(readable(original[i]!.text, c.secrets), c.id).toEqual([]);
+      expect(broken(c.input, original[i]!.text, c.preserve), c.id).toEqual([]);
+      expect(readable(changed[i]!.text, c.secrets), c.id).toEqual(c.secrets);
+      expect(broken(c.input, changed[i]!.text, c.preserve), c.id).toEqual([]);
+      expect(changed[i]!.text, c.id).not.toBe(original[i]!.text);
+    });
     expect(compare(probe, drifted, archive, archive).copy_mismatch).toEqual(probe.map((c) => c.id));
     expect(compare(probe, capture, archive, archive).copy_mismatch).toEqual([]);
   });
