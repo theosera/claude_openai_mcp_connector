@@ -3044,6 +3044,11 @@ describe("session-archive masking: S1 retains the 2026-09-24 series", () => {
       expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
   });
 
+  it("retains the base backtick-containing non-fence line verbatim", () => {
+    const line = "```mysql -p`x`";
+    expect(runMask(mask, line)).toBe(line);
+  });
+
   it("retains structural fence runs while masking their credential info", () => {
     for (const [input, expectedRun] of [
       ["~~~mysql -pVALUEZZ9", "~~~"],

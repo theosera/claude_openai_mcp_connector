@@ -325,6 +325,255 @@ const corpus = readFileSync(join(ROOT, "tests/fixtures/redaction-corpus/corpus.j
 const issueCases = corpus.filter((c) => /^(G-230-|G-234-|K-|M-|O-|S1-)/.test(c.id));
 const masks = COPIES.map(extracted);
 
+describe("S1 #249 native BSD unclosed escaped-DQ hook growth", { timeout: 180_000 }, () => {
+  // Scoped duplicate of the existing logRedactionPerf contract for this newly
+  // requested S1 shape only: its private test harness cannot be imported without
+  // registering its suites. Existing CX1 cases, limits and REPEAT stay unchanged.
+  const sizes = [64, 128, 256].map((kib) => kib * 1024);
+  const pairCount = 7;
+  const attemptCount = 3;
+  const ratioLimit = 3 ** 2;
+  const ceilingMs = (bytes: number) => (1000 * bytes) / (64 * 1024);
+  const systemPath = "/usr/bin:/bin:/usr/sbin:/sbin";
+
+  for (const [index, file] of COPIES.entries()) {
+    it.skipIf(process.platform !== "darwin")(`${file}: 64 to 256 KiB stays strictly below nine`, () => {
+      const startedAt = new Date().toISOString();
+      const head = 'gpg --passphrase "HEAD';
+      const unitBytes = [0x61, 0x5c, 0x22];
+      const unit = Buffer.from(unitBytes).toString("ascii");
+      const unitHex = Buffer.from(unit, "ascii").toString("hex");
+      const source = masks[index]!;
+      const wrapper = [
+        "set -euo pipefail",
+        's1_sed_path="$(command -v sed)"',
+        's1_awk_path="$(command -v awk)"',
+        '[ "$s1_sed_path" = /usr/bin/sed ]',
+        '[ "$s1_awk_path" = /usr/bin/awk ]',
+        'printf "S1_NATIVE_TOOLS\\t%s\\t%s\\n" "$s1_sed_path" "$s1_awk_path"',
+        source,
+        "mask"
+      ].join("\n");
+      const inputs = sizes.map((bytes) => {
+        const bodyBytes = bytes - Buffer.byteLength(head);
+        const input = head + unit.repeat(Math.ceil(bodyBytes / unit.length)).slice(0, bodyBytes);
+        return { bytes, input };
+      });
+      type Call = {
+        phase: string;
+        inputBytes: number;
+        ceilingMs: number;
+        childCapMs: number;
+        startedAt: string;
+        finishedAt: string | null;
+        elapsedMs: number | null;
+        childSucceeded: boolean;
+        childExitCode: number | null;
+        childSignal: string | null;
+        stoppedByChildCap: boolean | null;
+        toolPaths: { sed: string; awk: string } | null;
+        toolPathsAsserted: boolean;
+        outputBytes: number | null;
+        outputSha256: string | null;
+        canaryHidden: boolean | null;
+        maskPresent: boolean | null;
+        gpgPreserved: boolean | null;
+        wholeValueHidden: boolean | null;
+        failure: string | null;
+      };
+      type Pair = { orderBytes: number[]; smallMs: number | null; largeMs: number | null };
+      const calls: Call[] = [];
+      const first: { bytes: number; elapsedMs: number }[] = [];
+      const attempts: { pairs: Pair[]; ratio: number | null }[] = [];
+      let checkout: { sha: string; parents: string[] } | null = null;
+      let outcome = "failed";
+      let failure: string | null = null;
+
+      const measure = (input: string, phase: string) => {
+        const bytes = Buffer.byteLength(input);
+        const call: Call = {
+          phase,
+          inputBytes: bytes,
+          ceilingMs: ceilingMs(bytes),
+          childCapMs: 4 * ceilingMs(bytes),
+          startedAt: new Date().toISOString(),
+          finishedAt: null,
+          elapsedMs: null,
+          childSucceeded: false,
+          childExitCode: null,
+          childSignal: null,
+          stoppedByChildCap: null,
+          toolPaths: null,
+          toolPathsAsserted: false,
+          outputBytes: null,
+          outputSha256: null,
+          canaryHidden: null,
+          maskPresent: null,
+          gpgPreserved: null,
+          wholeValueHidden: null,
+          failure: null
+        };
+        calls.push(call);
+        let raw: string;
+        const tick = performance.now();
+        try {
+          raw = execFileSyncBounded("/bin/bash", ["-c", wrapper], {
+            cwd: ROOT,
+            env: { ...process.env, PATH: systemPath },
+            input,
+            encoding: "utf8",
+            timeout: call.childCapMs,
+            maxBuffer: 4 * 1024 * 1024
+          });
+          call.childSucceeded = true;
+          call.childExitCode = 0;
+          call.stoppedByChildCap = false;
+        } catch (error) {
+          // Preserve the cause for this synthetic fixture's child failure.
+          const message = error instanceof Error ? error.message : String(error);
+          const stopped = error as { status?: unknown; signal?: unknown; code?: unknown; stderr?: unknown };
+          call.childExitCode = typeof stopped.status === "number" ? stopped.status : null;
+          call.childSignal = typeof stopped.signal === "string" ? stopped.signal : null;
+          call.stoppedByChildCap = message.includes("was stopped by the runaway cap of");
+          const stderr =
+            typeof stopped.stderr === "string"
+              ? stopped.stderr
+              : Buffer.isBuffer(stopped.stderr)
+                ? stopped.stderr.toString("utf8")
+                : "";
+          call.failure = call.stoppedByChildCap
+            ? message.slice(0, 500)
+            : JSON.stringify({
+                status: call.childExitCode,
+                signal: call.childSignal,
+                code: typeof stopped.code === "string" ? stopped.code : null,
+                stderr: stderr.slice(0, 500)
+              });
+          throw new Error(`${file}: ${phase}, ${bytes} bytes: child failed or hit its ${call.childCapMs} ms cap`, {
+            cause: error
+          });
+        } finally {
+          call.elapsedMs = performance.now() - tick;
+          call.finishedAt = new Date().toISOString();
+        }
+        const newline = raw.indexOf("\n");
+        const [tag, sed, awk] = raw.slice(0, newline).split("\t");
+        call.toolPaths = { sed: sed ?? "", awk: awk ?? "" };
+        expect(newline, phase).toBeGreaterThanOrEqual(0);
+        expect(tag, phase).toBe("S1_NATIVE_TOOLS");
+        expect(call.toolPaths, phase).toEqual({ sed: "/usr/bin/sed", awk: "/usr/bin/awk" });
+        call.toolPathsAsserted = true;
+        const output = raw.slice(newline + 1);
+        call.outputBytes = Buffer.byteLength(output);
+        call.outputSha256 = createHash("sha256").update(output).digest("hex");
+        call.canaryHidden = !output.includes("HEAD");
+        call.maskPresent = output.includes("***MASKED***");
+        call.gpgPreserved = output.startsWith("gpg --passphrase ");
+        call.wholeValueHidden = output === "gpg --passphrase ***MASKED***";
+        expect(call.canaryHidden, phase).toBe(true);
+        expect(call.maskPresent, phase).toBe(true);
+        expect(call.gpgPreserved, phase).toBe(true);
+        expect(call.wholeValueHidden, phase).toBe(true);
+        return call.elapsedMs!;
+      };
+
+      try {
+        expect(unitHex).toBe("615c22");
+        const revision = execFileSyncBounded("git", ["rev-list", "--parents", "-n", "1", "HEAD"], {
+          cwd: ROOT,
+          encoding: "utf8",
+          timeout: 10_000
+        })
+          .trim()
+          .split(/\s+/);
+        checkout = { sha: revision[0]!, parents: revision.slice(1) };
+        expect(checkout.sha).toMatch(/^[0-9a-f]{40}$/);
+        for (const { bytes, input } of inputs) {
+          expect(Buffer.byteLength(input)).toBe(bytes);
+          const elapsedMs = measure(input, `first-${bytes}`);
+          first.push({ bytes, elapsedMs });
+          expect(elapsedMs, `${file}: first call, ${bytes} bytes`).toBeLessThan(ceilingMs(bytes));
+        }
+        const small = inputs[0]!;
+        const large = inputs[2]!;
+        let ratioPassed = false;
+        while (attempts.length < attemptCount && !ratioPassed) {
+          const attempt: { pairs: Pair[]; ratio: number | null } = { pairs: [], ratio: null };
+          attempts.push(attempt);
+          for (let pairIndex = 0; pairIndex < pairCount; pairIndex++) {
+            const order = pairIndex % 2 === 0 ? [small, large] : [large, small];
+            const pair: Pair = { orderBytes: order.map(({ bytes }) => bytes), smallMs: null, largeMs: null };
+            attempt.pairs.push(pair);
+            for (const { bytes, input } of order) {
+              const elapsedMs = measure(input, `attempt-${attempts.length}-pair-${pairIndex + 1}-${bytes}`);
+              if (bytes === small.bytes) pair.smallMs = elapsedMs;
+              else pair.largeMs = elapsedMs;
+            }
+          }
+          attempt.ratio =
+            Math.min(...attempt.pairs.map(({ largeMs }) => largeMs!)) /
+            Math.min(...attempt.pairs.map(({ smallMs }) => smallMs!));
+          ratioPassed = attempt.ratio < ratioLimit;
+        }
+        expect(attempts.at(-1)!.ratio).toBeLessThan(ratioLimit);
+        outcome = "passed";
+      } catch (error) {
+        failure = error instanceof Error ? error.message.slice(0, 500) : String(error);
+        throw error;
+      } finally {
+        console.log(
+          JSON.stringify({
+            measurement: "S1-249-native-BSD-unclosed-escaped-DQ",
+            file,
+            startedAt,
+            finishedAt: new Date().toISOString(),
+            outcome,
+            outcomeScope: "callback assertions only; final Vitest and CI status must be checked separately",
+            failure,
+            runtime: { node: process.version, platform: process.platform, arch: process.arch },
+            checkout,
+            checkoutLabel: "actual checkout, possibly synthetic merge; not assumed to be the PR head",
+            sources: COPIES.map((path, copy) => ({
+              path,
+              bytes: Buffer.byteLength(masks[copy]!),
+              sha256: createHash("sha256").update(masks[copy]!).digest("hex")
+            })),
+            wrapperSha256: createHash("sha256").update(wrapper).digest("hex"),
+            systemPath,
+            shape: {
+              head,
+              headHex: Buffer.from(head).toString("hex"),
+              unitBytes,
+              unitHex,
+              construction: "head plus repeated unit clipped to exact ASCII bytes, no appended LF or closing quote",
+              inputs: inputs.map(({ bytes, input }) => ({
+                bytes: Buffer.byteLength(input),
+                expectedBytes: bytes,
+                sha256: createHash("sha256").update(input).digest("hex"),
+                tailHex: Buffer.from(input).subarray(-16).toString("hex")
+              }))
+            },
+            contract: {
+              sizes,
+              firstCeilingsMs: sizes.map(ceilingMs),
+              childCapsMs: sizes.map((n) => 4 * ceilingMs(n)),
+              pairCount,
+              attemptCount,
+              ratioLimit,
+              strictRatio: true
+            },
+            timingScope: "fresh strict child including tool assertions and framing; output checks run after timing",
+            timeoutScope: "existing syncChild helper stops the direct child; no process-group cleanup claim",
+            first,
+            attempts,
+            calls
+          })
+        );
+      }
+    });
+  }
+});
+
 it("rejects a failed masking stage instead of treating its empty output as a pass", () => {
   expect(run("mask() { cat; }", "KEEP_S1_READER")).toBe("KEEP_S1_READER");
   expect(() => run("mask() { false | cat; }", "KEEP_S1_READER")).toThrow();
