@@ -54,9 +54,33 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   here. Each printed line is quoted for where it is pasted — JSON for the client,
   a shell word for commands, a unit-file word for systemd (with `%` doubled) — and
   an output path with a control character, or one that starts or ends with
-  whitespace (the server trims `MCP_ENV_FILE`), is refused. The OAuth questions follow
-  separately. Reverse-verified per guard: removing each one turns the tests aimed
+  whitespace (the server trims `MCP_ENV_FILE`), is refused. The OAuth questions are
+  the next entry. Reverse-verified per guard: removing each one turns the tests aimed
   at it red.
+
+- **`pnpm run init:env` asks the OAuth questions for web connectors** (ROADMAP
+  Onboarding, second part). After the HTTP port it offers OAuth; on yes it asks for
+  the public https URL, a login password, and whether to keep sign-ins across
+  restarts in a state file (by default beside the env file, named after it). The
+  URL may not carry a user name, a password, a query or a fragment — the server
+  quotes the URL in its own error, so a secret in it would be printed back — and
+  its trailing slashes are dropped as the server drops them. It must start with
+  `https://` as written: a URL parser also reads `HTTPS://host` or `https:host` as
+  https, but the server checks the start literally and would refuse the file. The
+  login password is
+  asked only in a terminal, twice; nothing is drawn while it is typed. Each entry is
+  read on a readline interface of its own, closed once the answer is in, so nothing
+  of the password reaches a later prompt: not through the up arrow, not as text typed
+  behind the Enter, and not as text erased with Ctrl-U or Ctrl-W, which Ctrl-Y would
+  otherwise paste back. Piped input is refused before the password is asked. It
+  needs at least 12 characters:
+  that floor is init's own, and the server enforces no minimum. A state file path
+  where anything already is — a file, a link, a dangling link — is refused, because
+  a state file is keyed to the password it was written under and the server will
+  not start on one written under another; it must also be outside the vault, and
+  not the env file itself, which is checked on the path resolved the way the env
+  file's own is, so a linked directory does not hide it.
+  Reverse-verified per guard: removing each one turns the tests aimed at it red.
 
 ### Changed
 

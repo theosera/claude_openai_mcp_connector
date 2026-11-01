@@ -40,9 +40,12 @@ non-engineers. Goal: a copy-paste path that does **not** require a manual build.
   **First part in: `pnpm run init:env`** (`src/initEnv.ts`) asks for the vault and
   the transport (stdio, or HTTP with a generated bearer token), writes the file
   outside the vault without ever overwriting one, and prints the `MCP_ENV_FILE`
-  line to add. Still to come: the OAuth questions (a second PR). The README's
-  setup steps, which put `KNOWLEDGE_ROOT` in the client's `env` block where it
-  wins over the file, are rewritten separately.
+  line to add. **Second part in: the OAuth questions** — for web connectors it
+  asks for the public https URL, a login password (only in a terminal, never
+  shown or recalled, at least 12 characters — init's floor; the server has
+  none) and, by default, a state file beside the env file. Still to come: the
+  README's setup steps, which put `KNOWLEDGE_ROOT` in the client's `env` block
+  where it wins over the file, are rewritten separately.
 - _Why:_ the target audience skews technical but the build step is the main
   drop-off point; the web/OAuth path stays "advanced".
 
