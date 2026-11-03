@@ -30,6 +30,128 @@ function changed(source: string, before: string, after: string): string {
   return source.replace(before, after);
 }
 
+const SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
+const ESCAPED_DQ_UNIT = Buffer.from([0x61, 0x5c, 0x22]).toString("ascii");
+
+// Observe the first collector's output before legacy sed can hide a missing
+// guard. Only the in-memory test copy is cut/instrumented; shipped hooks stay
+// intact. Small probes run after the existing native timing assertions, so they
+// neither warm that measurement nor add a large or tighter timing workload.
+function beforeLegacySed(source: string): string {
+  const boundary = "\n  ' |\n  sed -E \\\n";
+  expect(source.split(boundary), "first collector / legacy sed boundary").toHaveLength(2);
+  return source.slice(0, source.indexOf(boundary)) + "\n  '\n}";
+}
+
+function runCollector(source: string, input: string): string {
+  return execFileSyncBounded(
+    "/bin/bash",
+    [
+      "-c",
+      [
+        "set -euo pipefail",
+        '[ "$(command -v awk)" = /usr/bin/awk ]',
+        '[ "$(command -v sed)" = /usr/bin/sed ]',
+        source,
+        "mask"
+      ].join("\n")
+    ],
+    {
+      cwd: ROOT,
+      env: { ...process.env, PATH: SYSTEM_PATH },
+      input,
+      encoding: "utf8",
+      timeout: 3000,
+      maxBuffer: 64 * 1024
+    }
+  );
+}
+
+function splitTrace(source: string) {
+  const collector = beforeLegacySed(source).replaceAll(
+    'split($0, original_bytes, "")',
+    "s1_test_split($0, original_bytes)"
+  );
+  const instrumented = changed(
+    collector,
+    "| LC_ALL=C awk '\n",
+    `| LC_ALL=C awk '
+    function s1_test_split(text, bytes) {
+      s1_test_splits[NR]++
+      return split(text, bytes, "")
+    }
+    END {
+      for (s1_test_record = 1; s1_test_record <= NR; s1_test_record++)
+        printf "S1_249_SPLIT_TRACE:%d:%d\\n", s1_test_record, s1_test_splits[s1_test_record] + 0
+    }
+`
+  );
+  const input = 'gpg --passphrase "HEAD' + ESCAPED_DQ_UNIT.repeat(4) + "\nprintf KEEP_SPLIT";
+  const raw = runCollector(instrumented, input);
+  const trace = [...raw.matchAll(/^S1_249_SPLIT_TRACE:(\d+):(\d+)\n/gm)];
+  return {
+    records: trace.map((match) => Number(match[1])),
+    splits: trace.map((match) => Number(match[2])),
+    output: raw.replace(/^S1_249_SPLIT_TRACE:\d+:\d+\n/gm, "")
+  };
+}
+
+function requireOneSplit(trace: ReturnType<typeof splitTrace>) {
+  expect(trace.records, "two original records reached the split probe").toEqual([1, 2]);
+  expect(trace.output).toBe("F0\nNgpg --passphrase ***MASKED***\nF0\nNprintf KEEP_SPLIT\n");
+  expect(trace.splits, "one bulk split per original record").toEqual([1, 1]);
+}
+
+function verifySplitGuard(source: string) {
+  const original = splitTrace(source);
+  requireOneSplit(original);
+  const withoutGuard = changed(
+    source,
+    'n = split($0, original_bytes, "")',
+    `split("", original_bytes)
+      n = length($0)
+      for (s1_test_byte = 1; s1_test_byte <= n; s1_test_byte++) original_bytes[s1_test_byte] = substr($0, s1_test_byte, 1)`
+  );
+  const mutated = splitTrace(withoutGuard);
+  expect(mutated.output).toBe(original.output); // Value masking alone cannot detect this loss.
+  expect(mutated.records).toEqual([1, 2]);
+  expect(mutated.splits).toEqual([0, 0]);
+  expect(() => requireOneSplit(mutated)).toThrow("one bulk split per original record");
+  return { original, mutated, missingGuardRejected: true };
+}
+
+const UNCLOSED_ROUTES = [
+  {
+    name: "pending argument via s1_token / s1_value",
+    // Cooking restores --passphrase; raw keyword scanning cannot cover it.
+    input: 'gpg --passphra\\se "HEAD' + ESCAPED_DQ_UNIT.repeat(4),
+    expected: "F0\nNgpg --passphra\\se ***MASKED***\n",
+    before: "    function s1_value(first, last,    q) {\n      q = original_bytes[first]",
+    after:
+      '    function s1_value(first, last,    q) {\n      q = original_bytes[first]\n      if (q == "\\"" && !s1_quoted(first)) return'
+  },
+  {
+    name: "s1_keyword unmatched-quote fallback",
+    input: 'password: "HEAD' + ESCAPED_DQ_UNIT.repeat(4),
+    expected: "F0\nNpassword: ***MASKED***\n",
+    before: '      s1_range(first, last)\n      if (word != "passwd" && word != "passphrase")',
+    after:
+      '      if (!(q == "\\"" && !s1_quoted(first))) s1_range(first, last)\n      if (word != "passwd" && word != "passphrase")'
+  }
+];
+
+function verifyUnclosedGuard(source: string, route: (typeof UNCLOSED_ROUTES)[number]) {
+  const original = runCollector(beforeLegacySed(source), route.input);
+  const requireMasked = (output: string) =>
+    expect(output, `${route.name}: unclosed value must be masked before legacy sed`).toBe(route.expected);
+  requireMasked(original);
+  const mutated = runCollector(beforeLegacySed(changed(source, route.before, route.after)), route.input);
+  expect(mutated).toBe(`F0\nN${route.input}\n`); // Prove the selective mutation reaches this input.
+  expect(mutated).toContain("HEAD");
+  expect(() => requireMasked(mutated)).toThrow("unclosed value must be masked before legacy sed");
+  return { route: route.name, inputBytes: Buffer.byteLength(route.input), missingGuardRejected: true };
+}
+
 type Case = { id: string; input: string; secrets: string[]; preserve: string[] };
 const REGRESSION_CASES: Case[] = [
   {
@@ -388,6 +510,7 @@ describe("S1 #249 native BSD unclosed escaped-DQ hook growth", { timeout: 180_00
       let checkout: { sha: string; parents: string[] } | null = null;
       let outcome = "failed";
       let failure: string | null = null;
+      let guardChecks: unknown = null;
 
       const measure = (input: string, phase: string) => {
         const bytes = Buffer.byteLength(input);
@@ -516,6 +639,16 @@ describe("S1 #249 native BSD unclosed escaped-DQ hook growth", { timeout: 180_00
           ratioPassed = attempt.ratio < ratioLimit;
         }
         expect(attempts.at(-1)!.ratio).toBeLessThan(ratioLimit);
+        const guardStartedAt = new Date().toISOString();
+        const guardTick = performance.now();
+        guardChecks = {
+          split: verifySplitGuard(source),
+          unclosed: UNCLOSED_ROUTES.map((route) => verifyUnclosedGuard(source, route)),
+          startedAt: guardStartedAt,
+          elapsedMs: performance.now() - guardTick,
+          childCalls: 6,
+          scope: "small mechanism probes after all unchanged timing assertions, including expected-red controls"
+        };
         outcome = "passed";
       } catch (error) {
         failure = error instanceof Error ? error.message.slice(0, 500) : String(error);
@@ -566,13 +699,25 @@ describe("S1 #249 native BSD unclosed escaped-DQ hook growth", { timeout: 180_00
             timeoutScope: "existing syncChild helper stops the direct child; no process-group cleanup claim",
             first,
             attempts,
-            calls
+            calls,
+            guardChecks
           })
         );
       }
     });
   }
 });
+
+for (const [index, file] of COPIES.entries()) {
+  describe(`S1 #249 guard reachability: ${file}`, () => {
+    it("requires one bulk split per original record and rejects a byte-at-a-time copy", () => {
+      verifySplitGuard(masks[index]!);
+    });
+    it.each(UNCLOSED_ROUTES)("requires pre-sed masking of unclosed escaped DQ: $name", (route) => {
+      verifyUnclosedGuard(masks[index]!, route);
+    });
+  });
+}
 
 it("rejects a failed masking stage instead of treating its empty output as a pass", () => {
   expect(run("mask() { cat; }", "KEEP_S1_READER")).toBe("KEEP_S1_READER");
