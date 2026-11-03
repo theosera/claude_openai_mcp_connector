@@ -54,7 +54,9 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   here. Each printed line is quoted for where it is pasted — JSON for the client,
   a shell word for commands, a unit-file word for systemd (with `%` doubled) — and
   an output path with a control character, or one that starts or ends with
-  whitespace (the server trims `MCP_ENV_FILE`), is refused. The OAuth questions are
+  whitespace (the server trims `MCP_ENV_FILE`), is refused. For HTTP, the
+  `check:http` line names the written file with `--env`: without it the check reads
+  a file in the checkout, and it never reads `MCP_ENV_FILE`. The OAuth questions are
   the next entry. Reverse-verified per guard: removing each one turns the tests aimed
   at it red.
 

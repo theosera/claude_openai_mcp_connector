@@ -612,7 +612,13 @@ describe("init:env — what it tells the operator (G14)", () => {
     expect(result.code, result.stderr).toBe(0);
     expect(result.stdout).toContain("launchctl bootout gui/$(id -u)/<label>");
     expect(result.stdout).toContain("launchctl bootstrap gui/$(id -u) <plist>");
-    expect(result.stdout).toContain("pnpm run check:http");
+    // check-http.mjs reads a file in the checkout unless --env names one, and
+    // never reads MCP_ENV_FILE: the line must name the file just written.
+    // Reverse-verified (2026-11-03, each mutation confirmed applied and the source
+    // restored byte-identical): dropping `--env` and the path from the line, or
+    // leaving the path unquoted, reddened only this case and the quoted-path case.
+    expect(result.stdout).toContain(`pnpm run check:http --env '${defaultTarget()}'\n`);
+    expect(result.stdout).not.toContain("check:http -- --env");
     expect(result.stdout).toContain("The endpoint is read-only");
   });
 });
@@ -623,7 +629,7 @@ describe("init:env — guidance quoted for where it is pasted (PR#308 thread 3)"
     expect(shellQuote("/a b/$(id)/`x`/it's")).toBe("'/a b/$(id)/`x`/it'\\''s'");
   });
 
-  it("http: the systemd line keeps a path with spaces, % and quotes as one assignment", async () => {
+  it("http: the systemd line and the check:http line keep a path with spaces, % and quotes whole", async () => {
     const dir = path.join(root, 'a b %h "q" \\s');
     fs.mkdirSync(dir, { mode: 0o700 });
     const out = path.join(dir, FILE);
@@ -637,6 +643,7 @@ describe("init:env — guidance quoted for where it is pasted (PR#308 thread 3)"
     expect(result.stdout).toContain(
       `Give the server MCP_ENV_FILE='${root}/a b %h "q" \\s/${FILE}' in its real environment`
     );
+    expect(result.stdout).toContain(`pnpm run check:http --env '${root}/a b %h "q" \\s/${FILE}'\n`);
   });
 
   it("stdio: the check:stdio line is one shell word even with $(...), backticks and a quote in the path", async () => {
