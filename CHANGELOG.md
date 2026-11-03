@@ -84,6 +84,15 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The README's setup starts from `pnpm run init:env`** (ROADMAP Onboarding,
+  the part left after the OAuth questions). Run, the HTTP section and the
+  stdio verification now name the file `init:env` writes through
+  `MCP_ENV_FILE`, and the Claude Code, Codex and Claude Desktop registrations
+  carry only `MCP_ENV_FILE`: their `env` blocks used to set `KNOWLEDGE_ROOT`
+  too, which wins over the file. Writing the file by hand stays as its own
+  subsection, reserving a subtree and registering its write tools are now two
+  separate steps, and the multiple-roots subsection says how to turn the file's
+  `KNOWLEDGE_ROOT` line into `KNOWLEDGE_ROOTS`. Docs only.
 - **The pinned development and CI Node version moves from 24.22.0 to
   24.22.1**, the 24.x line's fix in the Node.js security release of
   2026-10-21. `.node-version`, the exact matrix leg and the macOS job name
