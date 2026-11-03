@@ -346,8 +346,9 @@ launchd: add it to the plist's `EnvironmentVariables`, then reload the job with
 `launchctl bootstrap gui/$(id -u) <plist>` (`launchctl kickstart -k` restarts
 without re-reading the plist, so the variable would not reach the job). Confirm
 that `launchctl print gui/$(id -u)/<label>` shows `MCP_ENV_FILE`, then run
-`pnpm run check:http`. See [`docs/operations.md`](./docs/operations.md) for the
-long-running setup.
+`pnpm run check:http --env /abs/path/to/http.env` — without `--env` the check
+reads a file in the checkout, not the one `MCP_ENV_FILE` names. See
+[`docs/operations.md`](./docs/operations.md) for the long-running setup.
 
 `MCP_HTTP_PUBLIC_URL` is the OAuth issuer and is auto-added to the
 DNS-rebinding allowlist (which is compared by hostname — the `:port` suffix in
