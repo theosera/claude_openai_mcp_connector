@@ -338,8 +338,65 @@ function expectPreserved(input: string, output: string, preserve: string) {
   expect(fenceSyntax(output, input)).toEqual(fenceSyntax(input));
 }
 
+// #279: the canaries belong to argument-position credentials in the original
+// fragment, with no unrelated token= prefix that could pass if this reader did
+// nothing. Whole repeated units keep partial flags out of the size boundaries.
+// The existing SHAPES harness checks both kinds, all five sizes, status: ok,
+// every secret marker, preserve counts, and the unchanged timing thresholds.
+const ISSUE279_SHAPES: readonly PerfShape[] = [
+  [
+    "issue279-many-mysql-password-flags",
+    "FKPERF279M1",
+    (n) => completeUnits("mysql ", "-pFKPERF279M1 ", " KEEP279M1", n),
+    "KEEP279M1"
+  ],
+  [
+    "issue279-many-redis-password-flags",
+    ["FKPERF279R1", "FKPERF279R2"],
+    (n) => completeUnits("redis-cli ", "-a FKPERF279R1 --pass FKPERF279R2 ", " KEEP279R1", n),
+    "KEEP279R1"
+  ],
+  [
+    "issue279-curl-long-unclosed-quote",
+    ["FKPERF279U1", "FKPERF279U2"],
+    (n) => enclosed('curl -u "user:FKPERF279U1 ', 'x\\" ', "FKPERF279U2\nKEEP279U1", n),
+    "KEEP279U1"
+  ],
+  [
+    "issue279-curl-many-joined-quote-pieces",
+    "FKPERF279J1",
+    (n) => completeUnits("curl -u user:", "'FKPERF279J1'\"x\"", " KEEP279J1", n),
+    "KEEP279J1"
+  ],
+  [
+    "issue279-mysql-long-sql-before-password",
+    "FKPERF279SQL1",
+    (n) => enclosed("mysql -e '", "SELECT -price KEEP279SQL ", "' -pFKPERF279SQL1 KEEP279SQL", n),
+    "KEEP279SQL"
+  ],
+  [
+    "issue279-json-command-many-encoded-quoted-passwords",
+    "FKPERF279JSON1",
+    (n) => completeUnits('{"command":"mysql ', '-p\\"FKPERF279JSON1\\" ', ' KEEP279JSON1"}', n),
+    "KEEP279JSON1"
+  ],
+  [
+    "issue279-redis-many-original-line-continuations",
+    "FKPERF279C1",
+    (n) => completeUnits("redis-cli \\\n", "-a FKPERF279C1 \\\n", " KEEP279C1", n),
+    "KEEP279C1"
+  ],
+  [
+    "issue279-unquoted-prefix-joined-to-long-quoted-value",
+    ["FKPERF279P1", "FKPERF279P2"],
+    (n) => enclosed("mysql -pFKPERF279P1'", "x ", "FKPERF279P2' KEEP279P1", n),
+    "KEEP279P1"
+  ]
+];
+
 const SHAPES: readonly PerfShape[] = [
   ...ISSUE295_SHAPES,
+  ...ISSUE279_SHAPES,
   ["I-unclosed-escaped", "FKPERFUE1", (n) => fill('passphrase: "FKPERFUE1 ', 'a\\"', n)],
   ["I-masked-doubled", "FKPERFMD1", (n) => fill("token=FKPERFMD1 ", `${MASK}''x`, n)],
   ["I-label-quotes", "FKPERFLQ1", (n) => fill('passwd: "FKPERFLQ1', 'passwd: "ab', n)],
