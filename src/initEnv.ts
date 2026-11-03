@@ -679,7 +679,10 @@ function guidance(target: string, transport: string, oauth?: OAuthAnswers): stri
       "     launchctl bootout gui/$(id -u)/<label>",
       "     launchctl bootstrap gui/$(id -u) <plist>",
       "   (launchctl kickstart -k restarts without re-reading the plist, so the variable would not reach the job.)",
-      "   Confirm that launchctl print gui/$(id -u)/<label> shows MCP_ENV_FILE, then run: pnpm run check:http",
+      "   Confirm that launchctl print gui/$(id -u)/<label> shows MCP_ENV_FILE, then run (in the repository checkout):",
+      // --env names this file: without it check-http.mjs reads a file in the
+      // checkout, and it never reads MCP_ENV_FILE. No `--`, as for check:stdio.
+      `     pnpm run check:http --env ${shell}`,
       `   systemd: Environment=${systemdQuote(`MCP_ENV_FILE=${target}`)}`,
       "2. MCP_AUTH_TOKEN is in the file and was not shown. To read it, open the file in an editor;",
       "   do not print it inside an AI coding session, whose transcript keeps it.",
