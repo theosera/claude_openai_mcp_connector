@@ -490,7 +490,7 @@ describe("the core on the fourth review's shapes", () => {
       "a label in angle brackets with no closing tag",
       ["command"],
       "mysql -p<password> -h KEEPRV81",
-      "mysql -p<password> -h KEEPRV81"
+      `mysql -p${MASK} -h KEEPRV81`
     ],
     [
       "a label as a type argument",
