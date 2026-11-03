@@ -302,11 +302,13 @@ tunnel.
 
 ```bash
 pnpm run build
-MCP_ENV_FILE=/abs/path/.mcp-state/vault-stdio.env node dist/index.js   # written by init:env (stdio)
+MCP_ENV_FILE=/abs/path/.mcp-state/vault-stdio.env node dist/index.js
 ```
 
-A client normally starts this process itself; see
-[Client registration](#client-registration).
+That path is a stdio file written with `init:env --out`
+([below](#the-env-file-the-stdio-registrations-name)); without `--out` the file
+is at the default location from [Setup](#setup). A client normally starts this
+process itself; see [Client registration](#client-registration).
 
 ### Run (HTTP — for ChatGPT / Claude.ai web, with OAuth)
 
