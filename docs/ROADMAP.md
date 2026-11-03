@@ -31,7 +31,7 @@ non-engineers. Goal: a copy-paste path that does **not** require a manual build.
   removing the Node/pnpm build step.
 - A **"first-time / prerequisites"** quickstart with install links (Node) and a
   3-tier path: 🟢 local + Claude Desktop → 🟡 CLI clients → 🔴 web + OAuth.
-- 🚧 A guided `init` that writes an env file interactively — it must also
+- ✅ A guided `init` that writes an env file interactively — it must also
   wire up the **`MCP_ENV_FILE`** (absolute path) that names that file, because
   the server no longer reads `.env` from its working directory (for a
   client-spawned stdio server that directory is attacker-choosable; see the
@@ -43,9 +43,10 @@ non-engineers. Goal: a copy-paste path that does **not** require a manual build.
   line to add. **Second part in: the OAuth questions** — for web connectors it
   asks for the public https URL, a login password (only in a terminal, never
   shown or recalled, at least 12 characters — init's floor; the server has
-  none) and, by default, a state file beside the env file. Still to come: the
-  README's setup steps, which put `KNOWLEDGE_ROOT` in the client's `env` block
-  where it wins over the file, are rewritten separately.
+  none) and, by default, a state file beside the env file. **Then the README's
+  setup steps:** they start from `init:env`, and the client registrations carry
+  only `MCP_ENV_FILE` — they used to put `KNOWLEDGE_ROOT` in the client's `env`
+  block, where it wins over the file.
 - _Why:_ the target audience skews technical but the build step is the main
   drop-off point; the web/OAuth path stays "advanced".
 
