@@ -830,6 +830,28 @@ function workTrace(source: string, input: string, kind: "carry" | "tag") {
   };
 }
 
+function frameTrace(source: string, input: string) {
+  const boundary = "\n  ' |\n  sed -E \\\n";
+  expect(source.split(boundary)).toHaveLength(2);
+  let collector = source.slice(0, source.indexOf(boundary)) + "\n  '\n}";
+  collector = changed(
+    collector,
+    "    function structural(first, last,    j, c, count, container, spaces, end, width, k) {",
+    "    function structural(first, last,    j, c, count, container, spaces, end, width, k) {\n      s1_test_calls++"
+  );
+  collector = changed(
+    collector,
+    "| LC_ALL=C awk '\n",
+    `| LC_ALL=C awk '
+    END { printf "S1_FRAME:%d:%d\\n", NR, s1_test_calls + 0 }
+`
+  );
+  const raw = run(collector, input);
+  const trace = [...raw.matchAll(/^S1_FRAME:(\d+):(\d+)\n/gm)];
+  expect(trace).toHaveLength(1);
+  return { records: Number(trace[0]![1]), calls: Number(trace[0]![2]), output: raw.replace(trace[0]![0], "") };
+}
+
 for (const [index, file] of COPIES.entries()) {
   const source = masks[index]!;
   describe(`S1 scan findings: ${file}`, () => {
@@ -1106,6 +1128,29 @@ for (const [index, file] of COPIES.entries()) {
         }
       ];
       for (const c of cases) requireHidden(run(source, c.input), c);
+    });
+    timed(file, "F6 skips impossible fence framing while keeping real fence guards", () => {
+      const input = "mysql -pFSCAN_FRAME9 KEEP_FRAME" + "\r note".repeat(40);
+      const original = frameTrace(source, input);
+      const requireNoFraming = (calls: number) => expect(calls, "non-fence records must avoid framing scans").toBe(0);
+      expect(original.records).toBe(1);
+      requireNoFraming(original.calls);
+      expect(original.output).not.toContain("FSCAN_FRAME9");
+      expect(original.output).toContain("KEEP_FRAME");
+      const mutant = changed(
+        source,
+        's1_fence_possible = index($0, "```") || index($0, "~~~")',
+        "s1_fence_possible = 1"
+      );
+      const changedTrace = frameTrace(mutant, input);
+      expect(changedTrace.output).toBe(original.output);
+      expect(changedTrace.calls).toBe(input.split("\r").length);
+      expect(() => requireNoFraming(changedTrace.calls)).toThrow("non-fence records must avoid framing scans");
+      for (const marker of ["```", "~~~"]) {
+        const actualFence = frameTrace(source, marker + "public");
+        expect(actualFence.calls).toBe(1);
+        expect(actualFence.output).toMatch(/^F1P/);
+      }
     });
     timed(file, "preserves noncredential commands and all public controls", () => {
       for (const c of CASES.filter((c) => c.family === "public"))

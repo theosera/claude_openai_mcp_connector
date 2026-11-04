@@ -1035,6 +1035,7 @@ mask() {
     {
       n = split($0, original_bytes, "")
       segments = 0; any_fence = 0; first = 1
+      s1_fence_possible = index($0, "```") || index($0, "~~~")
       split("", s1_raw_double); s1_raw_quote = 0
       for (i = 1; i <= n + 1; i++) {
         c = original_bytes[i]
@@ -1042,6 +1043,7 @@ mask() {
           if (s1_raw_quote) s1_raw_double[s1_raw_quote] = i
           s1_raw_quote = i
         }
+        if (!s1_fence_possible) continue
         if (i <= n && c != "\r") continue
         segments++
         starts[segments] = first; ends[segments] = i - 1
