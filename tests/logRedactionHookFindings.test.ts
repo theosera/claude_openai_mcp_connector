@@ -1043,6 +1043,70 @@ for (const [index, file] of COPIES.entries()) {
       expect(changedTrace.work).toBeGreaterThan(Buffer.byteLength(input));
       expect(() => requireLinear(changedTrace.work)).toThrow("F6 tag boundary work must stay linear");
     });
+    timed(file, "F6 bounds cached fast word ends to their current tag", () => {
+      const c: Case = {
+        id: "F6-fast-cache-tag-boundary",
+        family: "F6-fast",
+        input: '<x token=a"Q">"P P<y token=b"FSCAN_HEAD9 FSCAN_TAIL9"> KEEP_CACHE_BOUNDARY',
+        secrets: ["FSCAN_HEAD9", "FSCAN_TAIL9"],
+        preserve: ["KEEP_CACHE_BOUNDARY"]
+      };
+      requireHidden(run(source, c.input), c);
+      const mutant = changed(source, "while (j < limit) {", "while (j < n + 1) {");
+      const output = run(mutant, c.input);
+      expect(readable(output, c.secrets)).toEqual(["FSCAN_TAIL9"]);
+      expect(broken(c.input, output, c.preserve)).toEqual([]);
+      expect(() => requireHidden(output, c)).toThrow("F6-fast-cache-tag-boundary: original credential guard");
+    });
+    timed(file, "F6 completes its probe before selecting tag-only collection", () => {
+      const c: Case = {
+        id: "F6-fast-later-complex-keyword",
+        family: "F6-fast",
+        input: '<x token=public"FSCAN_PROBE9"> password=public"FSCAN_LATE9" KEEP_CLASSIFY',
+        secrets: ["FSCAN_PROBE9", "FSCAN_LATE9"],
+        preserve: ["KEEP_CLASSIFY"]
+      };
+      requireHidden(run(source, c.input), c);
+      const mutant = changed(source, "if (probe && s1_probe_complex) break", "if (probe && s1_probe_needed) break");
+      const output = run(mutant, c.input);
+      expect(readable(output, c.secrets)).toEqual(["FSCAN_LATE9"]);
+      expect(broken(c.input, output, c.preserve)).toEqual([]);
+      expect(() => requireHidden(output, c)).toThrow("F6-fast-later-complex-keyword: original credential guard");
+    });
+    timed(file, "F6 preserves multiline tag completion and nonpassword input values", () => {
+      const head = '<input data-token=public"FSCAN_F6_WRAP9"';
+      const cases: Case[] = [
+        {
+          id: "F6-fast-value-before-type",
+          family: "F6-fast",
+          input: head + '\n value="FSCAN_F6_VALUE9" type=password> KEEP_F6_JOIN',
+          secrets: ["FSCAN_F6_WRAP9", "FSCAN_F6_VALUE9"],
+          preserve: [">", "KEEP_F6_JOIN"]
+        },
+        {
+          id: "F6-fast-type-before-value",
+          family: "F6-fast",
+          input: head + '\n type="password" value="FSCAN_F6_VALUE9"> KEEP_F6_JOIN',
+          secrets: ["FSCAN_F6_WRAP9", "FSCAN_F6_VALUE9"],
+          preserve: [">", "KEEP_F6_JOIN"]
+        },
+        {
+          id: "F6-fast-text-control",
+          family: "F6-fast",
+          input: head + '\n value="KEEP_F6_VALUE" type=text> KEEP_F6_JOIN',
+          secrets: ["FSCAN_F6_WRAP9"],
+          preserve: ["KEEP_F6_VALUE", ">", "KEEP_F6_JOIN"]
+        },
+        {
+          id: "F6-fast-tag-completion",
+          family: "F6-fast",
+          input: '<password a="FSCAN_F6_WRAP9"\n note="public"\n b="FSCAN_F6_VALUE9"> KEEP_F6_JOIN',
+          secrets: ["FSCAN_F6_WRAP9", "FSCAN_F6_VALUE9"],
+          preserve: [">", "KEEP_F6_JOIN"]
+        }
+      ];
+      for (const c of cases) requireHidden(run(source, c.input), c);
+    });
     timed(file, "preserves noncredential commands and all public controls", () => {
       for (const c of CASES.filter((c) => c.family === "public"))
         expect(run(source, c.input), c.id).toBe(c.exact ?? c.input);

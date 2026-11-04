@@ -367,7 +367,7 @@ mask() {
       return j
     }
     function s1_quoted(at) {
-      return original_bytes[at] == "\"" ? s1_double[at] : s1_single[at + 1]
+      return original_bytes[at] == "\"" ? (s1_fast_tag ? s1_raw_double[at] : s1_double[at]) : s1_single[at + 1]
     }
     # Shell single quotes treat backslashes literally; keyword/YAML ranges
     # keep their separate escape-aware/doubled-apostrophe lookup.
@@ -466,7 +466,7 @@ mask() {
         scheme = scheme tolower(original_bytes[nextword]); nextword++
       }
       if (scheme ~ /^(basic|digest|token|apikey|oauth|ssws)$/ && original_bytes[nextword] ~ /[[:space:]]/) {
-        if (s1_probe_only) { s1_probe_needed = 1; return }
+        if (s1_probe_only) { s1_probe_needed = 1; s1_probe_complex = 1; return }
         while (nextword <= n && original_bytes[nextword] ~ /[[:space:]]/) nextword++
         last = nextword
         while (last <= n && original_bytes[last] !~ /[[:space:],"\047]/ && !s1_at(last, "-----")) last++
@@ -477,7 +477,7 @@ mask() {
       # Probe only the metadata-independent prefix. Any potentially active
       # quoted/outside-tag value keeps the full collector and its guards.
       if (s1_probe_only) {
-        if (!in_tag || q == "\"" || q == s1_apostrophe) s1_probe_needed = 1
+        if (!in_tag || q == "\"" || q == s1_apostrophe) { s1_probe_needed = 1; s1_probe_complex = 1 }
         else if (!s1_keyword_tag_quote) s1_tag_value_start = j
         return
       }
@@ -559,7 +559,7 @@ mask() {
       if (s1_command_start[level] && original_bytes[j] == "$" && original_bytes[j + 1] != "(") {
         s1_clients[level, "curl"] = 1; s1_handled = 1; return
       }
-      if (original_bytes[j] != "-") {
+      if (original_bytes[j] != "-" && (s1_command_start[level] || s1_container[level])) {
         alias = s1_curl_alias(first, last)
         if (s1_command_start[level] && s1_alias_name ~ /^(docker|podman)$/) { s1_container[level] = 1; s1_handled = 1; return }
         if (s1_container[level] == 1 && s1_alias_name == "run") { s1_container[level] = 2; s1_handled = 1; return }
@@ -693,10 +693,21 @@ mask() {
       s1_tag_end_first = at; s1_tag_end_last = j
       return j
     }
+    function s1_tag_word_end(first, limit,    j, qend) {
+      if (first >= s1_tag_word_first && first <= s1_tag_word_last) return s1_tag_word_last
+      j = first
+      while (j < limit) {
+        if (original_bytes[j] ~ /[[:space:]|;&()]/) break
+        if (original_bytes[j] == "\"" && (qend = s1_quoted(j))) j = qend
+        j++
+      }
+      s1_tag_word_first = first; s1_tag_word_last = j - 1
+      return j - 1
+    }
     function s1_tag_quoted_tail(first, quote,    last, tag_end, qend) {
       # Cover every glued quoted/unquoted piece while retaining the tag end
       # needed by later HTML input rules. Boundaries are cached/table lookups.
-      last = s1_words[first]; tag_end = s1_tag_end(first)
+      tag_end = s1_tag_end(first); last = s1_fast_tag ? s1_tag_word_end(first, tag_end) : s1_words[first]
       if (last >= tag_end) last = tag_end - 1
       if (s1_has_dash && s1_dash[first] && s1_dash[first] <= last) last = s1_dash[first] - 1
       # The compatibility keyword pass must retain its quote boundary rather
@@ -704,10 +715,20 @@ mask() {
       s1_protect[quote]++; s1_protect[quote + 1]--
       qend = s1_quoted(quote)
       if (qend && qend <= last) { s1_protect[qend]++; s1_protect[qend + 1]-- }
+      if (s1_fast_tag) {
+        if (first <= last) {
+          if (s1_fast_count && first < s1_fast_first[s1_fast_count]) s1_fast_ordered = 0
+          s1_fast_first[++s1_fast_count] = first; s1_fast_last[s1_fast_count] = last; s1_fast_compact[s1_fast_count] = tag_end > n
+        }
+        if (s1_fast_quotes && quote < s1_fast_quote[s1_fast_quotes]) s1_fast_ordered = 0
+        s1_fast_quote[++s1_fast_quotes] = quote
+        if (qend && qend <= last) s1_fast_quote[++s1_fast_quotes] = qend
+      }
       s1_range(first, last)
     }
     function s1_keywords(probe,    i, c, covered, in_tag, tag_quote) {
       s1_probe_only = probe; s1_probe_needed = 0; s1_tag_value_start = 0
+      if (probe) { s1_probe_tag = 0; s1_probe_complex = 0 }
       s1_tag_end_first = n + 1; s1_tag_end_last = 0
       for (i = 1; i <= n; i++) {
         c = original_bytes[i]
@@ -717,8 +738,8 @@ mask() {
         if (s1_tag_value_start && i >= s1_tag_value_start) {
           if (!in_tag || c == ">" || c ~ /[[:space:]]/ || (c == "-" && s1_at(i, "-----"))) s1_tag_value_start = 0
           else if (c == "\"" || c == s1_apostrophe) {
-            if (probe) { s1_probe_needed = 1; break }
-            s1_tag_quoted_tail(s1_tag_value_start, i)
+            if (probe) { s1_probe_needed = 1; s1_probe_tag = 1 }
+            if (!probe || probe == 2) s1_tag_quoted_tail(s1_tag_value_start, i)
             s1_tag_value_start = 0
           }
         }
@@ -729,23 +750,87 @@ mask() {
         } else if (c == "<" && original_bytes[i + 1] ~ /[A-Za-z\/!?]/) in_tag = 1
         if (i in s1_suppressed) covered += s1_suppressed[i]
         if (!covered && c ~ /[tTkKsSpPaAbB]/ && tolower(c original_bytes[i + 1]) ~ /^(to|ke|se|pa|au|be)$/) { s1_keyword_tag_quote = tag_quote; s1_keyword(i, in_tag) }
-        if (probe && s1_probe_needed) break
+        if (probe && s1_probe_complex) break
       }
       s1_probe_only = 0
+      if (probe) s1_fast_tag = s1_probe_tag && !s1_probe_complex
       return s1_probe_needed
     }
-    function s1_can_skip_collection(    probe) {
+    function s1_can_skip_collection(    probe, needed) {
       # Quote-only records have no recursion beyond one double-quoted span.
       # Exclude live continuation state and every possible token/flag family.
-      if (s1_has_single || index($0, "\\") || $0 ~ /[`$(){}]/ || s1_original_needed() || s1_expected[0] || s1_clients[0, "mysql"] || s1_clients[0, "curl"] || s1_clients[0, "redis-cli"]) return 0
+      if (s1_continued || s1_array_depth || s1_container[0] || s1_has_single || index($0, "\\") || $0 ~ /[`$(){}]/ || s1_original_needed() || s1_expected[0] || s1_clients[0, "mysql"] || s1_clients[0, "curl"] || s1_clients[0, "redis-cli"]) return 0
+      if (index($0, "----")) return 0
       probe = $0
       gsub(/"/, "", probe)
       if (probe ~ /curl|mysql|mariadb|redis-cli|--passphrase|--passwd/) return 0
-      return !s1_keywords(1)
+      # Provisional F6 ranges are committed only after the complete probe.
+      # A later complex keyword discards them before canonical collection.
+      s1_fast_tag = 1
+      s1_tag_word_first = n + 1; s1_tag_word_last = 0
+      needed = s1_keywords(2)
+      if (!s1_fast_tag) {
+        split("", s1_marks); split("", s1_protect); s1_has_ranges = 0
+      }
+      return !needed
+    }
+    function s1_emit(    i, active, protected, masked, chunk, range, first, last, cursor, point, nextquote, at, compact) {
+      # With no selected range, weaving would emit the unchanged record.
+      # Keep every scan/state update above and every downstream masker intact.
+      if (!s1_has_ranges) { printf "%s", $0; return }
+      if (s1_fast_tag && s1_fast_ordered) {
+        # F6 starts and protected quotes are recorded in stream order. Merge
+        # their ranges and skip masked bytes; use the original byte array for
+        # literal output, never repeated substr() calls over the whole record.
+        # Reuse one marker across protected quotes only in a tag that has
+        # no terminator on this physical record; retain every original quote.
+        cursor = 1; nextquote = 1
+        for (range = 1; range <= s1_fast_count; range++) {
+          first = s1_fast_first[range]; last = s1_fast_last[range]; compact = s1_fast_compact[range]
+          while (range < s1_fast_count && s1_fast_first[range + 1] <= last + 1) {
+            range++
+            compact = compact && s1_fast_compact[range]
+            if (s1_fast_last[range] > last) last = s1_fast_last[range]
+          }
+          for (i = cursor; i < first; i++) {
+            chunk = chunk original_bytes[i]
+            if (length(chunk) >= 256) { printf "%s", chunk; chunk = "" }
+          }
+          at = first; masked = 0
+          while (nextquote <= s1_fast_quotes && s1_fast_quote[nextquote] <= last) {
+            point = s1_fast_quote[nextquote++]
+            if (point < at) continue
+            if (point > at && (!compact || !masked)) { chunk = chunk "***MASKED***"; masked = 1 }
+            chunk = chunk original_bytes[point]; at = point + 1
+            if (length(chunk) >= 256) { printf "%s", chunk; chunk = "" }
+          }
+          if (at <= last && (!compact || !masked)) chunk = chunk "***MASKED***"
+          cursor = last + 1
+          if (length(chunk) >= 256) { printf "%s", chunk; chunk = "" }
+        }
+        for (i = cursor; i <= n; i++) {
+          chunk = chunk original_bytes[i]
+          if (length(chunk) >= 256) { printf "%s", chunk; chunk = "" }
+        }
+        printf "%s", chunk
+        return
+      }
+      for (i = 1; i <= n; i++) {
+        if (i in s1_marks) active += s1_marks[i]
+        if (i in s1_protect) protected += s1_protect[i]
+        if (active && !protected) {
+          if (!masked) chunk = chunk "***MASKED***"
+          masked = 1
+        } else { chunk = chunk original_bytes[i]; masked = 0 }
+        if (length(chunk) >= 256) { printf "%s", chunk; chunk = "" }
+      }
+      printf "%s", chunk
     }
     function s1_collect(    i, j, c, q, slash, ending, active, masked, protected, chunk, size, last, label, previous, tick, top, open, brace_top, shell_next, group_quote, group_quote_start, next_double, array_record) {
       s1_has_ranges = 0
-      s1_probe_only = 0
+      s1_probe_only = 0; s1_fast_tag = 0
+      split("", s1_fast_first); split("", s1_fast_last); split("", s1_fast_quote); split("", s1_fast_compact)
+      s1_fast_count = 0; s1_fast_quotes = 0; s1_fast_ordered = 1
       s1_json_record = $0 ~ /^[[:space:]]*[{][[:space:]]*"/
       array_record = s1_array_depth
       split("", s1_marks); split("", s1_protect); split("", s1_suppressed)
@@ -768,6 +853,13 @@ mask() {
       if (array_record) { s1_clients[0, "curl"] = 1; s1_expected[0] = s1_array_expected }
       # Proven inactive S1 records still pass through all downstream maskers.
       if (s1_can_skip_collection()) { s1_continued = 0; printf "%s", $0; return }
+      # This preflight proved that only unquoted tag tails need S1 work.
+      # Keep the same keyword/range guards, with sparse quote metadata only.
+      if (s1_fast_tag) {
+        s1_continued = 0
+        s1_emit()
+        return
+      }
       if (index($0, "\\")) for (i = 1; i <= n; i++) {
         if (slash) s1_escaped[i] = 1
         if (original_bytes[i] == "\\") slash = !slash; else slash = 0
@@ -872,19 +964,7 @@ mask() {
       }
       s1_blank_first = n + 1; s1_blank_last = 0
       s1_keywords(0)
-      # With no selected range, weaving would emit the unchanged record.
-      # Keep every scan/state update above and every downstream masker intact.
-      if (!s1_has_ranges) { printf "%s", $0; return }
-      for (i = 1; i <= n; i++) {
-        if (i in s1_marks) active += s1_marks[i]
-        if (i in s1_protect) protected += s1_protect[i]
-        if (active && !protected) {
-          if (!masked) chunk = chunk "***MASKED***"
-          masked = 1
-        } else { chunk = chunk original_bytes[i]; masked = 0 }
-        if (length(chunk) >= 256) { printf "%s", chunk; chunk = "" }
-      }
-      printf "%s", chunk
+      s1_emit()
     }
     # Byte widths for the renderer closing-whitespace union. Only a wholly
     # whitespace suffix is structural; a partial UTF-8 sequence never matches.
@@ -955,8 +1035,14 @@ mask() {
     {
       n = split($0, original_bytes, "")
       segments = 0; any_fence = 0; first = 1
+      split("", s1_raw_double); s1_raw_quote = 0
       for (i = 1; i <= n + 1; i++) {
-        if (i <= n && original_bytes[i] != "\r") continue
+        c = original_bytes[i]
+        if (c == "\"") {
+          if (s1_raw_quote) s1_raw_double[s1_raw_quote] = i
+          s1_raw_quote = i
+        }
+        if (i <= n && c != "\r") continue
         segments++
         starts[segments] = first; ends[segments] = i - 1
         prefix_end = first - 1; marker = ""
