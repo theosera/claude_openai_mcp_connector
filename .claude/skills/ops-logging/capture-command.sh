@@ -863,6 +863,13 @@ mask() {
       s1_original_shapes()
       s1_scan(1, ending, 0)
       if (array_record) s1_array_expected = s1_array_depth ? s1_expected[0] : ""
+      # Renderer fences end a shell fragment even when its array was unclosed.
+      # Do not let that fragment opt later ordinary commands into -u masking.
+      if (any_fence && (array_record || s1_array_depth)) {
+        s1_array_depth = 0; s1_array_quote = ""; s1_array_expected = ""
+        split("", s1_clients); split("", s1_expected); split("", s1_container)
+        s1_continued = 0; s1_command_start[0] = 1
+      }
       s1_blank_first = n + 1; s1_blank_last = 0
       s1_keywords(0)
       # With no selected range, weaving would emit the unchanged record.

@@ -905,6 +905,25 @@ for (const [index, file] of COPIES.entries()) {
       expect(changedTrace.work).toBeGreaterThan(Buffer.byteLength(input));
       expect(() => requireLinear(changedTrace.work)).toThrow("F3 historical depth must stay scalar");
     });
+    timed(file, "F3 ends carried option arrays at structural fence boundaries", () => {
+      const c: Case = {
+        id: "F3-array-fence-boundary",
+        family: "F3-control",
+        input: "~~~~~~bash\nopts=( -u user:FSCAN_BOUNDARY9\n~~~~~~\nsort -u source:dest KEEP_BOUNDARY",
+        secrets: ["FSCAN_BOUNDARY9"],
+        preserve: ["sort -u source:dest", "KEEP_BOUNDARY"]
+      };
+      requireHidden(run(source, c.input), c);
+      const mutant = changed(
+        source,
+        "if (any_fence && (array_record || s1_array_depth))",
+        "if (0 && any_fence && (array_record || s1_array_depth))"
+      );
+      const output = run(mutant, c.input);
+      expect(readable(output, c.secrets)).toEqual([]);
+      expect(broken(c.input, output, c.preserve)).toEqual(["sort -u source:dest"]);
+      expect(() => requireHidden(output, c)).toThrow("F3-array-fence-boundary: public controls");
+    });
     timed(file, "F3 masks redis URL credentials with empty usernames", () => {
       reverseCases(
         source,
