@@ -816,11 +816,18 @@ for (const [index, file] of COPIES.entries()) {
 
     it("loses each credential-client family when its original-token guard is removed", () => {
       for (const [guard, input] of [
-        ['s1_clients[level, "curl"] && (word == "-u"', 'curl -u "user:S1FIRST S1SECOND" KEEP_S1_END'],
+        [
+          '!s1_h0_public[level] && (s1_clients[level, "curl"] || s1_h0_default(level)) && (word == "-u"',
+          'curl -u "user:S1FIRST S1SECOND" KEEP_S1_END'
+        ],
         ['s1_clients[level, "mysql"] && word ~ /^-p./', "mysql -p'S1FIRST S1SECOND'"],
         ['s1_clients[level, "redis-cli"] && (word == "-a"', "redis-cli -a 'S1FIRST S1SECOND'"]
       ]) {
-        const mutant = changed(source, guard!, `0 && ${guard}`);
+        const mutant = changed(
+          changed(source, "return s1_h0_active && !s1_h0_public[level]", "return 0"),
+          guard!,
+          `0 && ${guard}`
+        );
         expect(run(source, input!)).not.toContain("S1FIRST");
         expect(run(mutant, input!)).toContain("S1FIRST");
       }

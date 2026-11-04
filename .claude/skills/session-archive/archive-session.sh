@@ -669,6 +669,7 @@ mask() {
     # Shell single quotes treat backslashes literally; keyword/YAML ranges
     # keep their separate escape-aware/doubled-apostrophe lookup.
     function s1_word_quoted(at) {
+      if (at in s1_shell_closing) return 0
       if (original_bytes[at] == "\"") return (at in s1_shell_double) ? s1_shell_double[at] : s1_double[at]
       return s1_shell_single[at]
     }
@@ -758,11 +759,15 @@ mask() {
       }
       if (j == after || j > n) return
       first = j; q = original_bytes[j]
+      # A keyword that is itself an attribute value (type="password") is
+      # not a label for the following attribute. Keep that structural label.
+      if (in_tag && s1_keyword_tag_quote && !explicit && (original_bytes[after - 1] == "\"" || original_bytes[after - 1] == s1_apostrophe)) return
       scheme = ""; nextword = j
       while (nextword <= n && nextword - j < 7 && original_bytes[nextword] ~ /[A-Za-z]/) {
         scheme = scheme tolower(original_bytes[nextword]); nextword++
       }
       if (scheme ~ /^(basic|digest|token|apikey|oauth|ssws)$/ && original_bytes[nextword] ~ /[[:space:]]/) {
+        if (in_tag && s1_keyword_tag_quote && !s1_probe_only) { s1_tag_quoted_tail(s1_keyword_tag_start, s1_keyword_tag_start); return }
         if (s1_probe_only) { s1_probe_needed = 1; s1_probe_complex = 1; return }
         while (nextword <= n && original_bytes[nextword] ~ /[[:space:]]/) nextword++
         last = nextword
@@ -776,6 +781,7 @@ mask() {
       if (s1_probe_only) {
         if (!in_tag || q == "\"" || q == s1_apostrophe) { s1_probe_needed = 1; s1_probe_complex = 1 }
         else if (!s1_keyword_tag_quote) s1_tag_value_start = j
+        else { s1_probe_needed = 1; s1_probe_complex = 1 }
         return
       }
       if (q == "\"" || q == s1_apostrophe) {
@@ -784,14 +790,20 @@ mask() {
         if (s1_shell_closing[j] && (j == n || original_bytes[j + 1] ~ /^[[:space:];|&)}]$/)) { s1_range(j, j); return }
         last = s1_quoted(j)
         if (last) {
+          if (in_tag) { s1_tag_quoted_tail(j, j); return }
           # Shell values can glue quoted/unquoted pieces and substitutions.
           # JSON/YAML separators end the value instead of joining the next key.
           if (!in_tag && s1_words[j] > last && original_bytes[last + 1] !~ /^[<>]$/ && !s1_at(last + 1, "/>") && (assigned || original_bytes[last + 1] !~ /^[[:space:],;:}\]]$/)) s1_range(j, s1_words[j])
           else s1_range(j + 1, last - 1)
           return
         }
+        if (in_tag) { s1_range(j + 1, s1_tag_end(j) - 1); return }
       }
-      if (in_tag && q != "\"" && q != s1_apostrophe) { if (!s1_keyword_tag_quote) s1_tag_value_start = j; return }
+      if (in_tag && q != "\"" && q != s1_apostrophe) {
+        if (!s1_keyword_tag_quote) s1_tag_value_start = j
+        else s1_tag_quoted_tail(s1_keyword_tag_start, s1_keyword_tag_start)
+        return
+      }
       # The original bare rule took the leftmost value, then skipped any
       # keyword-looking suffix inside that value. Closing-key quotes belong
       # require a quoted value, including its unmatched-quote fallback.
@@ -819,18 +831,35 @@ mask() {
       s1_alias_name = name
       return name == "curl" ? suffix : 0
     }
-    function s1_entry_client(first, last,    j, c, name, alias) {
+    function s1_h0_name(first, last,    j, c, word, quote, nextc) {
+      # Only literal public command names qualify. Shell single quotes keep
+      # backslashes; double quotes remove them only before shell-special bytes.
+      for (j = first; j <= last && length(word) < 16; j++) {
+        c = original_bytes[j]
+        if (quote && c == quote) { quote = ""; continue }
+        if (!quote && (c == "\"" || c == s1_apostrophe)) { quote = c; continue }
+        if (c == "\\" && quote != s1_apostrophe && j < last) {
+          nextc = original_bytes[j + 1]
+          if (quote != "\"" || nextc == "$" || nextc == "`" || nextc == "\"" || nextc == "\\") c = original_bytes[++j]
+        }
+        word = word c
+      }
+      return quote || j <= last ? "" : word
+    }
+    function s1_entry_client(first, last,    j, c, name, alias, path) {
       alias = s1_curl_alias(first, last)
       if (alias || s1_alias_name == "curl") return "curl"
       for (j = first; j <= last; j++) {
         c = original_bytes[j]
         if (c == "\"" || c == s1_apostrophe) continue
         if (c == "\\" && j < last) c = original_bytes[++j]
-        if (c == "/") name = ""
+        if (c == "/") { name = ""; path = 1 }
         else if (length(name) < 32) name = name c
       }
       if (name ~ /^(mysql|mysqldump|mysqladmin|mariadb|mariadb-dump)$/) return "mysql"
-      return name == "redis-cli" ? name : "-"
+      if (name == "redis-cli") return name
+      if (first > last || (last - first == 1 && (s1_at(first, "\"\"") || s1_at(first, s1_apostrophe s1_apostrophe)))) return "empty"
+      return name == "sort" && !path && s1_h0_name(first, last) == "sort" ? "-" : "default-u"
     }
     function s1_container_value_option(option) {
       # Explicit arities: an option operand must never become an image/client.
@@ -883,20 +912,59 @@ mask() {
       # Explicit nonclient/empty entrypoints override client-looking images.
       # Leave handled false so nested substitutions in operands still run.
       if (s1_entrypoint[level]) {
-        if (s1_entrypoint[level] != "-") s1_clients[level, s1_entrypoint[level]] = 1
+        s1_h0_public[level] = s1_entrypoint[level] == "-" || s1_entrypoint[level] == "empty"
+        s1_h0_image_command[level] = s1_entrypoint[level] == "empty"
+        if (!s1_h0_public[level]) s1_clients[level, s1_entrypoint[level]] = 1
         s1_container[level] = 0; delete s1_entrypoint[level]; return 1
       }
       alias = s1_curl_alias(first, last)
       if (alias == 2) { s1_container[level] = 2; return 0 }
       s1_container[level] = 0
+      s1_h0_image_command[level] = 1
       return 0
+    }
+    function s1_curl_value(first, last, colon, redis_url,    j, end) {
+      # Redis -u takes a URL, unlike curl -u username:password. Keep only
+      # that existing URL host control, and consume a quoted userinfo value
+      # through @ even when its password includes whitespace.
+      if (redis_url && s1_at(colon, "://")) {
+        j = colon + 3
+        while (j <= last && original_bytes[j] !~ /[\/:@]/) j++
+        if (original_bytes[j] == ":") {
+          first = j + 1; end = first
+          while (end <= last && original_bytes[end] !~ /[\/@]/) end++
+          if (original_bytes[end] == "@") { s1_value(first, end - 1); return }
+        }
+      }
+      s1_value(colon + 1, last)
+    }
+    function s1_h0_default(level) {
+      return s1_h0_active && !s1_h0_public[level]
+    }
+    function s1_h0_command(first, last, level,    j, c, word) {
+      if (!s1_command_start[level] && !s1_h0_image_command[level]) return
+      # An explicitly empty entrypoint with only option operands is an
+      # existing public control. An actual command is classified afresh.
+      if (s1_h0_image_command[level] == 2) { s1_h0_image_command[level] = 1; return }
+      if (s1_h0_image_command[level] && s1_h0_public[level]) {
+        if (last - first == 1 && s1_at(first, "-u")) { s1_h0_image_command[level] = 2; return }
+        if (last - first > 1 && s1_at(first, "-p")) return
+      }
+      s1_h0_image_command[level] = 0
+      word = s1_h0_name(first, last)
+      s1_h0_public[level] = word == "sort" || word == "date"
+      s1_h0_text[level] = word == "echo" || word == "printf"
     }
     function s1_token(first, last, level,    j, c, word, count, start, finish, colon, client, probe, probe_count, alias) {
       # Names have bounded cooked spellings; values keep their full extent.
       word = ""; client = ""; count = 0; s1_handled = 0
       # A container option operand is not its image or an executable. Keep
       # handled false so substitutions inside the operand are still inspected.
-      if (s1_container[level] >= 2 && s1_container_token(first, last, level)) return
+      if (s1_container[level] >= 2) {
+        if (s1_container_token(first, last, level)) return
+        if (s1_h0_image_command[level]) return
+      }
+      s1_h0_command(first, last, level)
       if (s1_expected[level]) {
         if (s1_expected[level] == "curl") {
           colon = first
@@ -906,7 +974,7 @@ mask() {
             if (original_bytes[colon + 1] != "\"" && original_bytes[colon + 1] != s1_apostrophe) {
               while (finish > colon && (original_bytes[finish] == "\"" || original_bytes[finish] == s1_apostrophe)) finish--
             }
-            s1_value(colon + 1, finish)
+            s1_curl_value(first, finish, colon, s1_clients[level, "redis-cli"] && !s1_clients[level, "curl"])
           }
         } else s1_value(first, last)
         s1_expected[level] = ""; s1_handled = 1; return
@@ -941,6 +1009,7 @@ mask() {
       if (j > last || original_bytes[j] != "-") {
         probe = ""; probe_count = 0
         for (j = last; j >= first && probe_count < 12; j--) {
+          if (s1_h0_text[level] && (j in s1_literal_newlines)) s1_h0_public[level] = 1
           c = original_bytes[j]
           if (c == "\"" || c == s1_apostrophe || c == "\\") continue
           probe = c probe; probe_count++
@@ -962,21 +1031,24 @@ mask() {
         s1_clients[level, client] = 1; s1_handled = 1; return
       }
       if (word == "--passphrase" || word == "--passwd") { s1_expected[level] = "keyword"; return }
-      if (s1_clients[level, "curl"] && (word == "-u" || word == "-su" || word == "--user")) { s1_expected[level] = "curl"; return }
+      if (!s1_h0_public[level] && (s1_clients[level, "curl"] || s1_h0_default(level)) && (word == "-u" || word == "-su" || word == "--user")) { s1_expected[level] = "curl"; return }
       # curl -u consumes an attached value; -s is a boolean short option and
       # may precede it in the same word. Other short-option grammars are not
       # guessed here, since an earlier option may itself consume the suffix.
-      if (s1_clients[level, "curl"] && (word ~ /^--user=/ || word ~ /^-s?u./)) {
+      if (!s1_h0_public[level] && (s1_clients[level, "curl"] || s1_h0_default(level)) && (word ~ /^--user=/ || word ~ /^-s?u./)) {
         start = word ~ /^--user=/ ? s1_positions[7] + 1 : s1_positions[word ~ /^-su/ ? 3 : 2] + 1
         colon = start
         while (colon <= last && original_bytes[colon] != ":") colon++
-        if (colon <= last) s1_value(colon + 1, last)
+        if (colon <= last) s1_curl_value(start, last, colon, s1_clients[level, "redis-cli"] && !s1_clients[level, "curl"])
         s1_handled = 1
       }
       if (s1_clients[level, "mysql"] && word ~ /^-p./) {
         s1_value(s1_positions[2] + 1, last); s1_handled = 1
       }
       if (s1_clients[level, "redis-cli"] && (word == "-a" || word == "--pass")) s1_expected[level] = "redis"
+    }
+    function s1_json_continuation(at) {
+      return s1_json_continuations[at]
     }
     function s1_json_separator(at) {
       return s1_json_record && original_bytes[at] == "\\" && !(at in s1_escaped) && original_bytes[at + 1] ~ /^[nrt]$/
@@ -997,22 +1069,23 @@ mask() {
       if (level >= 32) { s1_range(first, last); return }
       if (level) {
         s1_clients[level, "mysql"] = s1_clients[level, "curl"] = s1_clients[level, "redis-cli"] = 0
-        s1_expected[level] = ""; s1_command_start[level] = 1; s1_container[level] = 0; delete s1_entrypoint[level]
+        s1_expected[level] = ""; s1_command_start[level] = 1; s1_container[level] = 0; delete s1_entrypoint[level]; s1_h0_public[level] = 0; s1_h0_image_command[level] = 0; s1_h0_text[level] = 0
       }
       if (array_value) s1_clients[level, "curl"] = 1
       for (i = first; i <= last; i++) {
         c = original_bytes[i]
+        if (s1_json_record && (qend = s1_json_continuation(i))) { i += qend - 1; continue }
         if (s1_json_record && s1_json_separator(i)) {
           if (original_bytes[i + 1] != "t") {
             s1_clients[level, "mysql"] = s1_clients[level, "curl"] = s1_clients[level, "redis-cli"] = 0
-            s1_expected[level] = ""; s1_command_start[level] = 1; s1_container[level] = 0; delete s1_entrypoint[level]
+            s1_expected[level] = ""; s1_command_start[level] = 1; s1_container[level] = 0; delete s1_entrypoint[level]; s1_h0_public[level] = 0; s1_h0_image_command[level] = 0; s1_h0_text[level] = 0
           }
           i++; continue
         }
         if (c ~ /[[:space:]]/) continue
         if (c ~ /[|;&()]/ || (c ~ /[{}]/ && s1_command_start[level] && (i == last || original_bytes[i + 1] ~ /[[:space:]|;&()]/))) {
           s1_clients[level, "mysql"] = s1_clients[level, "curl"] = s1_clients[level, "redis-cli"] = 0
-          s1_expected[level] = ""; s1_command_start[level] = 1; s1_container[level] = 0; delete s1_entrypoint[level]; continue
+          s1_expected[level] = ""; s1_command_start[level] = 1; s1_container[level] = 0; delete s1_entrypoint[level]; s1_h0_public[level] = 0; s1_h0_image_command[level] = 0; s1_h0_text[level] = 0; continue
         }
         if (s1_simple) {
           end = i
@@ -1034,6 +1107,9 @@ mask() {
             if ((c == "\"" || c == s1_apostrophe) && !(j in s1_escaped)) {
               qend = s1_word_quoted(j)
               if (qend && qend <= end) s1_scan(j + 1, qend - 1, level + 1)
+              else if (qend > end && j < end) { s1_scan(j + 1, end, level + 1); j = end }
+            } else if (c == "{" && (qend = s1_braces[j])) {
+              if (qend <= end) s1_scan(j + 1, qend - 1, level + 1)
             } else if (c == "`" && !(j in s1_escaped)) {
               qend = s1_ticks[j]
               if (qend && qend <= end) s1_scan(j + 1, qend - 1, level + 1)
@@ -1073,7 +1149,8 @@ mask() {
     function s1_tag_quoted_tail(first, quote,    last, tag_end, qend) {
       # Cover every glued quoted/unquoted piece while retaining the tag end
       # needed by later HTML input rules. Boundaries are cached/table lookups.
-      tag_end = s1_tag_end(first); last = s1_fast_tag ? s1_tag_word_end(first, tag_end) : s1_words[first]
+      tag_end = s1_tag_end(first); qend = s1_quoted(quote)
+      last = !qend ? tag_end - 1 : (s1_fast_tag ? s1_tag_word_end(first, tag_end) : s1_words[first])
       if (last >= tag_end) last = tag_end - 1
       if (s1_has_dash && s1_dash[first] && s1_dash[first] <= last) last = s1_dash[first] - 1
       # The compatibility keyword pass must retain its quote boundary rather
@@ -1092,7 +1169,7 @@ mask() {
       }
       s1_range(first, last)
     }
-    function s1_keywords(probe,    i, c, covered, in_tag, tag_quote) {
+    function s1_keywords(probe,    i, c, covered, in_tag, tag_quote, tag_quote_start) {
       s1_probe_only = probe; s1_probe_needed = 0; s1_tag_value_start = 0
       if (probe) { s1_probe_tag = 0; s1_probe_complex = 0 }
       s1_tag_end_first = n + 1; s1_tag_end_last = 0
@@ -1111,11 +1188,11 @@ mask() {
         }
         if (in_tag) {
           if (tag_quote) { if (c == tag_quote) tag_quote = "" }
-          else if (c == "\"" || c == s1_apostrophe) tag_quote = c
+          else if (c == "\"" || c == s1_apostrophe) { tag_quote = c; tag_quote_start = i }
           else if (c == ">") in_tag = 0
         } else if (c == "<" && original_bytes[i + 1] ~ /[A-Za-z\/!?]/) in_tag = 1
         if (i in s1_suppressed) covered += s1_suppressed[i]
-        if (!covered && c ~ /[tTkKsSpPaAbB]/ && tolower(c original_bytes[i + 1]) ~ /^(to|ke|se|pa|au|be)$/) { s1_keyword_tag_quote = tag_quote; s1_keyword(i, in_tag) }
+        if (!covered && c ~ /[tTkKsSpPaAbB]/ && tolower(c original_bytes[i + 1]) ~ /^(to|ke|se|pa|au|be)$/) { s1_keyword_tag_quote = tag_quote; s1_keyword_tag_start = tag_quote_start; s1_keyword(i, in_tag) }
         if (probe && s1_probe_complex) break
       }
       s1_probe_only = 0
@@ -1125,11 +1202,11 @@ mask() {
     function s1_can_skip_collection(    probe, needed) {
       # Quote-only records have no recursion beyond one double-quoted span.
       # Exclude live continuation state and every possible token/flag family.
-      if (s1_continued || s1_array_depth || s1_container[0] || s1_has_single || index($0, "\\") || $0 ~ /[`$(){}]/ || s1_original_needed() || s1_expected[0] || s1_clients[0, "mysql"] || s1_clients[0, "curl"] || s1_clients[0, "redis-cli"]) return 0
+      if (s1_h0_active || s1_continued || s1_array_depth || s1_container[0] || s1_has_single || index($0, "\\") || $0 ~ /[`$(){}]/ || s1_original_needed() || s1_expected[0] || s1_clients[0, "mysql"] || s1_clients[0, "curl"] || s1_clients[0, "redis-cli"]) return 0
       if (index($0, "----")) return 0
       probe = $0
       gsub(/"/, "", probe)
-      if (probe ~ /curl|mysql|mariadb|redis-cli|--passphrase|--passwd/) return 0
+      if (probe ~ /curl|mysql|mariadb|redis-cli|--passphrase|--passwd|--?u/) return 0
       # Provisional F6 ranges are committed only after the complete probe.
       # A later complex keyword discards them before canonical collection.
       s1_fast_tag = 1
@@ -1192,7 +1269,7 @@ mask() {
       }
       printf "%s", chunk
     }
-    function s1_collect(    i, j, c, q, slash, ending, active, masked, protected, chunk, size, last, label, previous, tick, top, open, brace_top, shell_next, group_quote, group_quote_start, next_double, array_record) {
+    function s1_collect(    i, j, c, q, slash, ending, active, masked, protected, chunk, size, last, label, previous, tick, top, open, brace_top, shell_next, group_quote, group_quote_start, next_double, array_record, slash_run, slash_first) {
       s1_has_ranges = 0
       s1_probe_only = 0; s1_fast_tag = 0
       split("", s1_fast_first); split("", s1_fast_last); split("", s1_fast_quote); split("", s1_fast_compact)
@@ -1201,7 +1278,8 @@ mask() {
       array_record = s1_array_depth
       split("", s1_marks); split("", s1_protect); split("", s1_suppressed)
       split("", s1_double); split("", s1_single); split("", s1_words)
-      split("", s1_escaped); split("", s1_dash)
+      split("", s1_escaped); split("", s1_dash); split("", s1_json_continuations); split("", s1_literal_newlines)
+      s1_h0_active = index($0, "-u") || index($0, "-su")
       split("", s1_ticks); split("", s1_parens); split("", s1_stack)
       split("", s1_unclosed_parens); split("", s1_literal_substitution)
       split("", s1_shell_single); split("", s1_shell_double)
@@ -1215,7 +1293,7 @@ mask() {
       s1_simple = !s1_has_single && $0 !~ /["\\`$(){}]/
       # Continuation carries context without removing LF (archive refence and
       # PEM counters still see the same physical records). Ordinary LF resets.
-      if (!s1_continued) { split("", s1_clients); split("", s1_expected); split("", s1_container); split("", s1_entrypoint); s1_command_start[0] = 1 }
+      if (!s1_continued) { split("", s1_clients); split("", s1_expected); split("", s1_container); split("", s1_entrypoint); split("", s1_h0_public); split("", s1_h0_image_command); split("", s1_h0_text); s1_command_start[0] = 1 }
       if (array_record) { s1_clients[0, "curl"] = 1; s1_expected[0] = s1_array_expected }
       # Proven inactive S1 records still pass through all downstream maskers.
       if (s1_can_skip_collection()) { s1_continued = 0; printf "%s", $0; return }
@@ -1228,7 +1306,18 @@ mask() {
       }
       if (index($0, "\\")) for (i = 1; i <= n; i++) {
         if (slash) s1_escaped[i] = 1
-        if (original_bytes[i] == "\\") slash = !slash; else slash = 0
+        if (original_bytes[i] == "\\") {
+          if (!slash_run) slash_first = i
+          slash_run++; slash = !slash
+        } else {
+          # tojson encodes a shell continuation as 3 (mod 4) backslashes
+          # followed by n, or r+\n. Classify the run only once at its start.
+          if (s1_json_record && slash_run % 4 == 3 && original_bytes[i] ~ /^[nr]$/) {
+            if (original_bytes[i] == "n") s1_json_continuations[slash_first] = slash_run + 1
+            else if (original_bytes[i + 1] == "\\" && original_bytes[i + 2] == "n") s1_json_continuations[slash_first] = slash_run + 3
+          } else if (slash_run && original_bytes[i] == "n" && s1_at(i + 1, "curl")) s1_literal_newlines[i] = 1
+          slash_run = 0; slash = 0
+        }
       }
       ending = n
       if (ending && original_bytes[ending] == "\r") ending--
@@ -1294,7 +1383,7 @@ mask() {
         } else if (c == "{" && (j = s1_braces[i])) s1_words[i] = s1_words[j + 1]
         else if (c == "`" && !(i in s1_escaped) && (j = s1_ticks[i])) s1_words[i] = s1_words[j + 1]
         else if (c ~ /[[:space:]|;&()]/) s1_words[i] = i - 1
-        else if (s1_json_record && s1_json_separator(i)) s1_words[i] = i - 1
+        else if (s1_json_record && (s1_json_separator(i) || s1_json_continuation(i))) s1_words[i] = i - 1
         else if (c == "\\" && i < ending) s1_words[i] = s1_words[i + 2]
         else if ((c == "\"" || c == s1_apostrophe) && (j = s1_word_quoted(i)) && j <= ending) s1_words[i] = s1_words[j + 1]
         else s1_words[i] = s1_words[i + 1]
@@ -1325,7 +1414,7 @@ mask() {
       # Do not let that fragment opt later ordinary commands into -u masking.
       if (any_fence && (array_record || s1_array_depth)) {
         s1_array_depth = 0; s1_array_quote = ""; s1_array_expected = ""
-        split("", s1_clients); split("", s1_expected); split("", s1_container); split("", s1_entrypoint)
+        split("", s1_clients); split("", s1_expected); split("", s1_container); split("", s1_entrypoint); split("", s1_h0_public); split("", s1_h0_image_command); split("", s1_h0_text)
         s1_continued = 0; s1_command_start[0] = 1
       }
       s1_blank_first = n + 1; s1_blank_last = 0

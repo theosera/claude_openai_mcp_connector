@@ -273,8 +273,8 @@ for (const [index, file] of COPIES.entries()) {
       checkCase(source, c);
       const mutant = changed(
         source,
-        "function s1_entry_client(first, last,    j, c, name, alias) {",
-        'function s1_entry_client(first, last,    j, c, name, alias) {\n      return "-"'
+        "function s1_entry_client(first, last,    j, c, name, alias, path) {",
+        'function s1_entry_client(first, last,    j, c, name, alias, path) {\n      return "-"'
       );
       const output = run(mutant, c.input);
       expect(readable(output, c.secrets), "G1 mutation exposes each entrypoint credential").toEqual(c.secrets);
@@ -287,7 +287,11 @@ for (const [index, file] of COPIES.entries()) {
         secrets: []
       };
       checkCase(source, c);
-      const mutant = changed(source, "return option ~ /^(", "return 0 && option ~ /^(");
+      const mutant = changed(
+        changed(source, "return s1_h0_active && !s1_h0_public[level]", "return 0"),
+        "return option ~ /^(",
+        "return 0 && option ~ /^("
+      );
       const output = run(mutant, c.input);
       expect(broken(c.input, output, ["sort -u source:dest"]), "G2 mutation damages the named public control").toEqual([
         "sort -u source:dest"

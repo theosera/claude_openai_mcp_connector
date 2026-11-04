@@ -742,10 +742,13 @@ function nonBashInput(): Case {
     preserve: ["SyntheticTool", "KEEP_ROUTE", "KEEP_ROUTE_END"]
   };
 }
-function reverseCases(source: string, cases: Case[], before: string, after: string) {
+function reverseCases(source: string, cases: Case[], before: string, after: string, removeH0Default = false) {
   expect(cases.length).toBeGreaterThan(0);
   for (const c of cases) requireHidden(run(source, c.input), c);
-  const mutant = changed(source, before, after);
+  const mutationSource = removeH0Default
+    ? changed(source, "return s1_h0_active && !s1_h0_public[level]", "return 0")
+    : source;
+  const mutant = changed(mutationSource, before, after);
   for (const c of cases) {
     const output = run(mutant, c.input);
     expect(readable(output, c.secrets), `${c.id}: mutation reaches actual canary`).toEqual(c.secrets);
@@ -868,7 +871,8 @@ for (const [index, file] of COPIES.entries()) {
         source,
         CASES.filter((c) => c.id.startsWith("F2-")),
         "return s1_json_record &&",
-        "return 0 && s1_json_record &&"
+        "return 0 && s1_json_record &&",
+        true
       );
     });
     timed(file, "F2 covers the shipped non-Bash tool renderer through the masking stage", () => {
@@ -879,7 +883,8 @@ for (const [index, file] of COPIES.entries()) {
         source,
         CASES.filter((c) => c.family === "F3-alias"),
         "alias && (s1_command_start[level] || (alias == 2 && s1_container[level] == 2))",
-        "0 && alias && (s1_command_start[level] || (alias == 2 && s1_container[level] == 2))"
+        "0 && alias && (s1_command_start[level] || (alias == 2 && s1_container[level] == 2))",
+        true
       );
     });
     timed(file, "F3 scopes expanded credential clients to command position", () => {
@@ -887,7 +892,8 @@ for (const [index, file] of COPIES.entries()) {
         source,
         CASES.filter((c) => c.family === "F3-dynamic"),
         'if (s1_command_start[level] && original_bytes[j] == "$"',
-        'if (0 && s1_command_start[level] && original_bytes[j] == "$"'
+        'if (0 && s1_command_start[level] && original_bytes[j] == "$"',
+        true
       );
     });
     timed(file, "F3 confines option-array credentials to their own array body", () => {
@@ -895,7 +901,8 @@ for (const [index, file] of COPIES.entries()) {
         source,
         CASES.filter((c) => c.family === "F3-array"),
         'if (s1_command_start[level] && original_bytes[end + 1] == "(" && s1_option_array(i, end))',
-        'if (0 && s1_command_start[level] && original_bytes[end + 1] == "(" && s1_option_array(i, end))'
+        'if (0 && s1_command_start[level] && original_bytes[end + 1] == "(" && s1_option_array(i, end))',
+        true
       );
     });
     timed(file, "F3 carries historical array depth without rebuilding old stack entries", () => {
@@ -936,10 +943,15 @@ for (const [index, file] of COPIES.entries()) {
         preserve: ["sort -u source:dest", "KEEP_BOUNDARY"]
       };
       requireHidden(run(source, c.input), c);
-      const mutant = changed(
-        source,
+      let mutant = changed(
+        changed(source, "return s1_h0_active && !s1_h0_public[level]", "return 0"),
         "if (any_fence && (array_record || s1_array_depth))",
         "if (0 && any_fence && (array_record || s1_array_depth))"
+      );
+      mutant = changed(
+        mutant,
+        '!s1_h0_public[level] && (s1_clients[level, "curl"] || s1_h0_default(level)) && (word == "-u"',
+        's1_clients[level, "curl"] && (word == "-u"'
       );
       const output = run(mutant, c.input);
       expect(readable(output, c.secrets)).toEqual([]);
@@ -951,7 +963,8 @@ for (const [index, file] of COPIES.entries()) {
         source,
         CASES.filter((c) => c.family === "F3-url"),
         'if (original_bytes[j] != ":") continue',
-        'if (j == i + 3 || original_bytes[j] != ":") continue'
+        'if (j == i + 3 || original_bytes[j] != ":") continue',
+        true
       );
     });
     timed(file, "F3 carries client context across CRLF continuations only", () => {
@@ -959,7 +972,8 @@ for (const [index, file] of COPIES.entries()) {
         source,
         CASES.filter((c) => c.family === "F3-crlf"),
         'if (ending && original_bytes[ending] == "\\r") ending--',
-        'if (0 && ending && original_bytes[ending] == "\\r") ending--'
+        'if (0 && ending && original_bytes[ending] == "\\r") ending--',
+        true
       );
     });
     timed(file, "F4 retains public text around empty attached user options", () => {
@@ -1032,7 +1046,8 @@ for (const [index, file] of COPIES.entries()) {
         source,
         CASES.filter((c) => c.id.startsWith("F5-")),
         "if (c ~ /[|;&()]/ || (c ~ /[{}]/ && s1_command_start[level] && (i == last || original_bytes[i + 1] ~ /[[:space:]|;&()]/)))",
-        "if (c ~ /[|;&(){}]/)"
+        "if (c ~ /[|;&(){}]/)",
+        true
       );
     });
     timed(file, "F6 masks quoted attribute tails without damaging earlier HTML input guards", () => {
