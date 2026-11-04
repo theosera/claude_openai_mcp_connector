@@ -522,12 +522,84 @@ mask() {
       s1_alias_name = name
       return name == "curl" ? suffix : 0
     }
+    function s1_entry_client(first, last,    j, c, name, alias) {
+      alias = s1_curl_alias(first, last)
+      if (alias || s1_alias_name == "curl") return "curl"
+      for (j = first; j <= last; j++) {
+        c = original_bytes[j]
+        if (c == "\"" || c == s1_apostrophe) continue
+        if (c == "\\" && j < last) c = original_bytes[++j]
+        if (c == "/") name = ""
+        else if (length(name) < 32) name = name c
+      }
+      if (name ~ /^(mysql|mysqldump|mysqladmin|mariadb|mariadb-dump)$/) return "mysql"
+      return name == "redis-cli" ? name : "-"
+    }
+    function s1_container_value_option(option) {
+      # Explicit arities: an option operand must never become an image/client.
+      # Keep attached operands in their own token and booleans such as --rm free
+      # to precede the image. This is a maintained grammar, not CLI discovery.
+      return option ~ /^(--add-host|--annotation|--attach|--blkio-weight|--blkio-weight-device|--cap-add|--cap-drop|--cgroup-parent|--cgroupns|--cidfile|--cpu-count|--cpu-percent|--cpu-period|--cpu-quota|--cpu-rt-period|--cpu-rt-runtime|--cpu-shares|--cpus|--cpuset-cpus|--cpuset-mems|--device|--device-cgroup-rule|--device-read-bps|--device-read-iops|--device-write-bps|--device-write-iops|--detach-keys|--dns|--dns-option|--dns-search|--domainname|--entrypoint|--env|--env-file|--expose|--gpus|--group-add|--health-cmd|--health-interval|--health-retries|--health-start-interval|--health-start-period|--health-timeout|--hostname|--io-maxbandwidth|--io-maxiops|--ip|--ip6|--ipc|--isolation|--kernel-memory|--label|--label-file|--link|--link-local-ip|--log-driver|--log-opt|--mac-address|--memory|--memory-reservation|--memory-swap|--memory-swappiness|--mount|--name|--net|--network|--network-alias|--oom-score-adj|--pid|--pids-limit|--platform|--publish|--pull|--restart|--runtime|--security-opt|--shm-size|--stop-signal|--stop-timeout|--storage-opt|--sysctl|--tmpfs|--ulimit|--user|--userns|--uts|--volume|--volume-driver|--volumes-from|--workdir)$/
+    }
+    function s1_container_short_pending(first, last,    j, c, started, value) {
+      # Walk the actual token, not the capped option-name spelling. A long
+      # boolean cluster can put its value-taking flag beyond that prefix.
+      for (j = first; j <= last; j++) {
+        c = original_bytes[j]
+        if (c == "\"" || c == s1_apostrophe) continue
+        if (c == "\\" && j < last) c = original_bytes[++j]
+        if (!started) { started = 1; continue }
+        if (value) return 0
+        if (c ~ /^[acehlmpuvw]$/) value = 1
+      }
+      return value
+    }
+    function s1_container_token(first, last, level,    j, c, word, equal, alias) {
+      # Defer entrypoint activation until after the image: container -u/-p
+      # still refer to its user/ports, not the entrypoint credentials.
+      if (s1_container[level] == 3) { s1_container[level] = 2; return 1 }
+      if (s1_container[level] == 4) {
+        s1_entrypoint[level] = s1_entry_client(first, last)
+        s1_container[level] = 2; return 1
+      }
+      for (j = first; j <= last && length(word) < 32; j++) {
+        c = original_bytes[j]
+        if (c == "\"" || c == s1_apostrophe) continue
+        if (c == "\\" && j < last) c = original_bytes[++j]
+        if (c == "=") { equal = j; break }
+        word = word c
+      }
+      if (s1_container[level] != 5 && substr(word, 1, 1) == "-") {
+        if (word == "--") { s1_container[level] = 5; return 1 }
+        if (word == "--entrypoint") {
+          if (equal) s1_entrypoint[level] = s1_entry_client(equal + 1, last)
+          else s1_container[level] = 4
+        } else if (s1_container_value_option(word)) {
+          if (!equal) s1_container[level] = 3
+        } else if (substr(word, 1, 2) != "--") {
+          # A value-taking short option consumes the cluster suffix, or one
+          # next word when it is last. Earlier boolean flags consume no value.
+          if (s1_container_short_pending(first, last)) s1_container[level] = 3
+        }
+        return 1
+      }
+      # Explicit nonclient/empty entrypoints override client-looking images.
+      # Leave handled false so nested substitutions in operands still run.
+      if (s1_entrypoint[level]) {
+        if (s1_entrypoint[level] != "-") s1_clients[level, s1_entrypoint[level]] = 1
+        s1_container[level] = 0; delete s1_entrypoint[level]; return 1
+      }
+      alias = s1_curl_alias(first, last)
+      if (alias == 2) { s1_container[level] = 2; return 0 }
+      s1_container[level] = 0
+      return 0
+    }
     function s1_token(first, last, level,    j, c, word, count, start, finish, colon, client, probe, probe_count, alias) {
       # Names have bounded cooked spellings; values keep their full extent.
       word = ""; client = ""; count = 0; s1_handled = 0
       # A container option operand is not its image or an executable. Keep
       # handled false so substitutions inside the operand are still inspected.
-      if (s1_container[level] == 3) { s1_container[level] = 2; return }
+      if (s1_container[level] >= 2 && s1_container_token(first, last, level)) return
       if (s1_expected[level]) {
         if (s1_expected[level] == "curl") {
           colon = first
@@ -592,9 +664,6 @@ mask() {
         if (client ~ /^(mysql|mysqldump|mysqladmin|mariadb|mariadb-dump)$/) client = "mysql"
         s1_clients[level, client] = 1; s1_handled = 1; return
       }
-      if (s1_container[level] == 2 && word ~ /^(-e|--env|-v|--volume|-w|--workdir|-u|--user|-p|--publish|--name|--network|--entrypoint|--mount|--platform|--hostname|--userns|--label|--env-file|--dns)$/) {
-        s1_container[level] = 3; s1_handled = 1; return
-      }
       if (word == "--passphrase" || word == "--passwd") { s1_expected[level] = "keyword"; return }
       if (s1_clients[level, "curl"] && (word == "-u" || word == "-su" || word == "--user")) { s1_expected[level] = "curl"; return }
       # curl -u consumes an attached value; -s is a boolean short option and
@@ -631,7 +700,7 @@ mask() {
       if (level >= 32) { s1_range(first, last); return }
       if (level) {
         s1_clients[level, "mysql"] = s1_clients[level, "curl"] = s1_clients[level, "redis-cli"] = 0
-        s1_expected[level] = ""; s1_command_start[level] = 1; s1_container[level] = 0
+        s1_expected[level] = ""; s1_command_start[level] = 1; s1_container[level] = 0; delete s1_entrypoint[level]
       }
       if (array_value) s1_clients[level, "curl"] = 1
       for (i = first; i <= last; i++) {
@@ -639,14 +708,14 @@ mask() {
         if (s1_json_record && s1_json_separator(i)) {
           if (original_bytes[i + 1] != "t") {
             s1_clients[level, "mysql"] = s1_clients[level, "curl"] = s1_clients[level, "redis-cli"] = 0
-            s1_expected[level] = ""; s1_command_start[level] = 1; s1_container[level] = 0
+            s1_expected[level] = ""; s1_command_start[level] = 1; s1_container[level] = 0; delete s1_entrypoint[level]
           }
           i++; continue
         }
         if (c ~ /[[:space:]]/) continue
         if (c ~ /[|;&()]/ || (c ~ /[{}]/ && s1_command_start[level] && (i == last || original_bytes[i + 1] ~ /[[:space:]|;&()]/))) {
           s1_clients[level, "mysql"] = s1_clients[level, "curl"] = s1_clients[level, "redis-cli"] = 0
-          s1_expected[level] = ""; s1_command_start[level] = 1; s1_container[level] = 0; continue
+          s1_expected[level] = ""; s1_command_start[level] = 1; s1_container[level] = 0; delete s1_entrypoint[level]; continue
         }
         if (s1_simple) {
           end = i
@@ -849,7 +918,7 @@ mask() {
       s1_simple = !s1_has_single && $0 !~ /["\\`$(){}]/
       # Continuation carries context without removing LF (archive refence and
       # PEM counters still see the same physical records). Ordinary LF resets.
-      if (!s1_continued) { split("", s1_clients); split("", s1_expected); split("", s1_container); s1_command_start[0] = 1 }
+      if (!s1_continued) { split("", s1_clients); split("", s1_expected); split("", s1_container); split("", s1_entrypoint); s1_command_start[0] = 1 }
       if (array_record) { s1_clients[0, "curl"] = 1; s1_expected[0] = s1_array_expected }
       # Proven inactive S1 records still pass through all downstream maskers.
       if (s1_can_skip_collection()) { s1_continued = 0; printf "%s", $0; return }
@@ -959,7 +1028,7 @@ mask() {
       # Do not let that fragment opt later ordinary commands into -u masking.
       if (any_fence && (array_record || s1_array_depth)) {
         s1_array_depth = 0; s1_array_quote = ""; s1_array_expected = ""
-        split("", s1_clients); split("", s1_expected); split("", s1_container)
+        split("", s1_clients); split("", s1_expected); split("", s1_container); split("", s1_entrypoint)
         s1_continued = 0; s1_command_start[0] = 1
       }
       s1_blank_first = n + 1; s1_blank_last = 0
