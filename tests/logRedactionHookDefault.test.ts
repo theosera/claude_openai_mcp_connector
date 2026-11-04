@@ -287,6 +287,26 @@ for (const [kind, input, secrets] of [
     "quoted-scheme-spaced-tail",
     '<x note="token: Basic SYN_H3_SCHEME_SPACE_HEAD9 SYN_H3_SCHEME_SPACE_TAIL9"> KEEP_H3',
     ["SYN_H3_SCHEME_SPACE_HEAD9", "SYN_H3_SCHEME_SPACE_TAIL9"]
+  ],
+  [
+    "nested-quoted-dash-double",
+    '<x note="token: SYN_H3_DASH_DQ_HEAD9-----SYN_H3_DASH_DQ_TAIL9"> KEEP_H3',
+    ["SYN_H3_DASH_DQ_HEAD9", "SYN_H3_DASH_DQ_TAIL9"]
+  ],
+  [
+    "nested-quoted-dash-single",
+    "<x note='token: SYN_H3_DASH_SQ_HEAD9-----SYN_H3_DASH_SQ_TAIL9'> KEEP_H3",
+    ["SYN_H3_DASH_SQ_HEAD9", "SYN_H3_DASH_SQ_TAIL9"]
+  ],
+  [
+    "bare-quoted-dash-double",
+    '<x token=public"SYN_H3_BARE_DQ_HEAD9-----SYN_H3_BARE_DQ_TAIL9"> KEEP_H3',
+    ["SYN_H3_BARE_DQ_HEAD9", "SYN_H3_BARE_DQ_TAIL9"]
+  ],
+  [
+    "bare-quoted-dash-single",
+    "<x token=public'SYN_H3_BARE_SQ_HEAD9-----SYN_H3_BARE_SQ_TAIL9'> KEEP_H3",
+    ["SYN_H3_BARE_SQ_HEAD9", "SYN_H3_BARE_SQ_TAIL9"]
   ]
 ] as const) {
   CASES.push({ id: `H3-${kind}`, family: "H3", input, secrets: [...secrets], preserve: [">", "KEEP_H3"] });
@@ -702,6 +722,16 @@ for (const [index, file] of COPIES.entries()) {
         CASES.filter((c) => c.id.startsWith("H3-quoted-scheme-")),
         "if (in_tag && s1_keyword_tag_quote && !s1_probe_only) { s1_tag_quoted_tail(s1_keyword_tag_start, s1_keyword_tag_start); return }",
         "if (0 && in_tag && s1_keyword_tag_quote && !s1_probe_only) { s1_tag_quoted_tail(s1_keyword_tag_start, s1_keyword_tag_start); return }",
+        (c) => [c.secrets[1]!]
+      );
+    });
+
+    measured(file, "H3 quoted attribute values retain their full extent across five-dash runs", () => {
+      requireGuard(
+        source,
+        CASES.filter((c) => c.id.startsWith("H3-nested-quoted-dash-") || c.id.startsWith("H3-bare-quoted-dash-")),
+        "if (s1_dash[first] < quote || (qend && s1_dash[first] > qend)) {",
+        "if (1) {",
         (c) => [c.secrets[1]!]
       );
     });

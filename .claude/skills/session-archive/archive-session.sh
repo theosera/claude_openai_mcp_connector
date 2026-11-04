@@ -1152,7 +1152,12 @@ mask() {
       tag_end = s1_tag_end(first); qend = s1_quoted(quote)
       last = !qend ? tag_end - 1 : (s1_fast_tag ? s1_tag_word_end(first, tag_end) : s1_words[first])
       if (last >= tag_end) last = tag_end - 1
-      if (s1_has_dash && s1_dash[first] && s1_dash[first] <= last) last = s1_dash[first] - 1
+      # The bare five-dash boundary cannot cut an embedded quoted piece.
+      # Keep that boundary only outside the quote; armor ranges are protected
+      # separately before keyword collection.
+      if (s1_dash[first] < quote || (qend && s1_dash[first] > qend)) {
+        if (s1_has_dash && s1_dash[first] && s1_dash[first] <= last) last = s1_dash[first] - 1
+      }
       # The compatibility keyword pass must retain its quote boundary rather
       # than treating the replacement plus the closing angle as one bare value.
       s1_protect[quote]++; s1_protect[quote + 1]--
