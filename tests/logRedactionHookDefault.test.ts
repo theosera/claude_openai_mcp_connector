@@ -307,10 +307,23 @@ for (const [kind, input, secrets] of [
     "bare-quoted-dash-single",
     "<x token=public'SYN_H3_BARE_SQ_HEAD9-----SYN_H3_BARE_SQ_TAIL9'> KEEP_H3",
     ["SYN_H3_BARE_SQ_HEAD9", "SYN_H3_BARE_SQ_TAIL9"]
+  ],
+  [
+    "dash-second-quoted-piece",
+    '<x token=public"SYN_H3_SECOND_HEAD9"middle"private-----SYN_H3_SECOND_TAIL9"> KEEP_H3',
+    ["SYN_H3_SECOND_HEAD9", "SYN_H3_SECOND_TAIL9"]
   ]
 ] as const) {
   CASES.push({ id: `H3-${kind}`, family: "H3", input, secrets: [...secrets], preserve: [">", "KEEP_H3"] });
 }
+
+CASES.push({
+  id: "H3-dash-inside-then-outside",
+  family: "H3",
+  input: '<x token=public"SYN_H3_INSIDE_HEAD9-----SYN_H3_INSIDE_TAIL9"middle-----KEEP_H3_DASH_PUBLIC> KEEP_H3',
+  secrets: ["SYN_H3_INSIDE_HEAD9", "SYN_H3_INSIDE_TAIL9"],
+  preserve: ["-----KEEP_H3_DASH_PUBLIC", ">", "KEEP_H3"]
+});
 
 CASES.push({
   id: "H3-structural-input-password-type",
@@ -503,6 +516,35 @@ function beforeLegacySed(source: string): string {
   const boundary = "\n  ' |\n  sed -E \\\n";
   expect(source.split(boundary), "first collector / legacy sed boundary").toHaveLength(2);
   return source.slice(0, source.indexOf(boundary)) + "\n  '\n}";
+}
+
+function dashTrace(source: string, input: string) {
+  let collector = beforeLegacySed(source);
+  const first = collector.indexOf("    function s1_tag_dash(");
+  const last = collector.indexOf("\n    function ", first + 1);
+  expect(first, "quoted-dash helper exists").toBeGreaterThanOrEqual(0);
+  expect(last, "quoted-dash helper boundary exists").toBeGreaterThan(first);
+  const helper = collector.slice(first, last);
+  const instrumented = changed(
+    helper,
+    "      while (i <= last) {\n        c = original_bytes[i]",
+    "      while (i <= last) {\n        s1_test_dash_steps++\n        c = original_bytes[i]"
+  );
+  collector = changed(collector, helper, instrumented);
+  collector = changed(
+    collector,
+    "\n  '\n}",
+    '\n    END { printf "\\nS1_DASH_STEPS=%d\\n", s1_test_dash_steps + 0 }\n  \'\n}'
+  );
+  const output = run(collector, input);
+  const trace = [...output.matchAll(/\nS1_DASH_STEPS=(\d+)\n/g)];
+  expect(trace, "quoted-dash step trace reached its collector END").toHaveLength(1);
+  return { steps: Number(trace[0]![1]), payload: output.replace(trace[0]![0], "") };
+}
+
+function requireDashBound(trace: ReturnType<typeof dashTrace>, inputBytes: number): void {
+  expect(trace.steps, "H3 quoted-dash instrumentation reaches its loop").toBeGreaterThan(0);
+  expect(trace.steps, "H3 cached quoted-dash walk stays bounded").toBeLessThanOrEqual(3 * inputBytes);
 }
 
 function requireGuard(
@@ -729,10 +771,58 @@ for (const [index, file] of COPIES.entries()) {
     measured(file, "H3 quoted attribute values retain their full extent across five-dash runs", () => {
       requireGuard(
         source,
-        CASES.filter((c) => c.id.startsWith("H3-nested-quoted-dash-") || c.id.startsWith("H3-bare-quoted-dash-")),
-        "if (s1_dash[first] < quote || (qend && s1_dash[first] > qend)) {",
-        "if (1) {",
+        CASES.filter(
+          (c) =>
+            c.id.startsWith("H3-nested-quoted-dash-") ||
+            c.id.startsWith("H3-bare-quoted-dash-") ||
+            c.id === "H3-dash-second-quoted-piece" ||
+            c.id === "H3-dash-inside-then-outside"
+        ),
+        "cap = s1_has_dash ? s1_tag_dash(first, last) : 0",
+        "cap = s1_has_dash ? s1_dash[first] : 0",
         (c) => [c.secrets[1]!]
+      );
+    });
+
+    measured(file, "H3 memoizes quoted-dash walks across repeated labels in the same attribute", () => {
+      const c: Case = {
+        id: "H3-quoted-dash-cache",
+        family: "H3",
+        input:
+          '<x note="' +
+          Array<string>(32).fill("token: SYN_H3_CACHE9").join(" ") +
+          '"' +
+          "x".repeat(1024) +
+          "-----KEEP_CACHE_PUBLIC> KEEP_CACHE_END",
+        secrets: ["SYN_H3_CACHE9"],
+        preserve: ["-----KEEP_CACHE_PUBLIC", ">", "KEEP_CACHE_END"]
+      };
+      requireHidden(run(source, c.input), c);
+      const inputBytes = Buffer.byteLength(c.input);
+      const cached = dashTrace(source, c.input);
+      requireDashBound(cached, inputBytes);
+      const mutant = changed(
+        source,
+        "if (first >= s1_tag_dash_first && last <= s1_tag_dash_last && (!s1_tag_dash_cap || s1_tag_dash_cap >= first)) return s1_tag_dash_cap",
+        "if (0 && first >= s1_tag_dash_first && last <= s1_tag_dash_last && (!s1_tag_dash_cap || s1_tag_dash_cap >= first)) return s1_tag_dash_cap"
+      );
+      const uncached = dashTrace(mutant, c.input);
+      expect(uncached.payload, "cache removal keeps the collector payload identical").toBe(cached.payload);
+      expect(uncached.steps, "cache removal exceeds the same byte-based work bound").toBeGreaterThan(3 * inputBytes);
+      expect(() => requireDashBound(uncached, inputBytes)).toThrow("H3 cached quoted-dash walk stays bounded");
+      process.stdout.write(
+        JSON.stringify({
+          measurement: "S1-H3-DASH-CACHE",
+          file,
+          sourceHash: sourceHashes[index],
+          inputBytes,
+          labels: 32,
+          gluedBytes: 1024,
+          stepBound: 3 * inputBytes,
+          cachedSteps: cached.steps,
+          uncachedSteps: uncached.steps,
+          samePayload: cached.payload === uncached.payload
+        }) + "\n"
       );
     });
 

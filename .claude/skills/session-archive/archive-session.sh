@@ -1146,18 +1146,36 @@ mask() {
       s1_tag_word_first = first; s1_tag_word_last = j - 1
       return j - 1
     }
-    function s1_tag_quoted_tail(first, quote,    last, tag_end, qend) {
+    function s1_tag_dash(first, last,    i, c, qend, cap) {
+      # Reuse a whole word result for labels inside its quoted pieces. Each
+      # new uncached walk stops at the next bare boundary, and jumps quotes
+      # with the existing close table instead of rescanning their contents.
+      if (first >= s1_tag_dash_first && last <= s1_tag_dash_last && (!s1_tag_dash_cap || s1_tag_dash_cap >= first)) return s1_tag_dash_cap
+      i = first
+      while (i <= last) {
+        c = original_bytes[i]
+        if (c == "\"" || c == s1_apostrophe) {
+          qend = s1_quoted(i)
+          if (!qend || qend > last) break
+          i = qend + 1; continue
+        }
+        if (c == "-" && s1_at(i, "-----")) { cap = i; break }
+        i++
+      }
+      s1_tag_dash_first = first; s1_tag_dash_last = last; s1_tag_dash_cap = cap
+      return cap
+    }
+    function s1_tag_quoted_tail(first, quote,    last, tag_end, qend, cap) {
       # Cover every glued quoted/unquoted piece while retaining the tag end
       # needed by later HTML input rules. Boundaries are cached/table lookups.
       tag_end = s1_tag_end(first); qend = s1_quoted(quote)
       last = !qend ? tag_end - 1 : (s1_fast_tag ? s1_tag_word_end(first, tag_end) : s1_words[first])
       if (last >= tag_end) last = tag_end - 1
-      # The bare five-dash boundary cannot cut an embedded quoted piece.
-      # Keep that boundary only outside the quote; armor ranges are protected
+      # A bare boundary cannot cut any glued quoted piece. Conversely a later
+      # outside boundary still keeps its public suffix. Armor is protected
       # separately before keyword collection.
-      if (s1_dash[first] < quote || (qend && s1_dash[first] > qend)) {
-        if (s1_has_dash && s1_dash[first] && s1_dash[first] <= last) last = s1_dash[first] - 1
-      }
+      cap = s1_has_dash ? s1_tag_dash(first, last) : 0
+      if (cap && cap <= last) last = cap - 1
       # The compatibility keyword pass must retain its quote boundary rather
       # than treating the replacement plus the closing angle as one bare value.
       s1_protect[quote]++; s1_protect[quote + 1]--
@@ -1178,6 +1196,7 @@ mask() {
       s1_probe_only = probe; s1_probe_needed = 0; s1_tag_value_start = 0
       if (probe) { s1_probe_tag = 0; s1_probe_complex = 0 }
       s1_tag_end_first = n + 1; s1_tag_end_last = 0
+      s1_tag_dash_first = n + 1; s1_tag_dash_last = 0; s1_tag_dash_cap = 0
       for (i = 1; i <= n; i++) {
         c = original_bytes[i]
         # Retain the legacy bare-value quote coverage only inside a tag.
