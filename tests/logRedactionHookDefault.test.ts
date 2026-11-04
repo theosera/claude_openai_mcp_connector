@@ -459,6 +459,31 @@ const PUBLIC_CASES: Case[] = [
   }
 ];
 
+// Full-mask outputs measured byte-for-byte at b6e196bf1d497314c8a00eb9b58561531d16d7af,
+// whose complete mask SHA256 is 1ff68fcb0dc12962993c9a15d69240ea0e76adcdcdb710d81d6781cdf024ebe3.
+const FAST_EMISSION_CASES: (Case & { expected: string; ranges: number; quotes: number })[] = [
+  {
+    id: "F6-fast-one-range-spaced-tail",
+    family: "H3",
+    input: '<x token=public"SYN_FAST_HEAD9 SYN_FAST_TAIL9"> KEEP_FAST',
+    secrets: ["SYN_FAST_HEAD9", "SYN_FAST_TAIL9"],
+    preserve: [">", "KEEP_FAST"],
+    expected: '<x token=***MASKED***"***MASKED***"> KEEP_FAST',
+    ranges: 1,
+    quotes: 2
+  },
+  {
+    id: "F6-fast-two-range-spaced-tails",
+    family: "H3",
+    input: '<x token=public"SYN_FAST_A9 SYN_FAST_B9" secret=public"SYN_FAST_C9 SYN_FAST_D9"> KEEP_FAST',
+    secrets: ["SYN_FAST_A9", "SYN_FAST_B9", "SYN_FAST_C9", "SYN_FAST_D9"],
+    preserve: [">", "KEEP_FAST"],
+    expected: '<x token=***MASKED***"***MASKED***" secret=***MASKED***"***MASKED***"> KEEP_FAST',
+    ranges: 2,
+    quotes: 4
+  }
+];
+
 function rendererCase(client: "curl" | "mysql" | "redis", ending: "LF" | "CRLF"): Case {
   const script = readFileSync(join(ROOT, COPIES[1]!), "utf8").split("\n");
   const part = (anchor: string) => {
@@ -545,6 +570,54 @@ function dashTrace(source: string, input: string) {
 function requireDashBound(trace: ReturnType<typeof dashTrace>, inputBytes: number): void {
   expect(trace.steps, "H3 quoted-dash instrumentation reaches its loop").toBeGreaterThan(0);
   expect(trace.steps, "H3 cached quoted-dash walk stays bounded").toBeLessThanOrEqual(3 * inputBytes);
+}
+
+function fastEmissionTrace(source: string, input: string) {
+  let collector = beforeLegacySed(source);
+  collector = changed(
+    collector,
+    "| LC_ALL=C awk '\n",
+    `| LC_ALL=C awk '
+    function s1_test_fast_maps(stage,    key, marks, protect) {
+      for (key in s1_marks) marks++
+      for (key in s1_protect) protect++
+      printf "\\nS1_FAST_MAPS:%s:%d:%d:%d:%d:%d:%d:%d\\n", stage, s1_fast_tag, s1_fast_ordered, s1_fast_count, s1_fast_quotes, s1_has_ranges, marks, protect
+    }
+`
+  );
+  const ordered = "      if (s1_fast_tag && s1_fast_ordered) {";
+  const branch = collector.includes(ordered) ? ordered : "      if (0 && s1_fast_tag && s1_fast_ordered) {";
+  collector = changed(collector, branch, '      s1_test_fast_maps("before")\n' + branch);
+  const generic = "      for (i = 1; i <= n; i++) {\n        if (i in s1_marks)";
+  collector = changed(collector, generic, '      s1_test_fast_maps("generic")\n' + generic);
+  const output = run(collector, input);
+  const pattern = /\nS1_FAST_MAPS:([a-z]+):([0-9:]+)\n/g;
+  const records = [...output.matchAll(pattern)].map((match) => {
+    const values = match[2]!.split(":").map(Number);
+    expect(values, "fast-emission trace has every map and descriptor field").toHaveLength(7);
+    return {
+      stage: match[1]!,
+      fast: values[0]!,
+      ordered: values[1]!,
+      ranges: values[2]!,
+      quotes: values[3]!,
+      hasRanges: values[4]!,
+      marks: values[5]!,
+      protect: values[6]!
+    };
+  });
+  expect(records.length, "fast-emission trace reached its emitter").toBeGreaterThan(0);
+  return { records, payload: output.replace(pattern, "") };
+}
+
+function requireFastDescriptors(trace: ReturnType<typeof fastEmissionTrace>): void {
+  expect(trace.records).toHaveLength(1);
+  const state = trace.records[0]!;
+  expect(state.stage).toBe("before");
+  expect([state.fast, state.ordered, state.hasRanges]).toEqual([1, 1, 1]);
+  expect(state.ranges, "natural fast input produces interval descriptors").toBeGreaterThan(0);
+  expect(state.quotes, "natural fast input produces protected-quote descriptors").toBeGreaterThan(0);
+  expect([state.marks, state.protect], "ordered fast emission does not allocate unused delta maps").toEqual([0, 0]);
 }
 
 function requireGuard(
@@ -847,6 +920,103 @@ for (const [index, file] of COPIES.entries()) {
         String.raw`if (in_tag && s1_keyword_tag_quote && !explicit && (original_bytes[after - 1] == "\"" || original_bytes[after - 1] == s1_apostrophe)) return`,
         String.raw`if (0 && in_tag && s1_keyword_tag_quote && !explicit && (original_bytes[after - 1] == "\"" || original_bytes[after - 1] == s1_apostrophe)) return`
       );
+    });
+
+    measured(file, "F6 natural fast emission preserves the frozen b6 output with descriptors and no delta maps", () => {
+      for (const c of FAST_EMISSION_CASES) {
+        const output = run(source, c.input);
+        requireHidden(output, c);
+        expect(output, `${c.id}: byte-identical frozen b6 output`).toBe(c.expected);
+        const trace = fastEmissionTrace(source, c.input);
+        requireFastDescriptors(trace);
+        requireHidden(trace.payload, c);
+        expect([trace.records[0]!.ranges, trace.records[0]!.quotes], c.id).toEqual([c.ranges, c.quotes]);
+        process.stdout.write(
+          JSON.stringify({
+            measurement: "S1-FAST-EMISSION",
+            file,
+            caseId: c.id,
+            sourceHash: sourceHashes[index],
+            inputBytes: Buffer.byteLength(c.input),
+            normal: trace.records,
+            baselineOutputSha256: createHash("sha256").update(c.expected).digest("hex"),
+            matchesFrozenB6: output === c.expected
+          }) + "\n"
+        );
+      }
+    });
+
+    measured(file, "F6 generic fallback rebuilds exact deltas before emitting fast descriptors", () => {
+      const generic = changed(
+        source,
+        "if (s1_fast_tag && s1_fast_ordered)",
+        "if (0 && s1_fast_tag && s1_fast_ordered)"
+      );
+      const missingRebuild = changed(
+        generic,
+        "if (s1_fast_tag) {\n        for (range = 1; range <= s1_fast_count; range++)",
+        "if (0 && s1_fast_tag) {\n        for (range = 1; range <= s1_fast_count; range++)"
+      );
+      for (const c of FAST_EMISSION_CASES) {
+        const ordered = fastEmissionTrace(source, c.input);
+        const rebuilt = fastEmissionTrace(generic, c.input);
+        expect(rebuilt.records.map((state) => state.stage)).toEqual(["before", "generic"]);
+        expect([rebuilt.records[0]!.marks, rebuilt.records[0]!.protect]).toEqual([0, 0]);
+        expect(rebuilt.records[1]!.marks, "generic emission reconstructs interval deltas").toBeGreaterThan(0);
+        expect(rebuilt.records[1]!.protect, "generic emission reconstructs quote deltas").toBeGreaterThan(0);
+        expect(rebuilt.payload, `${c.id}: ordered and generic collector payloads`).toBe(ordered.payload);
+        requireHidden(rebuilt.payload, c);
+        const output = run(generic, c.input);
+        requireHidden(output, c);
+        expect(output, `${c.id}: generic emission retains the frozen b6 output`).toBe(c.expected);
+        const absent = fastEmissionTrace(missingRebuild, c.input);
+        expect([absent.records[1]!.marks, absent.records[1]!.protect]).toEqual([0, 0]);
+        expect(readable(absent.payload, c.secrets), `${c.id}: collector without rebuild exposes canaries`).toEqual(
+          c.secrets
+        );
+        expect(() => requireHidden(absent.payload, c)).toThrow(`${c.id}: original credential guard`);
+        const leaked = run(missingRebuild, c.input);
+        expect(readable(leaked, c.secrets), `${c.id}: full mask without rebuild exposes canaries`).toEqual(c.secrets);
+        expect(broken(c.input, leaked, c.preserve), c.id).toEqual([]);
+        expect(() => requireHidden(leaked, c)).toThrow(`${c.id}: original credential guard`);
+        process.stdout.write(
+          JSON.stringify({
+            measurement: "S1-FAST-REBUILD",
+            file,
+            caseId: c.id,
+            sourceHash: sourceHashes[index],
+            rebuilt: rebuilt.records,
+            missingRebuild: absent.records,
+            sameCollectorPayload: rebuilt.payload === ordered.payload,
+            exposedCanariesWithoutRebuild: readable(leaked, c.secrets).length
+          }) + "\n"
+        );
+      }
+    });
+
+    measured(file, "F6 allocation guards independently avoid maps unused by ordered emission", () => {
+      const first = source.indexOf("    function s1_tag_quoted_tail(");
+      const last = source.indexOf("\n    function ", first + 1);
+      expect(first).toBeGreaterThanOrEqual(0);
+      expect(last).toBeGreaterThan(first);
+      const helper = source.slice(first, last);
+      const allocated = changed(
+        changed(helper, "if (!s1_fast_tag) {", "if (1) {"),
+        "if (!s1_fast_tag) s1_range(first, last)",
+        "if (1) s1_range(first, last)"
+      );
+      const mutant = changed(source, helper, allocated);
+      for (const c of FAST_EMISSION_CASES) {
+        const normal = fastEmissionTrace(source, c.input);
+        const allocatedTrace = fastEmissionTrace(mutant, c.input);
+        expect(allocatedTrace.payload, `${c.id}: allocating unused maps retains collector output`).toBe(normal.payload);
+        expect(run(mutant, c.input), `${c.id}: allocating unused maps retains full output`).toBe(c.expected);
+        expect(allocatedTrace.records[0]!.marks).toBeGreaterThan(0);
+        expect(allocatedTrace.records[0]!.protect).toBeGreaterThan(0);
+        expect(() => requireFastDescriptors(allocatedTrace)).toThrow(
+          "ordered fast emission does not allocate unused delta maps"
+        );
+      }
     });
 
     measured(file, "H4 brace-region guard alone scans clients inside non-command braces", () => {

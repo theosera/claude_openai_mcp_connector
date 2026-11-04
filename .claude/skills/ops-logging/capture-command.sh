@@ -843,7 +843,7 @@ mask() {
       j = first
       while (j < limit) {
         if (original_bytes[j] ~ /[[:space:]|;&()]/) break
-        if (original_bytes[j] == "\"" && (qend = s1_quoted(j))) j = qend
+        if (original_bytes[j] == "\"" && (qend = s1_raw_double[j])) j = qend
         j++
       }
       s1_tag_word_first = first; s1_tag_word_last = j - 1
@@ -871,7 +871,7 @@ mask() {
     function s1_tag_quoted_tail(first, quote,    last, tag_end, qend, cap) {
       # Cover every glued quoted/unquoted piece while retaining the tag end
       # needed by later HTML input rules. Boundaries are cached/table lookups.
-      tag_end = s1_tag_end(first); qend = s1_quoted(quote)
+      tag_end = s1_tag_end(first); qend = s1_fast_tag ? s1_raw_double[quote] : s1_quoted(quote)
       last = !qend ? tag_end - 1 : (s1_fast_tag ? s1_tag_word_end(first, tag_end) : s1_words[first])
       if (last >= tag_end) last = tag_end - 1
       # A bare boundary cannot cut any glued quoted piece. Conversely a later
@@ -881,19 +881,21 @@ mask() {
       if (cap && cap <= last) last = cap - 1
       # The compatibility keyword pass must retain its quote boundary rather
       # than treating the replacement plus the closing angle as one bare value.
-      s1_protect[quote]++; s1_protect[quote + 1]--
-      qend = s1_quoted(quote)
-      if (qend && qend <= last) { s1_protect[qend]++; s1_protect[qend + 1]-- }
+      if (!s1_fast_tag) {
+        s1_protect[quote]++; s1_protect[quote + 1]--
+        if (qend && qend <= last) { s1_protect[qend]++; s1_protect[qend + 1]-- }
+      }
       if (s1_fast_tag) {
         if (first <= last) {
           if (s1_fast_count && first < s1_fast_first[s1_fast_count]) s1_fast_ordered = 0
+          s1_has_ranges = 1
           s1_fast_first[++s1_fast_count] = first; s1_fast_last[s1_fast_count] = last; s1_fast_compact[s1_fast_count] = tag_end > n
         }
         if (s1_fast_quotes && quote < s1_fast_quote[s1_fast_quotes]) s1_fast_ordered = 0
         s1_fast_quote[++s1_fast_quotes] = quote
         if (qend && qend <= last) s1_fast_quote[++s1_fast_quotes] = qend
       }
-      s1_range(first, last)
+      if (!s1_fast_tag) s1_range(first, last)
     }
     function s1_keywords(probe,    i, c, covered, in_tag, tag_quote, tag_quote_start) {
       s1_probe_only = probe; s1_probe_needed = 0; s1_tag_value_start = 0
@@ -984,6 +986,16 @@ mask() {
         }
         printf "%s", chunk
         return
+      }
+      if (s1_fast_tag) {
+        for (range = 1; range <= s1_fast_count; range++) {
+          first = s1_fast_first[range]; last = s1_fast_last[range]
+          s1_marks[first]++; s1_marks[last + 1]--
+        }
+        for (range = 1; range <= s1_fast_quotes; range++) {
+          point = s1_fast_quote[range]
+          s1_protect[point]++; s1_protect[point + 1]--
+        }
       }
       for (i = 1; i <= n; i++) {
         if (i in s1_marks) active += s1_marks[i]
@@ -1305,19 +1317,21 @@ mask() {
       clear_tag()
     }
     function clear_tag(    j) {
-      for (j = 1; j <= used; j++) delete tag[j]
+      split("", tag)
       used = 0
       state = 0
     }
     function finish_value() {
-      if (attr == "type" && value == "password") password_input = 1
+      if (!label && attr == "type" && value == "password") password_input = 1
       attr = value = ""
       attribute = 0
     }
+    # A keyword-labelled tag is masked independently of attribute spelling.
+    # Keep all quote/state transitions, but fold type/value names only for input.
     function attribute_byte(c) {
       if (quote != "") {
         if (c == quote) { quote = ""; finish_value() }
-        else if (length(value) <= 8) value = value tolower(c)
+        else if (!label && length(value) <= 8) value = value tolower(c)
         return
       }
       if (attribute == 3) {
@@ -1330,18 +1344,18 @@ mask() {
         if (c ~ /[[:space:]]/) finish_value()
         # Keep one byte past password/ so longer slash-bearing types cannot
         # truncate to the terminal form recognized by close_tag().
-        else if (length(value) <= 9) value = value tolower(c)
+        else if (!label && length(value) <= 9) value = value tolower(c)
         return
       }
       if (c == "=" && (attribute == 1 || attribute == 2)) { attribute = 3; return }
       if (c ~ /[[:space:]]/) { if (attribute == 1) attribute = 2; return }
       if (attribute != 1) { attr = ""; attribute = 1 }
-      if (length(attr) <= 4) attr = attr tolower(c)
+      if (!label && length(attr) <= 4) attr = attr tolower(c)
     }
     function close_tag(    j, marked) {
       # This function sees > itself. Only an unfinished bare type can treat
       # its final slash as />; quoted or whitespace-terminated values cannot.
-      if (attribute == 4 && attr == "type" && value == "password/") password_input = 1
+      if (!label && attribute == 4 && attr == "type" && value == "password/") password_input = 1
       if (attribute == 4) finish_value()
       if (!label && !password_input) { flush_tag(); return }
       for (j = 1; j <= name_end; j++) emit(tag[j])
@@ -1471,7 +1485,7 @@ mask() {
       }
     }
     function legacy_clear(    j) {
-      for (j = 1; j <= legacy_used; j++) delete legacy_tag[j]
+      split("", legacy_tag)
       legacy_used = legacy_state = legacy_cr = 0
       legacy_word = ""
     }
