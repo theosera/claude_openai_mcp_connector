@@ -1321,6 +1321,83 @@ describe("OAuth TTLs are read one variable at a time (#301)", () => {
   });
 });
 
+// #301's rule for the two integers that still went through parseInt. parseInt
+// read only the leading digits, so "8abc" and "1.5e3" became 8 and 1 — a usable
+// value, which is why nothing failed.
+//
+// Reverse-verified (2026-10-29, one mutation per site, each putting that site
+// back on parseInt): the scan site reddened exactly "8abc", "1.5e3", "1e2",
+// "8.0", "+8" and "8 1" ("expected 8 to be undefined"), the port site exactly
+// "8787abc", "1.5e3", "8.787e3", "8787.0", "+8787" and "8787 1" ("expected
+// [Function] to throw"), and neither touched the other block. Putting the scan
+// site's `isSafeInteger` back to `isInteger` reddened only "99999999999999999999".
+// The other cases read the same under parseInt; "0x10" and "0x1f90" are there
+// because `Number` alone would take them.
+describe("MCP_SCAN_CONCURRENCY is read from plain decimal digits only", () => {
+  const read = (value: string | undefined) =>
+    loadConfig({ KNOWLEDGE_ROOT: "/vaults/alpha", MCP_SCAN_CONCURRENCY: value }).scanConcurrency;
+
+  it.each([
+    ["8", 8],
+    [" 16 ", 16],
+    ["\t4\r\n", 4],
+    ["008", 8]
+  ])("reads %j as %i", (value, expected) => {
+    expect(read(value)).toBe(expected);
+  });
+
+  it.each([
+    "8abc",
+    "1.5e3",
+    "1e2",
+    "8.0",
+    "0x10",
+    "+8",
+    "8 1",
+    "８",
+    "0",
+    "000",
+    "-1",
+    "abc",
+    "",
+    "99999999999999999999"
+  ])("keeps the default for %j", (value) => {
+    expect(read(value)).toBeUndefined();
+  });
+
+  it("keeps the default when unset", () => {
+    expect(read(undefined)).toBeUndefined();
+  });
+});
+
+describe("MCP_HTTP_PORT is read from plain decimal digits only", () => {
+  const read = (value: string | undefined) => loadHttpConfig({ MCP_AUTH_TOKEN: "t", MCP_HTTP_PORT: value }).port;
+
+  it.each([
+    ["8799", 8799],
+    [" 8799 ", 8799],
+    ["08799", 8799],
+    ["1", 1],
+    ["65535", 65535]
+  ])("reads %j as %i", (value, expected) => {
+    expect(read(value)).toBe(expected);
+  });
+
+  it.each([undefined, "", "   "])("uses 8787 for %j", (value) => {
+    expect(read(value)).toBe(8787);
+  });
+
+  // Refused, not defaulted: a typo must not start the server on a port nobody
+  // asked for. Each is matched on the message so a throw from elsewhere cannot
+  // pass for the refusal.
+  it.each(["8787abc", "1.5e3", "8.787e3", "8787.0", "0x1f90", "+8787", "8787 1", "８７８７", "abc", "0", "65536"])(
+    "refuses %j",
+    (value) => {
+      expect(() => read(value)).toThrow(/Invalid MCP_HTTP_PORT=/);
+    }
+  );
+});
+
 // INV-7 item 4: with MCP_OAUTH_ENABLED set, a missing issuer, a non-https
 // issuer, or a missing password must refuse to boot rather than advertise a
 // half-built authorization server. Every other OAuth test builds its config
