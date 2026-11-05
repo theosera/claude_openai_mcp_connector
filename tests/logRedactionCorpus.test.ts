@@ -51,7 +51,7 @@ describe("the core on the corpus", () => {
   });
 
   it("masks every secret and keeps every preserve word", () => {
-    expect(corpus).toHaveLength(217);
+    expect(corpus).toHaveLength(221);
     const failures = corpus
       .map((c) => ({ id: c.id, ...verdict(c) }))
       .filter((v) => v.result.status !== "ok" || v.leaked.length > 0 || v.broken.length > 0)
