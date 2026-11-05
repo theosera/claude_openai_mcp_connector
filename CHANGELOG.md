@@ -95,6 +95,14 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   subsection, reserving a subtree and registering its write tools are now two
   separate steps, and the multiple-roots subsection says how to turn the file's
   `KNOWLEDGE_ROOT` line into `KNOWLEDGE_ROOTS`. Docs only.
+- **The pinned development and CI Node version moves from 24.22.1 to
+  26.13.0**, the first LTS release of the 26.x line. `.node-version`, the exact
+  matrix leg and the macOS job name 26.13.0; `engines` stays `>=22.12.0` and
+  the 22.x leg is unchanged. The required status check follows the matrix leg,
+  from `build (24.22.1)` to `build (26.13.0)`. Node 26 no longer ships
+  Corepack, so the setup steps in `README.md` and `CONTRIBUTING.md` install it
+  first. The entries below, which moved the pin to 24.22.1 and to 24.22.0, are
+  records of their time and stay as written.
 - **The pinned development and CI Node version moves from 24.22.0 to
   24.22.1**, the 24.x line's fix in the Node.js security release of
   2026-10-21. `.node-version`, the exact matrix leg and the macOS job name
