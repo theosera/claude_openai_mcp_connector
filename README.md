@@ -98,7 +98,8 @@ missing, install it from <https://nodejs.org/> (LTS). This project uses
 [`pnpm`](https://pnpm.io/) for builds — enable it once with:
 
 ```bash
-corepack enable        # ships with Node; turns on pnpm
+npm install -g corepack   # Node 26 no longer ships it
+corepack enable           # turns on pnpm
 ```
 
 That's the whole toolchain. A one-command install that skips the build step is
