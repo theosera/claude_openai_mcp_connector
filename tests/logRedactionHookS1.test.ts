@@ -481,11 +481,7 @@ for (const [index, file] of COPIES.entries()) {
 
     it("retains shell command boundaries for client recognition", () => {
       const source = masks[index]!;
-      const mutant = changed(
-        source,
-        "else if (c ~ /[[:space:]|;&()]/)",
-        "else if (c ~ /[[:space:]|;&)]/)"
-      );
+      const mutant = changed(source, "else if (c ~ /[[:space:]|;&()]/)", "else if (c ~ /[[:space:]|;&)]/)");
       const publicInput = "mysql -e'PUBLIC_CX_SQL'(printf -pPUBLIC_CX_FLAG)";
       expect(run(source, publicInput)).toBe(publicInput);
       expect(run(mutant, publicInput)).not.toBe(publicInput);
