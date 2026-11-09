@@ -791,6 +791,8 @@ mask() {
         last = s1_quoted(j)
         if (last) {
           if (in_tag) { s1_tag_quoted_tail(j, j); return }
+          # Collect the adjacent closed suffix without changing shell word ends.
+          if (original_bytes[last + 1] == "(" && s1_parens[last + 1]) s1_range(last + 2, s1_parens[last + 1] - 1)
           # Shell values can glue quoted/unquoted pieces and substitutions.
           # JSON/YAML separators end the value instead of joining the next key.
           if (!in_tag && s1_words[j] > last && original_bytes[last + 1] !~ /^[<>]$/ && !s1_at(last + 1, "/>") && (assigned || original_bytes[last + 1] !~ /^[[:space:],;:}\]]$/)) s1_range(j, s1_words[j])

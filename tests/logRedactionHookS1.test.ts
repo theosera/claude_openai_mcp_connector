@@ -447,6 +447,80 @@ const corpus = readFileSync(join(ROOT, "tests/fixtures/redaction-corpus/corpus.j
 const issueCases = corpus.filter((c) => /^(G-230-|G-234-|K-|M-|O-|S1-)/.test(c.id));
 const masks = COPIES.map(extracted);
 
+const mainMask = readFileSync(join(ROOT, "tests/fixtures/log-redaction-s1-base-mask.sh"), "utf8");
+const mainVerdicts = corpus.map(({ input, secrets, preserve }) => {
+  const output = run(mainMask, input);
+  return { leaked: readable(output, secrets), broken: broken(input, output, preserve) };
+});
+const ax7 = corpus.find(({ id }) => id === "A-X7")!;
+const adjacentSuffixGuard =
+  '          if (original_bytes[last + 1] == "(" && s1_parens[last + 1]) s1_range(last + 2, s1_parens[last + 1] - 1)';
+
+for (const [index, file] of COPIES.entries()) {
+  describe(`CX-1109-2: ${file}`, () => {
+    it("A-X7 hides every declared secret and retains public controls", () => {
+      expect(ax7.secrets).toHaveLength(2);
+      expect(ax7.preserve).toHaveLength(1);
+      for (const word of [...ax7.secrets, ...ax7.preserve]) expect(ax7.input).toContain(word);
+      const output = run(masks[index]!, ax7.input);
+      expect(readable(output, ax7.secrets)).toEqual([]);
+      expect(broken(ax7.input, output, ax7.preserve)).toEqual([]);
+    });
+
+    it("A-X7 rejects removal of only the added original-range guard", () => {
+      const source = masks[index]!;
+      const mutant = changed(source, adjacentSuffixGuard, "          # Guard removed in memory only.");
+      const output = run(mutant, ax7.input);
+      const leaked = readable(output, ax7.secrets);
+      expect(readable(run(source, ax7.input), ax7.secrets)).toEqual([]);
+      expect(leaked).toEqual(ax7.secrets.slice(1));
+      expect(broken(ax7.input, output, ax7.preserve)).toEqual([]);
+      const requireHidden = () => expect(leaked.length, "A-X7: readable secret count").toBe(0);
+      expect(requireHidden).toThrow("A-X7: readable secret count");
+    });
+
+    it("retains shell command boundaries for client recognition", () => {
+      const source = masks[index]!;
+      const mutant = changed(
+        source,
+        "else if (c ~ /[[:space:]|;&()]/)",
+        "else if (c ~ /[[:space:]|;&)]/)"
+      );
+      const publicInput = "mysql -e'PUBLIC_CX_SQL'(printf -pPUBLIC_CX_FLAG)";
+      expect(run(source, publicInput)).toBe(publicInput);
+      expect(run(mutant, publicInput)).not.toBe(publicInput);
+      const nestedInput = "printf 'PUBLIC_CX'(mysql -pSYNTH_CX_SECRET) KEEP_CX_END";
+      const output = run(source, nestedInput);
+      expect(readable(output, ["SYNTH_CX_SECRET"])).toEqual([]);
+      expect(broken(nestedInput, output, ["PUBLIC_CX", "mysql", "KEEP_CX_END"])).toEqual([]);
+      expect(readable(run(mutant, nestedInput), ["SYNTH_CX_SECRET"])).toEqual(["SYNTH_CX_SECRET"]);
+    });
+
+    it("retains the main corpus floor and the two existing public-control allowances", () => {
+      expect(corpus).toHaveLength(221);
+      expect(createHash("sha256").update(mainMask.trimEnd()).digest("hex")).toBe(
+        "617fa9d045214e0cb1c6515fbee280111480ddac9d7edbcf74b1ec35a6579805"
+      );
+      const failures = corpus.flatMap(({ id, input, secrets, preserve }, row) => {
+        const output = run(masks[index]!, input);
+        const baseline = mainVerdicts[row]!;
+        const leaked = readable(output, secrets).filter((word) => !baseline.leaked.includes(word)).length;
+        const lost = broken(input, output, preserve);
+        const allowance = id === "J-A2" ? 1 : id === "J-A3" ? 2 : 0;
+        if (allowance) {
+          const before = changed(masks[index]!, adjacentSuffixGuard, "");
+          expect(lost, id).toEqual(broken(input, run(before, input), preserve));
+        }
+        const publicFailure = allowance
+          ? Number(lost.length !== allowance)
+          : lost.filter((word) => !baseline.broken.includes(word)).length;
+        return leaked || publicFailure ? [{ id, leaked, publicFailure }] : [];
+      });
+      expect(failures).toEqual([]);
+    });
+  });
+}
+
 describe("S1 #249 native BSD unclosed escaped-DQ hook growth", { timeout: 180_000 }, () => {
   // Scoped duplicate of the existing logRedactionPerf contract for this newly
   // requested S1 shape only: its private test harness cannot be imported without
