@@ -409,6 +409,56 @@ REGRESSION_CASES.push(
   }
 );
 
+// #249 A: a parenthesized tail glued to a closed quoted value (corpus A-X7).
+// The pre-S1 hooks hide the whole value; S1 must not leave the tail readable.
+// Declared secrets are the words main's hooks hide (both copies, measured at
+// main cd66e8e9). A word after a space inside the parentheses is readable on
+// main too, so it is not declared here; public controls must survive.
+const AX7_SHAPE_CASES: Case[] = [
+  {
+    id: "paren-tail-single-quoted",
+    input: "password='HEADZZ9'(TAILZZ9) KEEP_AX7_SQ",
+    secrets: ["HEADZZ9", "TAILZZ9"],
+    preserve: ["KEEP_AX7_SQ"]
+  },
+  {
+    id: "paren-tail-double-quoted",
+    input: 'password="HEADZZ9"(TAILZZ9) KEEP_AX7_DQ',
+    secrets: ["HEADZZ9", "TAILZZ9"],
+    preserve: ["KEEP_AX7_DQ"]
+  },
+  {
+    id: "paren-tail-space-in-parens",
+    input: "password='HEADZZ9'(TAILZZ9 MIDZZ9) KEEP_AX7_SP",
+    secrets: ["HEADZZ9", "TAILZZ9"],
+    preserve: ["KEEP_AX7_SP"]
+  },
+  {
+    id: "paren-tail-next-secret-label",
+    input: "password='HEADZZ9'(TAILZZ9) token: NEXTZZ9 KEEP_AX7_NEXT",
+    secrets: ["HEADZZ9", "TAILZZ9", "NEXTZZ9"],
+    preserve: ["KEEP_AX7_NEXT"]
+  },
+  {
+    id: "paren-tail-next-public-command",
+    input: "password='HEADZZ9'(TAILZZ9); echo KEEP_AX7_CMD",
+    secrets: ["HEADZZ9", "TAILZZ9"],
+    preserve: ["echo", "KEEP_AX7_CMD"]
+  },
+  {
+    id: "paren-tail-then-substitution",
+    input: "password='HEADZZ9'(TAILZZ9) && echo \"$(printf KEEP_AX7_SUB)\"",
+    secrets: ["HEADZZ9", "TAILZZ9"],
+    preserve: ["KEEP_AX7_SUB"]
+  },
+  {
+    id: "paren-tail-quote-concat",
+    input: "password='HEADZZ9''MIDZZ9'(TAILZZ9) KEEP_AX7_CAT",
+    secrets: ["HEADZZ9", "MIDZZ9", "TAILZZ9"],
+    preserve: ["KEEP_AX7_CAT"]
+  }
+];
+
 // Measured on both complete masks at immutable 6fb1a228a0bb66a41c8241517013c8a53556ef21:
 // every declared secret word below was already readable. These noncanonical
 // JSON argv/escaped-JSON and unclosed-input-attribute shapes have no masking
@@ -445,6 +495,7 @@ const corpus = readFileSync(join(ROOT, "tests/fixtures/redaction-corpus/corpus.j
   .split("\n")
   .map((line) => JSON.parse(line) as Case);
 const issueCases = corpus.filter((c) => /^(G-230-|G-234-|K-|M-|O-|S1-)/.test(c.id));
+const parenTailCorpus = corpus.filter((c) => c.id === "A-X7");
 const masks = COPIES.map(extracted);
 
 const mainMask = readFileSync(join(ROOT, "tests/fixtures/log-redaction-s1-base-mask.sh"), "utf8");
@@ -903,6 +954,20 @@ for (const [index, file] of COPIES.entries()) {
 
     it.each(REGRESSION_CASES)(
       "$id hides original secret words and preserves its public controls",
+      ({ input, secrets, preserve }) => {
+        for (const word of [...secrets, ...preserve]) expect(input).toContain(word);
+        const output = run(source, input);
+        expect(readable(output, secrets)).toEqual([]);
+        expect(broken(input, output, preserve)).toEqual([]);
+      }
+    );
+
+    it("pins the corpus A-X7 row by id", () => {
+      expect(parenTailCorpus.map((c) => c.id)).toEqual(["A-X7"]);
+    });
+
+    it.each([...parenTailCorpus, ...AX7_SHAPE_CASES])(
+      "$id hides a parenthesized tail glued to a quoted value and preserves its public controls",
       ({ input, secrets, preserve }) => {
         for (const word of [...secrets, ...preserve]) expect(input).toContain(word);
         const output = run(source, input);
