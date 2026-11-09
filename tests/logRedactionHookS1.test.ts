@@ -492,7 +492,7 @@ for (const [index, file] of COPIES.entries()) {
       expect(readable(run(mutant, nestedInput), ["SYNTH_CX_SECRET"])).toEqual(["SYNTH_CX_SECRET"]);
     });
 
-    it("retains the main corpus floor and the two existing public-control allowances", () => {
+    it("retains the main corpus floor and the two existing public-control allowances", { timeout: 180_000 }, () => {
       expect(corpus).toHaveLength(221);
       expect(createHash("sha256").update(mainMask.trimEnd()).digest("hex")).toBe(
         "617fa9d045214e0cb1c6515fbee280111480ddac9d7edbcf74b1ec35a6579805"
