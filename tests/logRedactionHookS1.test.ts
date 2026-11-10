@@ -409,6 +409,56 @@ REGRESSION_CASES.push(
   }
 );
 
+// #249 A: a parenthesized tail glued to a closed quoted value (corpus A-X7).
+// The pre-S1 hooks hide the whole value; S1 must not leave the tail readable.
+// Declared secrets are the words main's hooks hide (both copies, measured at
+// main cd66e8e9). A word after a space inside the parentheses is readable on
+// main too, so it is not declared here; public controls must survive.
+const AX7_SHAPE_CASES: Case[] = [
+  {
+    id: "paren-tail-single-quoted",
+    input: "password='HEADZZ9'(TAILZZ9) KEEP_AX7_SQ",
+    secrets: ["HEADZZ9", "TAILZZ9"],
+    preserve: ["KEEP_AX7_SQ"]
+  },
+  {
+    id: "paren-tail-double-quoted",
+    input: 'password="HEADZZ9"(TAILZZ9) KEEP_AX7_DQ',
+    secrets: ["HEADZZ9", "TAILZZ9"],
+    preserve: ["KEEP_AX7_DQ"]
+  },
+  {
+    id: "paren-tail-space-in-parens",
+    input: "password='HEADZZ9'(TAILZZ9 MIDZZ9) KEEP_AX7_SP",
+    secrets: ["HEADZZ9", "TAILZZ9"],
+    preserve: ["KEEP_AX7_SP"]
+  },
+  {
+    id: "paren-tail-next-secret-label",
+    input: "password='HEADZZ9'(TAILZZ9) token: NEXTZZ9 KEEP_AX7_NEXT",
+    secrets: ["HEADZZ9", "TAILZZ9", "NEXTZZ9"],
+    preserve: ["KEEP_AX7_NEXT"]
+  },
+  {
+    id: "paren-tail-next-public-command",
+    input: "password='HEADZZ9'(TAILZZ9); echo KEEP_AX7_CMD",
+    secrets: ["HEADZZ9", "TAILZZ9"],
+    preserve: ["echo", "KEEP_AX7_CMD"]
+  },
+  {
+    id: "paren-tail-then-substitution",
+    input: "password='HEADZZ9'(TAILZZ9) && echo \"$(printf KEEP_AX7_SUB)\"",
+    secrets: ["HEADZZ9", "TAILZZ9"],
+    preserve: ["KEEP_AX7_SUB"]
+  },
+  {
+    id: "paren-tail-quote-concat",
+    input: "password='HEADZZ9''MIDZZ9'(TAILZZ9) KEEP_AX7_CAT",
+    secrets: ["HEADZZ9", "MIDZZ9", "TAILZZ9"],
+    preserve: ["KEEP_AX7_CAT"]
+  }
+];
+
 // Measured on both complete masks at immutable 6fb1a228a0bb66a41c8241517013c8a53556ef21:
 // every declared secret word below was already readable. These noncanonical
 // JSON argv/escaped-JSON and unclosed-input-attribute shapes have no masking
@@ -445,7 +495,171 @@ const corpus = readFileSync(join(ROOT, "tests/fixtures/redaction-corpus/corpus.j
   .split("\n")
   .map((line) => JSON.parse(line) as Case);
 const issueCases = corpus.filter((c) => /^(G-230-|G-234-|K-|M-|O-|S1-)/.test(c.id));
+const parenTailCorpus = corpus.filter((c) => c.id === "A-X7");
 const masks = COPIES.map(extracted);
+
+const mainMask = readFileSync(join(ROOT, "tests/fixtures/log-redaction-s1-base-mask.sh"), "utf8");
+const mainVerdicts = corpus.map(({ input, secrets, preserve }) => {
+  const output = run(mainMask, input);
+  return { leaked: readable(output, secrets), broken: broken(input, output, preserve) };
+});
+const ax7 = corpus.find(({ id }) => id === "A-X7")!;
+const adjacentSuffixGuard =
+  '          if (original_bytes[last + 1] == "(" && s1_parens[last + 1]) s1_range(last + 2, s1_parens[last + 1] - 1)';
+
+for (const [index, file] of COPIES.entries()) {
+  describe(`CX-1109-2: ${file}`, () => {
+    it("A-X7 hides every declared secret and retains public controls", () => {
+      expect(ax7.secrets).toHaveLength(2);
+      expect(ax7.preserve).toHaveLength(1);
+      for (const word of [...ax7.secrets, ...ax7.preserve]) expect(ax7.input).toContain(word);
+      const output = run(masks[index]!, ax7.input);
+      expect(readable(output, ax7.secrets)).toEqual([]);
+      expect(broken(ax7.input, output, ax7.preserve)).toEqual([]);
+    });
+
+    it("A-X7 rejects removal of only the added original-range guard", () => {
+      const source = masks[index]!;
+      const mutant = changed(source, adjacentSuffixGuard, "          # Guard removed in memory only.");
+      const output = run(mutant, ax7.input);
+      const leaked = readable(output, ax7.secrets);
+      expect(readable(run(source, ax7.input), ax7.secrets)).toEqual([]);
+      expect(leaked).toEqual(ax7.secrets.slice(1));
+      expect(broken(ax7.input, output, ax7.preserve)).toEqual([]);
+      const requireHidden = () => expect(leaked.length, "A-X7: readable secret count").toBe(0);
+      expect(requireHidden).toThrow("A-X7: readable secret count");
+    });
+
+    it("retains shell command boundaries for client recognition", () => {
+      const source = masks[index]!;
+      const mutant = changed(source, "else if (c ~ /[[:space:]|;&()]/)", "else if (c ~ /[[:space:]|;&)]/)");
+      const publicInput = "mysql -e'PUBLIC_CX_SQL'(printf -pPUBLIC_CX_FLAG)";
+      expect(run(source, publicInput)).toBe(publicInput);
+      expect(run(mutant, publicInput)).not.toBe(publicInput);
+      const nestedInput = "printf 'PUBLIC_CX'(mysql -pSYNTH_CX_SECRET) KEEP_CX_END";
+      const output = run(source, nestedInput);
+      expect(readable(output, ["SYNTH_CX_SECRET"])).toEqual([]);
+      expect(broken(nestedInput, output, ["PUBLIC_CX", "mysql", "KEEP_CX_END"])).toEqual([]);
+      expect(readable(run(mutant, nestedInput), ["SYNTH_CX_SECRET"])).toEqual(["SYNTH_CX_SECRET"]);
+    });
+
+    it("retains the main corpus floor and the two existing public-control allowances", { timeout: 180_000 }, () => {
+      expect(corpus).toHaveLength(221);
+      expect(createHash("sha256").update(mainMask.trimEnd()).digest("hex")).toBe(
+        "617fa9d045214e0cb1c6515fbee280111480ddac9d7edbcf74b1ec35a6579805"
+      );
+      const failures = corpus.flatMap(({ id, input, secrets, preserve }, row) => {
+        const output = run(masks[index]!, input);
+        const baseline = mainVerdicts[row]!;
+        const leaked = readable(output, secrets).filter((word) => !baseline.leaked.includes(word)).length;
+        const lost = broken(input, output, preserve);
+        const allowance = id === "J-A2" ? 1 : id === "J-A3" ? 2 : 0;
+        if (allowance) {
+          const before = changed(masks[index]!, adjacentSuffixGuard, "");
+          expect(lost, id).toEqual(broken(input, run(before, input), preserve));
+        }
+        const publicFailure = allowance
+          ? Number(lost.length !== allowance)
+          : lost.filter((word) => !baseline.broken.includes(word)).length;
+        return leaked || publicFailure ? [{ id, leaked, publicFailure }] : [];
+      });
+      expect(failures).toEqual([]);
+    });
+  });
+}
+
+const PAREN_TAIL_CASES: (Case & { guard: string; ambient?: { input: string; word: string } })[] = [
+  {
+    id: "CX-1109-2-P1",
+    input: "password='CXHEAD_A1'(CXTAIL_A1 KEEP_CXF1",
+    secrets: ["CXHEAD_A1", "CXTAIL_A1"],
+    preserve: ["password", "KEEP_CXF1"],
+    guard: "          s1_range(at + 1, end)",
+    ambient: {
+      input: "password='CXHEAD_A1'(CXTAIL_A1\u2003CXBOUND_A1 KEEP_CXF1",
+      word: "CXBOUND_A1"
+    }
+  },
+  {
+    id: "CX-1109-2-P2",
+    input: "password='CXHEAD_B2'(CXFIRST_B2)(CXTAIL_B2) KEEP_CXF2",
+    secrets: ["CXHEAD_B2", "CXFIRST_B2", "CXTAIL_B2"],
+    preserve: ["password", "KEEP_CXF2"],
+    guard: "        if (!first) s1_range(at + 1, end - 1 < limit ? end - 1 : limit)",
+    ambient: {
+      input: "password='CXHEAD_B2'(CXFIRST_B2)(CXTAIL_B2\u2003CXBOUND_B2) KEEP_CXF2",
+      word: "CXBOUND_B2"
+    }
+  },
+  {
+    id: "CX-1109-2-P3",
+    input: "password='CXHEAD_C3'(CXFIRST_C3)CXTAIL_C3 KEEP_CXF3",
+    secrets: ["CXHEAD_C3", "CXFIRST_C3", "CXTAIL_C3"],
+    preserve: ["password", "KEEP_CXF3"],
+    guard: "          s1_range(at, wordend)",
+    ambient: {
+      input: "password='CXHEAD_C3'(CXFIRST_C3)CXTAIL_C3\u2003CXBOUND_C3 KEEP_CXF3",
+      word: "CXBOUND_C3"
+    }
+  }
+];
+
+for (const [index, file] of COPIES.entries()) {
+  describe(`CX-1109-2 follow-up: ${file}`, () => {
+    it.each(PAREN_TAIL_CASES)(
+      "$id hides main-protected words and retains public controls",
+      ({ input, secrets, preserve, ambient }) => {
+        for (const word of [...secrets, ...preserve]) expect(input).toContain(word);
+        const baseline = run(mainMask, input);
+        expect(readable(baseline, secrets)).toEqual([]);
+        expect(broken(input, baseline, preserve)).toEqual([]);
+        const output = run(masks[index]!, input);
+        expect(readable(output, secrets)).toEqual([]);
+        expect(broken(input, output, preserve)).toEqual([]);
+        if (ambient) {
+          for (const word of [...secrets, ...preserve, ambient.word]) expect(ambient.input).toContain(word);
+          const ambientBaseline = run(mainMask, ambient.input);
+          const publicWord = readable(ambientBaseline, [ambient.word]).length > 0;
+          const hidden = publicWord ? secrets : [...secrets, ambient.word];
+          const retained = publicWord ? [...preserve, ambient.word] : preserve;
+          expect(readable(ambientBaseline, hidden)).toEqual([]);
+          expect(broken(ambient.input, ambientBaseline, retained)).toEqual([]);
+          const ambientOutput = run(masks[index]!, ambient.input);
+          expect(readable(ambientOutput, hidden)).toEqual([]);
+          expect(broken(ambient.input, ambientOutput, retained)).toEqual([]);
+        }
+      }
+    );
+
+    it.each(PAREN_TAIL_CASES)(
+      "$id rejects removal of only its new range guard",
+      ({ id, input, secrets, preserve, guard, ambient }) => {
+        const source = masks[index]!;
+        expect(readable(run(source, input), secrets)).toEqual([]);
+        const mutant = changed(source, guard, "          # Guard removed in memory only.");
+        const output = run(mutant, input);
+        const leaked = readable(output, secrets);
+        expect(leaked).toEqual(secrets.slice(-1));
+        expect(broken(input, output, preserve)).toEqual([]);
+        const requireHidden = () => expect(leaked.length, `${id}: readable secret count`).toBe(0);
+        expect(requireHidden).toThrow(`${id}: readable secret count`);
+        if (ambient && readable(run(mainMask, ambient.input), [ambient.word]).length > 0) {
+          const withoutBoundary = changed(
+            source,
+            "            if (text in s1_paren_blanks) break",
+            "            if (0) break"
+          );
+          const boundaryOutput = run(withoutBoundary, ambient.input);
+          expect(readable(boundaryOutput, secrets)).toEqual([]);
+          const lost = broken(ambient.input, boundaryOutput, [ambient.word]);
+          expect(lost).toEqual([ambient.word]);
+          const requirePublic = () => expect(lost.length, `${id}: public control count`).toBe(0);
+          expect(requirePublic).toThrow(`${id}: public control count`);
+        }
+      }
+    );
+  });
+}
 
 describe("S1 #249 native BSD unclosed escaped-DQ hook growth", { timeout: 180_000 }, () => {
   // Scoped duplicate of the existing logRedactionPerf contract for this newly
@@ -740,6 +954,20 @@ for (const [index, file] of COPIES.entries()) {
 
     it.each(REGRESSION_CASES)(
       "$id hides original secret words and preserves its public controls",
+      ({ input, secrets, preserve }) => {
+        for (const word of [...secrets, ...preserve]) expect(input).toContain(word);
+        const output = run(source, input);
+        expect(readable(output, secrets)).toEqual([]);
+        expect(broken(input, output, preserve)).toEqual([]);
+      }
+    );
+
+    it("pins the corpus A-X7 row by id", () => {
+      expect(parenTailCorpus.map((c) => c.id)).toEqual(["A-X7"]);
+    });
+
+    it.each([...parenTailCorpus, ...AX7_SHAPE_CASES])(
+      "$id hides a parenthesized tail glued to a quoted value and preserves its public controls",
       ({ input, secrets, preserve }) => {
         for (const word of [...secrets, ...preserve]) expect(input).toContain(word);
         const output = run(source, input);
