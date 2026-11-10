@@ -55,6 +55,8 @@ mask() {
   # equivalent to ASCII s/i/k on some supported locales; N input stays untouched.
   local legacy_profile
   legacy_profile="$(printf 'w\302\205\nw\302\240\nw\341\232\200\nw\341\240\216\nw\342\200\200\nw\342\200\201\nw\342\200\202\nw\342\200\203\nw\342\200\204\nw\342\200\205\nw\342\200\206\nw\342\200\207\nw\342\200\210\nw\342\200\211\nw\342\200\212\nw\342\200\250\nw\342\200\251\nw\342\200\257\nw\342\201\237\nw\343\200\200\nw\357\273\277\ns:\305\277\ni:\304\261\ni:\304\260\nk:\342\204\252\n' | sed -En -e 's/^w([[:space:]])$/w\1/p' -e 's/^s:(s)$/s:\1/Ip' -e 's/^i:(i)$/i:\1/Ip' -e 's/^k:(k)$/k:\1/Ip')"
+  local CON295_S1_PAREN_PROFILE="$legacy_profile"
+  export CON295_S1_PAREN_PROFILE
   # A credential in tool output is usually QUOTED ("access_token": "…",
   # {'api_key':'…'}), and the keyword rule at the bottom cannot see it: it ends
   # the value at whitespace, and a JSON line has none, so it never even starts —
@@ -366,6 +368,62 @@ mask() {
       s1_blank_first = at; s1_blank_last = j
       return j
     }
+    BEGIN {
+      s1_paren_profile_count = split(ENVIRON["CON295_S1_PAREN_PROFILE"], s1_paren_profile, "\n")
+      for (s1_paren_profile_index = 1; s1_paren_profile_index <= s1_paren_profile_count; s1_paren_profile_index++) {
+        if (substr(s1_paren_profile[s1_paren_profile_index], 1, 1) != "w") continue
+        s1_paren_blank = substr(s1_paren_profile[s1_paren_profile_index], 2)
+        s1_paren_blanks[s1_paren_blank] = 1
+        s1_paren_blank_leads[substr(s1_paren_blank, 1, 1)] = 1
+      }
+    }
+    function s1_paren_blank_after(at,    j, c, width, text) {
+      if (at >= s1_paren_blank_first && at <= s1_paren_blank_last) return s1_paren_blank_last
+      j = at
+      while (j <= n) {
+        c = original_bytes[j]
+        if (c ~ /[[:space:]]/) break
+        if (c in s1_paren_blank_leads) {
+          width = blank_width(j, n)
+          if (width > 1) {
+            text = c original_bytes[j + 1]
+            if (width == 3) text = text original_bytes[j + 2]
+            if (text in s1_paren_blanks) break
+          }
+        }
+        j++
+      }
+      s1_paren_blank_first = at; s1_paren_blank_last = j
+      return j
+    }
+    function s1_quoted_paren_tail(at,    end, wordend, first, limit) {
+      if (s1_paren_tails[at]) return
+      limit = s1_paren_blank_after(at + 1) - 1
+      if (s1_has_dash && s1_dash[at + 1] && s1_dash[at + 1] <= limit) limit = s1_dash[at + 1] - 1
+      first = 1
+      while (at <= limit && original_bytes[at] == "(") {
+        end = s1_parens[at]
+        if (!end) {
+          end = limit
+          s1_range(at + 1, end)
+          s1_paren_tails[at] = 1
+          return
+        }
+        if (!first) s1_range(at + 1, end - 1 < limit ? end - 1 : limit)
+        # Completed suffixes need no second walk when original labels overlap.
+        if (s1_paren_tails[at]) return
+        s1_paren_tails[at] = 1
+        if (end >= limit) return
+        first = 0
+        at = end + 1
+        wordend = s1_words[at]
+        if (wordend >= at) {
+          if (wordend > limit) wordend = limit
+          s1_range(at, wordend)
+          at = wordend + 1
+        }
+      }
+    }
     function s1_quoted(at) {
       return original_bytes[at] == "\"" ? (s1_fast_tag ? s1_raw_double[at] : s1_double[at]) : s1_single[at + 1]
     }
@@ -496,6 +554,7 @@ mask() {
           if (in_tag) { s1_tag_quoted_tail(j, j); return }
           # Collect the adjacent closed suffix without changing shell word ends.
           if (original_bytes[last + 1] == "(" && s1_parens[last + 1]) s1_range(last + 2, s1_parens[last + 1] - 1)
+          if (original_bytes[last + 1] == "(") s1_quoted_paren_tail(last + 1)
           # Shell values can glue quoted/unquoted pieces and substitutions.
           # JSON/YAML separators end the value instead of joining the next key.
           if (!in_tag && s1_words[j] > last && original_bytes[last + 1] !~ /^[<>]$/ && !s1_at(last + 1, "/>") && (assigned || original_bytes[last + 1] !~ /^[[:space:],;:}\]]$/)) s1_range(j, s1_words[j])
@@ -1019,6 +1078,8 @@ mask() {
       array_record = s1_array_depth
       split("", s1_marks); split("", s1_protect); split("", s1_suppressed)
       split("", s1_double); split("", s1_single); split("", s1_words)
+      split("", s1_paren_tails)
+      s1_paren_blank_first = n + 1; s1_paren_blank_last = 0
       split("", s1_escaped); split("", s1_dash); split("", s1_json_continuations); split("", s1_literal_newlines)
       s1_h0_active = index($0, "-u") || index($0, "-su")
       split("", s1_ticks); split("", s1_parens); split("", s1_stack)

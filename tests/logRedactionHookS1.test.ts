@@ -517,6 +517,99 @@ for (const [index, file] of COPIES.entries()) {
   });
 }
 
+const PAREN_TAIL_CASES: (Case & { guard: string; ambient?: { input: string; word: string } })[] = [
+  {
+    id: "CX-1109-2-P1",
+    input: "password='CXHEAD_A1'(CXTAIL_A1 KEEP_CXF1",
+    secrets: ["CXHEAD_A1", "CXTAIL_A1"],
+    preserve: ["password", "KEEP_CXF1"],
+    guard: "          s1_range(at + 1, end)",
+    ambient: {
+      input: "password='CXHEAD_A1'(CXTAIL_A1\u2003CXBOUND_A1 KEEP_CXF1",
+      word: "CXBOUND_A1"
+    }
+  },
+  {
+    id: "CX-1109-2-P2",
+    input: "password='CXHEAD_B2'(CXFIRST_B2)(CXTAIL_B2) KEEP_CXF2",
+    secrets: ["CXHEAD_B2", "CXFIRST_B2", "CXTAIL_B2"],
+    preserve: ["password", "KEEP_CXF2"],
+    guard: "        if (!first) s1_range(at + 1, end - 1 < limit ? end - 1 : limit)",
+    ambient: {
+      input: "password='CXHEAD_B2'(CXFIRST_B2)(CXTAIL_B2\u2003CXBOUND_B2) KEEP_CXF2",
+      word: "CXBOUND_B2"
+    }
+  },
+  {
+    id: "CX-1109-2-P3",
+    input: "password='CXHEAD_C3'(CXFIRST_C3)CXTAIL_C3 KEEP_CXF3",
+    secrets: ["CXHEAD_C3", "CXFIRST_C3", "CXTAIL_C3"],
+    preserve: ["password", "KEEP_CXF3"],
+    guard: "          s1_range(at, wordend)",
+    ambient: {
+      input: "password='CXHEAD_C3'(CXFIRST_C3)CXTAIL_C3\u2003CXBOUND_C3 KEEP_CXF3",
+      word: "CXBOUND_C3"
+    }
+  }
+];
+
+for (const [index, file] of COPIES.entries()) {
+  describe(`CX-1109-2 follow-up: ${file}`, () => {
+    it.each(PAREN_TAIL_CASES)(
+      "$id hides main-protected words and retains public controls",
+      ({ input, secrets, preserve, ambient }) => {
+        for (const word of [...secrets, ...preserve]) expect(input).toContain(word);
+        const baseline = run(mainMask, input);
+        expect(readable(baseline, secrets)).toEqual([]);
+        expect(broken(input, baseline, preserve)).toEqual([]);
+        const output = run(masks[index]!, input);
+        expect(readable(output, secrets)).toEqual([]);
+        expect(broken(input, output, preserve)).toEqual([]);
+        if (ambient) {
+          for (const word of [...secrets, ...preserve, ambient.word]) expect(ambient.input).toContain(word);
+          const ambientBaseline = run(mainMask, ambient.input);
+          const publicWord = readable(ambientBaseline, [ambient.word]).length > 0;
+          const hidden = publicWord ? secrets : [...secrets, ambient.word];
+          const retained = publicWord ? [...preserve, ambient.word] : preserve;
+          expect(readable(ambientBaseline, hidden)).toEqual([]);
+          expect(broken(ambient.input, ambientBaseline, retained)).toEqual([]);
+          const ambientOutput = run(masks[index]!, ambient.input);
+          expect(readable(ambientOutput, hidden)).toEqual([]);
+          expect(broken(ambient.input, ambientOutput, retained)).toEqual([]);
+        }
+      }
+    );
+
+    it.each(PAREN_TAIL_CASES)(
+      "$id rejects removal of only its new range guard",
+      ({ id, input, secrets, preserve, guard, ambient }) => {
+        const source = masks[index]!;
+        expect(readable(run(source, input), secrets)).toEqual([]);
+        const mutant = changed(source, guard, "          # Guard removed in memory only.");
+        const output = run(mutant, input);
+        const leaked = readable(output, secrets);
+        expect(leaked).toEqual(secrets.slice(-1));
+        expect(broken(input, output, preserve)).toEqual([]);
+        const requireHidden = () => expect(leaked.length, `${id}: readable secret count`).toBe(0);
+        expect(requireHidden).toThrow(`${id}: readable secret count`);
+        if (ambient && readable(run(mainMask, ambient.input), [ambient.word]).length > 0) {
+          const withoutBoundary = changed(
+            source,
+            "            if (text in s1_paren_blanks) break",
+            "            if (0) break"
+          );
+          const boundaryOutput = run(withoutBoundary, ambient.input);
+          expect(readable(boundaryOutput, secrets)).toEqual([]);
+          const lost = broken(ambient.input, boundaryOutput, [ambient.word]);
+          expect(lost).toEqual([ambient.word]);
+          const requirePublic = () => expect(lost.length, `${id}: public control count`).toBe(0);
+          expect(requirePublic).toThrow(`${id}: public control count`);
+        }
+      }
+    );
+  });
+}
+
 describe("S1 #249 native BSD unclosed escaped-DQ hook growth", { timeout: 180_000 }, () => {
   // Scoped duplicate of the existing logRedactionPerf contract for this newly
   // requested S1 shape only: its private test harness cannot be imported without
