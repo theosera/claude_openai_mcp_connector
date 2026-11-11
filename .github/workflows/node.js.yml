@@ -113,4 +113,53 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run typecheck
       - run: pnpm run build
-      - run: pnpm test
+      # The timing file runs in build-macos-timing below, on its own runners.
+      - run: pnpm test --exclude tests/logRedactionPerf.test.ts
+
+  # macOS timing leg. tests/logRedactionPerf.test.ts judges how time grows with
+  # input size. In build-macos it took 3,369 s of a 3,529 s test run (job
+  # 129579383573, 2026-11-10), most of it in the shipped masks' Issue 295
+  # group, and it shared the runner with the other test files, which can load
+  # one side of a timed pair. A red there also could not say whether a timing
+  # check or a behaviour check had failed. Here the file runs on its own
+  # runners, split by test name so the parts run in parallel:
+  #   rest     every test outside the shipped masks' group, so a group added
+  #            to the file later still runs on macOS
+  #   capture  the shipped masks' group for capture-command.sh
+  #   others   the same group for every other copy (archive-session.sh today)
+  # The three patterns cover the file without overlap. If the group or copy
+  # names change, check that they still do. The Linux legs above still run the
+  # whole file. Like build-macos, this is not a required check.
+  build-macos-timing:
+    name: build-macos-timing (${{ matrix.part }})
+    runs-on: macos-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - part: rest
+            pattern: "^(?!.*Issue 295 time over two doublings)"
+          - part: capture
+            pattern: "Issue 295 time over two doublings.*capture: "
+          - part: others
+            pattern: "Issue 295 time over two doublings(?!.*capture: )"
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413  # v6.1.0
+
+      - name: Use Node.js 26.13.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 26.13.0
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Timing tests (${{ matrix.part }})
+        # Passed through the environment, not spliced into the script.
+        env:
+          PATTERN: ${{ matrix.pattern }}
+        run: pnpm test tests/logRedactionPerf.test.ts -t "$PATTERN"
