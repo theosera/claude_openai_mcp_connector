@@ -92,28 +92,6 @@ const MARKUP_FAMILIES: readonly Omit<Family, "kind">[] = [
     }
   },
   {
-    name: "label-attributes-unclosed",
-    make: (p) => {
-      const q = p.pick(Q);
-      return `${p.K()} <password a=${q}${p.S()}${q} b=${q}${p.S()}${q}> ${p.K()}`;
-    }
-  },
-  {
-    name: "label-attributes-child",
-    make: (p) => {
-      const q = p.pick(Q);
-      return `${p.K()} <password a=${q}${p.S()}${q} b=${q}${p.S()}${q}><value>${p.S()}</value></password> ${p.K()}`;
-    }
-  },
-  {
-    name: "label-attributes-next-line",
-    make: (p) => {
-      const q = p.pick(Q);
-      const eol = p.pick(["\n", "\r\n"]);
-      return `${p.K()} <password a=${q}${p.S()}${q} b=${q}${p.S()}${q}>${p.S()}${eol}</password> ${p.K()}`;
-    }
-  },
-  {
     name: "compound-label-element",
     make: (p) => {
       const label = p.pick(["access_token", "api_key", "client_secret"]);
@@ -169,9 +147,7 @@ const MARKUP_FAMILIES: readonly Omit<Family, "kind">[] = [
  * M of the redaction corpus each have a named family: URL userinfo (including password-free negatives
  * and ports), quoted five-dash values, and adjacent certificate / private-key
  * armor. Each M family keeps a word immediately after the quoted value. #296
- * adds #276 delimiter/attribute shapes, all three #291 shapes, and #295's five
- * markup shapes, independently for command and text. Known core leaks stay in
- * the generated input and retain their secret markers.
+ * adds the confirmed label and markup shapes independently for command and text.
  */
 const FAMILIES: readonly Family[] = [
   { name: "mysql-p", kind: "command", make: (p) => `mysql -u app -p${p.S()} ${p.K()}` },

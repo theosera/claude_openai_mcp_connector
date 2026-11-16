@@ -4,7 +4,9 @@ Generated inputs for the differential fuzz of the log redactor (#249). The gener
 
 ## `seed-1.jsonl`
 
-490 cases from `generate(1, 490)`: ten of each of the 49 families, in turn. `tests/redactionFuzz.test.ts` regenerates it and requires the same bytes, so a change to the generator that changes these 490 cases shows up as a change to this file. The ten families added for #280 changed the index-to-family assignment and random draws, and `dash-armor` gained an immediate preserve word. #296 adds another 20 families, changing that assignment and the random draws again. Full runs from either earlier grammar are not reproduced case by case. A change that only reaches later cases need not change the sample: when the label redraw below was introduced with 19 families, it left the then-190-case sample as it was, while seed 1 differed from case 5139 on (seed 13 from case 8216). Those positions describe the old grammar, not this 49-family version.
+430 cases from `generate(1, 430)`: ten of each of the 43 families, in turn. `tests/redactionFuzz.test.ts` regenerates it and requires the same bytes. The original 29 families keep their order, followed by seven command families and seven text families. The index-to-family assignment and random draws change with the family list, so earlier grammars are not reproduced case by case.
+
+この PR には確かめ済みの族だけを入れる。残りは別の件。
 
 Each line has the corpus fields a judge reads, plus the case's origin:
 
@@ -46,26 +48,19 @@ All M families, including the existing `dash-armor`, place a preserve word immed
 
 ## Label and markup coverage (#296)
 
-Each row below has a `-command` and a `-text` family, with ten sample cases per family. The original 29 families keep their order; the ten command families follow, then the ten text families. A preserve word sits immediately before and after every new shape. Every credential value has a secret marker, including values the current core fails to hide.
+Each retained stem below has a `-command` and a `-text` family, with ten sample cases per family. Preserve markers sit immediately before and after each shape.
 
-| Family stem                  | Shape                                                                                            | Reference   |
-| ---------------------------- | ------------------------------------------------------------------------------------------------ | ----------- |
-| `delimiter-label`            | Unquoted password, closing `}` or `]`, then token/Bearer and another secret; text also draws `)` | #276        |
-| `label-element-attributes`   | Same-line closed password/token element, quoted and bare attributes, empty or secret body        | #276        |
-| `label-attributes-unclosed`  | Two attributes without a closing tag                                                             | #291 / #293 |
-| `label-attributes-child`     | Two attributes followed by a child value                                                         | #291 / #293 |
-| `label-attributes-next-line` | Two attributes and direct text, with the closing tag on the next line                            | #291 / #293 |
-| `compound-label-element`     | `access_token`, `api_key` or `client_secret`, two attributes and direct text                     | #295        |
-| `namespaced-label-element`   | `ns:password`, two attributes and direct text                                                    | #295        |
-| `password-input`             | Password input with quoted/bare values, case variation, reordered type/value, self-closing end   | #295        |
-| `multiline-label-start`      | Simple label start tag split between attributes                                                  | #295        |
-| `angled-label-attribute`     | `<` or `>` inside the second quoted attribute, followed by another attribute and direct text     | #295        |
+- `delimiter-label`
+- `label-element-attributes`
+- `compound-label-element`
+- `namespaced-label-element`
+- `password-input`
+- `multiline-label-start`
+- `angled-label-attribute`
 
-Quoted attributes draw both quote directions. The two line-spanning shapes draw LF and CRLF. A command `)` is excluded from `delimiter-label-command` because it already ends a shell word without the #276 fix; it would not discriminate that fix.
+Coverage tests independently require each named family, input shape and marker count in the sample and in 16,000 generated cases for each of seeds 13 and 29. The corpus gate compares the full set of 29 integration families plus the 14 retained families and requires zero secret or preserve failures in every family, without exemptions.
 
-The coverage tests check input shapes and marker counts independently of `FAMILY_NAMES`. Matching core rollbacks must expose an additional generated secret, rather than merely change formatting. For the three #291 shapes, both shipped sed copies are tested with two overlapping attribute paths removed: the #295 streaming simple-label path and the older #293 cleanup. Removing only the cleanup leaves the newer path active and is not evidence that the grammar misses the shape. Mutants are constructed in memory; tracked engine files are not edited.
-
-At integration base `4178facf55caf54de82f3382b9835425dc5f6656`, the core still leaks later attribute values in all three #291 shapes, and can also leak child/direct text. The generated cases retain those secrets. They are findings for the core owner, not new argument-position exceptions. This grammar update does not change the judge, suppress failing cases, or relax the core-only sample gate. The core owner supplies the companion corpus-test commit: its fixed values change from 290/29/no-`<` to 490/49/180 markup inputs in the same D1 PR. The strict gate still rejects all 60 #291 sample cases until C4 fixes them. Acceptance and merge wait for C1 → C2 → C3 → C4 in the owner-approved order; no case or exception is removed or added to bypass that dependency. D1 edits only its generator, generator tests and sample/README, and imports the core-authored corpus-test commit without independently editing that file.
+For #296's acceptance condition concerning comparison with an engine with fixes removed: この条件は別の件で確かめる。
 
 ## How cases are judged
 

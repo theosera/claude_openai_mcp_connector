@@ -54,9 +54,10 @@ describe("stdio dual-era serving", () => {
   /**
    * The same registration, plus the operator env file that every write-capable
    * stdio process is supposed to carry (docs/operations.md, "INV-9 operating
-   * condition"). `KNOWLEDGE_ROOT` stays inline because that is the shape the
-   * README registration blocks use, and because the real environment wins over
-   * the file (tests/config.test.ts), so the two cannot fight.
+   * condition"). `KNOWLEDGE_ROOT` stays inline because the real environment
+   * wins over the file (tests/config.test.ts), so the two cannot fight. It was
+   * also the shape of the README registration blocks until they moved the vault
+   * into the env file and kept only `MCP_ENV_FILE`.
    */
   /**
    * The operator-file registration. Both write flags are off by default on

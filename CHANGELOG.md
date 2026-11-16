@@ -54,12 +54,55 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   here. Each printed line is quoted for where it is pasted — JSON for the client,
   a shell word for commands, a unit-file word for systemd (with `%` doubled) — and
   an output path with a control character, or one that starts or ends with
-  whitespace (the server trims `MCP_ENV_FILE`), is refused. The OAuth questions follow
-  separately. Reverse-verified per guard: removing each one turns the tests aimed
+  whitespace (the server trims `MCP_ENV_FILE`), is refused. For HTTP, the
+  `check:http` line names the written file with `--env`: without it the check reads
+  a file in the checkout, and it never reads `MCP_ENV_FILE`. The OAuth questions are
+  the next entry. Reverse-verified per guard: removing each one turns the tests aimed
   at it red.
+
+- **`pnpm run init:env` asks the OAuth questions for web connectors** (ROADMAP
+  Onboarding, second part). After the HTTP port it offers OAuth; on yes it asks for
+  the public https URL, a login password, and whether to keep sign-ins across
+  restarts in a state file (by default beside the env file, named after it). The
+  URL may not carry a user name, a password, a query or a fragment — the server
+  quotes the URL in its own error, so a secret in it would be printed back — and
+  its trailing slashes are dropped as the server drops them. It must start with
+  `https://` as written: a URL parser also reads `HTTPS://host` or `https:host` as
+  https, but the server checks the start literally and would refuse the file. The
+  login password is
+  asked only in a terminal, twice; nothing is drawn while it is typed. Each entry is
+  read on a readline interface of its own, closed once the answer is in, so nothing
+  of the password reaches a later prompt: not through the up arrow, not as text typed
+  behind the Enter, and not as text erased with Ctrl-U or Ctrl-W, which Ctrl-Y would
+  otherwise paste back. Piped input is refused before the password is asked. It
+  needs at least 12 characters:
+  that floor is init's own, and the server enforces no minimum. A state file path
+  where anything already is — a file, a link, a dangling link — is refused, because
+  a state file is keyed to the password it was written under and the server will
+  not start on one written under another; it must also be outside the vault, and
+  not the env file itself, which is checked on the path resolved the way the env
+  file's own is, so a linked directory does not hide it.
+  Reverse-verified per guard: removing each one turns the tests aimed at it red.
 
 ### Changed
 
+- **The README's setup starts from `pnpm run init:env`** (ROADMAP Onboarding,
+  the part left after the OAuth questions). Run, the HTTP section and the
+  stdio verification now name the file `init:env` writes through
+  `MCP_ENV_FILE`, and the Claude Code, Codex and Claude Desktop registrations
+  carry only `MCP_ENV_FILE`: their `env` blocks used to set `KNOWLEDGE_ROOT`
+  too, which wins over the file. Writing the file by hand stays as its own
+  subsection, reserving a subtree and registering its write tools are now two
+  separate steps, and the multiple-roots subsection says how to turn the file's
+  `KNOWLEDGE_ROOT` line into `KNOWLEDGE_ROOTS`. Docs only.
+- **The pinned development and CI Node version moves from 24.22.1 to
+  26.13.0**, the first LTS release of the 26.x line. `.node-version`, the exact
+  matrix leg and the macOS job name 26.13.0; `engines` stays `>=22.12.0` and
+  the 22.x leg is unchanged. The required status check follows the matrix leg,
+  from `build (24.22.1)` to `build (26.13.0)`. Node 26 no longer ships
+  Corepack, so the setup steps in `README.md` and `CONTRIBUTING.md` install it
+  first. The entries below, which moved the pin to 24.22.1 and to 24.22.0, are
+  records of their time and stay as written.
 - **The pinned development and CI Node version moves from 24.22.0 to
   24.22.1**, the 24.x line's fix in the Node.js security release of
   2026-10-21. `.node-version`, the exact matrix leg and the macOS job name
@@ -75,6 +118,20 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   follows the matrix leg, from `build (24.13.0)` to `build (24.22.0)`. The 0.7.0
   entry that introduced the pin, and the timing note in `tests/oauth.test.ts`
   (measured on 24.13.0), are records of their time and stay as written.
+
+### Fixed
+
+- **`MCP_HTTP_PORT` and `MCP_SCAN_CONCURRENCY` are read only from plain decimal
+  digits**, the rule the OAuth lifetimes have followed since #301 (#314): the
+  whole trimmed value must be ASCII digits before it becomes a number. Both went
+  through `parseInt`, which stopped at the first character it could not read, so
+  `MCP_HTTP_PORT="8787abc"` bound 8787 and `"1.5e3"` bound port 1. Such a value
+  is now refused at startup like any other invalid port, not rounded to a port
+  nobody asked for; an unset or blank value still means 8787.
+  `MCP_SCAN_CONCURRENCY` given the same kind of value (`"8abc"`, `"1.5e3"`),
+  zero, or an integer too large to be exact keeps the store's default instead of
+  throttling every scan to its leading digits. An env file that sets such a port
+  has to be corrected before upgrading, or the server will not start.
 
 ### Security
 

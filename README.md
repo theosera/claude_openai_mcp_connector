@@ -98,7 +98,8 @@ missing, install it from <https://nodejs.org/> (LTS). This project uses
 [`pnpm`](https://pnpm.io/) for builds — enable it once with:
 
 ```bash
-corepack enable        # ships with Node; turns on pnpm
+npm install -g corepack   # Node 26 no longer ships it
+corepack enable           # turns on pnpm
 ```
 
 That's the whole toolchain. A one-command install that skips the build step is
@@ -109,28 +110,30 @@ on the [roadmap](./docs/ROADMAP.md).
 ```bash
 pnpm install
 pnpm run build
+pnpm run init:env
 ```
 
-Create a local `.env` file:
+`init:env` asks a few questions and writes the server's env file: the vault (an
+absolute path to an existing directory), then the transport — `stdio` when a
+local client starts the server, `http` for a long-running endpoint. For `http`
+it also asks for the port and whether web connectors sign in through OAuth; with
+OAuth, for the public https URL your tunnel serves, a login password (asked only
+in a terminal, twice, never shown, at least 12 characters) and a state file,
+beside the env file by default. It then lists what the file will hold, secrets
+hidden, and writes nothing until you answer `y`.
 
-```bash
-cp .env.example .env
-```
+- The file goes to `$XDG_CONFIG_HOME/claude-openai-mcp-connector/server.env`
+  (`~/.config/…` when `XDG_CONFIG_HOME` is unset); `--out <absolute path>` puts
+  it elsewhere. **One file per endpoint** — run it again with another `--out`
+  for a second server.
+- It never overwrites an existing file and refuses a location inside the vault.
+- The bearer token it generates (`http`) and the password you type are in the
+  file and never printed. To read them, open the file in an editor — not inside
+  an AI coding session, whose transcript keeps what it prints.
+- It ends with the next steps for that transport; the sections below follow
+  them.
 
-Then set:
-
-```text
-KNOWLEDGE_ROOT=/path/to/private/obsidian-vault
-MCP_WRITE_MODE=two_step
-# Optional. Defaults to ~/.mcp-state/patches-<hash of this vault's path>. The
-# hash keeps servers started against different vaults from sharing one plan
-# directory. Set this only to put plan state somewhere else, and use an absolute
-# path — a relative one follows the caller's working directory, which a
-# client-spawned stdio server does not control.
-#MCP_PATCH_STATE_DIR=/abs/path/to/.mcp-state/patches
-```
-
-**Point the server at that file with `MCP_ENV_FILE` (absolute path).** The
+**The server reads that file only through `MCP_ENV_FILE` (absolute path).** The
 connector reads an env file **only** from `MCP_ENV_FILE`; it does **not** read
 `.env` from its working directory, because for a locally-spawned stdio server
 that directory is chosen by the MCP client — an untrusted directory could
@@ -138,7 +141,7 @@ otherwise supply the bearer token, the transport, the bind address, and the
 write opt-ins:
 
 ```bash
-MCP_ENV_FILE=/abs/path/to/claude_openai_mcp_connector/.env node dist/index.js
+MCP_ENV_FILE=/abs/path/to/server.env node dist/index.js
 ```
 
 Variables already present in the real environment always win over the file, and
@@ -157,15 +160,60 @@ included — give each server its own: a file written for an HTTP endpoint makes
 a stdio registration serve HTTP instead
 ([below](#the-env-file-the-stdio-registrations-name)).
 
-To allow a remote client to create instruction-only Skills without exposing
-general document writes, also set a vault-relative, pre-existing directory:
+### Writing the file by hand
+
+`init:env` is a convenience, not a requirement — the rules above are the
+server's. If you write the file yourself:
+
+- Name it with `MCP_ENV_FILE` as an absolute path. A `.env` in the checkout, or
+  in any other working directory, is never read on its own.
+- Keep it outside every knowledge root, mode `600`. Inside one the server
+  refuses to start, and the secrets in it should then be rotated, as above.
+- A stdio server needs only the vault:
+
+  ```text
+  KNOWLEDGE_ROOT=/path/to/private/obsidian-vault
+  MCP_WRITE_MODE=two_step
+  # Optional. Defaults to ~/.mcp-state/patches-<hash of this vault's path>. The
+  # hash keeps servers started against different vaults from sharing one plan
+  # directory. Set this only to put plan state somewhere else, and use an absolute
+  # path — a relative one follows the caller's working directory, which a
+  # client-spawned stdio server does not control.
+  #MCP_PATCH_STATE_DIR=/abs/path/to/.mcp-state/patches
+  ```
+
+- An HTTP endpoint's file also holds `MCP_TRANSPORT=http`, `MCP_HTTP_PORT` and
+  `MCP_AUTH_TOKEN` (a long random value, e.g. `openssl rand -hex 32`), and for
+  web connectors `MCP_OAUTH_ENABLED=1`, `MCP_HTTP_PUBLIC_URL` and
+  `MCP_OAUTH_PASSWORD` — the lines `init:env` would write.
+
+Do not commit `.env`, private vault URLs, private vault paths, or real note content.
+
+### Reserved subtrees (Skills, audit)
+
+`init:env` does not ask about these; add them to the file by hand. They are two
+separate decisions:
+
+1. **Reserve the subtree.** `MCP_SKILLS_SUBDIR` / `MCP_AUDIT_SUBDIR` name a
+   vault-relative, pre-existing directory and take it away from the general
+   write surface (INV-8 for Skills, INV-9 for audit). A reservation holds only
+   in a process that has the setting, so give every server process that can
+   write to this vault the same values — each stdio registration, and each HTTP
+   endpoint with a write surface enabled.
+2. **Register the write tools.** A subdir alone registers none; that is each
+   transport's own opt-in — `MCP_HTTP_ALLOW_SKILL_WRITE=1` /
+   `MCP_HTTP_ALLOW_AUDIT_WRITE=1` over HTTP, `MCP_STDIO_ALLOW_SKILL_WRITE=1` /
+   `MCP_STDIO_ALLOW_AUDIT_WRITE=1` over stdio.
+
+For example, to let a remote client create instruction-only Skills without
+exposing general document writes, the HTTP endpoint's file gets:
 
 ```text
 MCP_SKILLS_SUBDIR=path/to/skills
 MCP_HTTP_ALLOW_SKILL_WRITE=1
 ```
 
-The directory must be **disjoint from `projects/`**, the root `create_document`
+The Skills directory must be **disjoint from `projects/`**, the root `create_document`
 writes into — not `projects` itself, not a directory under it, and not `./`
 (the whole vault). The Skills subtree is reserved against the general write
 surface, so an overlap would make every document create fail; the server
@@ -174,8 +222,6 @@ refuses to start rather than let that surface silently stop working.
 This surface is create-only: it accepts `SKILL.md`, optional flat
 `references/*.md`, and optional `agents/openai.yaml`; it rejects scripts,
 assets, arbitrary paths, and attempts to overwrite an existing Skill.
-
-Do not commit `.env`, private vault URLs, private vault paths, or real note content.
 
 ### Multiple knowledge roots (optional)
 
@@ -198,6 +244,12 @@ KNOWLEDGE_ROOTS=vault=/path/to/private/obsidian-vault,ops=/path/to/ops-log-repo
   backward compatible).
 - Each root is served by its own path-containment guard chain; roots must be
   disjoint directories (nesting/duplicates are rejected at startup).
+- `init:env` writes a single `KNOWLEDGE_ROOT` line. For several roots, replace
+  that line in the file with `KNOWLEDGE_ROOTS=…`, and keep the file outside
+  every one of them.
+- When both are set, `KNOWLEDGE_ROOTS` is used and `KNOWLEDGE_ROOT` is ignored,
+  wherever each comes from — so `KNOWLEDGE_ROOTS` in the file wins even over a
+  `KNOWLEDGE_ROOT` left in a client's `env` block.
 
 ### Session archive hook (Claude Code history → vault)
 
@@ -251,13 +303,18 @@ tunnel.
 
 ```bash
 pnpm run build
-KNOWLEDGE_ROOT=/abs/path/to/vault node dist/index.js
+MCP_ENV_FILE=/abs/path/.mcp-state/vault-stdio.env node dist/index.js
 ```
+
+That path is a stdio file written with `init:env --out`
+([below](#the-env-file-the-stdio-registrations-name)); without `--out` the file
+is at the default location from [Setup](#setup). A client normally starts this
+process itself; see [Client registration](#client-registration).
 
 ### Run (HTTP — for ChatGPT / Claude.ai web, with OAuth)
 
-Open the tunnel **first** so you know the public URL, then start the server with
-that URL as the OAuth issuer:
+Open the tunnel **first** so you know the public URL — `init:env` asks for it as
+the OAuth issuer — then write the endpoint's file and start the server:
 
 ```bash
 # Terminal 1 — tunnel 127.0.0.1:8787 to a public HTTPS URL
@@ -266,22 +323,33 @@ cloudflared tunnel --url http://127.0.0.1:8787
 ```
 
 ```bash
-# Terminal 2 — start the connector pointing at that public URL
+# Terminal 2 — write the endpoint's file, then start the connector with it
 pnpm run build
-MCP_TRANSPORT=http \
-MCP_HTTP_PORT=8787 \
-MCP_HTTP_PUBLIC_URL="https://<random>.trycloudflare.com" \
-MCP_OAUTH_ENABLED=1 \
-MCP_OAUTH_PASSWORD="replace-with-a-strong-passphrase-you-choose" \
-MCP_AUTH_TOKEN="$(openssl rand -hex 32)" \
-KNOWLEDGE_ROOT=/abs/path/to/vault \
-node dist/index.js
+pnpm run init:env --out /abs/path/to/http.env
+#   transport http · port 8787 · OAuth yes · URL https://<random>.trycloudflare.com
+MCP_ENV_FILE=/abs/path/to/http.env node dist/index.js
 # Listening on http://127.0.0.1:8787/mcp (write=off, oauth=on)
 ```
 
-Set `MCP_OAUTH_PASSWORD` to a strong passphrase **you choose** — you type it on
-the OAuth consent screen when a web client connects. It must be non-empty (the
-server refuses to start otherwise).
+The login password you give `init:env` is `MCP_OAUTH_PASSWORD`: you type it on
+the OAuth consent screen when a web client connects. `init:env` asks for at
+least 12 characters; the server itself only refuses an empty one.
+
+The endpoint is **read-only** by default. To allow writes, add
+`MCP_HTTP_ALLOW_WRITE=1` to its file by hand, together with the same
+`MCP_AUDIT_SUBDIR` / `MCP_SKILLS_SUBDIR` as the other server processes that
+write to this vault ([reserved subtrees](#reserved-subtrees-skills-audit)).
+
+For a server that stays up, give the service `MCP_ENV_FILE` in its real
+environment — systemd: `Environment=MCP_ENV_FILE=/abs/path/to/http.env`;
+launchd: add it to the plist's `EnvironmentVariables`, then reload the job with
+`launchctl bootout gui/$(id -u)/<label>` and
+`launchctl bootstrap gui/$(id -u) <plist>` (`launchctl kickstart -k` restarts
+without re-reading the plist, so the variable would not reach the job). Confirm
+that `launchctl print gui/$(id -u)/<label>` shows `MCP_ENV_FILE`, then run
+`pnpm run check:http --env /abs/path/to/http.env` — without `--env` the check
+reads a file in the checkout, not the one `MCP_ENV_FILE` names. See
+[`docs/operations.md`](./docs/operations.md) for the long-running setup.
 
 `MCP_HTTP_PUBLIC_URL` is the OAuth issuer and is auto-added to the
 DNS-rebinding allowlist (which is compared by hostname — the `:port` suffix in
@@ -300,9 +368,10 @@ constrained audit tools — set it **without** `MCP_HTTP_ALLOW_WRITE` to run a
 read-only-plus-audit "scan" endpoint whose write reach is one reserved subtree.
 
 By default OAuth state (registered clients and tokens) lives in process memory,
-so every server restart forces web clients to re-authorize. Set
-`MCP_OAUTH_STATE_FILE=/abs/path/to/oauth-state.json` to persist that state —
-registered clients and token records — across restarts. (Not to be confused with
+so every server restart forces web clients to re-authorize.
+`MCP_OAUTH_STATE_FILE=/abs/path/to/oauth-state.json` persists that state —
+registered clients and token records — across restarts; `init:env` offers one
+beside the env file and writes the line when you accept. (Not to be confused with
 the MCP protocol sessions removed above: those are gone entirely, this is the
 OAuth authorization a web client already completed.) Tokens are stored
 **as sha256 hashes** (the file contains nothing
@@ -330,19 +399,20 @@ purpose means stopping the server and moving the old file aside first (see
 > (`… audit=off`) is how you see that; see
 > [`operations.md` §9](./docs/operations.md#9-two-endpoint-deployment-interactive--unattended-audit-scan).
 >
-> **Every example below therefore carries `MCP_ENV_FILE`**, and none of them can
-> be copied into a working registration without it. Leave it out only if this
-> vault uses neither reserved subtree — and then confirm that choice against the
-> startup line rather than assuming it.
+> **Every example below therefore carries only `MCP_ENV_FILE`.** The file holds
+> the vault as well, so none of them starts without it.
 
 ### The env file the stdio registrations name
 
-Give the stdio servers **their own** file — one that says nothing about a
-transport, a port, or a credential. Keep it outside the vault (anything under
-`KNOWLEDGE_ROOT` is vault content), mode `600`:
+Give the stdio servers **their own** file — the one `init:env` writes when you
+answer `stdio`, e.g. `pnpm run init:env --out /abs/path/.mcp-state/vault-stdio.env`.
+It holds the vault and says nothing about a transport, a port, or a credential,
+and it sits outside the vault (anything under `KNOWLEDGE_ROOT` is vault content),
+mode `600`. If you use the reserved subtrees, add them by hand:
 
 ```text
 # /abs/path/.mcp-state/vault-stdio.env  — stdio registrations only
+KNOWLEDGE_ROOT=/abs/path/to/private/vault
 MCP_SKILLS_SUBDIR=_skills             # same subtree as the HTTP endpoints
 MCP_AUDIT_SUBDIR=90_Audit/vault-scan  # same subtree — reserves it here (INV-9)
 
@@ -373,18 +443,19 @@ MCP_AUDIT_SUBDIR=90_Audit/vault-scan  # same subtree — reserves it here (INV-9
 ### Claude Code (CLI, stdio)
 
 ```bash
-# Roots in the registration, everything else in the stdio env file above.
-# MCP_ENV_FILE is what carries MCP_AUDIT_SUBDIR / MCP_SKILLS_SUBDIR into this
-# always-write-capable process; a registration without it starts normally with
-# the INV-9 reservation off.
+# Everything, the vault included, is in the stdio env file above. It is also
+# what carries MCP_AUDIT_SUBDIR / MCP_SKILLS_SUBDIR into this
+# always-write-capable process; without them it starts normally with the INV-9
+# reservation off.
 claude mcp add vault \
-  --env KNOWLEDGE_ROOT=/abs/path/to/private/vault \
   --env MCP_ENV_FILE=/abs/path/.mcp-state/vault-stdio.env \
   -- node /abs/path/to/claude_openai_mcp_connector/dist/index.js
 ```
 
-`KNOWLEDGE_ROOT` may appear in both places without conflict: the real
-environment wins and the file only fills what the environment left unset.
+Do not also set `KNOWLEDGE_ROOT`, or anything else the file holds, in a
+registration: the real environment wins over the file, so a variable set in
+both places takes the registration's value and the file's line is ignored.
+`init:env` says the same when it finishes.
 
 ### Codex CLI (stdio)
 
@@ -395,7 +466,6 @@ command = "node"
 args = ["/abs/path/to/claude_openai_mcp_connector/dist/index.js"]
 
 [mcp_servers.claude-openai-vault.env]
-KNOWLEDGE_ROOT = "/abs/path/to/private/vault"
 MCP_ENV_FILE = "/abs/path/.mcp-state/vault-stdio.env"
 ```
 
@@ -409,7 +479,6 @@ MCP_ENV_FILE = "/abs/path/.mcp-state/vault-stdio.env"
       "command": "node",
       "args": ["/abs/path/to/claude_openai_mcp_connector/dist/index.js"],
       "env": {
-        "KNOWLEDGE_ROOT": "/abs/path/to/private/vault",
         "MCP_ENV_FILE": "/abs/path/.mcp-state/vault-stdio.env"
       }
     }
@@ -426,13 +495,18 @@ stderr:
 
 ```bash
 MCP_ENV_FILE=/abs/path/.mcp-state/vault-stdio.env \
-KNOWLEDGE_ROOT=/abs/path/to/private/vault \
   node /abs/path/to/claude_openai_mcp_connector/dist/index.js </dev/null 2>&1 >/dev/null | head -1
 ```
 
 ```text
 MCP stdio transport ready (write=on, documents=on, legacy_create=off, skills=on, audit=reserved-only)
 ```
+
+To check the tool surface the file declares, run
+`pnpm run check:stdio --env /abs/path/.mcp-state/vault-stdio.env` in the
+checkout after `pnpm run build`. That check loads the file directly, not
+through `MCP_ENV_FILE`, so also run the command above, or start the server once
+from your client.
 
 `legacy_create=off` is also the expected value. It means the one-step
 `create_document` is **not** registered: every document write this process offers

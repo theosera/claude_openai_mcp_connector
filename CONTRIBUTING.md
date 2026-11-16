@@ -48,6 +48,7 @@ Requirements: **Node.js >= 22.12.0** and [pnpm](https://pnpm.io) (pinned via the
 `packageManager` field — enable it with Corepack).
 
 ```bash
+npm install -g corepack   # Node 26 no longer ships it
 corepack enable
 pnpm install --frozen-lockfile
 ```
