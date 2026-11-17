@@ -86,6 +86,16 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **`check:http` can take the bearer from the environment.** With a single
+  `--env`, a bearer in the environment now wins over the file's, in the same
+  order the server reads them, so the check keeps working once the token is kept
+  out of the file and handed to the server through the environment. With two or
+  more `--env`, each endpoint still uses only its own file: one environment
+  value cannot belong to both the interactive and the scan endpoint. Each
+  endpoint's block says where its bearer came from (`bearer: from environment`
+  or the file's path), never the value, and a `WARN` line names the file when
+  both hold a value and they differ. When no bearer is found, the message now
+  mentions the environment.
 - **The README's setup starts from `pnpm run init:env`** (ROADMAP Onboarding,
   the part left after the OAuth questions). Run, the HTTP section and the
   stdio verification now name the file `init:env` writes through

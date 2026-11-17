@@ -4,7 +4,9 @@
 // (initialize -> notifications/initialized -> tools/list) against
 // http://127.0.0.1:<MCP_HTTP_PORT>/mcp using that file's MCP_AUTH_TOKEN, then
 // compares the LIVE tool surface with what the same file's MCP_HTTP_ALLOW_*
-// flags DECLARE. The bearer token is read from disk and never printed. The MCP
+// flags DECLARE. With a single --env, a bearer in the environment wins over the
+// file's, as it does for the server; with two or more, each endpoint uses only
+// its own file. The bearer is never printed, only where it came from. The MCP
 // session is always terminated (authenticated DELETE) so repeated/scheduled
 // runs do not leak server-side transports, and every request is bounded by a
 // timeout so a wedged endpoint fails instead of hanging.
@@ -30,7 +32,7 @@
 // MCP_CHECK_TIMEOUT_MS (default 10000) bounds each HTTP request.
 
 import path from "node:path";
-import { parseEnvFile, parsePort, isTruthy, requiredEnv, repoRoot } from "./repo-env.mjs";
+import { parseEnvFile, parsePort, isTruthy, resolveBearer, repoRoot } from "./repo-env.mjs";
 import {
   AUDIT_WRITE_TOOLS,
   GENERAL_WRITE_TOOLS,
@@ -46,7 +48,8 @@ const USAGE = `Usage: node scripts/check-http.mjs [--env <path>]...
 
 Checks each endpoint's local /mcp handshake and verifies the live tool surface
 against that endpoint's MCP_HTTP_ALLOW_* flags. Defaults to ./.env when no
---env is given. Tokens are read from the .env files and never printed.
+--env is given. Tokens are read from the .env files and, with a single --env,
+from the environment, which wins over the file; they are never printed.
 MCP_CHECK_TIMEOUT_MS (default 10000) bounds each request.`;
 
 function parseArgs(argv) {
@@ -84,10 +87,11 @@ function parseRpcPayload(text) {
   return JSON.parse(dataLine.slice("data:".length).trim());
 }
 
-async function checkEndpoint(envPath) {
+async function checkEndpoint(envPath, endpointCount) {
   const { resolved, env } = parseEnvFile(envPath);
   const port = parsePort(env.MCP_HTTP_PORT, resolved);
-  const token = requiredEnv(env, "MCP_AUTH_TOKEN", resolved);
+  const bearer = resolveBearer(env, resolved, endpointCount);
+  const token = bearer.token;
   const endpoint = `http://127.0.0.1:${port}/mcp`;
   const authHeader = { Authorization: `Bearer ${token}` };
   const postHeaders = {
@@ -156,11 +160,14 @@ async function checkEndpoint(envPath) {
     // Shared with check-stdio.mjs: a surface WIDER than the flags declare —
     // including an unrecognized write-capable tool — fails closed; a narrower
     // one only warns.
-    const { readOnly, writeCapable, failures, warnings } = classifySurface(tools, categories);
+    const surface = classifySurface(tools, categories);
+    const { readOnly, writeCapable, failures } = surface;
+    const warnings = bearer.warning ? [bearer.warning, ...surface.warnings] : surface.warnings;
 
     const serverInfo = initPayload.result?.serverInfo ?? {};
     return {
       envPath: resolved,
+      bearerSource: bearer.source,
       endpoint,
       publicUrl: env.MCP_HTTP_PUBLIC_URL?.trim().replace(/\/+$/, "") || undefined,
       server: `${serverInfo.name ?? "unknown"} ${serverInfo.version ?? ""}`.trimEnd(),
@@ -195,11 +202,12 @@ let hadFailure = false;
 for (const envPath of envPaths) {
   console.log(`\n== ${envPath} ==`);
   try {
-    const r = await checkEndpoint(envPath);
+    const r = await checkEndpoint(envPath, envPaths.length);
     const flagsSummary = `write=${r.declared.generalWrite ? "on" : "off"} legacy_create=${
       r.declared.legacyCreate ? "on" : "off"
     } skill=${r.declared.skillWrite ? "on" : "off"} audit=${r.declared.auditWrite ? "on" : "off"}`;
     console.log(`  local:    ${r.endpoint}`);
+    console.log(`  bearer:   from ${r.bearerSource}`);
     if (r.publicUrl) console.log(`  public:   ${r.publicUrl}/mcp`);
     console.log(`  server:   ${r.server}`);
     console.log(`  protocol: ${r.protocol}`);

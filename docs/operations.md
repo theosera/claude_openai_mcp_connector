@@ -1420,8 +1420,13 @@ The whole point is that the **scan** endpoint exposes the audit tools and **no**
 general/skill write tools, so an injected scanner has nothing to write with. The
 repo ships an authenticated check that runs the full MCP handshake against each
 endpoint's local `/mcp` and compares the live tool surface with that endpoint's
-`MCP_HTTP_ALLOW_*` flags — the bearer is read from the `.env` file and never
-printed:
+`MCP_HTTP_ALLOW_*` flags. The bearer comes from the `.env` file and, when exactly
+one `--env` is given, from the environment as well, which wins over the file as
+it does for the server; with two or more `--env`, each endpoint uses only its
+own file. The bearer is never printed — each endpoint's block says only where it
+came from (`bearer: from environment` or the file's path), and a `WARN` line
+names the file when the environment and the file both hold a value and they
+differ:
 
 ```bash
 pnpm run check:http --env ./.env --env /abs/path/to/scan-dir/.env
@@ -1434,6 +1439,11 @@ the scan endpoint exposing `create_document` — which is exactly the
 confused-deputy regression this split prevents. A surface **narrower** than
 declared (a flag on but the tool missing) is a warning, not a failure. With no
 `--env`, it checks `./.env` (the interactive endpoint) alone.
+
+The surface follows the bearer the check sends. If the static bearer's scopes are
+narrowed to reading (`MCP_AUTH_TOKEN_SCOPES=vault.read`), an endpoint whose flags
+declare write tools reports them as narrower than declared — a warning, not a
+failure.
 
 The check reads each file from the path you pass and never from a working
 directory, so it is unaffected by the `MCP_ENV_FILE` change — but it **fails

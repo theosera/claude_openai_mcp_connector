@@ -42,11 +42,47 @@ export function isTruthy(value) {
   return normalized === "1" || normalized === "true" || normalized === "yes";
 }
 
+/** A value counts as configured when it is non-empty after trimming and not a `replace-with-…` placeholder. */
+function configured(value) {
+  const trimmed = value?.trim();
+  return trimmed && !trimmed.startsWith("replace-with-") ? trimmed : undefined;
+}
+
 /** Read a required secret from a parsed env object; never logged by callers. */
 export function requiredEnv(env, name, envPath) {
-  const value = env[name]?.trim();
-  if (!value || value.startsWith("replace-with-")) {
+  const value = configured(env[name]);
+  if (!value) {
     throw new Error(`${name} must be configured in ${envPath}.`);
   }
   return value;
+}
+
+const BEARER = "MCP_AUTH_TOKEN";
+
+/**
+ * The bearer check:http sends to one endpoint, and where it came from.
+ *
+ * With a single endpoint, a bearer in the environment wins over the file's, in
+ * the same order the server reads them, so the check keeps working once the
+ * token is kept out of the file and handed to the server through the
+ * environment. With two or more endpoints only each one's own file counts: one
+ * environment value cannot belong to both the interactive and the scan
+ * endpoint, and reading it would undo their separation.
+ *
+ * Returns `{ token, source, warning }`. `source` is "environment" or the file's
+ * path. `warning` is set when both hold a value and they differ; it names the
+ * file, never either value. Callers must not log `token`.
+ */
+export function resolveBearer(env, envPath, endpointCount, processEnv = process.env) {
+  const fromFile = configured(env[BEARER]);
+  const fromEnvironment = endpointCount === 1 ? configured(processEnv[BEARER]) : undefined;
+  if (fromEnvironment) {
+    const warning =
+      fromFile && fromFile !== fromEnvironment
+        ? `${BEARER} in the environment differs from ${envPath}; using the environment.`
+        : undefined;
+    return { token: fromEnvironment, source: "environment", warning };
+  }
+  if (fromFile) return { token: fromFile, source: envPath, warning: undefined };
+  throw new Error(`${BEARER} must be configured in ${envPath} or (with a single --env) the environment.`);
 }
