@@ -179,6 +179,34 @@ function projectDocument(
 }
 
 /**
+ * Upper bound on the combined number of array elements and object members in
+ * one `tools/call` `arguments` payload, passed to the SDK as
+ * `maxToolInputElements` (CVE-2026-111768). The SDK counts every element and
+ * key at every depth and refuses the call before schema validation or the
+ * handler runs. Leaving it unset means no limit — the SDK default even in the
+ * fixed release — so without this the 4 MiB HTTP body bound is the only cap,
+ * and that body holds about two million elements.
+ *
+ * The largest legitimate write is bounded by bytes, not elements: `tags` and
+ * `source_refs` share one frontmatter block capped at
+ * MAX_FRONTMATTER_BLOCK_BYTES (8 KiB), where each element takes at least two
+ * bytes, so a write that could succeed carries at most about 4,096 of them
+ * between the two (fewer in practice). A Skill bundle is at most 20
+ * references, about 65 elements in all. 10,000 leaves room above both.
+ *
+ * The bound covers every tool, read tools included. A `tags` filter or a
+ * `sections` list is not stored, so no byte cap stands behind it, and the
+ * bound is what now caps it. How many entries callers send there has not been
+ * measured; a read call over the bound is now refused like any other.
+ *
+ * This bounds the structure of one call's arguments after the transport has
+ * parsed them. It does not bound request bytes or the cost of parsing them:
+ * the HTTP body bound still does that for HTTP, and this change adds no byte
+ * bound for stdio.
+ */
+export const MAX_TOOL_INPUT_ELEMENTS = 10_000;
+
+/**
  * Build a fully-wired McpServer over a KnowledgeStore. The same factory backs
  * both the stdio transport (local CLI clients) and the HTTP transport (remote
  * Chat connectors), so the tool surface and the untrusted-content boundary
@@ -198,7 +226,7 @@ export function buildMcpServer(vaultStore: VaultStore, options: BuildServerOptio
       name: "claude-openai-markdown-connector",
       version: SERVER_VERSION
     },
-    { instructions: SERVER_INSTRUCTIONS }
+    { instructions: SERVER_INSTRUCTIONS, maxToolInputElements: MAX_TOOL_INPUT_ELEMENTS }
   );
 
   server.registerTool(
