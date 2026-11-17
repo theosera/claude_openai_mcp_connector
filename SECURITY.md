@@ -69,6 +69,10 @@ Measured 2026-09-03 01:10 JST on ruleset `Branch-protection` (enforcement
 review request and blocks nothing. Merges of CODEOWNERS-owned paths with zero
 approvals are the expected behaviour under that configuration, not an anomaly.
 
+Measured again 2026-11-06 07:34 JST on the same ruleset:
+`required_approving_review_count` is still `0`, and `bypass_actors` is now
+empty. The `RepositoryRole` 5 entry above was removed on 2026-11-06 00:07 JST.
+
 **What does block**, on the same ruleset and the same measurement:
 `required_status_checks` — `build (22.x)`, `build (26.13.0)`, `CodeQL` (the
 second was renamed from `build (24.22.1)` when the pinned development and CI
@@ -83,10 +87,12 @@ stops a merge on its own. Those two are what a red "merge is blocked" has
 meant here.
 
 To make review itself gate a merge, the field to change is
-`required_approving_review_count`. ⚠️ That alone is not sufficient: the
-`bypass_actors` entry above lets `RepositoryRole` 5 bypass the rule
-regardless, so raising the count gates everyone except the actor who has been
-merging. Read `bypass_actors` in the same breath as any count.
+`required_approving_review_count`. Until 2026-11-06 that alone was not
+sufficient: the `bypass_actors` entry above let `RepositoryRole` 5 bypass the
+rule regardless, so raising the count would have gated everyone except the
+actor who had been merging. ⚠️ That entry is gone, but whether a raised count
+now stops that actor has not been measured. Read `bypass_actors` in the same
+breath as any count.
 
 ## Curated mapping to the Reusable Security Baseline
 
