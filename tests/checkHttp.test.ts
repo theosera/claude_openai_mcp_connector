@@ -31,9 +31,11 @@ import { afterEach, describe, expect, it } from "vitest";
  * - return an empty bearer instead of stopping: "stops when neither holds a
  *   bearer" and "stops on an endpoint whose file has no bearer", which both
  *   exit 0.
- * A mutation in `scripts/check-http.mjs`, printing the bearer line only after a
- * successful handshake (as the first version of this change did), turns only
- * "prints the bearer line before the handshake fails" red, with no bearer line.
+ * Mutations in `scripts/check-http.mjs`: printing the bearer line only after a
+ * successful handshake (as the first version of this change did) turns only
+ * "prints the bearer line before the handshake fails" red, with no bearer line;
+ * putting the differ WARN back among the surface warnings, printed only after a
+ * successful handshake, turns only that same test red, with no WARN line.
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -200,6 +202,11 @@ describe("check:http says where the bearer came from even when it is refused", (
     expect(new Set(stub.seen)).toEqual(new Set([`Bearer ${FROM_ENVIRONMENT}`]));
     expect(output).toContain("HTTP 401");
     expect(output).toContain("bearer:   from environment");
+    // The two values differ, which is the likeliest reason for the 401, so the
+    // WARN that says so must be there too.
+    const warnLines = output.split("\n").filter((line) => line.includes("WARN:"));
+    expect(warnLines).toHaveLength(1);
+    expect(warnLines[0]).toContain(`differs from ${file}; using the environment`);
     expect(leaked(output, ALL_VALUES)).toEqual([]);
   });
 });

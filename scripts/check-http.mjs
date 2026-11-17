@@ -95,8 +95,10 @@ async function checkEndpoint(envPath, endpointCount) {
   const port = parsePort(env.MCP_HTTP_PORT, resolved);
   const bearer = resolveBearer(env, resolved, endpointCount);
   const token = bearer.token;
-  // Before the handshake, so a refused bearer still says where it came from.
+  // Before the handshake, so a refused bearer still says where it came from,
+  // and that the environment's value differed from the file's.
   console.log(`  bearer:   from ${bearer.source}`);
+  if (bearer.warning) console.log(`  WARN:     ${bearer.warning}`);
   const endpoint = `http://127.0.0.1:${port}/mcp`;
   const authHeader = { Authorization: `Bearer ${token}` };
   const postHeaders = {
@@ -165,9 +167,7 @@ async function checkEndpoint(envPath, endpointCount) {
     // Shared with check-stdio.mjs: a surface WIDER than the flags declare —
     // including an unrecognized write-capable tool — fails closed; a narrower
     // one only warns.
-    const surface = classifySurface(tools, categories);
-    const { readOnly, writeCapable, failures } = surface;
-    const warnings = bearer.warning ? [bearer.warning, ...surface.warnings] : surface.warnings;
+    const { readOnly, writeCapable, failures, warnings } = classifySurface(tools, categories);
 
     const serverInfo = initPayload.result?.serverInfo ?? {};
     return {
