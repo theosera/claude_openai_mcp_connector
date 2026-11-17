@@ -2,12 +2,14 @@
 //
 // For each endpoint (identified by an `.env` file) it runs the MCP handshake
 // (initialize -> notifications/initialized -> tools/list) against
-// http://127.0.0.1:<MCP_HTTP_PORT>/mcp using that file's MCP_AUTH_TOKEN, then
+// http://127.0.0.1:<MCP_HTTP_PORT>/mcp with that endpoint's bearer, then
 // compares the LIVE tool surface with what the same file's MCP_HTTP_ALLOW_*
-// flags DECLARE. With a single endpoint (one --env, or none and the default
-// ./.env), a bearer in the environment wins over the file's, as it does for the
-// server; with two or more, each endpoint uses only its own file. The bearer is
-// never printed, only where it came from. The MCP
+// flags DECLARE. The bearer is the file's MCP_AUTH_TOKEN, except that with a
+// single endpoint (one --env, or none and the default ./.env) a bearer in the
+// environment wins over the file's, as it does for the server; with two or
+// more, each endpoint uses only its own file. The bearer is never printed; the
+// line saying where it came from is printed before the handshake, so it is
+// there even when the endpoint refuses the bearer. The MCP
 // session is always terminated (authenticated DELETE) so repeated/scheduled
 // runs do not leak server-side transports, and every request is bounded by a
 // timeout so a wedged endpoint fails instead of hanging.
@@ -93,6 +95,8 @@ async function checkEndpoint(envPath, endpointCount) {
   const port = parsePort(env.MCP_HTTP_PORT, resolved);
   const bearer = resolveBearer(env, resolved, endpointCount);
   const token = bearer.token;
+  // Before the handshake, so a refused bearer still says where it came from.
+  console.log(`  bearer:   from ${bearer.source}`);
   const endpoint = `http://127.0.0.1:${port}/mcp`;
   const authHeader = { Authorization: `Bearer ${token}` };
   const postHeaders = {
@@ -168,7 +172,6 @@ async function checkEndpoint(envPath, endpointCount) {
     const serverInfo = initPayload.result?.serverInfo ?? {};
     return {
       envPath: resolved,
-      bearerSource: bearer.source,
       endpoint,
       publicUrl: env.MCP_HTTP_PUBLIC_URL?.trim().replace(/\/+$/, "") || undefined,
       server: `${serverInfo.name ?? "unknown"} ${serverInfo.version ?? ""}`.trimEnd(),
@@ -208,7 +211,6 @@ for (const envPath of envPaths) {
       r.declared.legacyCreate ? "on" : "off"
     } skill=${r.declared.skillWrite ? "on" : "off"} audit=${r.declared.auditWrite ? "on" : "off"}`;
     console.log(`  local:    ${r.endpoint}`);
-    console.log(`  bearer:   from ${r.bearerSource}`);
     if (r.publicUrl) console.log(`  public:   ${r.publicUrl}/mcp`);
     console.log(`  server:   ${r.server}`);
     console.log(`  protocol: ${r.protocol}`);

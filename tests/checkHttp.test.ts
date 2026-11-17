@@ -31,6 +31,9 @@ import { afterEach, describe, expect, it } from "vitest";
  * - return an empty bearer instead of stopping: "stops when neither holds a
  *   bearer" and "stops on an endpoint whose file has no bearer", which both
  *   exit 0.
+ * A mutation in `scripts/check-http.mjs`, printing the bearer line only after a
+ * successful handshake (as the first version of this change did), turns only
+ * "prints the bearer line before the handshake fails" red, with no bearer line.
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -58,13 +61,17 @@ afterEach(async () => {
   }
 });
 
-async function startStub(): Promise<Stub> {
+async function startStub(options: { refuse?: boolean } = {}): Promise<Stub> {
   const seen: string[] = [];
   const server = http.createServer((req, res) => {
     seen.push(req.headers.authorization ?? "");
     let raw = "";
     req.on("data", (chunk: Buffer) => (raw += chunk.toString("utf8")));
     req.on("end", () => {
+      if (options.refuse) {
+        res.writeHead(401, { "Content-Type": "application/json" }).end('{"error":"unauthorized"}');
+        return;
+      }
       if (req.method !== "POST") {
         res.writeHead(200).end();
         return;
@@ -178,6 +185,22 @@ describe("check:http reads the bearer from the environment with a single --env",
     expect(code).toBe(1);
     expect(output).toContain(`${BEARER} must be configured in ${file} or (with a single endpoint) the environment.`);
     expect(stub.seen).toEqual([]);
+  });
+});
+
+describe("check:http says where the bearer came from even when it is refused", () => {
+  it("prints the bearer line before the handshake fails", async () => {
+    const stub = await startStub({ refuse: true });
+    const file = await writeEndpointFile(stub.port, FROM_FILE);
+
+    const { code, output } = await runCheck([file], FROM_ENVIRONMENT);
+
+    expect(code).toBe(1);
+    expect(stub.seen.length).toBeGreaterThan(0);
+    expect(new Set(stub.seen)).toEqual(new Set([`Bearer ${FROM_ENVIRONMENT}`]));
+    expect(output).toContain("HTTP 401");
+    expect(output).toContain("bearer:   from environment");
+    expect(leaked(output, ALL_VALUES)).toEqual([]);
   });
 });
 
