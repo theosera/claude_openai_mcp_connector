@@ -20,7 +20,7 @@ Skill は将来の agent 指示として実行されるため、一般ノート�
    ★ **ワイヤ上で実測済み** (2026-09-02 JST、両 transport の 2×2): subdir のみなら
    `skills=reserved-only` で **stdio 12 / HTTP 8 tools のどちらにも `plan_skill_create` は出ない**。
    flag も立てると **stdio 14 / HTTP 10** になり、実際に呼べる。**flag だけ (subdir 無し) は起動拒否。**
-   ⭕ HTTP 側は `documents=off` のまま **8 → 10** なので、item 4 の「後者だけでは一般 document
+   ⭕ HTTP 側は `documents=off` のまま **8 → 10** なので、INV-6 item 4 の「後者だけでは一般 document
    write を出さない」もワイヤで確認できている。
 2. 必ず `plan_skill_create` → bundle diff のユーザ承認 → `apply_planned_skill_create`。plan は
    target を触らず patch state に proposal だけを保存する。
