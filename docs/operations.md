@@ -1420,10 +1420,10 @@ The whole point is that the **scan** endpoint exposes the audit tools and **no**
 general/skill write tools, so an injected scanner has nothing to write with. The
 repo ships an authenticated check that runs the full MCP handshake against each
 endpoint's local `/mcp` and compares the live tool surface with that endpoint's
-`MCP_HTTP_ALLOW_*` flags. The bearer comes from the `.env` file and, when exactly
-one `--env` is given, from the environment as well, which wins over the file as
-it does for the server; with two or more `--env`, each endpoint uses only its
-own file. The bearer is never printed — each endpoint's block says only where it
+`MCP_HTTP_ALLOW_*` flags. The bearer comes from the `.env` file and, when a single
+endpoint is checked (one `--env`, or none and the default `./.env`), from the
+environment as well, which wins over the file as it does for the server; with
+two or more `--env`, each endpoint uses only its own file. The bearer is never printed — each endpoint's block says only where it
 came from (`bearer: from environment` or the file's path), and a `WARN` line
 names the file when the environment and the file both hold a value and they
 differ:

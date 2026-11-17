@@ -4,9 +4,10 @@
 // (initialize -> notifications/initialized -> tools/list) against
 // http://127.0.0.1:<MCP_HTTP_PORT>/mcp using that file's MCP_AUTH_TOKEN, then
 // compares the LIVE tool surface with what the same file's MCP_HTTP_ALLOW_*
-// flags DECLARE. With a single --env, a bearer in the environment wins over the
-// file's, as it does for the server; with two or more, each endpoint uses only
-// its own file. The bearer is never printed, only where it came from. The MCP
+// flags DECLARE. With a single endpoint (one --env, or none and the default
+// ./.env), a bearer in the environment wins over the file's, as it does for the
+// server; with two or more, each endpoint uses only its own file. The bearer is
+// never printed, only where it came from. The MCP
 // session is always terminated (authenticated DELETE) so repeated/scheduled
 // runs do not leak server-side transports, and every request is bounded by a
 // timeout so a wedged endpoint fails instead of hanging.
@@ -48,8 +49,8 @@ const USAGE = `Usage: node scripts/check-http.mjs [--env <path>]...
 
 Checks each endpoint's local /mcp handshake and verifies the live tool surface
 against that endpoint's MCP_HTTP_ALLOW_* flags. Defaults to ./.env when no
---env is given. Tokens are read from the .env files and, with a single --env,
-from the environment, which wins over the file; they are never printed.
+--env is given. Tokens are read from the .env files and, when one endpoint is
+checked, from the environment, which wins over the file; they are never printed.
 MCP_CHECK_TIMEOUT_MS (default 10000) bounds each request.`;
 
 function parseArgs(argv) {

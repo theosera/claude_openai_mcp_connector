@@ -62,7 +62,8 @@ const BEARER = "MCP_AUTH_TOKEN";
 /**
  * The bearer check:http sends to one endpoint, and where it came from.
  *
- * With a single endpoint, a bearer in the environment wins over the file's, in
+ * With a single endpoint (one --env, or none and the default ./.env), a bearer
+ * in the environment wins over the file's, in
  * the same order the server reads them, so the check keeps working once the
  * token is kept out of the file and handed to the server through the
  * environment. With two or more endpoints only each one's own file counts: one
@@ -84,5 +85,5 @@ export function resolveBearer(env, envPath, endpointCount, processEnv = process.
     return { token: fromEnvironment, source: "environment", warning };
   }
   if (fromFile) return { token: fromFile, source: envPath, warning: undefined };
-  throw new Error(`${BEARER} must be configured in ${envPath} or (with a single --env) the environment.`);
+  throw new Error(`${BEARER} must be configured in ${envPath} or (with a single endpoint) the environment.`);
 }

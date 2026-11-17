@@ -86,8 +86,9 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **`check:http` can take the bearer from the environment.** With a single
-  `--env`, a bearer in the environment now wins over the file's, in the same
+- **`check:http` can take the bearer from the environment.** When it checks a
+  single endpoint (one `--env`, or none and the default `./.env`), a bearer in
+  the environment now wins over the file's, in the same
   order the server reads them, so the check keeps working once the token is kept
   out of the file and handed to the server through the environment. With two or
   more `--env`, each endpoint still uses only its own file: one environment

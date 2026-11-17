@@ -982,9 +982,18 @@ describe("HTTP transport integration", () => {
       const envFile = path.join(dir, ".env");
       await fs.writeFile(envFile, `MCP_HTTP_PORT=${port}\nMCP_AUTH_TOKEN=${token}\n`, "utf8");
 
+      // With one endpoint, check-http lets a bearer in the environment win over
+      // the file's. This test pins the file's token, so the child gets the
+      // test's environment without one: a bearer in the shell running the
+      // suite would otherwise reach the server and be refused (a red for a
+      // reason this test does not claim).
+      const childEnv: NodeJS.ProcessEnv = { ...process.env };
+      delete childEnv.MCP_AUTH_TOKEN;
+
       const { code, output } = await new Promise<{ code: number | null; output: string }>((resolve) => {
         const child = spawn(process.execPath, [path.join(repoRoot, "scripts", "check-http.mjs"), "--env", envFile], {
           cwd: repoRoot,
+          env: childEnv,
           stdio: ["ignore", "pipe", "pipe"]
         });
         let output = "";

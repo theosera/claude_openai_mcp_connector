@@ -16,6 +16,21 @@ import { afterEach, describe, expect, it } from "vitest";
  * 127.0.0.1 that records the Authorization header it receives and answers the
  * handshake with an empty tool list. The child gets an explicit environment,
  * so a bearer in the shell that runs the tests cannot reach it.
+ *
+ * Mutations run against `resolveBearer` in `scripts/repo-env.mjs`, with the
+ * tests that went red and why:
+ * - never read the environment: "file has no bearer line" exits 1, "over the
+ *   file" sends the file's value, "no WARN when both match" says the bearer
+ *   came from the file;
+ * - let the file win when both hold a value: "over the file" sends the file's
+ *   value, "no WARN when both match" says the bearer came from the file;
+ * - read the environment with two or more endpoints: only "stops on an endpoint
+ *   whose file has no bearer", which exits 0;
+ * - warn even when the two values match: only "no WARN when both match", which
+ *   prints a WARN line;
+ * - return an empty bearer instead of stopping: "stops when neither holds a
+ *   bearer" and "stops on an endpoint whose file has no bearer", which both
+ *   exit 0.
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -138,6 +153,31 @@ describe("check:http reads the bearer from the environment with a single --env",
     expect(warnLines).toHaveLength(1);
     expect(warnLines[0]).toContain(`differs from ${file}; using the environment`);
     expect(leaked(output, ALL_VALUES)).toEqual([]);
+  });
+
+  it("uses the environment with no WARN when both match", async () => {
+    const stub = await startStub();
+    const file = await writeEndpointFile(stub.port, FROM_ENVIRONMENT);
+
+    const { code, output } = await runCheck([file], FROM_ENVIRONMENT);
+
+    expect(code).toBe(0);
+    expect(stub.seen.length).toBeGreaterThan(0);
+    expect(new Set(stub.seen)).toEqual(new Set([`Bearer ${FROM_ENVIRONMENT}`]));
+    expect(output).toContain("bearer:   from environment");
+    expect(output).not.toContain("WARN:");
+    expect(leaked(output, ALL_VALUES)).toEqual([]);
+  });
+
+  it("stops when neither holds a bearer", async () => {
+    const stub = await startStub();
+    const file = await writeEndpointFile(stub.port);
+
+    const { code, output } = await runCheck([file]);
+
+    expect(code).toBe(1);
+    expect(output).toContain(`${BEARER} must be configured in ${file} or (with a single endpoint) the environment.`);
+    expect(stub.seen).toEqual([]);
   });
 });
 
