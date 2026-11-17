@@ -179,6 +179,24 @@ function projectDocument(
 }
 
 /**
+ * Upper bound on the combined number of array elements and object members in
+ * one `tools/call` `arguments` payload, passed to the SDK as
+ * `maxToolInputElements` (CVE-2026-111768). The SDK counts every element and
+ * key at every depth and refuses the call before schema validation or the
+ * handler runs. Leaving it unset means no limit — the SDK default even in the
+ * fixed release — so without this the 4 MiB HTTP body bound is the only cap,
+ * and that body holds about two million elements.
+ *
+ * The largest legitimate input is bounded by bytes, not elements: `tags` and
+ * `source_refs` end up in a frontmatter block capped at
+ * MAX_FRONTMATTER_BLOCK_BYTES (8 KiB), where each element takes at least two
+ * bytes, so a write that could succeed carries at most about 4,096 of them. A
+ * Skill bundle is at most 20 references, about 65 elements in all. 10,000
+ * leaves room above both.
+ */
+export const MAX_TOOL_INPUT_ELEMENTS = 10_000;
+
+/**
  * Build a fully-wired McpServer over a KnowledgeStore. The same factory backs
  * both the stdio transport (local CLI clients) and the HTTP transport (remote
  * Chat connectors), so the tool surface and the untrusted-content boundary
@@ -198,7 +216,7 @@ export function buildMcpServer(vaultStore: VaultStore, options: BuildServerOptio
       name: "claude-openai-markdown-connector",
       version: SERVER_VERSION
     },
-    { instructions: SERVER_INSTRUCTIONS }
+    { instructions: SERVER_INSTRUCTIONS, maxToolInputElements: MAX_TOOL_INPUT_ELEMENTS }
   );
 
   server.registerTool(
