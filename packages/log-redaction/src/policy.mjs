@@ -8,7 +8,8 @@
  * see those rules, so a rule added to the shell in one of those families stays
  * green here while the two drift apart. `SECRET_LABELS` below carries the two
  * passwd / passphrase words; the core reads quotes (and so the doubled
- * apostrophe) itself. The argument-position rules come in the next step of #249.
+ * apostrophe) itself. The core also reads argument-position values directly;
+ * their named clients and flags do not change this label/token vocabulary.
  *
  * Today `redact-log.mjs` lifts this vocabulary out of the shipped sed `mask()` at
  * run time (`vocabularyFrom`), so the engine does not run where

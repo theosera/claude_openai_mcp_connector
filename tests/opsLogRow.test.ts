@@ -95,3 +95,31 @@ describe("ops log row: one command is one table row (#246)", () => {
     expect(dataRows(log).length).toBeGreaterThan(1);
   });
 });
+
+describe("ops capture entrance: continued credentials (#230/S1)", () => {
+  const commands = [
+    "mysql -h db -u app \\\n  -pS1ENTRANCE_SECRET -e 'select 1'",
+    "redis-cli -h db \\\n  -a S1ENTRANCE_SECRET ping",
+    "gpg --batch --passphrase \\\n  S1ENTRANCE_SECRET -c file"
+  ];
+
+  it.each(commands)("masks the continued value before building a table row: %s", (command) => {
+    const log = logRow(hookPath, command, "S1 entrance regression");
+    expect(log).not.toContain("S1ENTRANCE_SECRET");
+    expect(log).toContain("***MASKED***");
+    expect(dataRows(log)).toHaveLength(1);
+  });
+
+  it("detects a leaked continued client value when context is reset at every physical line", () => {
+    const source = fs.readFileSync(hookPath, "utf8");
+    const guard = "if (!s1_continued)";
+    expect(source.split(guard)).toHaveLength(2);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ops-log-s1-mutant-"));
+    scratch.push(dir);
+    const mutant = path.join(dir, "capture-command.sh");
+    fs.writeFileSync(mutant, source.replace(guard, "if (1)"));
+    for (const command of commands.slice(0, 2)) {
+      expect(logRow(mutant, command, "S1 continuation mutant")).toContain("S1ENTRANCE_SECRET");
+    }
+  });
+});
