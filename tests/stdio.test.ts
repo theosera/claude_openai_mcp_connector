@@ -210,8 +210,10 @@ describe("stdio dual-era serving", () => {
       }
     }
 
-    function textOf(result: Awaited<ReturnType<Client["callTool"]>>): string {
-      const content = (result.content ?? []) as Array<{ type: string; text?: string }>;
+    // Takes both eras' results: the 2025 client's type also admits the
+    // compatibility shape `{ toolResult }`, which carries no `content`.
+    function textOf(result: object): string {
+      const content = ("content" in result ? (result.content ?? []) : []) as Array<{ type: string; text?: string }>;
       return content.map((block) => block.text ?? "").join("\n");
     }
 
@@ -231,6 +233,35 @@ describe("stdio dual-era serving", () => {
       const data = (result.structuredContent as { data?: { results?: unknown[]; total_count?: number } }).data;
       expect(data?.results).toEqual([]);
       expect(data?.total_count).toBe(0);
+    }, 60_000);
+
+    it("refuses arguments one element over the bound on the 2026-07-28 era too", async () => {
+      // The two tests above negotiate the 2025 era. The stdio entrypoint also
+      // serves 2026-07-28 from the same factory, so send the same
+      // over-the-bound call with a modern client pinned to that revision
+      // (unpinned, it would negotiate the 2025 era again and check one era twice).
+      //
+      // Reverse-verified (2026-11-17, src/server.ts): with
+      // `maxToolInputElements` removed this fails along with the 2025-era
+      // over-the-bound test (the call is answered, isError is not true); with
+      // the bound lowered to 9_999 it fails on the message, which then names
+      // 9999, so the refusal on this era comes from the configured bound.
+      const client = new ModernClient(
+        { name: "element-bound-modern", version: "0.0.0" },
+        { versionNegotiation: { mode: { pin: "2026-07-28" } } }
+      );
+      await client.connect(new ModernStdioClientTransport({ ...spawnArgs, env: serverEnv() }));
+      try {
+        // 2 keys + 9,999 tags = 10,001.
+        const result = await client.callTool({
+          name: "search_documents",
+          arguments: { query: "retrieval", tags: Array.from({ length: 9_999 }, (_, i) => `t${i}`) }
+        });
+        expect(result.isError).toBe(true);
+        expect(textOf(result)).toMatch(limitMessage);
+      } finally {
+        await client.close();
+      }
     }, 60_000);
   });
 
