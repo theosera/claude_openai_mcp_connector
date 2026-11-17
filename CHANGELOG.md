@@ -144,10 +144,14 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   validation and before the handler runs (a new rejection a client can see, as
   an error result that names the bound). The count reaches inside
   `frontmatter_patch`, whose values the schema does not inspect. Legitimate
-  input stays well under it: `tags` and `source_refs` have to fit an 8 KiB
-  frontmatter block, so at most about 4,096 elements, and a Skill bundle is at
-  most about 65. Until now the only cap was the 4 MiB HTTP body, which holds
-  about two million elements.
+  writes stay well under it: `tags` and `source_refs` share one 8 KiB
+  frontmatter block, so at most about 4,096 elements between them, and a Skill
+  bundle is at most about 65. The bound applies to read tools too, where a
+  `tags` filter or a `sections` list has no byte cap of its own; ordinary use
+  is a few to a few dozen entries. Until now the only cap was the 4 MiB HTTP
+  body, which holds about two million elements. This bounds the structure of a
+  call's arguments after they are parsed, not request bytes or parsing cost:
+  the HTTP body bound still covers those, and stdio gets no byte bound here.
 - **A heading's closing-hash run is found by a linear scan, not a regex**
   (2026-09-19 whole-repository scan, F1). `closeHashes` ran
   `/(?:^|\s+)#+$/` over every ATX heading's text; the unanchored `\s+`

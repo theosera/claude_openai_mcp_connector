@@ -187,12 +187,21 @@ function projectDocument(
  * fixed release — so without this the 4 MiB HTTP body bound is the only cap,
  * and that body holds about two million elements.
  *
- * The largest legitimate input is bounded by bytes, not elements: `tags` and
- * `source_refs` end up in a frontmatter block capped at
+ * The largest legitimate write is bounded by bytes, not elements: `tags` and
+ * `source_refs` share one frontmatter block capped at
  * MAX_FRONTMATTER_BLOCK_BYTES (8 KiB), where each element takes at least two
- * bytes, so a write that could succeed carries at most about 4,096 of them. A
- * Skill bundle is at most 20 references, about 65 elements in all. 10,000
- * leaves room above both.
+ * bytes, so a write that could succeed carries at most about 4,096 of them
+ * between the two (fewer in practice). A Skill bundle is at most 20
+ * references, about 65 elements in all. 10,000 leaves room above both.
+ *
+ * The bound covers every tool, read tools included. A `tags` filter or a
+ * `sections` list is not stored, so no byte cap stands behind it; its ordinary
+ * use is a few to a few dozen entries, and the bound is what now caps it.
+ *
+ * This bounds the structure of one call's arguments after the transport has
+ * parsed them. It does not bound request bytes or the cost of parsing them:
+ * the HTTP body bound still does that for HTTP, and this change adds no byte
+ * bound for stdio.
  */
 export const MAX_TOOL_INPUT_ELEMENTS = 10_000;
 
