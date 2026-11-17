@@ -177,6 +177,63 @@ describe("stdio dual-era serving", () => {
     await client.close();
   }, 60_000);
 
+  // --- Tool argument element bound (CVE-2026-111768) -----------------------
+  // tests/toolInputElements.test.ts pins the bound over the SDK's in-memory
+  // transport. These send the same calls through the real stdio entrypoint, so
+  // they cover the server src/index.ts actually builds. The arguments count as
+  // there: the SDK counts object keys and array elements inside `arguments`,
+  // so { query, tags: [n] } is 2 + n.
+  //
+  // Reverse-verified (2026-11-17, one mutation at a time in src/server.ts):
+  //   - `maxToolInputElements: MAX_TOOL_INPUT_ELEMENTS` removed → only the
+  //     over-the-bound test fails, because the call is answered instead of
+  //     refused (isError is not true)
+  //   - MAX_TOOL_INPUT_ELEMENTS lowered to 9_999 → both tests fail: the
+  //     at-the-bound call is refused ("maximum of 9999 elements"), and the
+  //     over-the-bound refusal no longer matches the literal 10000 its message
+  //     is pinned to
+  describe("tool argument element bound (CVE-2026-111768)", () => {
+    // The SDK's refusal names the bound, so a red here says "the bound is
+    // missing" rather than "some other check refused the call".
+    const limitMessage = /arguments contain more than the maximum of 10000 elements/;
+
+    async function searchWithTags(tagCount: number) {
+      const client = new Client({ name: "element-bound", version: "0.0.0" });
+      await client.connect(new StdioClientTransport({ ...spawnArgs, env: serverEnv() }));
+      try {
+        return await client.callTool({
+          name: "search_documents",
+          arguments: { query: "retrieval", tags: Array.from({ length: tagCount }, (_, i) => `t${i}`) }
+        });
+      } finally {
+        await client.close();
+      }
+    }
+
+    function textOf(result: Awaited<ReturnType<Client["callTool"]>>): string {
+      const content = (result.content ?? []) as Array<{ type: string; text?: string }>;
+      return content.map((block) => block.text ?? "").join("\n");
+    }
+
+    it("refuses arguments one element over the bound, with the bound's message", async () => {
+      // 2 keys + 9,999 tags = 10,001.
+      const result = await searchWithTags(9_999);
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toMatch(limitMessage);
+    }, 60_000);
+
+    it("accepts arguments exactly at the bound", async () => {
+      // 2 keys + 9,998 tags = 10,000. The search runs: no fixture note carries
+      // those tags, so it answers with an empty page rather than an error.
+      const result = await searchWithTags(9_998);
+      expect(result.isError).not.toBe(true);
+      expect(textOf(result)).not.toMatch(limitMessage);
+      const data = (result.structuredContent as { data?: { results?: unknown[]; total_count?: number } }).data;
+      expect(data?.results).toEqual([]);
+      expect(data?.total_count).toBe(0);
+    }, 60_000);
+  });
+
   it("keeps the two eras identical on the FULL surface, not just the audit-off one", async () => {
     const env = await operatorEnv({ auditWrite: true, skillWrite: true });
 
