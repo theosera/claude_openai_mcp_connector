@@ -195,8 +195,9 @@ function projectDocument(
  * references, about 65 elements in all. 10,000 leaves room above both.
  *
  * The bound covers every tool, read tools included. A `tags` filter or a
- * `sections` list is not stored, so no byte cap stands behind it; its ordinary
- * use is a few to a few dozen entries, and the bound is what now caps it.
+ * `sections` list is not stored, so no byte cap stands behind it, and the
+ * bound is what now caps it. How many entries callers send there has not been
+ * measured; a read call over the bound is now refused like any other.
  *
  * This bounds the structure of one call's arguments after the transport has
  * parsed them. It does not bound request bytes or the cost of parsing them:
