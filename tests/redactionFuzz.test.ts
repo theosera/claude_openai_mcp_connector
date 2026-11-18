@@ -21,7 +21,7 @@ import { broken, type Engine, type EngineResult, readable } from "./tools/redact
 import { spawnSyncBounded } from "./tools/syncChild.js";
 
 /**
- * The differential fuzz, on the committed sample (seed 1, 290 cases = 10 of each
+ * The differential fuzz, on the committed sample (seed 1, 430 cases = 10 of each
  * family). The full runs (several seeds x 16,000 cases) are the tool's job; this
  * pins the generator and shows the runner can see what it claims to compare.
  */
@@ -56,7 +56,7 @@ const identity: Engine = (fragments) => fragments.map(({ text }) => ({ text, sta
 
 describe("the fuzz generator", () => {
   it("regenerates the committed sample byte for byte", () => {
-    const text = generate(1, 290)
+    const text = generate(1, 430)
       .map((c) => JSON.stringify(c))
       .join("\n");
     expect(`${text}\n`).toBe(readFileSync(SAMPLE, "utf8"));
@@ -90,6 +90,78 @@ describe("the fuzz generator", () => {
       .flatMap((c) => [...c.secrets, ...c.preserve]);
     expect(markers.length).toBeGreaterThan(64_000);
     expect(markers.filter(endsWithLabel)).toEqual([]);
+  });
+});
+
+// Independent shapes/counts: changing the family list cannot shrink this gate.
+const D1_SHAPES: readonly (readonly [string, readonly number[], RegExp])[] = [
+  ["delimiter-label", [2], /password=FK[A-Z0-9]{8}[}\])](?:token|Bearer) FK[A-Z0-9]{8} KEEP[A-Z0-9]{6}/],
+  [
+    "label-element-attributes",
+    [2, 3],
+    /<(password|token) a=(["'])FK[A-Z0-9]{8}\2 b=FK[A-Z0-9]{8}>(?:FK[A-Z0-9]{8})?<\/\1>/
+  ],
+  [
+    "compound-label-element",
+    [3],
+    /<(access_token|api_key|client_secret) a=(["'])FK[A-Z0-9]{8}\2 b=\2FK[A-Z0-9]{8}\2>FK[A-Z0-9]{8}<\/\1>/
+  ],
+  [
+    "namespaced-label-element",
+    [3],
+    /<ns:password a=(["'])FK[A-Z0-9]{8}\1 b=\1FK[A-Z0-9]{8}\1>FK[A-Z0-9]{8}<\/ns:password>/
+  ],
+  [
+    "password-input",
+    [1],
+    /<input (?:type=(["']?)password\1 value=\1FK[A-Z0-9]{8}\1|value=(["']?)FK[A-Z0-9]{8}\2 type=\2password\2)\/>/i
+  ],
+  [
+    "multiline-label-start",
+    [3],
+    /<password a=(["'])FK[A-Z0-9]{8}\1\r?\n b=\1FK[A-Z0-9]{8}\1>FK[A-Z0-9]{8}<\/password>/
+  ],
+  [
+    "angled-label-attribute",
+    [4],
+    /<password a=(["'])FK[A-Z0-9]{8}\1 b=\1FK[A-Z0-9]{8}[<>]tail\1 c=\1FK[A-Z0-9]{8}\1>FK[A-Z0-9]{8}<\/password>/
+  ]
+];
+
+const D1_FAMILIES = D1_SHAPES.flatMap(([shape, counts, pattern]) =>
+  (["command", "text"] as const).map((kind) => [`${shape}-${kind}`, kind, counts, pattern] as const)
+);
+
+const GENERATED_COVERAGE = [13, 29].map((seed) => ({ seed, cases: generate(seed, 16_000) }));
+
+describe("committed #296 coverage", () => {
+  it.each(D1_FAMILIES)("%s retains its shape and markers", (family, kind, counts, pattern) => {
+    const cases = sample.filter((c) => c.family === family);
+    expect(cases, `missing ${family}`).toHaveLength(10);
+    for (const c of cases) {
+      expect(c.kind, c.id).toBe(kind);
+      expect(c.input, c.id).toMatch(pattern);
+      expect(counts, c.id).toContain(c.secrets.length);
+      expect(c.preserve, c.id).toHaveLength(2);
+      expect(c.input, c.id).toMatch(/KEEP[A-Z0-9]{6} (?:<|password=)/);
+      expect(c.input, c.id).toMatch(/ KEEP[A-Z0-9]{6}$/);
+    }
+  });
+});
+
+describe.each(GENERATED_COVERAGE)("generated #296 coverage seed $seed", ({ seed, cases }) => {
+  it.each(D1_FAMILIES)("%s retains its generated shape and markers", (family, kind, counts, pattern) => {
+    const generated = cases.filter((c) => c.family === family);
+    expect(generated.length, `seed ${seed}: missing ${family}`).toBeGreaterThan(0);
+    for (const c of generated) {
+      expect(c.seed, c.id).toBe(seed);
+      expect(c.kind, c.id).toBe(kind);
+      expect(c.input, c.id).toMatch(pattern);
+      expect(counts, c.id).toContain(c.secrets.length);
+      expect(c.preserve, c.id).toHaveLength(2);
+      expect(c.input, c.id).toMatch(/KEEP[A-Z0-9]{6} (?:<|password=)/);
+      expect(c.input, c.id).toMatch(/ KEEP[A-Z0-9]{6}$/);
+    }
   });
 });
 

@@ -39,6 +39,57 @@ function load(path: string): Case[] {
 const corpus = load(join(HERE, "fixtures", "redaction-corpus", "corpus.jsonl"));
 const fuzzSample = load(join(HERE, "fixtures", "redaction-fuzz", "seed-1.jsonl"));
 
+const BASE_FAMILIES = [
+  "mysql-p",
+  "mysql-p-quoted",
+  "redis-a",
+  "curl-u",
+  "label-quoted",
+  "json-pair",
+  "label-bare",
+  "adjacent-keywords",
+  "dash-run",
+  "passphrase-quoted",
+  "passwd-label",
+  "yaml-doubled",
+  "shell-quote-join",
+  "label-closes-first",
+  "prose-apostrophe",
+  "next-line",
+  "preserve-only",
+  "url-userinfo",
+  "dash-armor",
+  "url-userinfo-dash",
+  "url-userinfo-pair",
+  "url-userinfo-quoted",
+  "url-user-only",
+  "url-port-only",
+  "url-userinfo-port",
+  "passwd-dash-followed",
+  "passphrase-dash-quoted",
+  "passwd-dash-certificate",
+  "passwd-armor"
+];
+
+const RETAINED_FAMILIES = [
+  "delimiter-label-command",
+  "label-element-attributes-command",
+  "compound-label-element-command",
+  "namespaced-label-element-command",
+  "password-input-command",
+  "multiline-label-start-command",
+  "angled-label-attribute-command",
+  "delimiter-label-text",
+  "label-element-attributes-text",
+  "compound-label-element-text",
+  "namespaced-label-element-text",
+  "password-input-text",
+  "multiline-label-start-text",
+  "angled-label-attribute-text"
+];
+
+const EXPECTED_FAMILIES = new Set([...BASE_FAMILIES, ...RETAINED_FAMILIES]);
+
 function verdict(c: Case) {
   const result = redactFragment({ text: c.input, kind: c.kind });
   return { result, ...judgeCase(c.input, result, c.secrets, c.preserve) };
@@ -60,17 +111,19 @@ describe("the core on the corpus", () => {
   });
 });
 
-// The committed fuzz sample: ten cases from each of the 29 families. The full
+// The committed fuzz sample: ten cases from each expected family. The full
 // runs (several seeds, 16,000 cases each) are run by hand; see the fuzz README.
 describe("the core on the fuzz sample", () => {
-  it("contains no less-than character, so does not exercise the markup rules", () => {
-    expect(fuzzSample).toHaveLength(290);
-    expect(fuzzSample.filter((c) => c.input.includes("<")).map((c) => c.id)).toEqual([]);
+  it("covers literal markup without encoded less-than entities", () => {
+    expect(fuzzSample).toHaveLength(EXPECTED_FAMILIES.size * 10);
+    expect(fuzzSample.filter((c) => c.input.includes("<"))).toHaveLength(
+      RETAINED_FAMILIES.filter((family) => !family.startsWith("delimiter-label-")).length * 10
+    );
     expect(fuzzSample.filter((c) => c.input.includes("&lt;")).map((c) => c.id)).toEqual([]);
   });
 
   it("masks every secret and keeps every preserve word in every family", () => {
-    expect(new Set(fuzzSample.map((c) => c.family)).size).toBe(29);
+    expect(new Set(fuzzSample.map((c) => c.family))).toEqual(EXPECTED_FAMILIES);
     const failures = fuzzSample
       .map((c) => ({ id: c.id, family: c.family!, ...verdict(c) }))
       .filter((v) => v.result.status !== "ok" || v.broken.length > 0 || v.leaked.length > 0)

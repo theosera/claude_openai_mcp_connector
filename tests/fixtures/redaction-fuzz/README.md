@@ -4,7 +4,9 @@ Generated inputs for the differential fuzz of the log redactor (#249). The gener
 
 ## `seed-1.jsonl`
 
-290 cases from `generate(1, 290)`: ten of each of the 29 families, in turn. `tests/redactionFuzz.test.ts` regenerates it and requires the same bytes, so a change to the generator that changes these 290 cases shows up as a change to this file. The ten families added for #280 change the index-to-family assignment and random draws, and `dash-armor` now draws an immediate preserve word. Full runs from before this change are not reproduced case by case. A change that only reaches later cases need not change the sample: when the label redraw below was introduced with 19 families, it left the then-190-case sample as it was, while seed 1 differed from case 5139 on (seed 13 from case 8216). Those positions describe the old grammar, not this 29-family version.
+430 cases from `generate(1, 430)`: ten of each of the 43 families, in turn. `tests/redactionFuzz.test.ts` regenerates it and requires the same bytes. The original 29 families keep their order, followed by seven command families and seven text families. The index-to-family assignment and random draws change with the family list, so earlier grammars are not reproduced case by case.
+
+この PR には確かめ済みの族だけを入れる。残りは別の件。
 
 Each line has the corpus fields a judge reads, plus the case's origin:
 
@@ -43,6 +45,22 @@ The original `url-userinfo` (L-1) and `dash-armor` (M-4, with M-1's five-dash va
 | M-6    | `passwd-armor`            | text    | Quoted passwd without dashes, private-key block, then a preserve word on the next line |
 
 All M families, including the existing `dash-armor`, place a preserve word immediately after the quoted value; block families also keep a word after the block. Quoted families draw both quote directions. L-6 draws ports 8443/8080 and L-7 draws 5432/5433. These negatives measure over-masking independently of secret leakage; they do not relax the judge or the core-only sample gate.
+
+## Label and markup coverage (#296)
+
+Each retained stem below has a `-command` and a `-text` family, with ten sample cases per family. Preserve markers sit immediately before and after each shape.
+
+- `delimiter-label`
+- `label-element-attributes`
+- `compound-label-element`
+- `namespaced-label-element`
+- `password-input`
+- `multiline-label-start`
+- `angled-label-attribute`
+
+Coverage tests independently require each named family, input shape and marker count in the sample and in 16,000 generated cases for each of seeds 13 and 29. The corpus gate compares the full set of 29 integration families plus the 14 retained families and requires zero secret or preserve failures in every family, without exemptions.
+
+For #296's acceptance condition concerning comparison with an engine with fixes removed: この条件は別の件で確かめる。
 
 ## How cases are judged
 
