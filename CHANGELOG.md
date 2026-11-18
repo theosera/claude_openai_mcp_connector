@@ -146,6 +146,13 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **`check:http` refuses a bearer that holds a control character.** fetch
+  rejects a header value with a line break in it, and its error quotes the whole
+  value, which the check printed on its `FAIL` line. A bearer could carry one
+  from the environment, or from a double-quoted `\n` in the endpoint's file,
+  which dotenv expands; the file's path existed before the check read the
+  environment. The check now stops before sending such a bearer and names only
+  where it came from.
 - **Tool arguments are bounded in element count** (CVE-2026-111768 in the MCP
   SDK). The SDK validated `tools/call` arguments against the input schema with
   no bound on their size, and the fixed `@modelcontextprotocol/server` ships the
