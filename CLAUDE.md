@@ -94,7 +94,7 @@ HTTP は **opt-in の OAuth 2.1 authorization server** (`src/oauth/`、PKCE S256
 > レビューして「指摘なし」になる事故が実際に起きかけた。
 >
 > 実測・両者の詳しい違い・空 diff 事故の経緯は **`mcp-vault-security` skill の
-> 「pre-commit レビューの発火」**節。
+> 「pre-commit レビューの発火」**節（`.claude/skills/mcp-vault-security/references/04-pre-commit-review.md`）。
 >
 > 全変更に広げない — 発火は「`fs` に書く経路」「write surface の gate」
 > 「**出力の封じ込め (escape / fence / マスク)**」「**送り先の認可 (origin pin / marker の照合)**」の
@@ -471,8 +471,9 @@ CAS は読んだ版一致時のみ更新、append/CAS は in-process mutex で�
   実測: #156 は 6 本、#161 は 1 本で止まっていた)。
   ⚠️ **強制を増やしたいなら触るのは CODEOWNERS ではなく `required_approving_review_count`。**
   ⛔ **ただしそれは全 PR を所有者 1 人待ちにする** — 採否は運用コストの判断で、コードの判断ではない。
-  ⛔ **さらに、それだけでは足りない**: 同 ruleset の `bypass_actors` が `RepositoryRole` 5 に
-  `bypass_mode: always` を与えているので、**count を上げても、実際に merge している当人は素通りする**。
+  ⚠️ **同 ruleset の `bypass_actors` は 2026-11-06 07:34 JST の実測で空である** (同日 00:07 JST に外した)。
+  その前は `RepositoryRole` 5 に `bypass_mode: always` を与えていて、ここは「count を上げても、実際に
+  merge している当人は素通りする」と書いていた。⛔ いま count を上げて当人が止まるかは測っていない。
   ⇒ **count を語るときは必ず `bypass_actors` と対で読む。**
   ★ **本節の正典は `SECURITY.md` の「What CODEOWNERS does, and what it does not」** —
   contributor 向けの面に置いてある。⛔ 両方を育てない (`GD-NO-DUPLICATION`)。

@@ -11,6 +11,7 @@
 # Measured 2026-09-03 01:10 JST: require_code_owner_review true, but
 # required_approving_review_count 0 and bypass_actors grants RepositoryRole 5
 # bypass_mode "always" -- so ownership here routes review and blocks nothing.
+# Measured 2026-11-06 07:34 JST: the count is still 0; bypass_actors is empty.
 # An earlier version of this comment said it "mechanically blocks" once branch
 # protection enabled code-owner review. That precondition is now satisfied and
 # the claim still did not come true, so the hedge was falsified, not unmet.
