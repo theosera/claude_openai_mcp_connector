@@ -2,9 +2,14 @@
 //
 // For each endpoint (identified by an `.env` file) it runs the MCP handshake
 // (initialize -> notifications/initialized -> tools/list) against
-// http://127.0.0.1:<MCP_HTTP_PORT>/mcp using that file's MCP_AUTH_TOKEN, then
+// http://127.0.0.1:<MCP_HTTP_PORT>/mcp with that endpoint's bearer, then
 // compares the LIVE tool surface with what the same file's MCP_HTTP_ALLOW_*
-// flags DECLARE. The bearer token is read from disk and never printed. The MCP
+// flags DECLARE. The bearer is the file's MCP_AUTH_TOKEN, except that with a
+// single endpoint (one --env, or none and the default ./.env) a bearer in the
+// environment wins over the file's, as it does for the server; with two or
+// more, each endpoint uses only its own file. The bearer is never printed; the
+// line saying where it came from is printed before the handshake, so it is
+// there even when the endpoint refuses the bearer. The MCP
 // session is always terminated (authenticated DELETE) so repeated/scheduled
 // runs do not leak server-side transports, and every request is bounded by a
 // timeout so a wedged endpoint fails instead of hanging.
@@ -30,7 +35,7 @@
 // MCP_CHECK_TIMEOUT_MS (default 10000) bounds each HTTP request.
 
 import path from "node:path";
-import { parseEnvFile, parsePort, isTruthy, requiredEnv, repoRoot } from "./repo-env.mjs";
+import { parseEnvFile, parsePort, isTruthy, resolveBearer, repoRoot } from "./repo-env.mjs";
 import {
   AUDIT_WRITE_TOOLS,
   GENERAL_WRITE_TOOLS,
@@ -46,7 +51,8 @@ const USAGE = `Usage: node scripts/check-http.mjs [--env <path>]...
 
 Checks each endpoint's local /mcp handshake and verifies the live tool surface
 against that endpoint's MCP_HTTP_ALLOW_* flags. Defaults to ./.env when no
---env is given. Tokens are read from the .env files and never printed.
+--env is given. Tokens are read from the .env files and, when one endpoint is
+checked, from the environment, which wins over the file; they are never printed.
 MCP_CHECK_TIMEOUT_MS (default 10000) bounds each request.`;
 
 function parseArgs(argv) {
@@ -84,10 +90,15 @@ function parseRpcPayload(text) {
   return JSON.parse(dataLine.slice("data:".length).trim());
 }
 
-async function checkEndpoint(envPath) {
+async function checkEndpoint(envPath, endpointCount) {
   const { resolved, env } = parseEnvFile(envPath);
   const port = parsePort(env.MCP_HTTP_PORT, resolved);
-  const token = requiredEnv(env, "MCP_AUTH_TOKEN", resolved);
+  const bearer = resolveBearer(env, resolved, endpointCount);
+  const token = bearer.token;
+  // Before the handshake, so a refused bearer still says where it came from,
+  // and that the environment's value differed from the file's.
+  console.log(`  bearer:   from ${bearer.source}`);
+  if (bearer.warning) console.log(`  WARN:     ${bearer.warning}`);
   const endpoint = `http://127.0.0.1:${port}/mcp`;
   const authHeader = { Authorization: `Bearer ${token}` };
   const postHeaders = {
@@ -195,7 +206,7 @@ let hadFailure = false;
 for (const envPath of envPaths) {
   console.log(`\n== ${envPath} ==`);
   try {
-    const r = await checkEndpoint(envPath);
+    const r = await checkEndpoint(envPath, envPaths.length);
     const flagsSummary = `write=${r.declared.generalWrite ? "on" : "off"} legacy_create=${
       r.declared.legacyCreate ? "on" : "off"
     } skill=${r.declared.skillWrite ? "on" : "off"} audit=${r.declared.auditWrite ? "on" : "off"}`;
