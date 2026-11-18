@@ -30,7 +30,9 @@ import { afterEach, describe, expect, it } from "vitest";
  *   prints a WARN line;
  * - return an empty bearer instead of stopping: "stops when neither holds a
  *   bearer" and "stops on an endpoint whose file has no bearer", which both
- *   exit 0.
+ *   exit 0;
+ * - send a bearer that holds a control character: only the two "line break in
+ *   the ... bearer" tests, which no longer find the refusal message.
  * Mutations in `scripts/check-http.mjs`: printing the bearer line only after a
  * successful handshake (as the first version of this change did) turns only
  * "prints the bearer line before the handshake fails" red, with no bearer line;
@@ -229,6 +231,36 @@ describe("check:http keeps each endpoint to its own file with two or more --env"
     expect(scan.seen.length).toBeGreaterThan(0);
     expect(new Set(scan.seen)).toEqual(new Set([`Bearer ${FROM_OTHER_FILE}`]));
     expect(output).toContain(`bearer:   from ${scanFile}`);
+    expect(leaked(output, ALL_VALUES)).toEqual([]);
+  });
+});
+
+describe("check:http refuses a bearer that holds a control character", () => {
+  // fetch rejects a header value with a line break in it, and its error quotes
+  // the whole value; the check prints that error on its FAIL line. So the
+  // bearer is refused before it is used, naming only where it came from.
+  it("stops on a line break in the environment's bearer, without sending or printing it", async () => {
+    const stub = await startStub();
+    const file = await writeEndpointFile(stub.port);
+
+    const { code, output } = await runCheck([file], `${FROM_ENVIRONMENT}\n${FROM_ENVIRONMENT}`);
+
+    expect(code).toBe(1);
+    expect(output).toContain(`${BEARER} from the environment contains a control character`);
+    expect(stub.seen).toEqual([]);
+    expect(leaked(output, ALL_VALUES)).toEqual([]);
+  });
+
+  it("stops on a line break in the file's bearer, without sending or printing it", async () => {
+    const stub = await startStub();
+    // dotenv turns `\n` inside a double-quoted value into a real line break.
+    const file = await writeEndpointFile(stub.port, `"${FROM_FILE}\\n${FROM_FILE}"`);
+
+    const { code, output } = await runCheck([file]);
+
+    expect(code).toBe(1);
+    expect(output).toContain(`${BEARER} from ${file} contains a control character`);
+    expect(stub.seen).toEqual([]);
     expect(leaked(output, ALL_VALUES)).toEqual([]);
   });
 });
