@@ -9,7 +9,7 @@ allowed-tools: Read
 
 # mcp-vault-security（目次）
 
-本文は節ごとに `references/` の下へ分けてある。中身は分ける前の SKILL.md と同じで、言い換えていない（元の順に連ねると、元の本文と全 byte で一致する）。
+本文は節ごとに `references/` の下へ分けてある。分けた時点（#347）の中身は分ける前の SKILL.md と同じで、言い換えていない（その時点では、元の順に連ねると元の本文と全 byte で一致した）。その後の直しは各ファイルに入っているので、今は一致しない。
 
 ⛔ **全部を一度に読まない。触るファイルに当たる節だけを読む。**
 
@@ -23,12 +23,12 @@ allowed-tools: Read
 | `references/01-inv-3-stale-safe-write.md` | 不変条件 ＞ INV-3 Two-step stale-safe write | 4,655 B |
 | `references/01-inv-4-public-private-separation.md` | 不変条件 ＞ INV-4 Public repo / private vault 分離 | 397 B |
 | `references/01-inv-5-untrusted-vault-content.md` | 不変条件 ＞ INV-5 Untrusted vault content (prompt injection) | 920 B |
-| `references/01-inv-6-remote-http-transport.md` | 不変条件 ＞ INV-6 Remote HTTP transport — authn + 露出最小化 (fail-closed) | 4,563 B |
+| `references/01-inv-6-remote-http-transport.md` | 不変条件 ＞ INV-6 Remote HTTP transport — authn + 露出最小化 (fail-closed) | 4,979 B |
 | `references/01-inv-7-oauth-authorization-server.md` | 不変条件 ＞ INV-7 OAuth 2.1 authorization server (web client 用 / opt-in) | 8,995 B |
-| `references/01-inv-8-skill-bundle-creation.md` | 不変条件 ＞ INV-8 Constrained Skill bundle creation | 3,906 B |
-| `references/01-inv-9-audit-write-surface.md` | 不変条件 ＞ INV-9 Constrained audit write surface (監査証跡の完全性) | 9,412 B |
-| `references/02-code-map.md` | コードのどこ (file → 不変条件) | 43,544 B |
-| `references/03-tests.md` | テストで固定する (規約でなく実行可能な保証) | 16,402 B |
+| `references/01-inv-8-skill-bundle-creation.md` | 不変条件 ＞ INV-8 Constrained Skill bundle creation | 3,912 B |
+| `references/01-inv-9-audit-write-surface.md` | 不変条件 ＞ INV-9 Constrained audit write surface (監査証跡の完全性) | 9,898 B |
+| `references/02-code-map.md` | コードのどこ (file → 不変条件) | 44,000 B |
+| `references/03-tests.md` | テストで固定する (規約でなく実行可能な保証) | 16,564 B |
 | `references/04-pre-commit-review.md` | pre-commit レビューの発火 (CLAUDE.md 発火表の詳細) | 3,256 B |
 | `references/05-references.md` | 参考 | 227 B |
 

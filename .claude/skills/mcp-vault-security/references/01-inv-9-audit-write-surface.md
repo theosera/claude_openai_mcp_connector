@@ -80,6 +80,10 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
 4. append/CAS は **in-process mutex で直列化** — MCP はセッション内で並行 tool 呼び出しを
    pipeline するので、無人スキャナの read-hash-write がインターリーブして lost update するのを
    決定論的に防ぐ (`applyPlannedUpdate` の read→hash→write と同じ窓を閉じる)。
+   ⚠️ **範囲を誇張しない**: mutex は 1 process の中だけ (`AuditStore` の promise の鎖)。監査サブツリーを
+   共有する `audit=on` の process が 2 つあれば、`compareAndSwapAuditState` の read→compare→rename の
+   間に共有の lock は無く、両方が同じ版を読んで CAS を通り、後の rename が先の更新を消しうる
+   (INV-3 の「in-process ≠ cross-process」と同じ限り。防ぐなら on-disk lock が要る)。
 5. **一般 document write は監査サブツリーを対象にできない** (`KnowledgeStore.assertNotAuditReserved`)。
    予約チェックは `resolveForWrite` (create_document / exact-path apply の共通 choke) と
    `applyPlannedUpdate` (update・**権威**) に置き、`planUpdate`/`validateCreateTarget` で早期 UX

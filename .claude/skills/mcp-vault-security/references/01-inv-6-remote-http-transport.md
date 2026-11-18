@@ -2,8 +2,12 @@
 
 private vault を HTTP で公開する経路は新しい攻撃面。以下を**弱めない**:
 
-1. **bearer auth 必須** — 全 HTTP リクエストは `Authorization: Bearer <MCP_AUTH_TOKEN>` を
-   要求。照合は `src/httpAuth.ts` で**constant-time** (`timingSafeEqual`、両辺を sha256 で
+1. **bearer auth 必須** — `/mcp` への全リクエストは `Authorization: Bearer <MCP_AUTH_TOKEN>` を
+   要求する (OAuth 有効時は INV-7 の「有効 access token かつ audience 一致」でもよい — どちらかを
+   `src/httpServer.ts` の `authenticate` が受ける)。認証の前に返すのは `/healthz` (vault の情報を
+   返さない) と、OAuth 有効時の OAuth の公開 endpoint (discovery・`/register`・`/authorize`・`/token`、
+   INV-7) だけで、それ以外の path は 404。
+   照合は `src/httpAuth.ts` で**constant-time** (`timingSafeEqual`、両辺を sha256 で
    固定長化して length 差で早期 return しない)。`MCP_AUTH_TOKEN` 未設定なら
    `loadHttpConfig` が**起動拒否** (open endpoint を作らない)。不正/欠落は 401。
 2. **loopback bind 既定** — `MCP_HTTP_HOST` 既定 `127.0.0.1`。公開は明示トンネル経由のみ。
