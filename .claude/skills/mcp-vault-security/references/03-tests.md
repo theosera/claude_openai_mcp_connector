@@ -74,7 +74,9 @@
 - two-step: plan→apply 成功 / 外部編集後 apply → stale reject / **apply は rename で置換**
   (`ino` が変わる・権限保持・`.tmp` を残さない) / **同一基点の 2 本同時 apply は 1 本成功 + 1 本 stale**
   (直列化が無いと**両方成功**する = lost update)
-- **scan の絞り込み (`path_prefix` → walk)**: prefix 付き検索が**絞らない検索と同じ結果**を返し、かつ
+- **scan の絞り込み (`path_prefix` → walk)**: prefix 付き検索が**絞らない検索の結果に同じ prefix を
+  後からかけたものと同じ結果**を返し (prefix の外にも当たる note があれば、絞らない検索そのものとは
+  一致しない)、かつ
   **実際に walk が縮んでいる**。⚠️ **2 つの半分は別の syscall で測る** — file を飛ばしたら `open` が減り、
   subtree ごと飛ばしたら `readdir` が減る。**実測: `open` だけを数えていたら、`subtreeMayMatch` を
   `return true` に潰しても全テストが緑だった** (per-file 判定だけで `open` は抑止されるため)。
