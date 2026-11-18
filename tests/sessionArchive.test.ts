@@ -3112,19 +3112,32 @@ describe("session-archive masking: the 2026-09-24 series", () => {
     expect(rules.filter((line) => line.includes("[^[:space:]|;&]+)*"))).toEqual([]);
     expect(rules.filter((line) => line.includes("[^[:space:]|;&]+){0,12}"))).toHaveLength(4);
 
+    //
+    // Eight times the tokens costs about eight times the time when the scan is
+    // linear and about 64 times when it is quadratic, so the bound sits between
+    // them at 20: a bound of 8 left a linear run no slack and failed on noise in
+    // CI (9.5 and 10.1). Measured with GNU sed 4.10, median of five: capped,
+    // 500 vs 4000 tokens is 4.7; with the cap taken off it is 48, each 4000-token
+    // run taking about 4.5s. At 1000 vs 8000 the uncapped run took about 19s
+    // each, so the six runs below would hit the timeout before the comparison.
+    // Each size is run once to warm up and then five times, and the medians
+    // are compared.
     const seconds = (tokens: number) => {
       const line = `${"mysql ".repeat(tokens)};mysql -p${PLACEHOLDER}`;
-      let best = Number.POSITIVE_INFINITY;
-      for (let attempt = 0; attempt < 3; attempt += 1) {
+      const time = () => {
         const started = performance.now();
         expect(runMask(mask, line)).not.toContain(PLACEHOLDER);
-        best = Math.min(best, (performance.now() - started) / 1000);
-      }
-      return best;
+        return (performance.now() - started) / 1000;
+      };
+      time();
+      const runs = [time(), time(), time(), time(), time()].sort((a, b) => a - b);
+      return runs[2];
     };
-    const small = seconds(1000);
-    const large = seconds(8000);
-    expect(large, `1000 tokens: ${small}s, 8000 tokens: ${large}s`).toBeLessThanOrEqual(Math.max(0.5, small * 8));
+    const small = seconds(500);
+    const large = seconds(4000);
+    expect(large, `median of 5 after a warm-up: 500 tokens ${small}s, 4000 tokens ${large}s`).toBeLessThanOrEqual(
+      Math.max(0.5, small * 20)
+    );
   }, 60_000);
 
   it("keeps the commands the argument rules must not touch readable", () => {
