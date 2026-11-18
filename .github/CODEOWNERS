@@ -13,8 +13,12 @@
 # bypass_mode "always" -- so ownership here routes review and blocks nothing.
 # Measured 2026-11-06 07:34 JST: the count is still 0; bypass_actors is empty.
 # An earlier version of this comment said it "mechanically blocks" once branch
-# protection enabled code-owner review. That precondition is now satisfied and
-# the claim still did not come true, so the hedge was falsified, not unmet.
+# protection enabled code-owner review. That precondition held at both
+# measurements above. Under the 2026-09-03 configuration the claim did not come
+# true. Under the 2026-11-06 one it still did not for a PR the code owner
+# authored: #341 merged with zero approvals after the bypass entry was removed.
+# For such PRs the hedge was falsified, not unmet. Whether code-owner review
+# stops a PR from any other author has not been measured since that removal.
 #
 # Syntax: <pattern> <owner...>  — last match wins (most specific line applies).
 

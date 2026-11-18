@@ -586,6 +586,102 @@ describe("HTTP transport integration", () => {
     await client.close();
   });
 
+  // --- Tool argument element bound (CVE-2026-111768) -----------------------
+  // tests/toolInputElements.test.ts pins the bound over the SDK's in-memory
+  // transport. These send the same calls through the real HTTP entry point (the
+  // bearer gate, the /mcp endpoint, the request parsing), so they cover the
+  // server this transport actually builds. The arguments count as there: the
+  // SDK counts object keys and array elements inside `arguments`, so
+  // { query, tags: [n] } is 2 + n.
+  //
+  // Reverse-verified (2026-11-17, one mutation at a time in src/server.ts):
+  //   - `maxToolInputElements: MAX_TOOL_INPUT_ELEMENTS` removed → only the
+  //     over-the-bound test fails, because the call is answered instead of
+  //     refused (isError is not true)
+  //   - MAX_TOOL_INPUT_ELEMENTS lowered to 9_999 → both tests fail: the
+  //     at-the-bound call is refused ("maximum of 9999 elements"), and the
+  //     over-the-bound refusal no longer matches the literal 10000 its message
+  //     is pinned to
+  describe("tool argument element bound (CVE-2026-111768)", () => {
+    // The SDK's refusal names the bound, so a red here says "the bound is
+    // missing" rather than "some other check refused the call".
+    const limitMessage = /arguments contain more than the maximum of 10000 elements/;
+
+    async function searchWithTags(tagCount: number) {
+      const transport = new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`), {
+        requestInit: { headers: { authorization: `Bearer ${token}` } }
+      });
+      const client = new Client({ name: "test", version: "0.0.0" });
+      await client.connect(transport);
+      try {
+        return await client.callTool({
+          name: "search_documents",
+          arguments: { query: "retrieval", tags: Array.from({ length: tagCount }, (_, i) => `t${i}`) }
+        });
+      } finally {
+        await client.close();
+      }
+    }
+
+    // Takes both eras' results: the 2025 client's type also admits the
+    // compatibility shape `{ toolResult }`, which carries no `content`.
+    function textOf(result: object): string {
+      const content = ("content" in result ? (result.content ?? []) : []) as Array<{ type: string; text?: string }>;
+      return content.map((block) => block.text ?? "").join("\n");
+    }
+
+    it("refuses arguments one element over the bound, with the bound's message", async () => {
+      // 2 keys + 9,999 tags = 10,001.
+      const result = await searchWithTags(9_999);
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toMatch(limitMessage);
+    });
+
+    it("accepts arguments exactly at the bound", async () => {
+      // 2 keys + 9,998 tags = 10,000. The search runs: no fixture note carries
+      // those tags, so it answers with an empty page rather than an error.
+      const result = await searchWithTags(9_998);
+      expect(result.isError).not.toBe(true);
+      expect(textOf(result)).not.toMatch(limitMessage);
+      const data = (result.structuredContent as { data?: { results?: unknown[]; total_count?: number } }).data;
+      expect(data?.results).toEqual([]);
+      expect(data?.total_count).toBe(0);
+    });
+
+    it("refuses arguments one element over the bound on the 2026-07-28 era too", async () => {
+      // The two tests above negotiate the 2025 era. This endpoint also serves
+      // 2026-07-28 from the same factory, so send the same over-the-bound call
+      // with a modern client pinned to that revision (unpinned, it would
+      // negotiate the 2025 era again and check one era twice).
+      //
+      // Reverse-verified (2026-11-17, src/server.ts): with
+      // `maxToolInputElements` removed this fails along with the 2025-era
+      // over-the-bound test (the call is answered, isError is not true); with
+      // the bound lowered to 9_999 it fails on the message, which then names
+      // 9999, so the refusal on this era comes from the configured bound.
+      const client = new ModernClient(
+        { name: "element-bound-modern", version: "0.0.0" },
+        { versionNegotiation: { mode: { pin: "2026-07-28" } } }
+      );
+      await client.connect(
+        new ModernStreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`), {
+          requestInit: { headers: { authorization: `Bearer ${token}` } }
+        })
+      );
+      try {
+        // 2 keys + 9,999 tags = 10,001.
+        const result = await client.callTool({
+          name: "search_documents",
+          arguments: { query: "retrieval", tags: Array.from({ length: 9_999 }, (_, i) => `t${i}`) }
+        });
+        expect(result.isError).toBe(true);
+        expect(textOf(result)).toMatch(limitMessage);
+      } finally {
+        await client.close();
+      }
+    });
+  });
+
   // --- DNS-rebinding protection (INV-6 item 3) -------------------------------
   // These tests pinned the *behavior* while it was enforced by three
   // @deprecated transport options (enableDnsRebindingProtection / allowedHosts /
@@ -886,9 +982,18 @@ describe("HTTP transport integration", () => {
       const envFile = path.join(dir, ".env");
       await fs.writeFile(envFile, `MCP_HTTP_PORT=${port}\nMCP_AUTH_TOKEN=${token}\n`, "utf8");
 
+      // With one endpoint, check-http lets a bearer in the environment win over
+      // the file's. This test pins the file's token, so the child gets the
+      // test's environment without one: a bearer in the shell running the
+      // suite would otherwise reach the server and be refused (a red for a
+      // reason this test does not claim).
+      const childEnv: NodeJS.ProcessEnv = { ...process.env };
+      delete childEnv.MCP_AUTH_TOKEN;
+
       const { code, output } = await new Promise<{ code: number | null; output: string }>((resolve) => {
         const child = spawn(process.execPath, [path.join(repoRoot, "scripts", "check-http.mjs"), "--env", envFile], {
           cwd: repoRoot,
+          env: childEnv,
           stdio: ["ignore", "pipe", "pipe"]
         });
         let output = "";

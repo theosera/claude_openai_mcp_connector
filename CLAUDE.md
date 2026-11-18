@@ -94,7 +94,7 @@ HTTP は **opt-in の OAuth 2.1 authorization server** (`src/oauth/`、PKCE S256
 > レビューして「指摘なし」になる事故が実際に起きかけた。
 >
 > 実測・両者の詳しい違い・空 diff 事故の経緯は **`mcp-vault-security` skill の
-> 「pre-commit レビューの発火」**節。
+> 「pre-commit レビューの発火」**節（`.claude/skills/mcp-vault-security/references/04-pre-commit-review.md`）。
 >
 > 全変更に広げない — 発火は「`fs` に書く経路」「write surface の gate」
 > 「**出力の封じ込め (escape / fence / マスク)**」「**送り先の認可 (origin pin / marker の照合)**」の

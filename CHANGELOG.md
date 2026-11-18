@@ -86,6 +86,17 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **`check:http` can take the bearer from the environment.** When it checks a
+  single endpoint (one `--env`, or none and the default `./.env`), a bearer in
+  the environment now wins over the file's, in the same
+  order the server reads them, so the check keeps working once the token is kept
+  out of the file and handed to the server through the environment. With two or
+  more `--env`, each endpoint still uses only its own file: one environment
+  value cannot belong to both the interactive and the scan endpoint. Each
+  endpoint's block says where its bearer came from (`bearer: from environment`
+  or the file's path), never the value, and a `WARN` line names the file when
+  both hold a value and they differ. When no bearer is found, the message now
+  mentions the environment.
 - **The README's setup starts from `pnpm run init:env`** (ROADMAP Onboarding,
   the part left after the OAuth questions). Run, the HTTP section and the
   stdio verification now name the file `init:env` writes through
@@ -135,6 +146,24 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **Tool arguments are bounded in element count** (CVE-2026-111768 in the MCP
+  SDK). The SDK validated `tools/call` arguments against the input schema with
+  no bound on their size, and the fixed `@modelcontextprotocol/server` ships the
+  new bound, `maxToolInputElements`, switched off. The server now passes
+  **10,000**: a call whose `arguments` hold more array elements and object
+  members than that, counted at every depth, is refused before schema
+  validation and before the handler runs (a new rejection a client can see, as
+  an error result that names the bound). The count reaches inside
+  `frontmatter_patch`, whose values the schema does not inspect. Legitimate
+  writes stay well under it: `tags` and `source_refs` share one 8 KiB
+  frontmatter block, so at most about 4,096 elements between them, and a Skill
+  bundle is at most about 65. The bound applies to read tools too, where a
+  `tags` filter or a `sections` list has no byte cap of its own. How many
+  entries callers send there has not been measured; a read call over the
+  bound is now refused like any other. Until now the only cap was the 4 MiB HTTP
+  body, which holds about two million elements. This bounds the structure of a
+  call's arguments after they are parsed, not request bytes or parsing cost:
+  the HTTP body bound still covers those, and stdio gets no byte bound here.
 - **A heading's closing-hash run is found by a linear scan, not a regex**
   (2026-09-19 whole-repository scan, F1). `closeHashes` ran
   `/(?:^|\s+)#+$/` over every ATX heading's text; the unanchored `\s+`

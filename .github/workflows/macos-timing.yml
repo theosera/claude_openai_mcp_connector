@@ -1,0 +1,97 @@
+name: macOS timing
+
+# tests/logRedactionPerf.test.ts judges how time grows with input size. On
+# macOS it is the slowest part of CI, so it has its own workflow: a pull
+# request runs it only when it touches what the timing measures (the two
+# shipped masks, the core, the timing tests, this workflow, or the Node, pnpm
+# and vitest versions), and every push to main runs it in full (con#307).
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - ".claude/skills/ops-logging/capture-command.sh"
+      - ".claude/skills/session-archive/archive-session.sh"
+      - "packages/log-redaction/**"
+      - "tests/logRedactionPerf.test.ts"
+      - ".github/workflows/macos-timing.yml"
+      - ".node-version"
+      - "package.json"
+      - "pnpm-lock.yaml"
+  workflow_dispatch:
+
+# Least privilege: the default GITHUB_TOKEN is read-only.
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same branch / PR to cut race + cost surface.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # In build-macos the timing file took 3,369 s of a 3,529 s test run (job
+  # 129579383573, 2026-11-10), most of it in the shipped masks' Issue 295
+  # group, and it shared the runner with the other test files, which can load
+  # one side of a timed pair. A red there also could not say whether a timing
+  # check or a behaviour check had failed. Here the file runs on its own
+  # runners, split by test name so the parts run in parallel:
+  #   capture-a  the shipped masks' group for capture-command.sh, shapes named
+  #              issue295-c*, -i*, -l* and -nul-*; the same job then runs, in
+  #              a second vitest call, every test outside the shipped masks'
+  #              group, so a group added to the file later still runs on macOS
+  #   capture-b  the same group for capture-command.sh, every other shape
+  #   others-a   the group for every other copy (archive-session.sh today),
+  #              the shapes of capture-a
+  #   others-b   the group for every other copy, every other shape
+  # Each B pattern is the complement of its A pattern, so a shape added later
+  # lands in one of them, and the five patterns cover the file without
+  # overlap. If the group, copy or shape names change, check that they still
+  # do. The four jobs plus build-macos make five macOS jobs, the per-account
+  # limit for running at once (shared with other repositories, so a wait can
+  # still happen). The Linux legs in node.js.yml still run the whole file.
+  # Like build-macos, this is not a required check.
+  build-macos-timing:
+    name: build-macos-timing (${{ matrix.part }})
+    runs-on: macos-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - part: capture-a
+            pattern: "Issue 295 time over two doublings.*capture: issue295-(?:[cil]|nul-)"
+            rest: true
+          - part: capture-b
+            pattern: "Issue 295 time over two doublings.*capture: (?!issue295-(?:[cil]|nul-))"
+          - part: others-a
+            pattern: "Issue 295 time over two doublings(?!.*capture: ).*: issue295-(?:[cil]|nul-)"
+          - part: others-b
+            pattern: "Issue 295 time over two doublings(?!.*capture: )(?!.*: issue295-(?:[cil]|nul-))"
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115  # v6.1.1
+
+      - name: Use Node.js 26.13.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 26.13.0
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Timing tests (${{ matrix.part }})
+        # Passed through the environment, not spliced into the script.
+        env:
+          PATTERN: ${{ matrix.pattern }}
+        run: pnpm test tests/logRedactionPerf.test.ts -t "$PATTERN"
+
+      - name: Timing tests (outside the shipped masks' group)
+        # Runs after the part above even when it fails, so both results show.
+        if: ${{ matrix.rest && !cancelled() }}
+        env:
+          PATTERN: "^(?!.*Issue 295 time over two doublings)"
+        run: pnpm test tests/logRedactionPerf.test.ts -t "$PATTERN"
