@@ -81,9 +81,12 @@ const runawayMs = (bytes: number) => RUNAWAY_FACTOR * ceilingMs(bytes);
  * runners with main's hooks: macos-timing.yml runs 5 and 6 failed it at 1.015 to
  * 1.14 times the ceiling (64 KiB to 1 MiB), while the two-doubling ratio held. For
  * these shapes only, a first call over the ceiling counts as the warm-up, and the
- * median of RECHECK_CALLS further calls is judged against the same ceiling. A
- * quadratic walk is seconds over at 64 KiB on every call, so its median stays over.
- * The ratio check is unchanged.
+ * median of RECHECK_CALLS further calls is judged against the same ceiling. On a
+ * local Mac, a copy with the #295 split guard taken out (a per-byte walk) first
+ * went over at 256 KiB, its median 1.10 to 1.12 times the ceiling there, and its
+ * time grew faster than the ceiling with the size, so its median stays over. The
+ * ratio check is unchanged. The cases are registered in the file's order, so this
+ * shape runs where it ran before the recheck was added.
  */
 const RECHECKED_FIRST_CALLS: ReadonlySet<string> = new Set(["issue295-many-unfinished-starts"]);
 const RECHECK_CALLS = 3;
@@ -464,6 +467,30 @@ function median(values: readonly number[]): number {
 }
 
 /**
+ * Diagnostic for PR #359: one line per size for the rechecked shapes, printed after
+ * that size's timed calls. `old` is the judgement without the recheck (the first
+ * call alone) and `new` the judgement with it, against the same ceiling, so one run
+ * gives both on the same runner.
+ */
+function diagnose(
+  copy: string,
+  name: string,
+  where: string,
+  size: number,
+  firstCallMs: number,
+  again: readonly number[],
+  judgedMs: number
+): void {
+  const ceiling = (CEILING_MS_PER_64_KIB * size) / (64 * KiB);
+  const ms = (value: number) => +value.toFixed(1);
+  console.log(
+    `PERF359 ${copy} ${name} ${where} size=${size} ceiling=${ceiling} first=${ms(firstCallMs)}` +
+      ` again=${JSON.stringify(again.map(ms))} judged=${ms(judgedMs)}` +
+      ` old=${firstCallMs < ceiling ? "under" : "over"} new=${judgedMs < ceiling ? "under" : "over"}`
+  );
+}
+
+/**
  * The fastest larger batch over the fastest smaller batch, from pairs of batch
  * times `[smaller, larger]`. Load only adds time, so each side's minimum is its
  * least disturbed batch, and load on the smaller side lowers the ratio only when it
@@ -642,19 +669,22 @@ describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_
     const cases = [...ISSUE295_SHAPES, NUL_NORMALIZATION_SHAPE].map(
       ([name, secret, make, preserve, hookSecret]) => [name, secret, make, preserve, hookSecret] as const
     );
-    const body = (...[name, secret, make, preserve, hookSecret]: (typeof cases)[number]) => {
+    const body = (where: string, ...[name, secret, make, preserve, hookSecret]: (typeof cases)[number]) => {
       let previous: string | null = null;
       for (const [index, size] of SIZES.entries()) {
         const text = make(size);
         const first = performance.now();
         const output = run(text, `${name}: first call`);
-        let firstMs = performance.now() - first;
+        const firstCallMs = performance.now() - first;
+        let firstMs = firstCallMs;
+        let again: number[] = [];
         if (!(firstMs < (CEILING_MS_PER_64_KIB * size) / (64 * KiB)) && RECHECKED_FIRST_CALLS.has(name)) {
-          const again = Array.from({ length: RECHECK_CALLS }, (_, i) =>
+          again = Array.from({ length: RECHECK_CALLS }, (_, i) =>
             measure(text, `${name}: first-call recheck ${i + 1}`)
           );
           firstMs = median(again);
         }
+        if (RECHECKED_FIRST_CALLS.has(name)) diagnose(copy, name, where, size, firstCallMs, again, firstMs);
         expect({ size, firstMs: firstMs < (CEILING_MS_PER_64_KIB * size) / (64 * KiB) ? "under" : firstMs }).toEqual({
           size,
           firstMs: "under"
@@ -685,13 +715,28 @@ describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_
             }
             ratios.push(growthRatio(pairs));
           }
+          if (RECHECKED_FIRST_CALLS.has(name)) {
+            console.log(
+              `PERF359 ${copy} ${name} ${where} size=${size} ratios=${JSON.stringify(ratios.map((r) => +r.toFixed(3)))}`
+            );
+          }
           expect({ size, ratio: ratios.at(-1)! < LIMIT ? "under" : ratios }).toEqual({ size, ratio: "under" });
         }
         previous = text;
       }
     };
-    it.each(cases.filter(([name]) => !RECHECKED_FIRST_CALLS.has(name)))(`${copy}: %s`, body);
-    it.each(cases.filter(([name]) => RECHECKED_FIRST_CALLS.has(name)))(`${copy}: %s`, body, RECHECKED_TIMEOUT_MS);
+    for (const shape of cases) {
+      const [name] = shape;
+      if (RECHECKED_FIRST_CALLS.has(name))
+        it(`${copy}: ${name}`, () => body("in-order", ...shape), RECHECKED_TIMEOUT_MS);
+      else it(`${copy}: ${name}`, () => body("in-order", ...shape));
+    }
+    // Diagnostic for PR #359, removed before merge: the rechecked shape once more
+    // at the end of this copy's cases, to compare its usual place with the last
+    // place on the same runner.
+    for (const shape of cases.filter(([name]) => RECHECKED_FIRST_CALLS.has(name))) {
+      it(`${copy}: ${shape[0]} (order probe, last)`, () => body("order-probe", ...shape), RECHECKED_TIMEOUT_MS);
+    }
   }
 });
 
