@@ -70,6 +70,56 @@ const masked = [
   }
 ];
 
+// A secret-labelled element whose name carries an id. The id rules run after the
+// tag pass and the cleanup, so the pass reads the whole name and masks the body
+// or the attributes. `key-` and not `password`: a keyword rule in the sed list
+// masks a `password value="…"` on its own, and the case would prove nothing.
+const SECRET = "SYNTHVAL0001";
+const labelled = [
+  {
+    name: "the body of a token element named with an id",
+    input: `<token-${UUID}>${SECRET}</token-${UUID}>`,
+    hidden: [SECRET, UUID],
+    shown: "<token-***MASKED***>***MASKED***</token-***MASKED***>"
+  },
+  {
+    name: "the body of an api-key element named with an upper-case id",
+    input: `<api-key-${UUID.toUpperCase()}>${SECRET}</api-key-${UUID.toUpperCase()}>`,
+    hidden: [SECRET, UUID.toUpperCase()],
+    shown: "<api-key-***MASKED***>***MASKED***</api-key-***MASKED***>"
+  },
+  {
+    name: "the body of a secret element named with a session_ id",
+    input: `<secret-session_${URL_ID}>${SECRET}</secret-session_${URL_ID}>`,
+    hidden: [SECRET, URL_ID],
+    shown: "<secret-session_***MASKED***>***MASKED***</secret-session_***MASKED***>"
+  },
+  {
+    name: "the attributes of a key element named with an id",
+    input: `<key-${UUID} data="${SECRET}"/>`,
+    hidden: [SECRET, UUID],
+    shown: "<key-***MASKED*** ***MASKED***>"
+  }
+] as const;
+
+// The id rules read a record in batches of about 256 bytes, and each rule holds
+// back the last bytes of a batch that could still begin a match. Each line here
+// starts its id one byte later than the line before, so for every rule some line
+// puts the id across the bytes that rule holds back; one session_ run spans
+// several batches. A line passes when it equals the three rules applied in
+// order, as the sed rules applied them.
+function inSedOrder(line: string): string {
+  return line
+    .replace(/[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}/g, "***MASKED***")
+    .replace(/(\/\.claude\/jobs\/)[0-9A-Fa-f]{8}/g, "$1***MASKED***")
+    .replace(/(session_)[0-9A-Za-z]{20,}/g, "$1***MASKED***");
+}
+const pad = (length: number): string => "x ".repeat(length).slice(0, length);
+const straddling = [UUID, `/.claude/jobs/${JOB}`, `session_${URL_ID}`].flatMap((id) =>
+  Array.from({ length: 151 }, (_, index) => `${pad(140 + index)}${id} tail ${pad(300)}`)
+);
+straddling.push(`${pad(100)}session_${"q7".repeat(300)} tail ${pad(300)}`);
+
 const kept = [
   ["names that only begin like an id", "grep -n session_id session_archive SESSION_VAULT_ORIGIN src"],
   ["a full commit sha", "git show 3c45e5579fc1d3c687b222b4b45cc5ccf8212d20"],
@@ -86,6 +136,22 @@ for (const [hook, path] of hooks) {
         expect(output).toContain(shape.shown);
       });
     }
+
+    for (const shape of labelled) {
+      it(`masks ${shape.name}`, () => {
+        const output = runMask(path, shape.input);
+        for (const value of shape.hidden) expect(output).not.toContain(value);
+        expect(output).toBe(`${shape.shown}\n`);
+      });
+    }
+
+    it("masks ids that straddle the batches the id rules read", () => {
+      expect(straddling.filter((line) => inSedOrder(line) === line)).toEqual([]);
+      const lines = runMask(path, straddling.join("\n")).split("\n");
+      expect(lines).toHaveLength(straddling.length + 1);
+      const wrong = straddling.flatMap((line, index) => (lines[index] === inSedOrder(line) ? [] : [index]));
+      expect(wrong).toEqual([]);
+    });
 
     for (const [name, input] of kept) {
       it(`keeps ${name}`, () => {
