@@ -470,6 +470,14 @@ mask() {
   # A visible non-whitespace ? keeps both sides without joining fields or
   # turning fence info into closing whitespace. The archive renderer and
   # refence comparisons apply the same mapping before measuring structure.
+  # Claude Code session ids: the last three sed rules mask a UUID (8-4-4-4-12
+  # hex, the shape of a session id, which also names transcript, scratchpad and
+  # background-task output paths), the 8-hex job directory under
+  # `/.claude/jobs/` (the id's first eight characters), and the `session_…` id
+  # of a session URL. An id is not a credential, but it names one session and
+  # must not leave the machine in a log. They run after every other sed rule,
+  # so no earlier rule sees their `***MASKED***`; `session_id`, `session_archive`
+  # and other short words stay readable.
   { LC_ALL=C tr '\000' '?'; printf '\n'; } | LC_ALL=C awk '
     # Byte widths for the renderer closing-whitespace union. Only a wholly
     # whitespace suffix is structural; a partial UTF-8 sequence never matches.
@@ -601,6 +609,9 @@ mask() {
     -e "/\`\`\`|~~~/!s/'\\*\\*\\*MASKED\\*\\*\\*''([^']|'')*'/'***MASKED***'/g" \
     -e '/^[[:space:]]*[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/.*/***MASKED***/' \
     -e '/^[[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-)[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-))[A-Za-z0-9+\/=]{32,}([[:space:]]*)$/\1***MASKED***\3/' \
+    -e 's/[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}/***MASKED***/g' \
+    -e 's#(/\.claude/jobs/)[0-9A-Fa-f]{8}#\1***MASKED***#g' \
+    -e 's/(session_)[0-9A-Za-z]{20,}/\1***MASKED***/g' \
     -e 's/^/N/' | LC_ALL=C awk '
     # Buffer one output record so its safe metadata stays paired even when a
     # multiline tag delays output. Store bounded chunks, not one cell per byte.
