@@ -89,7 +89,10 @@ const RECHECKED_FIRST_CALLS: ReadonlySet<string> = new Set(["issue295-many-unfin
 const RECHECK_CALLS = 3;
 /**
  * The same shape took 140 and 159 s on a green macOS run (run 4) under the 180 s
- * per-test limit; three more calls at 1 MiB add up to about a minute.
+ * per-test limit; three more calls at 1 MiB add up to about a minute. The longer
+ * limit only makes room for the recheck: the ceiling and the ratio are unchanged,
+ * so a hook that is slower on this shape still fails them. Passing inside 300 s
+ * is not evidence that a slower hook meets #295.
  */
 const RECHECKED_TIMEOUT_MS = 300_000;
 
