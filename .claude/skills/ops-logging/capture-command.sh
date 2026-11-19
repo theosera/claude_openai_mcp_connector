@@ -1566,6 +1566,8 @@ mask() {
     # Prefix parsing has a fixed number of monotone byte walks, including the
     # ambient whitespace profile already measured by the surrounding function.
     BEGIN {
+      r2_run = "[A-Za-z0-9+/=]"
+      for (i = 2; i <= 32; i++) r2_run = r2_run "[A-Za-z0-9+/=]"
       count = split(ENVIRON["CON295_R2_LEGACY_PROFILE"], profile, "\n")
       for (i = 1; i <= count; i++) if (substr(profile[i], 1, 1) == "w") blanks[substr(profile[i], 2)] = 1
     }
@@ -1658,6 +1660,9 @@ mask() {
       if (start > first) r2_scalar(start, last)
     }
     /^N/ {
+      # r2_scalar marks only a run of at least 32 alphabet bytes, so a record
+      # without such a run prints unchanged: skip the byte walk for it.
+      if ($0 !~ r2_run) { print; next }
       n = split($0, bytes, "")
       if (r2_legacy(2, n)) { print; next }
       split("", marks)
