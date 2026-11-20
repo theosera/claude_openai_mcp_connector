@@ -88,7 +88,11 @@ function mainFenceBaseline(script: string): { renderer: string; mask: string; re
   const sedStart = script.indexOf("  sed -E \\\n    -e '/^F/b'", script.indexOf("mask() {"));
   const sedEnd = script.indexOf("    -e 's/^/N/' | LC_ALL=C awk '", sedStart);
   const finalRule = String.raw`    -e 's/(<(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[[:space:]]+)[^<>]*>/\1***MASKED***>/Ig'`;
-  const command = script.slice(sedStart, sedEnd).replace("    -e '/^F/b' \\\n    -e 's/^N//' \\\n", "") + finalRule;
+  const shipped = script.slice(sedStart, sedEnd);
+  // The session-id rules run on render()'s output, after the tag pass and the
+  // cleanup, so the sed list is ae2291f's again and needs no carve-out.
+  expect(shipped, "no session-id rule in the sed list").not.toContain("[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}");
+  const command = shipped.replace("    -e '/^F/b' \\\n    -e 's/^N//' \\\n", "") + finalRule;
   const renderer = `${shared}\n${body}`;
   const refence = `${shared}\n${recheck}`;
   for (const [name, actual, expected] of [
@@ -2075,6 +2079,16 @@ describe("session-archive auth-scheme masking", () => {
     expect(mask.indexOf("function legacy_cleanup(", cleanupStart)).toBeLessThan(weaveStart);
     expect(mask.slice(weaveStart)).toContain("legacy_cleanup()");
     expect(mask.slice(weaveStart)).not.toContain("sed -E");
+    // The session-id rules are the last stage: render() and clean_segment() write
+    // only through id_put, which applies them after the tag pass and the cleanup.
+    expect(mask.indexOf("function id_put(", cleanupStart)).toBeGreaterThan(cleanupStart);
+    const segmentStart = mask.indexOf("function clean_segment(", cleanupStart);
+    expect(segmentStart).toBeGreaterThan(cleanupStart);
+    for (const start of [weaveStart, segmentStart]) {
+      const body = mask.slice(start, mask.indexOf("\n    }\n", start));
+      expect(body).toContain("id_put(");
+      expect(body).not.toContain("printf");
+    }
     const keywordRules = rules.filter((line) => line.includes("token|key|secret"));
     expect(keywordRules).toHaveLength(6);
 

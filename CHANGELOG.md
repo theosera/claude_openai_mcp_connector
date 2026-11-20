@@ -146,6 +146,13 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **The ops-log and session-archive hooks mask Claude Code session ids.** Both
+  copies of `mask()` gain three rules after every other one: a UUID (the shape
+  of a session id, which also names transcript, scratchpad and background-task
+  output paths), the eight-character job directory under `/.claude/jobs/`, and
+  the `session_` id of a session URL. Short words such as `session_id` stay
+  readable. The two copies stay byte-identical, and the canonical-baseline test
+  drops exactly these three lines before it compares hashes.
 - **`check:http` refuses a bearer that holds a control character.** fetch
   rejects a header value with a line break in it, and its error quotes the whole
   value, which the check printed on its `FAIL` line. A bearer could carry one
