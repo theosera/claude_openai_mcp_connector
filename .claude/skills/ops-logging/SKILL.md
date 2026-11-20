@@ -260,6 +260,7 @@ terminal-ops-logs/
   上限の証明ではない。
 - AWS `AKIA…` / OpenAI 系 `sk-…` (ハイフン付き `sk-proj-…` / `sk-ant-…` も対象)
 - Google API key `AIza…` / Slack `xox[baprs]-…`
+- Claude Code の session id の形: UUID (8-4-4-4-12 の 16 進・session の id 以外の UUID も伏せる) / `/.claude/jobs/` の 16 進 8 字 / `session_` + 英数 20 字以上 (session URL の id など) (`mask()` の最後の段 `id_rule()` で掛ける。`session_id` などの短い語は残す)
 - **引数位置の資格情報** (2026-09-24 追加・S-1 F6): `-u` / `--user` の `name:secret`、MySQL 系
   client の `-p<値>` (client 名に anchor — `-p` 単独は `mkdir -p` / `cp -pR` / `ssh -p2222`)、
   `redis-cli` の `-a` / `--pass`。`passwd` / `passphrase` は**共有の keyword 群に入れず**、fallback の**直後**の
