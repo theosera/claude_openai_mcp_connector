@@ -2101,9 +2101,12 @@ mask() {
     # since a match there may still need bytes that have not arrived. A
     # session_ match that reaches the end of what has arrived is replaced at
     # once, and id_skip drops the letters and digits that continue it, as the
-    # sed rule took them all. Each string here is one bounded batch from
-    # id_put() plus that hold; a skeleton piece can be longer but holds no id,
-    # so it takes one linear pass.
+    # sed rule took them all. A string here is one bounded batch from id_put()
+    # plus that hold, and a skeleton piece can be longer but holds no id, so it
+    # takes one linear pass. The exception is the early return at the top of
+    # render(): it hands id_put() a whole value or raw segment, which can be
+    # long and hold many ids, and each match copies the rest of the string, so
+    # that string takes time that grows faster than its length.
     function id_rule(k, s, last,    out) {
       if (k > 3) { printf "%s", s; return }
       s = id_held[k] s
@@ -2126,7 +2129,8 @@ mask() {
       id_rule(k + 1, out, last)
     }
     # render() writes through id_put(), which gathers small pieces (a CR-dense
-    # record has many) so the rules run about once per 256 bytes.
+    # record has many) so the rules run about once per 256 bytes. A longer
+    # piece goes to the rules whole.
     function id_put(s) {
       id_text = id_text s
       id_text_size += length(s)
