@@ -76,26 +76,44 @@ const ceilingMs = (bytes: number) => Math.max(1000, (CEILING_MS_PER_64_KIB * byt
 const runawayMs = (bytes: number) => RUNAWAY_FACTOR * ceilingMs(bytes);
 
 /**
- * Shapes whose first call over the ceiling is timed again before it is judged.
+ * Shapes whose first-call ceiling has a floor at the small sizes, and whose first
+ * call over the ceiling is timed again before it is judged.
  * `issue295-many-unfinished-starts` runs at about the ceiling on GitHub's macOS
  * runners with main's hooks: macos-timing.yml runs 5 and 6 failed it at 1.015 to
- * 1.14 times the ceiling (64 KiB to 1 MiB), while the two-doubling ratio held. For
- * these shapes only, a first call over the ceiling counts as the warm-up, and the
- * median of RECHECK_CALLS further calls is judged against the same ceiling. On a
- * local Mac, a copy with the #295 split guard taken out (a per-byte walk) first
- * went over at 256 KiB, its median 1.10 to 1.12 times the ceiling there, and its
- * time grew faster than the ceiling with the size, so its median stays over. The
- * ratio check is unchanged. The cases are registered in the file's order, so this
- * shape runs where it ran before the recheck was added.
+ * 1.14 times the ceiling (64 KiB to 1 MiB), while the two-doubling ratio held.
+ *
+ * The floor: in run 44636215555 two runners ran the same mask() on the same shapes,
+ * and this shape's first call on the slower one was 1.72 times the other's at
+ * 64 KiB but 1.21 times at 1 MiB. On that runner five 64 KiB calls spread from 952
+ * to 1,374 ms, and run 5 took 2,096 ms at 128 KiB. At the small sizes most of a call
+ * is the part every call pays whatever its size, and that part differs between
+ * runners. For these shapes the ceiling is never below SMALL_SIZE_FLOOR_MS, which
+ * lifts 64 and 128 KiB and stops short of 256 KiB.
+ *
+ * The recheck: a first call over the ceiling counts as the warm-up, and the median
+ * of RECHECK_CALLS further calls is judged against the same ceiling. It is aimed at
+ * the larger sizes, which runs 5 and 6 went over by 1.5 to 14 percent.
+ *
+ * Neither changes the ceiling from 256 KiB up or the ratio check. On a local Mac, a
+ * copy with the #295 split guard taken out (a per-byte walk) first went over at
+ * 256 KiB, its median 1.10 to 1.12 times the ceiling there, and its time grew faster
+ * than the ceiling with the size, so it still fails at that size. The cases are
+ * registered in the file's order, so this shape runs where it ran before.
  */
 const RECHECKED_FIRST_CALLS: ReadonlySet<string> = new Set(["issue295-many-unfinished-starts"]);
 const RECHECK_CALLS = 3;
+const SMALL_SIZE_FLOOR_MS = 3000;
+/** The first-call ceiling for shape `name` at `size` bytes. */
+const firstCallCeilingMs = (name: string, size: number) => {
+  const ceiling = (CEILING_MS_PER_64_KIB * size) / (64 * KiB);
+  return RECHECKED_FIRST_CALLS.has(name) ? Math.max(SMALL_SIZE_FLOOR_MS, ceiling) : ceiling;
+};
 /**
  * The same shape took 140 and 159 s on a green macOS run (run 4) under the 180 s
  * per-test limit; three more calls at 1 MiB add up to about a minute. The longer
- * limit only makes room for the recheck: the ceiling and the ratio are unchanged,
- * so a hook that is slower on this shape still fails them. Passing inside 300 s
- * is not evidence that a slower hook meets #295.
+ * limit only makes room for the recheck: the ceiling from 256 KiB up and the ratio
+ * are unchanged, so a hook that is slower on this shape still fails them. Passing
+ * inside 300 s is not evidence that a slower hook meets #295.
  */
 const RECHECKED_TIMEOUT_MS = 300_000;
 
@@ -467,26 +485,23 @@ function median(values: readonly number[]): number {
 }
 
 /**
- * Diagnostic for PR #359: one line per size for the rechecked shapes, printed after
- * that size's timed calls. `old` is the judgement without the recheck (the first
- * call alone) and `new` the judgement with it, against the same ceiling, so one run
- * gives both on the same runner.
+ * One line per size for the rechecked shapes, printed after that size's timed
+ * calls, so a run's log shows the first call, the recheck values when they were
+ * taken, and the value judged against the ceiling.
  */
-function diagnose(
+function logFirstCall(
   copy: string,
   name: string,
-  where: string,
   size: number,
+  ceilingMs: number,
   firstCallMs: number,
   again: readonly number[],
   judgedMs: number
 ): void {
-  const ceiling = (CEILING_MS_PER_64_KIB * size) / (64 * KiB);
   const ms = (value: number) => +value.toFixed(1);
   console.log(
-    `PERF359 ${copy} ${name} ${where} size=${size} ceiling=${ceiling} first=${ms(firstCallMs)}` +
-      ` again=${JSON.stringify(again.map(ms))} judged=${ms(judgedMs)}` +
-      ` old=${firstCallMs < ceiling ? "under" : "over"} new=${judgedMs < ceiling ? "under" : "over"}`
+    `first-call ${copy} ${name} size=${size} ceiling=${ceilingMs} first=${ms(firstCallMs)}` +
+      ` again=${JSON.stringify(again.map(ms))} judged=${ms(judgedMs)} ${judgedMs < ceilingMs ? "under" : "over"}`
   );
 }
 
@@ -669,23 +684,24 @@ describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_
     const cases = [...ISSUE295_SHAPES, NUL_NORMALIZATION_SHAPE].map(
       ([name, secret, make, preserve, hookSecret]) => [name, secret, make, preserve, hookSecret] as const
     );
-    const body = (where: string, ...[name, secret, make, preserve, hookSecret]: (typeof cases)[number]) => {
+    const body = (...[name, secret, make, preserve, hookSecret]: (typeof cases)[number]) => {
       let previous: string | null = null;
       for (const [index, size] of SIZES.entries()) {
         const text = make(size);
+        const ceiling = firstCallCeilingMs(name, size);
         const first = performance.now();
         const output = run(text, `${name}: first call`);
         const firstCallMs = performance.now() - first;
         let firstMs = firstCallMs;
         let again: number[] = [];
-        if (!(firstMs < (CEILING_MS_PER_64_KIB * size) / (64 * KiB)) && RECHECKED_FIRST_CALLS.has(name)) {
+        if (!(firstMs < ceiling) && RECHECKED_FIRST_CALLS.has(name)) {
           again = Array.from({ length: RECHECK_CALLS }, (_, i) =>
             measure(text, `${name}: first-call recheck ${i + 1}`)
           );
           firstMs = median(again);
         }
-        if (RECHECKED_FIRST_CALLS.has(name)) diagnose(copy, name, where, size, firstCallMs, again, firstMs);
-        expect({ size, firstMs: firstMs < (CEILING_MS_PER_64_KIB * size) / (64 * KiB) ? "under" : firstMs }).toEqual({
+        if (RECHECKED_FIRST_CALLS.has(name)) logFirstCall(copy, name, size, ceiling, firstCallMs, again, firstMs);
+        expect({ size, firstMs: firstMs < ceiling ? "under" : firstMs }).toEqual({
           size,
           firstMs: "under"
         });
@@ -717,7 +733,7 @@ describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_
           }
           if (RECHECKED_FIRST_CALLS.has(name)) {
             console.log(
-              `PERF359 ${copy} ${name} ${where} size=${size} ratios=${JSON.stringify(ratios.map((r) => +r.toFixed(3)))}`
+              `two-doubling ${copy} ${name} size=${size} ratios=${JSON.stringify(ratios.map((r) => +r.toFixed(3)))}`
             );
           }
           expect({ size, ratio: ratios.at(-1)! < LIMIT ? "under" : ratios }).toEqual({ size, ratio: "under" });
@@ -727,15 +743,8 @@ describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_
     };
     for (const shape of cases) {
       const [name] = shape;
-      if (RECHECKED_FIRST_CALLS.has(name))
-        it(`${copy}: ${name}`, () => body("in-order", ...shape), RECHECKED_TIMEOUT_MS);
-      else it(`${copy}: ${name}`, () => body("in-order", ...shape));
-    }
-    // Diagnostic for PR #359, removed before merge: the rechecked shape once more
-    // at the end of this copy's cases, to compare its usual place with the last
-    // place on the same runner.
-    for (const shape of cases.filter(([name]) => RECHECKED_FIRST_CALLS.has(name))) {
-      it(`${copy}: ${shape[0]} (order probe, last)`, () => body("order-probe", ...shape), RECHECKED_TIMEOUT_MS);
+      if (RECHECKED_FIRST_CALLS.has(name)) it(`${copy}: ${name}`, () => body(...shape), RECHECKED_TIMEOUT_MS);
+      else it(`${copy}: ${name}`, () => body(...shape));
     }
   }
 });
