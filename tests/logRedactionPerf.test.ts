@@ -43,11 +43,11 @@ import { MASK, redactFragment } from "../packages/log-redaction/src/core.mjs";
  *
  * The core is judged on how its time grows, not on how fast this machine is,
  * with one exception: the first call at each size must take under a second per
- * 64 KiB, and under SMALL_SIZE_FLOOR_MS at the small sizes. A linear core takes
- * milliseconds; a quadratic one takes seconds at 64 KiB and four times as long at
- * 128 KiB, and vitest's timeout cannot stop a synchronous loop -- a quadratic
- * mutation once kept this file running for 22 minutes. The ceiling fails it within
- * the first two sizes instead.
+ * 64 KiB. A linear core takes milliseconds; a quadratic one takes seconds at
+ * 64 KiB, and vitest's timeout cannot stop a synchronous loop -- a quadratic
+ * mutation once kept this file running for 22 minutes. The ceiling fails it in
+ * one call instead. This block calls redactFragment in this process, so the
+ * child-process floor below does not apply.
  *
  * The child-process checks below (the shipped masks and the archive's jq) keep
  * two limits apart. The ceiling is a judgement: a first call over it fails the
@@ -77,7 +77,7 @@ const ceilingMs = (bytes: number) => Math.max(1000, (CEILING_MS_PER_64_KIB * byt
 const runawayMs = (bytes: number) => RUNAWAY_FACTOR * ceilingMs(bytes);
 
 /**
- * The first-call ceiling for `size` bytes, a judgement: 1,000 ms per 64 KiB, never
+ * The child-process first-call ceiling for `size` bytes: 1,000 ms per 64 KiB, never
  * below SMALL_SIZE_FLOOR_MS, which lifts 64 and 128 KiB and stops short of 256 KiB.
  * On GitHub's macOS runners most of a small call is the part every call pays
  * whatever its size, and that part differs between runners. In run 44636215555 two
@@ -485,7 +485,7 @@ function median(values: readonly number[]): number {
 }
 
 /**
- * One line per size for the rechecked shapes, printed after that size's timed
+ * One line per size for every shipped-mask shape, after that size's timed
  * calls, so a run's log shows the first call, the recheck values when they were
  * taken, and the value judged against the ceiling.
  */
@@ -616,7 +616,7 @@ describe("the core's time over two doublings", { timeout: 180_000 }, () => {
       const first = performance.now();
       const result = redactFragment({ text, kind });
       const firstMs = performance.now() - first;
-      expect({ size, firstMs: firstMs < firstCallCeilingMs(size) ? "under" : firstMs }).toEqual({
+      expect({ size, firstMs: firstMs < ceilingMs(size) ? "under" : firstMs }).toEqual({
         size,
         firstMs: "under"
       });
@@ -700,7 +700,7 @@ describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_
           );
           firstMs = median(again);
         }
-        if (RECHECKED_FIRST_CALLS.has(name)) logFirstCall(copy, name, size, ceiling, firstCallMs, again, firstMs);
+        logFirstCall(copy, name, size, ceiling, firstCallMs, again, firstMs);
         expect({ size, firstMs: firstMs < ceiling ? "under" : firstMs }).toEqual({
           size,
           firstMs: "under"
