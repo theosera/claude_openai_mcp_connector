@@ -1,20 +1,21 @@
 ### INV-3 Two-step stale-safe write
 
-既存ファイル編集は必ず 2 段階:
+一般の既存 Markdown 文書の更新は 2 段階:
 
-- `plan_document_update`: diff + `expected_sha256` (plan 時の現本文ハッシュ) を
+- `plan_document_update`: diff + `expected_sha256` (plan 時のファイル全体の生バイトのハッシュ) を
   `<MCP_PATCH_STATE_DIR>/<uuid>.json` に保存 (既定は
-  `~/.mcp-state/patches-<primary root の hash>`)。**ファイルは触らない**。
-- `apply_planned_update`: 現本文を再ハッシュし `expected_sha256` と照合。**不一致なら
+  `~/.mcp-state/patches-<primary root の hash>`)。対象の文書は変更しない。
+- `apply_planned_update`: 対象ファイルの生バイトを再ハッシュし `expected_sha256` と照合。**不一致なら
   「stale」で適用拒否** (plan 後に外部編集が入ったら上書きしない)。`patch_id` は UUID
   形式を検証 (`patchPath`) — patch_id 経由で任意ファイルを読まないため。
 - exact-path 新規作成は `plan_document_create` → 完全なdiff/対象パス提示 → **現在のユーザへ
   `保存先は「…」でよろしいですか？` を `はい` + 自由記述で確認** →
   `apply_planned_document_create`。apply は `confirmed_target_path` の完全一致と staged content
   の sha256 を検証する。自由記述でパス修正なら apply せず再 plan。plan は対象/親dirを作らない。
+- 文書と Skill の plan は、保存直前と apply 時に `vaultIdentityTag` で primary root の同一性を照合する。記録のない旧 plan と別の root の plan は apply を拒み、作り直しを求める。共通実装は `src/patchState.ts`。
 - 全新規作成 (`createDocument` / exact-path apply) は `flag: "wx"` で**既存を上書きしない**
   (EEXIST → エラー)。親dirは component ごとに symlink/non-directory を検査してから作る。
-- **★ 上書きする唯一の write は atomic に置換し、直列化する** (`src/atomicWrite.ts` の
+- **★ 一般文書の update は atomic に置換し、直列化する** (`src/atomicWrite.ts` の
   `replaceFileAtomically` = 同一ディレクトリ temp → 所有者/権限を復元 → rename)。in-place
   `writeFile` は truncate してから書くので、中断でユーザのノートが**途中書き**になる
   (vault に控えは無い)。read→hash→write は `serializeWrite` で直列化 — 同一 plan 基点の
@@ -41,6 +42,6 @@
   `MCP_ALLOW_LEGACY_CREATE_DOCUMENT` (**両 transport 共通・既定 off**) を要求する。
   path 封じ込め・`wx`・サーバ生成 `id` は効いているので **identity 奪取や上書きはできない**が、
   承認無しで `projects/` に任意本文を**永続化**でき、それが後続セッションで untrusted
-  vault content として読み戻される。`scripts/check-http.mjs` では独立カテゴリとして採点する
-  (general write に混ぜると、その flag を検査しないのと同じになる)。
+  vault content として読み戻される。HTTP では一般 write と legacy create の両方の許可が必要。`scripts/check-http.mjs` の `checkEndpoint` が宣言を作り、HTTP・stdio 共通の `scripts/surface.mjs` の `classifySurface` が legacy create を独立に採点する。
+  HTTP の送信前には `scripts/repo-env.mjs` の `resolveBearer` が認証情報を選び、`sendable` が選択値の制御文字を検査する。試験は `references/03-tests.md` の `check:http` の項。
 

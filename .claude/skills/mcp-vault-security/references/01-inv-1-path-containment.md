@@ -1,19 +1,19 @@
 ## 不変条件 (invariants — 弱めない)
 
-### INV-1 Path containment — 全アクセスは KNOWLEDGE_ROOT 配下
+### INV-1 Path containment — vault 内の文書アクセスは各 knowledge root 配下
 
-`src/pathSafety.ts` が単一の番人。多段ガード (順序を入れ替えない / 段を消さない):
+`src/pathSafety.ts` は相対パスと包含判定の共通部品。ファイルを読む・書く時点の検査は各 store が行う。多段ガード (順序を入れ替えない / 段を消さない):
 
 1. **length cap** (`MAX_RELATIVE_PATH_LENGTH`) — payload 面積を縮める。
-2. **制御文字 / NUL 拒否** — `\x00-\x1f` `\x7f` を含むパスを reject。
+2. **前後の空白を除いた後の制御文字 / NUL 拒否** — `\x00-\x1f` `\x7f` を含むパスを reject。
 3. **percent-decode 検証** — `%2e%2e` / `%2f` 等の encoded traversal を、decode 後に
    `..`/絶対化したら reject (downstream で decode されてすり抜けるのを防ぐ防御層)。
    ※ 操作には raw を使う。decode 結果は**検証専用** (実 fs 操作で `%20`→space 等に
    化けさせない)。
 4. **NFC normalize** — macOS HFS+ の NFD 分解で `..` 判定を回避されないように。
-5. **絶対パス / `~` 先頭 / `..` segment 拒否** (`assertRelativePath`)。
-6. **realpath prefix 照合** (`resolveInsideRoot` / `relativeToRoot`) — 解決後の実パスが
-   root 配下か `path.relative` で確認 (`..`/絶対なら throw)。
+5. **正規化後の行き先を検査**（`assertRelativePath` / `assertNoEscape`）。前後の空白を除き、元の表記と検査用に decode した表記の両方で、絶対パス・ホーム相対・正規化してカレントを指すものや二点で始まるものを拒む。途中の親参照は OS のパス正規化で畳む。
+6. **解決時の包含検査**。`resolveInsideRoot` は候補の親の realpath を検査して末尾の名前を付ける。
+   `relativeToRoot` は呼び出し元が渡したパスを root と比較する。末尾を含む realpath の確認は呼び出し側で行う。
 7. **symlink escape 照合** (`walkMarkdownFiles` / `readDocument` / write 経路) — symlink は
    realpath して root 配下を確認、外を指すなら throw。
 8. **symlink cycle 安全 (DoS 防止)** — `walkMarkdownFiles` は訪問済み realpath の `visited`
@@ -37,7 +37,7 @@
    Node は移植可能な形で公開していない。**それができるまで、この安価な検査を残す。**
    `dev` は signature に残っているが**鮮度用**であり、封じ込めの代わりではない。
 
-- 違反は**例外で fail-closed** (sentinel fallback しない = MCP は黙って別物を返さない)。
+- walk 中に見つかった root 外への解決は例外を上げる。列挙後のファイルの再検査に失敗した場合、`readDocumentResilient` はそのノートを除き、残りの走査を続ける。
 - **新しい read/write 経路を足したら必ずこのガードを通す**。root 外の生パスで `fs` を
   直接呼ばない。
 - **複数ルート (`KNOWLEDGE_ROOTS`) でも各ルートが同ガードを持つ**: `src/multiRootStore.ts`
