@@ -2145,16 +2145,17 @@ mask() {
       # ASCII cleanup rewrites only a complete keyword followed by whitespace.
       # Any non-ASCII byte keeps the ambient Unicode fold/blank profile path.
       if (!legacy_state && (!index(value, "<") || (value !~ /[^[:print:][:space:]]/ && tolower(value) !~ /<(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)[[:space:]]/))) {
-        if (!selected) { printf "%s", value; return }
+        if (!selected) { id_put(value); id_end(); return }
         # With no rewrite, cleanup would preserve every CR and value byte.
         # Retain the same skeleton decision, including its mismatch fallback.
         raw_count = split(value, raw_segments, "\r")
         if (!raw_count) { raw_count = 1; raw_segments[1] = "" }
         for (j = 1; j <= skeleton_count; j++) {
-          if (j > 1) printf "\r"
-          if (raw_count == skeleton_count && substr(skeleton_segments[j], 1, 1) == "N") printf "%s", raw_segments[j]
-          else printf "%s", substr(skeleton_segments[j], 2)
+          if (j > 1) id_put("\r")
+          if (raw_count == skeleton_count && substr(skeleton_segments[j], 1, 1) == "N") id_put(raw_segments[j])
+          else id_put(substr(skeleton_segments[j], 2))
         }
+        id_end()
         return
       }
       legacy_cleanup()
