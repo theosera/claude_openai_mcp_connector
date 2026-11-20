@@ -43,10 +43,11 @@ import { MASK, redactFragment } from "../packages/log-redaction/src/core.mjs";
  *
  * The core is judged on how its time grows, not on how fast this machine is,
  * with one exception: the first call at each size must take under a second per
- * 64 KiB. A linear core takes milliseconds; a quadratic one takes seconds at
- * 64 KiB, and vitest's timeout cannot stop a synchronous loop -- a quadratic
- * mutation once kept this file running for 22 minutes. The ceiling fails it in
- * one call instead.
+ * 64 KiB, and under SMALL_SIZE_FLOOR_MS at the small sizes. A linear core takes
+ * milliseconds; a quadratic one takes seconds at 64 KiB and four times as long at
+ * 128 KiB, and vitest's timeout cannot stop a synchronous loop -- a quadratic
+ * mutation once kept this file running for 22 minutes. The ceiling fails it within
+ * the first two sizes instead.
  *
  * The child-process checks below (the shipped masks and the archive's jq) keep
  * two limits apart. The ceiling is a judgement: a first call over it fails the
@@ -76,38 +77,37 @@ const ceilingMs = (bytes: number) => Math.max(1000, (CEILING_MS_PER_64_KIB * byt
 const runawayMs = (bytes: number) => RUNAWAY_FACTOR * ceilingMs(bytes);
 
 /**
- * Shapes whose first-call ceiling has a floor at the small sizes, and whose first
- * call over the ceiling is timed again before it is judged.
+ * The first-call ceiling for `size` bytes, a judgement: 1,000 ms per 64 KiB, never
+ * below SMALL_SIZE_FLOOR_MS, which lifts 64 and 128 KiB and stops short of 256 KiB.
+ * On GitHub's macOS runners most of a small call is the part every call pays
+ * whatever its size, and that part differs between runners. In run 44636215555 two
+ * runners ran the same mask() on the same shapes, and
+ * issue295-many-unfinished-starts's first call on the slower one was 1.72 times the
+ * other's at 64 KiB but 1.21 times at 1 MiB; five 64 KiB calls on that runner spread
+ * from 952 to 1,374 ms. Run 5 took 2,096 ms at 128 KiB on the same shape, and run
+ * 44645179626 failed issue295-namespace-long-name at 1,013.7 ms at 64 KiB. The
+ * floor gives up catching a change that slows only the small sizes. From 256 KiB
+ * up the ceiling is unchanged, and so is the ratio check.
+ */
+const SMALL_SIZE_FLOOR_MS = 3000;
+const firstCallCeilingMs = (size: number) => Math.max(SMALL_SIZE_FLOOR_MS, (CEILING_MS_PER_64_KIB * size) / (64 * KiB));
+
+/**
+ * Shapes whose first call over the ceiling is timed again before it is judged.
  * `issue295-many-unfinished-starts` runs at about the ceiling on GitHub's macOS
  * runners with main's hooks: macos-timing.yml runs 5 and 6 failed it at 1.015 to
- * 1.14 times the ceiling (64 KiB to 1 MiB), while the two-doubling ratio held.
- *
- * The floor: in run 44636215555 two runners ran the same mask() on the same shapes,
- * and this shape's first call on the slower one was 1.72 times the other's at
- * 64 KiB but 1.21 times at 1 MiB. On that runner five 64 KiB calls spread from 952
- * to 1,374 ms, and run 5 took 2,096 ms at 128 KiB. At the small sizes most of a call
- * is the part every call pays whatever its size, and that part differs between
- * runners. For these shapes the ceiling is never below SMALL_SIZE_FLOOR_MS, which
- * lifts 64 and 128 KiB and stops short of 256 KiB.
- *
- * The recheck: a first call over the ceiling counts as the warm-up, and the median
- * of RECHECK_CALLS further calls is judged against the same ceiling. It is aimed at
- * the larger sizes, which runs 5 and 6 went over by 1.5 to 14 percent.
- *
- * Neither changes the ceiling from 256 KiB up or the ratio check. On a local Mac, a
- * copy with the #295 split guard taken out (a per-byte walk) first went over at
- * 256 KiB, its median 1.10 to 1.12 times the ceiling there, and its time grew faster
- * than the ceiling with the size, so it still fails at that size. The cases are
- * registered in the file's order, so this shape runs where it ran before.
+ * 1.14 times the ceiling (64 KiB to 1 MiB), while the two-doubling ratio held. A
+ * first call over the ceiling counts as the warm-up, and the median of
+ * RECHECK_CALLS further calls is judged against the same ceiling. It is aimed at
+ * the larger sizes, which runs 5 and 6 went over by 1.5 to 14 percent. On a local
+ * Mac, a copy with the #295 split guard taken out (a per-byte walk) first went over
+ * at 256 KiB, its median 1.08 to 1.12 times the ceiling there in two measurements,
+ * and its time grew faster than the ceiling with the size, so it still fails at
+ * that size. The cases are registered in the file's order, so this shape runs where
+ * it ran before.
  */
 const RECHECKED_FIRST_CALLS: ReadonlySet<string> = new Set(["issue295-many-unfinished-starts"]);
 const RECHECK_CALLS = 3;
-const SMALL_SIZE_FLOOR_MS = 3000;
-/** The first-call ceiling for shape `name` at `size` bytes. */
-const firstCallCeilingMs = (name: string, size: number) => {
-  const ceiling = (CEILING_MS_PER_64_KIB * size) / (64 * KiB);
-  return RECHECKED_FIRST_CALLS.has(name) ? Math.max(SMALL_SIZE_FLOOR_MS, ceiling) : ceiling;
-};
 /**
  * The same shape took 140 and 159 s on a green macOS run (run 4) under the 180 s
  * per-test limit; three more calls at 1 MiB add up to about a minute. The longer
@@ -493,15 +493,15 @@ function logFirstCall(
   copy: string,
   name: string,
   size: number,
-  ceilingMs: number,
+  limitMs: number,
   firstCallMs: number,
   again: readonly number[],
   judgedMs: number
 ): void {
   const ms = (value: number) => +value.toFixed(1);
   console.log(
-    `first-call ${copy} ${name} size=${size} ceiling=${ceilingMs} first=${ms(firstCallMs)}` +
-      ` again=${JSON.stringify(again.map(ms))} judged=${ms(judgedMs)} ${judgedMs < ceilingMs ? "under" : "over"}`
+    `first-call ${copy} ${name} size=${size} ceiling=${limitMs} first=${ms(firstCallMs)}` +
+      ` again=${JSON.stringify(again.map(ms))} judged=${ms(judgedMs)} ${judgedMs < limitMs ? "under" : "over"}`
   );
 }
 
@@ -616,7 +616,7 @@ describe("the core's time over two doublings", { timeout: 180_000 }, () => {
       const first = performance.now();
       const result = redactFragment({ text, kind });
       const firstMs = performance.now() - first;
-      expect({ size, firstMs: firstMs < (CEILING_MS_PER_64_KIB * size) / (64 * KiB) ? "under" : firstMs }).toEqual({
+      expect({ size, firstMs: firstMs < firstCallCeilingMs(size) ? "under" : firstMs }).toEqual({
         size,
         firstMs: "under"
       });
@@ -688,7 +688,7 @@ describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_
       let previous: string | null = null;
       for (const [index, size] of SIZES.entries()) {
         const text = make(size);
-        const ceiling = firstCallCeilingMs(name, size);
+        const ceiling = firstCallCeilingMs(size);
         const first = performance.now();
         const output = run(text, `${name}: first call`);
         const firstCallMs = performance.now() - first;
@@ -831,7 +831,7 @@ describe("the archive's NUL normalization time over two doublings", { timeout: 1
         const first = performance.now();
         const output = run(input, size, "first call");
         const firstMs = performance.now() - first;
-        expect({ size, firstMs: firstMs < (CEILING_MS_PER_64_KIB * size) / (64 * KiB) ? "under" : firstMs }).toEqual({
+        expect({ size, firstMs: firstMs < firstCallCeilingMs(size) ? "under" : firstMs }).toEqual({
           size,
           firstMs: "under"
         });
