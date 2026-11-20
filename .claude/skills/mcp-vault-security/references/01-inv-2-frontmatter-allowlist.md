@@ -9,7 +9,7 @@
 — キー allowlist だけでは nested object / 型不一致を YAML に注入できてしまうため。
 
 **★ 読む側も同じ不変条件に属する: `id` は同一性ではない。** `readDocument` は
-`document.id` を**ファイル自身の frontmatter から verbatim**に取る。frontmatter は untrusted
+`document.id` には frontmatter の `id` の前後の空白を除いた非空文字列を使い、それ以外では `relativePath` を使う。frontmatter は untrusted
 vault content (INV-5) なので、1 枚のノートが**他文書の uuid や他文書の path** を `id` として
 宣言でき、id-first の lookup を無条件に奪える (`fetch_document` / ChatGPT `fetch` /
 `trace_sources` / **`plan_document_update` の対象解決**)。二段階書き込みは「承認した**内容**」を
@@ -67,3 +67,4 @@ vault content (INV-5) なので、1 枚のノートが**他文書の uuid や他
   削除する diff** が組み上がり、承認者にはそれが意図した変更に見える。**read は「そのノートを
   返し続ける義務」があるから縮退してよい。writer にその義務は無い。**
 
+書き出す frontmatter の上限は `assertEmittedFrontmatterWithinLimit` が検査する。文書を組み立てる `serializeMarkdown` と、staged content を書く直前の document create / update の apply に検査がある。`tests/frontmatter.test.ts` が両方を扱う。

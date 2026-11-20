@@ -2,6 +2,6 @@
 
 - `.gitignore` が `vault/` `knowledge/` `data/` `.env*` `.mcp-state/` `*.key` `*.pem`
   `credentials*.json` `*token*.json` `secrets/` を除外。
-- テストは `fixtures/synthetic-vault/` の**合成データのみ** (実 vault を fixture 化しない)。
+- vault を使うテストは**合成データのみ**。`fixtures/synthetic-vault/` または試験が一時ディレクトリに作るノートを使う (実 vault を fixture 化しない)。
 - commit は**ファイル個別 add** (`git add src/... tests/...`)。`-A`/`.` 禁止。
 

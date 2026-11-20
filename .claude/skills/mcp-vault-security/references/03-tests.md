@@ -8,10 +8,10 @@
 > 緑は「壊れていない」であって「守っている」ではなく、
 > **その分岐を踏む入力を作らない限り、そのテストは何も証明していない**。
 > 赤の理由が**そのガードの不在**であることまで確認する (別の理由で落ちても意味がない)。
-> 実施済みの例: `enableDnsRebindingProtection` を落とすと境界テスト 2 本**だけ**が落ちる /
+> 以下は変更当時の実測。Host / Origin の現在の検査箇所は `src/httpServer.ts` の `rejectRebinding`。当時は旧 transport の設定変更で境界テスト 2 本だけが失敗した。
 > `legacy:'reject'` で 2025 leg が `-32022` / `cacheScope:'public'`・`ttlMs:60000` が**個別に**
 > 落ち、かつ**捕捉そのもの**を assert して vacuous な緑を塞ぐ / `MCP_HTTP_ALLOW_WRITE` を
-> 宣言だけ off にすると `check:http` が write tool 5 つを名指しする。
+> 宣言だけ off にした当時の実測は 5 件。現在の `classifySurface` は一般文書の plan/apply 4 種と legacy create 1 種を分け、実際に公開された一覧と許可の組み合わせから指摘を決める。
 > **チェックが FAIL したときも同じことを問う** — 検査した結果か、検査に**到達しなかった**結果か。
 > (#91: `check-http.mjs` は 2b 以降ずっと FAIL していたが、比較の手前で throw していたので
 > surface 検査は一度も走っていなかった。)
@@ -58,12 +58,14 @@
 > ⚠️ **これは `GD-VACUOUS-CHECK` とは別の失敗モード。** あちらは**検査に到達したか**、
 > こちらは**検査対象が同一か**。テストは正しく到達しており、見ている対象がズレうるだけ。
 
+次の path traversal 行でいう malformed escape は、同じパスに脱出も含まれる場合を指す。`tests/pathSafety.test.ts` は孤立したパーセント記号を含む通常のファイル名が通ることも確認する。
+
 最低限カバー:
 
 - path traversal (`../`, encoded `%2e%2e`, malformed escape `%ZZ`, 絶対, `~`, NUL/制御文字, 超過長) → reject
 - symlink escape (root 外を指す symlink) → reject / symlink cycle (`loop → root`) → 無限再帰せず完了
 - frontmatter allowlist (未知キー patch) → reject / 値型違反 (非 string / 非 string[]) → reject
-- **frontmatter block 長 (INV-2 / 二次 CPU)**: 上限超過は reject / **終端 `---` 無し**も reject
+- **frontmatter block 長 (INV-2 / 二次 CPU)**: 上限超過は reject / **終端が無く、ブロックとして数えた全体が上限を超える場合**も parse 前に拒否
   (ファイル全体がブロック扱いになる最悪ケース) / **frontmatter が無い巨大ノートは通る** (誤検知の逆)。
   ★ **時間も assert する** — ガードを外すと終端なしのテストが **177 秒**かかる (1 秒の assertion に対し 177 倍)。
   「throw する」だけでは、その throw が parse の前か後かを区別できない
@@ -90,6 +92,7 @@
 - **parse cache の鮮度**: 同サイズ・**mtime を固定値に戻した**外部編集を read が拾う。
   ★ **mtime は「観測した値を戻す」のでは駄目** — `utimes` が ns を切り捨てるので mtimeNs が
   変わり、**ガードを外しても緑になる** (実測でこれを踏んだ)。秒単位の固定値を前後で入れる
+- **`check:http` の認証情報**（`tests/checkHttp.test.ts`）。対象が 1 つなら設定済みの環境値を優先し、不在ならファイルを使う。引数を省いたときも実装は 1 対象として扱う。複数なら各ファイルから選ぶ。試験は選択元の表示・不一致の警告・未設定による失敗を確認する。`resolveBearer` が選んだ値に残る制御文字を `sendable` が送信前に拒む。実装が拒む範囲は C0 と DEL。試験はその代表について環境とファイルの各経路で失敗終了、受信 0 件、出力に値がないことを確認する。`leaked` 自身の陽性対照もある。
 - 一段階 create の gate: 既定で `create_document` が**登録されない** (両 era・両 transport) /
   `MCP_ALLOW_LEGACY_CREATE_DOCUMENT=1` で戻る (「消した」のではなく「gate した」ことの確認)
 - exact-path create: plan は対象側無変更 / `はい` + 自由記述の確認payload / confirmed path不一致・
@@ -109,9 +112,9 @@
   modern era でも **scope→tool 面が request ごと**に効く (`vault.read` と `vault.read vault.write`
   の 2 token を同一エンドポイントに連続投入し、read 側が後からでも write tool を見ないことを固定)
 - dual-era **stdio** (2c): **spawn した実 entrypoint** に v1 client (2025) と v2 client
-  (2026-07-28 pin) を繋ぎ、**同一 tool 面**・full surface (write tool あり)・`SERVER_INSTRUCTIONS`
+  (2026-07-28 pin) を繋ぎ、**同一の既定 tool 面**（二段階 document write あり）と `SERVER_INSTRUCTIONS`
   がワイヤ上で**両 era に届く**ことを固定 / modern era で実 tool call が通る (discovery だけで
-  緑にしない)。赤緑実測: `legacy:'reject'` で 2025 leg が `-32022`、旧配線に戻すと両 leg が落ちる
+  緑にしない)。Skill・監査を明示的に許可した両 era の一致と、legacy create の許可は別の試験で見る。赤緑実測: `legacy:'reject'` で 2025 leg が `-32022`、旧配線に戻すと両 leg が落ちる
 - runbook 契約: sessionless なので `GET`/`DELETE /mcp` は `405`、`tools/list` は**単独 POST**で通る
   (operations.md に載せる curl をテストで固定 — 手順書がサーバから乖離しないため)
 - Host allowlist: `hostnameOf` の port 剥がし・IPv6 bracket / port 省略表記でも genuine が通り
@@ -130,7 +133,7 @@
   文字列 fallback を `startsWith("..")` に戻すと 1 本 / hop 上限を 0 にすると symlink 2 本。
   ⚠️ **大文字小文字の同一性そのものは case-sensitive な FS 上のテストでは踏めない** — Linux CI では
   `/x` と `/X` が別ディレクトリなので、その形のテストは vacuous になる。`(dev,ino)` 機構が生きていることは
-  上の 7 本で押さえ、**case 差そのものは未検証**として負債に数える
+  上の逆検証に加え、`tests/config.test.ts` の `rejects a state file under a case variant` が実 FS を判定し、同じディレクトリを指す環境で検査する。別のディレクトリを指す環境では skip する
 - **エラー面のパス漏洩 (根 E / F9)**: 未知 `patch_id` で apply → patch-state dir も `$HOME` も出ない / **plan 後に対象を消して apply** → **vault root** が出ない (このケースだけ出どころが `resolveForExistingRead` の `realpath` で、patch 読取の catch では塞がらない = 境界でしか止まらない) / サーバ自作の文言 (`Patch is stale` / `Document not found: …`) は**そのまま届く** (誤検知の逆)。
   ★ 逆検証で **2 層が独立**であることを実測する — 境界だけ外すと vault root のテスト**だけ**が赤 (`ENOENT: … /tmp/mcp-errleak-vault-…`)、各サイトの catch だけ外すと**文言の assert だけ**が赤で 封じ込めの assert は通る。片方を「もう片方があるから要らない」と消さない
 - prompt injection fixture: 偽承認・tool-call風JSON・外部送信命令を忠実にdataとして返し、

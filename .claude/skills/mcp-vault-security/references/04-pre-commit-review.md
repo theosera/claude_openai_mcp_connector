@@ -2,7 +2,7 @@
 
 `CLAUDE.md` は「`fs` write 経路 / write surface の gate / 出力の封じ込め / 送り先の認可を触ったら
 **ローカル commit 後・push 前**に **(a) `/claude-security` の change scan、無ければ (b) `/security-review`**」
-とだけ言う。その根拠と、両者の違いはここが持つ。⚠️ **発火点は 2026-09-17 に「commit 前」から動いた** —
+と定める。`CLAUDE.md` の「回す前に基点 2 行」で対象の commit 範囲と未 commit 差分を確認し、所見の対象が変更ファイル集合に含まれることを照合する。レビューは push 直前の最後の操作とする。⚠️ **発火点は 2026-09-17 に「commit 前」から動いた** —
 (a) は commit 済みの差分しか読まないので「commit 前」は定義上いつも空 diff だった。節名の pre-commit は
 残す (名前であって規則ではない — ポインタを持つ `CLAUDE.md` 側と対で変えるまで動かさない)。
 
