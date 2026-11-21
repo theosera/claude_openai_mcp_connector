@@ -2915,6 +2915,15 @@ function withoutS1Keywords(maskFn: string): string {
   return mutate(maskFn, "s1_keyword(i, in_tag)", 's1_at(i, "")', "the original keyword collector");
 }
 
+/** main's sed rule for -u/--user NAME:VALUE, kept after S1 so r3 masks at least what that rule masks on main. */
+const USER_RULE_MARK = "(-u|--user)(=|[[:space:]]+)";
+
+function withoutUserRule(maskFn: string): string {
+  const rule = maskFn.split("\n").filter((line) => line.includes(USER_RULE_MARK));
+  if (rule.length !== 1) throw new Error(`expected one -u/--user rule line in mask(), found ${rule.length}`);
+  return mutate(maskFn, `${rule[0]}\n`, "", "the -u/--user rule kept from main");
+}
+
 describe("session-archive masking: S1 retains the 2026-09-24 series", () => {
   let mask: string;
   beforeAll(async () => {
@@ -2997,7 +3006,8 @@ describe("session-archive masking: S1 retains the 2026-09-24 series", () => {
   for (const [label, line] of argumentPosition) {
     it(`masks the argument-position credential and detects a disabled collector: ${label}`, () => {
       expect(runMask(mask, line)).not.toContain(PLACEHOLDER);
-      expect(runMask(withoutS1Arguments(mask), line)).toContain(PLACEHOLDER);
+      expect(runMask(withoutUserRule(mask), line)).not.toContain(PLACEHOLDER);
+      expect(runMask(withoutUserRule(withoutS1Arguments(mask)), line)).toContain(PLACEHOLDER);
     });
   }
 
@@ -3289,7 +3299,55 @@ describe.each([
   for (const [label, line] of literalNewline) {
     it(`masks the credential and detects a disabled collector: ${label}`, () => {
       expect(runMask(mask, line)).not.toContain(PLACEHOLDER);
-      expect(runMask(withoutS1Arguments(mask), line)).toContain(PLACEHOLDER);
+      expect(runMask(withoutUserRule(mask), line)).not.toContain(PLACEHOLDER);
+      expect(runMask(withoutUserRule(withoutS1Arguments(mask)), line)).toContain(PLACEHOLDER);
+    });
+  }
+});
+
+describe.each([
+  ["capture", captureHookPath],
+  ["archive", hookPath]
+])("hookmask: %s keeps main's -u/--user rule behind S1", (_hook, scriptPath) => {
+  let mask: string;
+  beforeAll(async () => {
+    mask = await shippedMask(scriptPath);
+  });
+
+  it("ships main's rule byte for byte", () => {
+    const mainRule = MAIN_FENCE_MASK_COMMAND.split("\n").filter((line) => line.includes(USER_RULE_MARK));
+    expect(mainRule).toHaveLength(1);
+    expect(mask.split("\n")).toContain(mainRule[0]);
+  });
+
+  // S1 treats these levels as public (an emptied container entrypoint, sort and
+  // date); main masked the value with this rule, so r3 must still mask it.
+  const mainOnly: Array<[string, string]> = [
+    [
+      "emptied entrypoint",
+      `docker run --rm --entrypoint "" curlimages/curl -u svc:${PLACEHOLDER} https://example.test/x`
+    ],
+    ["sort -u", `sort -u svc:${PLACEHOLDER}`],
+    ["date -u", `date -u svc:${PLACEHOLDER}`]
+  ];
+  for (const [label, line] of mainOnly) {
+    it(`masks a shape that only main's rule takes, and detects the rule's removal: ${label}`, () => {
+      expect(runMask(mask, line)).not.toContain(PLACEHOLDER);
+      expect(runMask(withoutS1Arguments(mask), line)).not.toContain(PLACEHOLDER);
+      expect(runMask(withoutUserRule(mask), line)).toContain(PLACEHOLDER);
+    });
+  }
+
+  // Where S1 has masked the value already, the rule leaves the line as it is.
+  const maskedByS1: Array<[string, string]> = [
+    ["-u", `curl -u svc:${PLACEHOLDER} https://example.test/x`],
+    ["--user=", `curl --user=svc:${PLACEHOLDER} https://example.test/x`],
+    ["quoted -u", `curl -u 'svc:${PLACEHOLDER}' https://example.test/x`],
+    ["printf", String.raw`printf 'echo "deploying"\ncurl -u svc:${PLACEHOLDER} https://example.test/x\n' > deploy.sh`]
+  ];
+  for (const [label, line] of maskedByS1) {
+    it(`does not change what S1 already masked: ${label}`, () => {
+      expect(runMask(mask, line)).toBe(runMask(withoutUserRule(mask), line));
     });
   }
 });
