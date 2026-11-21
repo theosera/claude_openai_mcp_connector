@@ -3260,6 +3260,40 @@ describe("session-archive masking: S1 repeated argument flags", () => {
   }, 120_000);
 });
 
+describe.each([
+  ["capture", captureHookPath],
+  ["archive", hookPath]
+])("hookmask: %s keeps curl -u masked inside an echo or printf string", (_hook, scriptPath) => {
+  let mask: string;
+  beforeAll(async () => {
+    mask = await shippedMask(scriptPath);
+  });
+
+  // A literal \n before curl inside an echo or printf string must not turn the
+  // curl credential collector off for that level. main masked these pairs with a
+  // sed rule that r3 no longer has, so the S1 collector is the only rule here.
+  const literalNewline: Array<[string, string]> = [];
+  for (const flag of ["-u svc:", "--user svc:", "-usvc:"]) {
+    literalNewline.push(
+      [
+        `printf ${flag}`,
+        String.raw`printf 'echo "deploying"\ncurl ${flag}${PLACEHOLDER} https://example.test/x\n' > deploy.sh`
+      ],
+      [`echo -e ${flag}`, String.raw`echo -e "echo start\ncurl ${flag}${PLACEHOLDER} https://example.test/x" > s.sh`],
+      [
+        `JSON body ${flag}`,
+        String.raw`curl -X POST -d '{"s":"echo start\ncurl ${flag}${PLACEHOLDER} https://example.test/x"}' https://example.test/api`
+      ]
+    );
+  }
+  for (const [label, line] of literalNewline) {
+    it(`masks the credential and detects a disabled collector: ${label}`, () => {
+      expect(runMask(mask, line)).not.toContain(PLACEHOLDER);
+      expect(runMask(withoutS1Arguments(mask), line)).toContain(PLACEHOLDER);
+    });
+  }
+});
+
 describe("session-archive vault authorization", () => {
   beforeAll(() => {
     for (const tool of ["jq", "git"]) {

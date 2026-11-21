@@ -799,7 +799,6 @@ mask() {
       if (j > last || original_bytes[j] != "-") {
         probe = ""; probe_count = 0
         for (j = last; j >= first && probe_count < 12; j--) {
-          if (s1_h0_text[level] && (j in s1_literal_newlines)) s1_h0_public[level] = 1
           c = original_bytes[j]
           if (c == "\"" || c == s1_apostrophe || c == "\\") continue
           probe = c probe; probe_count++
