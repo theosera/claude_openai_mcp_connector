@@ -1426,7 +1426,8 @@ environment as well, which wins over the file as it does for the server; with
 two or more `--env`, each endpoint uses only its own file. The bearer is never printed — each endpoint's block says only where it
 came from (`bearer: from environment` or the file's path), and a `WARN` line
 names the file when the environment and the file both hold a value and they
-differ:
+differ. Where an endpoint's reply quotes the bearer back, the line shows
+`[bearer hidden]` in its place:
 
 ```bash
 pnpm run check:http --env ./.env --env /abs/path/to/scan-dir/.env

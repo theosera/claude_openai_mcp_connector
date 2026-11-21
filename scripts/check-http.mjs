@@ -9,7 +9,10 @@
 // environment wins over the file's, as it does for the server; with two or
 // more, each endpoint uses only its own file. The bearer is never printed; the
 // line saying where it came from is printed before the handshake, so it is
-// there even when the endpoint refuses the bearer. The MCP
+// there even when the endpoint refuses the bearer. Nor is it printed where a
+// reply or an error quotes it: every line printed for an endpoint has that
+// endpoint's bearer replaced by "[bearer hidden]", and a reply is hidden the
+// same way before it is cut short for an error message. The MCP
 // session is always terminated (authenticated DELETE) so repeated/scheduled
 // runs do not leak server-side transports, and every request is bounded by a
 // timeout so a wedged endpoint fails instead of hanging.
@@ -35,7 +38,7 @@
 // MCP_CHECK_TIMEOUT_MS (default 10000) bounds each HTTP request.
 
 import path from "node:path";
-import { parseEnvFile, parsePort, isTruthy, resolveBearer, repoRoot } from "./repo-env.mjs";
+import { parseEnvFile, parsePort, isTruthy, resolveBearer, hideBearer, repoRoot } from "./repo-env.mjs";
 import {
   AUDIT_WRITE_TOOLS,
   GENERAL_WRITE_TOOLS,
@@ -79,26 +82,43 @@ function rpcBody(id, method, params = {}) {
 }
 
 // The Streamable HTTP transport replies with an SSE frame; a plain JSON body is
-// also tolerated so the check does not break if that ever changes.
-function parseRpcPayload(text) {
+// also tolerated so the check does not break if that ever changes. `hide` runs
+// over a reply before it is cut short for an error message, so the cut cannot
+// leave part of the bearer behind. JSON.parse's own error is not passed on,
+// because it quotes part of its input, the bearer included.
+function parseRpcPayload(text, hide) {
   const trimmed = text.trim();
-  if (trimmed.startsWith("{")) return JSON.parse(trimmed);
-  const dataLine = text.split(/\r?\n/).find((line) => line.startsWith("data:"));
-  if (!dataLine) {
-    throw new Error(`response contained neither JSON nor an SSE data event: ${text.slice(0, 300)}`);
+  const json = trimmed.startsWith("{")
+    ? trimmed
+    : text
+        .split(/\r?\n/)
+        .find((line) => line.startsWith("data:"))
+        ?.slice("data:".length)
+        .trim();
+  if (json === undefined) {
+    throw new Error(`response contained neither JSON nor an SSE data event: ${hide(text).slice(0, 300)}`);
   }
-  return JSON.parse(dataLine.slice("data:".length).trim());
+  try {
+    return JSON.parse(json);
+  } catch {
+    throw new Error(`response was not valid JSON: ${hide(json).slice(0, 300)}`);
+  }
 }
 
-async function checkEndpoint(envPath, endpointCount) {
+async function checkEndpoint(envPath, endpointCount, selected) {
   const { resolved, env } = parseEnvFile(envPath);
   const port = parsePort(env.MCP_HTTP_PORT, resolved);
   const bearer = resolveBearer(env, resolved, endpointCount);
   const token = bearer.token;
+  // The loop below prints every other line for this endpoint with this value
+  // hidden. `hide` is for the two lines printed here, and for the places that
+  // cut a reply short first.
+  selected.token = token;
+  const hide = (text) => hideBearer(text, token);
   // Before the handshake, so a refused bearer still says where it came from,
   // and that the environment's value differed from the file's.
-  console.log(`  bearer:   from ${bearer.source}`);
-  if (bearer.warning) console.log(`  WARN:     ${bearer.warning}`);
+  console.log(hide(`  bearer:   from ${bearer.source}`));
+  if (bearer.warning) console.log(hide(`  WARN:     ${bearer.warning}`));
   const endpoint = `http://127.0.0.1:${port}/mcp`;
   const authHeader = { Authorization: `Bearer ${token}` };
   const postHeaders = {
@@ -116,7 +136,7 @@ async function checkEndpoint(envPath, endpointCount) {
     });
     const text = await response.text();
     if (!response.ok) {
-      throw new Error(`POST ${endpoint} -> HTTP ${response.status}: ${text.slice(0, 300)}`);
+      throw new Error(`POST ${endpoint} -> HTTP ${response.status}: ${hide(text).slice(0, 300)}`);
     }
     return { response, text };
   }
@@ -130,7 +150,7 @@ async function checkEndpoint(envPath, endpointCount) {
         clientInfo: { name: "repo-http-check", version: "1" }
       })
     );
-    const initPayload = parseRpcPayload(init.text);
+    const initPayload = parseRpcPayload(init.text, hide);
     if (initPayload.error) throw new Error(`initialize failed: ${JSON.stringify(initPayload.error)}`);
 
     // The /mcp endpoint is sessionless: `createMcpHandler` with
@@ -144,7 +164,7 @@ async function checkEndpoint(envPath, endpointCount) {
     await post(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }), sessionId);
 
     const listed = await post(rpcBody(2, "tools/list"), sessionId);
-    const listPayload = parseRpcPayload(listed.text);
+    const listPayload = parseRpcPayload(listed.text, hide);
     if (listPayload.error) throw new Error(`tools/list failed: ${JSON.stringify(listPayload.error)}`);
 
     const tools = listPayload.result?.tools;
@@ -205,23 +225,27 @@ let hadFailure = false;
 
 for (const envPath of envPaths) {
   console.log(`\n== ${envPath} ==`);
+  // Holds the endpoint's bearer once it is chosen. Every line below is printed
+  // with it hidden, whatever the endpoint sent back or an error quoted.
+  const selected = { token: undefined };
+  const say = (line) => console.log(hideBearer(line, selected.token));
   try {
-    const r = await checkEndpoint(envPath, envPaths.length);
+    const r = await checkEndpoint(envPath, envPaths.length, selected);
     const flagsSummary = `write=${r.declared.generalWrite ? "on" : "off"} legacy_create=${
       r.declared.legacyCreate ? "on" : "off"
     } skill=${r.declared.skillWrite ? "on" : "off"} audit=${r.declared.auditWrite ? "on" : "off"}`;
-    console.log(`  local:    ${r.endpoint}`);
-    if (r.publicUrl) console.log(`  public:   ${r.publicUrl}/mcp`);
-    console.log(`  server:   ${r.server}`);
-    console.log(`  protocol: ${r.protocol}`);
-    console.log(`  declared: ${flagsSummary}`);
-    console.log(`  tools:    ${r.toolCount} (${r.readOnly} read-only, ${r.writeCapable} write-capable)`);
-    for (const warning of r.warnings) console.log(`  WARN:     ${warning}`);
+    say(`  local:    ${r.endpoint}`);
+    if (r.publicUrl) say(`  public:   ${r.publicUrl}/mcp`);
+    say(`  server:   ${r.server}`);
+    say(`  protocol: ${r.protocol}`);
+    say(`  declared: ${flagsSummary}`);
+    say(`  tools:    ${r.toolCount} (${r.readOnly} read-only, ${r.writeCapable} write-capable)`);
+    for (const warning of r.warnings) say(`  WARN:     ${warning}`);
     if (r.failures.length === 0) {
-      console.log("  RESULT:   OK — live surface matches declared flags (not wider).");
+      say("  RESULT:   OK — live surface matches declared flags (not wider).");
     } else {
       hadFailure = true;
-      for (const failure of r.failures) console.log(`  FAIL:     ${failure}`);
+      for (const failure of r.failures) say(`  FAIL:     ${failure}`);
     }
   } catch (error) {
     hadFailure = true;
@@ -231,7 +255,7 @@ for (const envPath of envPaths) {
         : error instanceof Error
           ? error.message
           : String(error);
-    console.log(`  FAIL:     ${message}`);
+    say(`  FAIL:     ${message}`);
   }
 }
 

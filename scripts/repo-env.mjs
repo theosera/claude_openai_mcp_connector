@@ -92,6 +92,23 @@ export function resolveBearer(env, envPath, endpointCount, processEnv = process.
   throw new Error(`${BEARER} must be configured in ${envPath} or (with a single endpoint) the environment.`);
 }
 
+/** What `hideBearer` puts where the bearer was. */
+export const BEARER_HIDDEN = "[bearer hidden]";
+
+/**
+ * `text` with every copy of `token` replaced by `BEARER_HIDDEN`: as sent, and
+ * as it reads inside a JSON string, which is how a JSON reply quotes it back.
+ * With no token, `text` comes back unchanged.
+ */
+export function hideBearer(text, token) {
+  if (!token) return text;
+  let hidden = text;
+  for (const form of new Set([token, JSON.stringify(token).slice(1, -1)])) {
+    hidden = hidden.split(form).join(BEARER_HIDDEN);
+  }
+  return hidden;
+}
+
 /** The bearer, unless it holds a C0 control character or DEL; the error names `from`, never the value. */
 function sendable(token, from) {
   for (const character of token) {
