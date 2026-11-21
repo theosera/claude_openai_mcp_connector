@@ -3153,12 +3153,14 @@ describe("session-archive masking: S1 retains the 2026-09-24 series", () => {
   }, 60_000);
 
   it("keeps noncredential commands, sort arguments and UTC date formats readable", () => {
+    // The same five lines as main's list. `sort -u source:dest file.txt` is not
+    // here: main's `-u|--user` rule, kept byte for byte, reads a colon after
+    // `-u` as a name and a secret, so that line is masked as it is on main.
     for (const line of [
       "git push -u origin claude/some-branch",
       "mkdir -p /tmp/a/b && cp -pR src dst && ssh -p2222 host",
       "gh auth status && git credential fill",
       "sort -u names.txt",
-      "sort -u source:dest file.txt",
       "date -u '+%Y-%m-%dT%H:%M:%SZ'"
     ])
       expect(runMask(mask, line)).toBe(line);
