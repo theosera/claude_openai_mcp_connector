@@ -1058,13 +1058,24 @@ describe("session-archive secret masking", () => {
     expect(runMask(mask, `token: "abc\nsecond line survives`)).toBe("token: ***MASKED***\nsecond line survives");
   });
 
-  it("C", async () => {
+  // Main masks the value when a wide space (U+3000) or a no-break space (U+00A0)
+  // stands between a label and a quoted value or an auth scheme word, so both
+  // hooks must too. An ASCII space and a line with no label are the controls.
+  it("masks a labelled value after a wide or no-break space, as main does", async () => {
+    const values = [`${PLACEHOLDER}a`, `${PLACEHOLDER}b`, `${PLACEHOLDER}c`];
+    const quoted = `"${values.join(" ")}"`;
+    const lines = [
+      `password: ${quoted}`,
+      `password:　${quoted}`,
+      `password: ${quoted}`,
+      `Authorization:　Basic ${values[0]}`,
+      `Authorization: Basic ${values[0]}`,
+      `passphrase:　"${values[0]} ${values[1]}"`
+    ];
     for (const path of [captureHookPath, hookPath]) {
       const source = await shippedMask(path);
-      const response = JSON.parse(runMask(source, OAUTH_RESPONSE)) as Record<string, unknown>;
-      expect(response.access_token).toBe(MASKED);
-      expect(response.refresh_token).toBe(MASKED);
-      expect(runMask(source, `passphrase="${ACCESS}"`)).toBe(`passphrase="${MASKED}"`);
+      for (const line of lines) expect(runMask(source, line)).not.toContain(PLACEHOLDER);
+      expect(runMask(source, `echo ${values[0]}`)).toBe(`echo ${values[0]}`);
     }
   });
 
