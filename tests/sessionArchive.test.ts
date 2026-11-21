@@ -2924,6 +2924,20 @@ function withoutUserRule(maskFn: string): string {
   return mutate(maskFn, `${rule[0]}\n`, "", "the -u/--user rule kept from main");
 }
 
+/** main's mysql and redis-cli loops (nine lines from `:m` to the restore of their sentinel), kept right after the -u/--user rule as on main. */
+const CLIENT_LOOPS_FIRST = "    -e ':m' \\";
+const CLIENT_LOOPS_LENGTH = 9;
+
+function withoutClientLoops(maskFn: string): string {
+  const lines = maskFn.split("\n");
+  const at = lines.indexOf(CLIENT_LOOPS_FIRST);
+  if (at === -1 || lines.indexOf(CLIENT_LOOPS_FIRST, at + 1) !== -1) {
+    throw new Error("expected one mysql/redis-cli loop block in mask()");
+  }
+  const block = `${lines.slice(at, at + CLIENT_LOOPS_LENGTH).join("\n")}\n`;
+  return mutate(maskFn, block, "", "the mysql and redis-cli loops kept from main");
+}
+
 describe("session-archive masking: S1 retains the 2026-09-24 series", () => {
   let mask: string;
   beforeAll(async () => {
@@ -3006,8 +3020,8 @@ describe("session-archive masking: S1 retains the 2026-09-24 series", () => {
   for (const [label, line] of argumentPosition) {
     it(`masks the argument-position credential and detects a disabled collector: ${label}`, () => {
       expect(runMask(mask, line)).not.toContain(PLACEHOLDER);
-      expect(runMask(withoutUserRule(mask), line)).not.toContain(PLACEHOLDER);
-      expect(runMask(withoutUserRule(withoutS1Arguments(mask)), line)).toContain(PLACEHOLDER);
+      expect(runMask(withoutClientLoops(withoutUserRule(mask)), line)).not.toContain(PLACEHOLDER);
+      expect(runMask(withoutClientLoops(withoutUserRule(withoutS1Arguments(mask))), line)).toContain(PLACEHOLDER);
     });
   }
 
@@ -3299,8 +3313,8 @@ describe.each([
   for (const [label, line] of literalNewline) {
     it(`masks the credential and detects a disabled collector: ${label}`, () => {
       expect(runMask(mask, line)).not.toContain(PLACEHOLDER);
-      expect(runMask(withoutUserRule(mask), line)).not.toContain(PLACEHOLDER);
-      expect(runMask(withoutUserRule(withoutS1Arguments(mask)), line)).toContain(PLACEHOLDER);
+      expect(runMask(withoutClientLoops(withoutUserRule(mask)), line)).not.toContain(PLACEHOLDER);
+      expect(runMask(withoutClientLoops(withoutUserRule(withoutS1Arguments(mask))), line)).toContain(PLACEHOLDER);
     });
   }
 });
@@ -3348,6 +3362,58 @@ describe.each([
   for (const [label, line] of maskedByS1) {
     it(`does not change what S1 already masked: ${label}`, () => {
       expect(runMask(mask, line)).toBe(runMask(withoutUserRule(mask), line));
+    });
+  }
+});
+
+describe.each([
+  ["capture", captureHookPath],
+  ["archive", hookPath]
+])("hookmask: %s keeps main's mysql and redis-cli loops behind S1", (_hook, scriptPath) => {
+  let mask: string;
+  beforeAll(async () => {
+    mask = await shippedMask(scriptPath);
+  });
+
+  it("ships main's loops byte for byte, in main's place right after the -u/--user rule", () => {
+    const main = MAIN_FENCE_MASK_COMMAND.split("\n");
+    const shipped = mask.split("\n");
+    const mainAt = main.findIndex((line) => line.includes(USER_RULE_MARK));
+    const shippedAt = shipped.findIndex((line) => line.includes(USER_RULE_MARK));
+    expect(mainAt).toBeGreaterThan(0);
+    expect(shippedAt).toBeGreaterThan(0);
+    expect(shipped.slice(shippedAt - 1, shippedAt + 1 + CLIENT_LOOPS_LENGTH)).toEqual(
+      main.slice(mainAt - 1, mainAt + 1 + CLIENT_LOOPS_LENGTH)
+    );
+  });
+
+  // S1 registers no client for these (a client image or compose service after
+  // docker/podman run, a client behind an unquoted paren); main masked the value
+  // with these loops, so r3 must still mask it.
+  const loopsOnly: Array<[string, string]> = [
+    ["image redis-cli -a", `docker run --rm -it ns/redis-cli -h redis.internal -a ${PLACEHOLDER}`],
+    ["image mysql -p", `docker run --rm ns/mysql -p${PLACEHOLDER}`],
+    ["compose service redis-cli", `docker compose run --rm redis-cli -h cache -a ${PLACEHOLDER} ping`],
+    ["paren before mysql -p", `mysql --defaults-extra-file=<(printf x) -h db -uroot -p${PLACEHOLDER}`],
+    ["image redis-cli --pass", `podman run --rm ns/redis-cli --pass ${PLACEHOLDER} ping`]
+  ];
+  for (const [label, line] of loopsOnly) {
+    it(`masks a shape that only main's loops take, and detects their removal: ${label}`, () => {
+      expect(runMask(mask, line)).not.toContain(PLACEHOLDER);
+      expect(runMask(withoutS1Arguments(mask), line)).not.toContain(PLACEHOLDER);
+      expect(runMask(withoutClientLoops(mask), line)).toContain(PLACEHOLDER);
+    });
+  }
+
+  // Where S1 has masked the value already, the loops leave the line as it is.
+  const maskedByS1: Array<[string, string]> = [
+    ["mysql -p", `mysql -h db -u root -p${PLACEHOLDER} appdb`],
+    ["redis-cli -a", `redis-cli -h cache -a ${PLACEHOLDER} ping`],
+    ["redis-cli --pass", `redis-cli --pass ${PLACEHOLDER} ping`]
+  ];
+  for (const [label, line] of maskedByS1) {
+    it(`does not change what S1 already masked: ${label}`, () => {
+      expect(runMask(mask, line)).toBe(runMask(withoutClientLoops(mask), line));
     });
   }
 });
