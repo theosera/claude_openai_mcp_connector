@@ -693,11 +693,40 @@ mask() {
     BEGIN {
       s1_paren_profile_count = split(ENVIRON["CON295_S1_PAREN_PROFILE"], s1_paren_profile, "\n")
       for (s1_paren_profile_index = 1; s1_paren_profile_index <= s1_paren_profile_count; s1_paren_profile_index++) {
+        if (substr(s1_paren_profile[s1_paren_profile_index], 2, 1) == ":") {
+          spelling = substr(s1_paren_profile[s1_paren_profile_index], 3)
+          s1_keyword_folds[spelling] = substr(s1_paren_profile[s1_paren_profile_index], 1, 1)
+          s1_keyword_fold_leads[substr(spelling, 1, 1)] = 1
+        }
         if (substr(s1_paren_profile[s1_paren_profile_index], 1, 1) != "w") continue
         s1_paren_blank = substr(s1_paren_profile[s1_paren_profile_index], 2)
         s1_paren_blanks[s1_paren_blank] = 1
         s1_paren_blank_leads[substr(s1_paren_blank, 1, 1)] = 1
       }
+    }
+    function s1_keyword_blank(at,    c, text) {
+      if (at > n) return 0
+      c = original_bytes[at]
+      if (c ~ /[[:space:]]/) return 1
+      if (!(c in s1_paren_blank_leads)) return 0
+      text = c original_bytes[at + 1]
+      if (text in s1_paren_blanks) return 2
+      text = text original_bytes[at + 2]
+      return (text in s1_paren_blanks) ? 3 : 0
+    }
+    function s1_keyword_word(at, limit,    c, spelling, word) {
+      while (at <= n && length(word) < limit) {
+        c = original_bytes[at]
+        if (c ~ /^[A-Za-z]$/) { word = word tolower(c); at++; continue }
+        if (!(c in s1_keyword_fold_leads)) break
+        spelling = c original_bytes[at + 1]
+        if (!(spelling in s1_keyword_folds)) spelling = spelling original_bytes[at + 2]
+        if (!(spelling in s1_keyword_folds)) break
+        word = word s1_keyword_folds[spelling]
+        at += length(spelling)
+      }
+      s1_keyword_word_end = at
+      return word
     }
     function s1_paren_blank_after(at,    j, c, width, text) {
       if (at >= s1_paren_blank_first && at <= s1_paren_blank_last) return s1_paren_blank_last
@@ -820,39 +849,57 @@ mask() {
         if (j > first && original_bytes[j] == "@") s1_range(first, j - 1, 1)
       }
     }
-    function s1_keyword(at, in_tag,    j, word, after, first, last, q, scheme, nextword, explicit, assigned) {
+    function s1_keyword_bare_end(at,    end) {
+      end = s1_blank_after(at) - 1
+      if (s1_has_dash && s1_dash[at] && s1_dash[at] <= end) end = s1_dash[at] - 1
+      return end
+    }
+    function s1_keyword(at, in_tag,    j, word, after, first, last, q, scheme, nextword, explicit, assigned, width, last_separator, ambiguous) {
       # Reject non-keyword prefixes before walking a bounded suffix. In
       # particular, a long ordinary word must not repeat fourteen case folds
       # and concatenations at every byte on native BSD awk.
       word = tolower(original_bytes[at] original_bytes[at + 1] original_bytes[at + 2])
-      if (word !~ /^(tok|key|sec|pas|pat|aut|bea)$/) return
+      if (word !~ /^(tok|key|sec|pas|pat|aut|bea)$/ && !(original_bytes[at] in s1_keyword_fold_leads) &&
+          !(original_bytes[at + 1] in s1_keyword_fold_leads) && !(original_bytes[at + 2] in s1_keyword_fold_leads)) return
       # Preserve the legacy suffix-label coverage too; overlapping ranges are
       # unioned, so an inner label cannot expose part of an outer passphrase.
-      j = at
-      while (j <= n && j - at < 14 && original_bytes[j] ~ /[A-Za-z]/) j++
-      word = ""
-      for (after = at; after < j; after++) word = word tolower(original_bytes[after])
+      word = s1_keyword_word(at, 14)
+      j = s1_keyword_word_end
       if (word !~ /^(token|key|secret|password|passwd|passphrase|pat|authorization|bearer)$/) return
       if (original_bytes[j] == "\"" || original_bytes[j] == s1_apostrophe) j++
       after = j
-      while (j <= n && original_bytes[j] ~ /[=:[:space:]]/) {
-        if (original_bytes[j] == "=" || original_bytes[j] == ":") explicit = 1
-        if (original_bytes[j] == "=") assigned = 1
-        j++
+      while (j <= n) {
+        if (original_bytes[j] == "=" || original_bytes[j] == ":") {
+          if (explicit) {
+            ambiguous = 1
+            if (s1_probe_only) { s1_probe_needed = 1; s1_probe_complex = 1 }
+            else s1_range(j, j)
+          }
+          explicit = 1
+          if (original_bytes[j] == "=") assigned = 1
+          last_separator = j++
+        } else if ((width = s1_keyword_blank(j))) j += width
+        else break
       }
-      if (j == after || j > n) return
+      if (j == after) return
+      if (j > n || s1_at(j, "-----")) {
+        if (last_separator > after && original_bytes[after - 1] != "\"" && original_bytes[after - 1] != s1_apostrophe) {
+          if (s1_probe_only) { s1_probe_needed = 1; s1_probe_complex = 1 }
+          else s1_range(last_separator, last_separator)
+        }
+        if (j > n) return
+      }
       first = j; q = original_bytes[j]
+      if (ambiguous && !s1_probe_only && q != "\"" && q != s1_apostrophe) s1_range(j, s1_keyword_bare_end(j))
       # A keyword that is itself an attribute value (type="password") is
       # not a label for the following attribute. Keep that structural label.
       if (in_tag && s1_keyword_tag_quote && !explicit && (original_bytes[after - 1] == "\"" || original_bytes[after - 1] == s1_apostrophe)) return
-      scheme = ""; nextword = j
-      while (nextword <= n && nextword - j < 7 && original_bytes[nextword] ~ /[A-Za-z]/) {
-        scheme = scheme tolower(original_bytes[nextword]); nextword++
-      }
-      if (scheme ~ /^(basic|digest|token|apikey|oauth|ssws)$/ && original_bytes[nextword] ~ /[[:space:]]/) {
+      scheme = s1_keyword_word(j, 7)
+      nextword = s1_keyword_word_end
+      if (scheme ~ /^(basic|digest|token|apikey|oauth|ssws)$/ && s1_keyword_blank(nextword)) {
         if (in_tag && s1_keyword_tag_quote && !s1_probe_only) { s1_tag_quoted_tail(s1_keyword_tag_start, s1_keyword_tag_start); return }
         if (s1_probe_only) { s1_probe_needed = 1; s1_probe_complex = 1; return }
-        while (nextword <= n && original_bytes[nextword] ~ /[[:space:]]/) nextword++
+        while ((width = s1_keyword_blank(nextword))) nextword += width
         last = nextword
         while (last <= n && original_bytes[last] !~ /[[:space:],"\047]/ && !s1_at(last, "-----")) last++
         s1_range(nextword, last - 1)
@@ -897,8 +944,7 @@ mask() {
       if ((at <= s1_bare_end && !explicit && (at == s1_bare_start || original_bytes[at - 1] ~ /[A-Za-z0-9]/)) || ((original_bytes[after - 1] == "\"" || original_bytes[after - 1] == s1_apostrophe) && q != "\"" && q != s1_apostrophe)) return
       # Same fallback extent as the shipped bare rule: whitespace and a run
       # of five dashes stop it. All labels are read before any range is woven.
-      last = s1_blank_after(j) - 1
-      if (s1_has_dash && s1_dash[j] && s1_dash[j] <= last) last = s1_dash[j] - 1
+      last = s1_keyword_bare_end(j)
       s1_range(first, last)
       if (word != "passwd" && word != "passphrase") { s1_bare_start = first; s1_bare_end = last }
     }
@@ -1308,7 +1354,8 @@ mask() {
           else if (c == ">") in_tag = 0
         } else if (c == "<" && original_bytes[i + 1] ~ /[A-Za-z\/!?]/) in_tag = 1
         if (i in s1_suppressed) covered += s1_suppressed[i]
-        if (!covered && c ~ /[tTkKsSpPaAbB]/ && tolower(c original_bytes[i + 1]) ~ /^(to|ke|se|pa|au|be)$/) { s1_keyword_tag_quote = tag_quote; s1_keyword_tag_start = tag_quote_start; s1_keyword(i, in_tag) }
+        if (!covered && ((c ~ /[tTkKsSpPaAbB]/ && (tolower(c original_bytes[i + 1]) ~ /^(to|ke|se|pa|au|be)$/ ||
+            (original_bytes[i + 1] in s1_keyword_fold_leads))) || (c in s1_keyword_fold_leads))) { s1_keyword_tag_quote = tag_quote; s1_keyword_tag_start = tag_quote_start; s1_keyword(i, in_tag) }
         if (probe && s1_probe_complex) break
       }
       s1_probe_only = 0
@@ -1958,6 +2005,7 @@ mask() {
           after = end
           while (after <= last && bytes[after] ~ /^[ \t]$/) after++
           if (after > last || r2_line(after) || bytes[after] ~ /^[&(),:;<>\[\]{}|]$/) { at = end - 1; continue }
+          width = end - at
         }
         if (start > first) r2_scalar(start, at - 1)
         at += width ? width - 1 : 0

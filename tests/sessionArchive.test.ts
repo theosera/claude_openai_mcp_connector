@@ -1058,6 +1058,16 @@ describe("session-archive secret masking", () => {
     expect(runMask(mask, `token: "abc\nsecond line survives`)).toBe("token: ***MASKED***\nsecond line survives");
   });
 
+  it("C", async () => {
+    for (const path of [captureHookPath, hookPath]) {
+      const source = await shippedMask(path);
+      const response = JSON.parse(runMask(source, OAUTH_RESPONSE)) as Record<string, unknown>;
+      expect(response.access_token).toBe(MASKED);
+      expect(response.refresh_token).toBe(MASKED);
+      expect(runMask(source, `passphrase="${ACCESS}"`)).toBe(`passphrase="${MASKED}"`);
+    }
+  });
+
   it("keeps the two shipped mask() copies byte-identical", async () => {
     // archive-session.sh says the ops-logging copy carries the same rules. A rule
     // added to one and not the other leaves that transport masking less.

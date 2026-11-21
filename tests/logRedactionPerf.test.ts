@@ -681,6 +681,35 @@ describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_
       return performance.now() - start;
     };
 
+    describe(copy, () => {
+      it("A", () => {
+        const record = "format=markdown,section=publicdocumentationreferencechapter,status=ready; ";
+        const small = record.repeat(Math.floor((64 * KiB) / record.length)).padEnd(64 * KiB);
+        const large = small + small;
+        for (const input of [small, large]) expect(run(input, "A")).toContain("status=ready");
+
+        const pairs: [number, number][] = [];
+        for (let index = 0; index < PAIRS; index += 1) {
+          if (index % 2 === 0) {
+            const first = measure(small, "A");
+            pairs.push([first, measure(large, "A")]);
+          } else {
+            const second = measure(large, "A");
+            pairs.push([measure(small, "A"), second]);
+          }
+        }
+
+        const smallMs = median(pairs.map(([time]) => time));
+        const largeMs = median(pairs.map(([, time]) => time));
+        const ratio = largeMs / smallMs;
+        const minimumRatio = growthRatio(pairs);
+        const limit = LIMIT ** (1 / DOUBLINGS);
+        console.log(JSON.stringify({ property: "A", copy, pairs: PAIRS, smallMs, largeMs, ratio, minimumRatio }));
+        expect(ratio).toBeLessThan(limit);
+        expect(minimumRatio).toBeLessThan(limit);
+      });
+    });
+
     const cases = [...ISSUE295_SHAPES, NUL_NORMALIZATION_SHAPE].map(
       ([name, secret, make, preserve, hookSecret]) => [name, secret, make, preserve, hookSecret] as const
     );
