@@ -50,6 +50,16 @@ const FROM_ENVIRONMENT = "x".repeat(32);
 const FROM_FILE = "y".repeat(32);
 const FROM_OTHER_FILE = "z".repeat(32);
 const ALL_VALUES = [FROM_ENVIRONMENT, FROM_FILE, FROM_OTHER_FILE];
+// Each value is one letter repeated, so these are what any eight characters cut
+// from one of them look like.
+const PIECES = ALL_VALUES.map((value) => value.slice(0, 8));
+/** What check:http prints where the bearer was. */
+const HIDDEN = "[bearer hidden]";
+
+interface Reply {
+  status: number;
+  body: string;
+}
 
 interface Stub {
   port: number;
@@ -65,7 +75,13 @@ afterEach(async () => {
   }
 });
 
-async function startStub(options: { refuse?: boolean } = {}): Promise<Stub> {
+/**
+ * `reply`, when it returns a reply for a POST, is sent instead of the
+ * handshake's; it gets the bearer the stub received, so it can quote it back.
+ */
+async function startStub(
+  options: { refuse?: boolean; reply?: (bearer: string, method: string) => Reply | undefined } = {}
+): Promise<Stub> {
   const seen: string[] = [];
   const server = http.createServer((req, res) => {
     seen.push(req.headers.authorization ?? "");
@@ -81,6 +97,11 @@ async function startStub(options: { refuse?: boolean } = {}): Promise<Stub> {
         return;
       }
       const message = JSON.parse(raw) as { id?: number; method: string };
+      const reply = options.reply?.((req.headers.authorization ?? "").replace(/^Bearer /, ""), message.method);
+      if (reply) {
+        res.writeHead(reply.status).end(reply.body);
+        return;
+      }
       if (message.id === undefined) {
         res.writeHead(202).end();
         return;
@@ -265,6 +286,86 @@ describe("check:http refuses a bearer that holds a control character", () => {
   });
 });
 
+describe("check:http hides the bearer wherever an endpoint's reply quotes it", () => {
+  // Each stub quotes back the bearer it received. The check still names the
+  // stage that failed, with "[bearer hidden]" where the value was: finding that
+  // marker shows the quoted value reached the output, and no eight characters of
+  // any value may be left beside it.
+
+  it("in the body of an HTTP error, where the 300-character cut falls inside the bearer", async () => {
+    // One copy at the start, and one that the cut would split.
+    const stub = await startStub({
+      reply: (bearer) => ({ status: 401, body: `${bearer}${"-".repeat(280 - bearer.length)}${bearer}` })
+    });
+    const file = await writeEndpointFile(stub.port, FROM_FILE);
+
+    const { code, output } = await runCheck([file]);
+
+    expect(code).toBe(1);
+    expect(new Set(stub.seen)).toEqual(new Set([`Bearer ${FROM_FILE}`]));
+    expect(output).toContain("HTTP 401");
+    expect(output).toContain(HIDDEN);
+    expect(leaked(output, PIECES)).toEqual([]);
+  });
+
+  it.each([
+    ["as sent", undefined],
+    // A JSON string quotes `"` and `\` with a backslash, so the copy the check
+    // prints differs from the bearer it sent.
+    ["as a JSON string quotes it", `${"x".repeat(16)}"\\${"x".repeat(16)}`]
+  ])("in a JSON-RPC error, %s", async (_, bearerInEnvironment) => {
+    const stub = await startStub({
+      reply: (bearer, method) =>
+        method === "initialize"
+          ? {
+              status: 200,
+              body: JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32001, message: "refused", data: bearer } })
+            }
+          : undefined
+    });
+    const file = await writeEndpointFile(stub.port, FROM_FILE);
+
+    const { code, output } = await runCheck([file], bearerInEnvironment);
+
+    expect(code).toBe(1);
+    expect(new Set(stub.seen)).toEqual(new Set([`Bearer ${bearerInEnvironment ?? FROM_FILE}`]));
+    expect(output).toContain("initialize failed");
+    expect(output).toContain(HIDDEN);
+    expect(leaked(output, PIECES)).toEqual([]);
+  });
+
+  it("in a reply that is neither JSON nor an SSE event, where the cut falls inside the bearer", async () => {
+    const stub = await startStub({
+      reply: (bearer, method) =>
+        method === "initialize" ? { status: 200, body: `${"-".repeat(280)}${bearer}` } : undefined
+    });
+    const file = await writeEndpointFile(stub.port, FROM_FILE);
+
+    const { code, output } = await runCheck([file]);
+
+    expect(code).toBe(1);
+    expect(new Set(stub.seen)).toEqual(new Set([`Bearer ${FROM_FILE}`]));
+    expect(output).toContain("neither JSON nor an SSE data event");
+    expect(output).toContain(HIDDEN);
+    expect(leaked(output, PIECES)).toEqual([]);
+  });
+
+  it("in a reply that is not valid JSON", async () => {
+    const stub = await startStub({
+      reply: (bearer, method) => (method === "initialize" ? { status: 200, body: `{"echo": ${bearer}}` } : undefined)
+    });
+    const file = await writeEndpointFile(stub.port, FROM_FILE);
+
+    const { code, output } = await runCheck([file]);
+
+    expect(code).toBe(1);
+    expect(new Set(stub.seen)).toEqual(new Set([`Bearer ${FROM_FILE}`]));
+    expect(output).toContain("response was not valid JSON");
+    expect(output).toContain(HIDDEN);
+    expect(leaked(output, PIECES)).toEqual([]);
+  });
+});
+
 describe("the leak check can see a value", () => {
   // Positive control for the `leaked(output, ALL_VALUES)` assertions above: the
   // same function finds a value in text that carries it, so their empty result
@@ -272,5 +373,12 @@ describe("the leak check can see a value", () => {
   it("finds a value embedded in text", () => {
     expect(leaked(`before ${FROM_ENVIRONMENT} after`, ALL_VALUES)).toEqual([FROM_ENVIRONMENT]);
     expect(leaked(`a ${FROM_FILE}\nb ${FROM_OTHER_FILE}`, ALL_VALUES)).toEqual([FROM_FILE, FROM_OTHER_FILE]);
+  });
+
+  // And for `leaked(output, PIECES)`: ten characters cut from a value, as a
+  // 300-character cut or a parser's error can leave them, are found.
+  it("finds a piece cut from a value", () => {
+    expect(leaked(`cut: ${FROM_FILE.slice(0, 10)}`, PIECES)).toEqual([FROM_FILE.slice(0, 8)]);
+    expect(leaked(`cut: ${FROM_ENVIRONMENT.slice(0, 10)}`, PIECES)).toEqual([FROM_ENVIRONMENT.slice(0, 8)]);
   });
 });

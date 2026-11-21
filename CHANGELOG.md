@@ -146,6 +146,11 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **`check:http` hides the bearer it chose in the error messages it prints.**
+  Every line it prints for an endpoint, what the endpoint sent back included,
+  shows `[bearer hidden]` where that endpoint's bearer was, both as sent and as
+  a JSON string quotes it, and no part of the value is left where a message is
+  cut short.
 - **The ops-log and session-archive hooks mask Claude Code session ids.** Both
   copies of `mask()` gain three rules after every other one: a UUID (the shape
   of a session id, which also names transcript, scratchpad and background-task
