@@ -682,20 +682,20 @@ describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_
     };
 
     describe(copy, () => {
-      it("A", () => {
+      it("stays near linear on a long run of comma-separated settings", () => {
         const record = "format=markdown,section=publicdocumentationreferencechapter,status=ready; ";
         const small = record.repeat(Math.floor((64 * KiB) / record.length)).padEnd(64 * KiB);
         const large = small + small;
-        for (const input of [small, large]) expect(run(input, "A")).toContain("status=ready");
+        for (const input of [small, large]) expect(run(input, "settings run")).toContain("status=ready");
 
         const pairs: [number, number][] = [];
         for (let index = 0; index < PAIRS; index += 1) {
           if (index % 2 === 0) {
-            const first = measure(small, "A");
-            pairs.push([first, measure(large, "A")]);
+            const first = measure(small, "settings run");
+            pairs.push([first, measure(large, "settings run")]);
           } else {
-            const second = measure(large, "A");
-            pairs.push([measure(small, "A"), second]);
+            const second = measure(large, "settings run");
+            pairs.push([measure(small, "settings run"), second]);
           }
         }
 
@@ -704,7 +704,9 @@ describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_
         const ratio = largeMs / smallMs;
         const minimumRatio = growthRatio(pairs);
         const limit = LIMIT ** (1 / DOUBLINGS);
-        console.log(JSON.stringify({ property: "A", copy, pairs: PAIRS, smallMs, largeMs, ratio, minimumRatio }));
+        console.log(
+          JSON.stringify({ property: "settings run", copy, pairs: PAIRS, smallMs, largeMs, ratio, minimumRatio })
+        );
         expect(ratio).toBeLessThan(limit);
         expect(minimumRatio).toBeLessThan(limit);
       });
