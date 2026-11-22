@@ -3197,7 +3197,7 @@ describe("session-archive masking: S1 repeated argument flags", () => {
   it("masks every repeated flag and detects when its original collector is absent", () => {
     for (const line of repeated) {
       expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
-      expect(runMask(withoutS1Arguments(mask), line), line).toContain(`${PLACEHOLDER}1`);
+      expect(runMask(withoutClientLoops(withoutS1Arguments(mask)), line), line).toContain(`${PLACEHOLDER}1`);
     }
   });
 
@@ -3226,7 +3226,7 @@ describe("session-archive masking: S1 repeated argument flags", () => {
   it("masks the entire original value before provider or armor rules partially replace it", () => {
     for (const line of partlyMasked) {
       expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
-      expect(runMask(withoutS1Arguments(mask), line), line).toContain(PLACEHOLDER);
+      expect(runMask(withoutClientLoops(withoutS1Arguments(mask)), line), line).toContain(PLACEHOLDER);
     }
   });
 
