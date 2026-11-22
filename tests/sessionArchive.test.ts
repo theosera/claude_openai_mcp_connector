@@ -1066,11 +1066,11 @@ describe("session-archive secret masking", () => {
     const quoted = `"${values.join(" ")}"`;
     const lines = [
       `password: ${quoted}`,
-      `password:　${quoted}`,
-      `password: ${quoted}`,
-      `Authorization:　Basic ${values[0]}`,
-      `Authorization: Basic ${values[0]}`,
-      `passphrase:　"${values[0]} ${values[1]}"`
+      `password:\u3000${quoted}`,
+      `password:\u00a0${quoted}`,
+      `Authorization:\u3000Basic ${values[0]}`,
+      `Authorization:\u00a0Basic ${values[0]}`,
+      `passphrase:\u3000"${values[0]} ${values[1]}"`
     ];
     for (const path of [captureHookPath, hookPath]) {
       const source = await shippedMask(path);
