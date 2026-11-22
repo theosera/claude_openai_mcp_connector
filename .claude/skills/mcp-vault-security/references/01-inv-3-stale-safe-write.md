@@ -43,5 +43,5 @@
   path 封じ込め・`wx`・サーバ生成 `id` は効いているので **identity 奪取や上書きはできない**が、
   承認無しで `projects/` に任意本文を**永続化**でき、それが後続セッションで untrusted
   vault content として読み戻される。HTTP では一般 write と legacy create の両方の許可が必要。`scripts/check-http.mjs` の `checkEndpoint` が宣言を作り、HTTP・stdio 共通の `scripts/surface.mjs` の `classifySurface` が legacy create を独立に採点する。
-  HTTP の送信前には `scripts/repo-env.mjs` の `resolveBearer` が認証情報を選び、`sendable` が選択値の制御文字を検査する。試験は `references/03-tests.md` の `check:http` の項。
+  HTTP の送信前には `scripts/repo-env.mjs` の `resolveBearer` が認証情報を選び、`sendable` が選択値の制御文字を検査する。出力では `hideBearer` が認証情報を伏せ、複数の接続先は互いの値を送らない。試験は `references/03-tests.md` の `check:http` の項。
 
