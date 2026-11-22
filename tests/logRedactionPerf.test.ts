@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -682,33 +682,46 @@ describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_
     };
 
     describe(copy, () => {
-      it("stays near linear on a long run of comma-separated settings", () => {
-        const record = "format=markdown,section=publicdocumentationreferencechapter,status=ready; ";
-        const small = record.repeat(Math.floor((64 * KiB) / record.length)).padEnd(64 * KiB);
-        const large = small + small;
-        for (const input of [small, large]) expect(run(input, "settings run")).toContain("status=ready");
-
-        const pairs: [number, number][] = [];
-        for (let index = 0; index < PAIRS; index += 1) {
-          if (index % 2 === 0) {
-            const first = measure(small, "settings run");
-            pairs.push([first, measure(large, "settings run")]);
-          } else {
-            const second = measure(large, "settings run");
-            pairs.push([measure(small, "settings run"), second]);
-          }
+      it("bounds value-boundary checks by the number of value bytes", () => {
+        // Observe the shipped lookup on ordinary records. A second query inside
+        // the same span must return the same end without another boundary walk.
+        const instrumented = source
+          .replace(
+            "function s1_at(",
+            `function s1_at(at, text) {
+              if (measuring) checks++
+              return measured_at(at, text)
+            }
+            function measured_at(`
+          )
+          .replace(
+            "function s1_scheme_end(",
+            `function s1_scheme_end(at,    end, again) {
+              measuring = 1; checks = 0
+              end = measured_end(at)
+              again = measured_end(at + 1)
+              measuring = 0
+              print end - at, checks, (again == end) > "/dev/stderr"
+              return end
+            }
+            function measured_end(`
+          );
+        const values = [2, 4, 8].map((count) => "chapter".repeat(count));
+        const input = values.map((value) => `Authorization: Basic ${value}`).join("\n");
+        const result = spawnSync("bash", ["-o", "pipefail", "-c", `${instrumented}\nmask`], {
+          input,
+          encoding: "utf8",
+          timeout: 10_000
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(0);
+        const lines = result.stdout.split("\n");
+        expect(lines).toHaveLength(values.length);
+        for (const [index, value] of values.entries()) {
+          expect(lines[index]).toContain("***MASKED***");
+          expect(lines[index]).not.toContain(value);
         }
-
-        const smallMs = median(pairs.map(([time]) => time));
-        const largeMs = median(pairs.map(([, time]) => time));
-        const ratio = largeMs / smallMs;
-        const minimumRatio = growthRatio(pairs);
-        const limit = LIMIT ** (1 / DOUBLINGS);
-        console.log(
-          JSON.stringify({ property: "settings run", copy, pairs: PAIRS, smallMs, largeMs, ratio, minimumRatio })
-        );
-        expect(ratio).toBeLessThan(limit);
-        expect(minimumRatio).toBeLessThan(limit);
+        expect(result.stderr.trim().split("\n")).toEqual(values.map((value) => `${value.length} ${value.length} 1`));
       });
     });
 

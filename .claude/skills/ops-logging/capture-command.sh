@@ -411,6 +411,9 @@ mask() {
       if (at > n) return 0
       c = original_bytes[at]
       if (c ~ /[[:space:]]/) return 1
+      # The keyword grammar also accepts these two separators on every host.
+      if (c == "\302" && original_bytes[at + 1] == "\240") return 2
+      if (c == "\343" && s1_at(at, "\343\200\200")) return 3
       if (!(c in s1_paren_blank_leads)) return 0
       text = c original_bytes[at + 1]
       if (text in s1_paren_blanks) return 2
@@ -552,6 +555,14 @@ mask() {
         if (j > first && original_bytes[j] == "@") s1_range(first, j - 1, 1)
       }
     }
+    # Each newly visited value byte is indexed once for this record.
+    function s1_scheme_end(at,    end, stop, i) {
+      end = at
+      while (end <= n && !(end in s1_scheme_ends) && original_bytes[end] !~ /[[:space:],"\047]/ && !s1_at(end, "-----")) end++
+      stop = (end in s1_scheme_ends) ? s1_scheme_ends[end] : end
+      for (i = at; i < end; i++) s1_scheme_ends[i] = stop
+      return stop
+    }
     function s1_keyword_bare_end(at,    end) {
       end = s1_blank_after(at) - 1
       if (s1_has_dash && s1_dash[at] && s1_dash[at] <= end) end = s1_dash[at] - 1
@@ -603,8 +614,7 @@ mask() {
         if (in_tag && s1_keyword_tag_quote && !s1_probe_only) { s1_tag_quoted_tail(s1_keyword_tag_start, s1_keyword_tag_start); return }
         if (s1_probe_only) { s1_probe_needed = 1; s1_probe_complex = 1; return }
         while ((width = s1_keyword_blank(nextword))) nextword += width
-        last = nextword
-        while (last <= n && original_bytes[last] !~ /[[:space:],"\047]/ && !s1_at(last, "-----")) last++
+        last = s1_scheme_end(nextword)
         s1_range(nextword, last - 1)
         s1_bare_start = nextword; s1_bare_end = last - 1
         return
@@ -618,9 +628,8 @@ mask() {
         return
       }
       if (q == "\"" || q == s1_apostrophe) {
-        # A shell word closing after an empty label is not a fresh value.
-        # Treating it as an opener could consume a later command name.
-        if (s1_shell_closing[j] && (j == n || original_bytes[j + 1] ~ /^[[:space:];|&)}]$/)) { s1_range(j, j); return }
+        # Preserve the original boundary for the downstream quoted-value rules.
+        if (s1_shell_closing[j] && (j == n || original_bytes[j + 1] ~ /^[[:space:];|&)}]$/)) return
         last = s1_quoted(j)
         if (last) {
           if (in_tag && original_bytes[last + 1] == "(") r2_tag_tail(last + 1)
@@ -1154,7 +1163,7 @@ mask() {
       array_record = s1_array_depth
       split("", s1_marks); split("", s1_protect); split("", s1_suppressed)
       split("", s1_double); split("", s1_single); split("", s1_words)
-      split("", s1_paren_tails)
+      split("", s1_paren_tails); split("", s1_scheme_ends)
       s1_paren_blank_first = n + 1; s1_paren_blank_last = 0
       split("", s1_escaped); split("", s1_dash); split("", s1_json_continuations); split("", s1_literal_newlines)
       s1_h0_active = index($0, "-u") || index($0, "-su")
@@ -1434,6 +1443,8 @@ mask() {
     -e "/\`\`\`|~~~/!s/(redis-cli([[:space:]]+[^[:space:]|;&]+){0,12}[[:space:]]+(-a|--pass)[[:space:]]+[\"']?)(\\*|\\*\\*|\\*\\*\\*|\\*\\*\\*M|\\*\\*\\*MA|\\*\\*\\*MAS|\\*\\*\\*MASK|\\*\\*\\*MASKE|\\*\\*\\*MASKED|\\*\\*\\*MASKEDP|\\*\\*\\*MASKEDP\\*|\\*\\*\\*MASKEDP\\*\\*)-{0,4}([[:space:]\"'|;&]|-----|$)/\1***MASKEDP***\5/g" \
     -e 'tr' \
     -e 's#\*\*\*MASKEDP\*\*\*#***MASKED***#g' \
+    -e "/\`\`\`|~~~/!s/((passwd|passphrase)['\"]?[=:[:space:]]+\")([^\"\\\\-]|\\\\.|-{1,4}([^\"\\\\-]|\\\\.))*-{0,4}\"/\1***MASKED***\"/Ig" \
+    -e "/\`\`\`|~~~/!s/((passwd|passphrase)['\"]?[=:[:space:]]+')([^'\\\\-]|\\\\.|-{1,4}([^'\\\\-]|\\\\.))*-{0,4}'/\1***MASKED***'/Ig" \
     -e "/\`\`\`|~~~/!s/'\\*\\*\\*MASKED\\*\\*\\*''([^']|'')*'/'***MASKED***'/g" \
     -e '/^[[:space:]]*[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/.*/***MASKED***/' \
     -e '/^[[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-)[A-Za-z0-9+\/=]{32,}[[:space:]]*$/s/^([[:space:]]*([0-9]+[[:space:]]*[|:>]?[[:space:]]*|[>|]+[[:space:]]*|[^[:space:]:]+:[0-9]+:[[:space:]]*|-))[A-Za-z0-9+\/=]{32,}([[:space:]]*)$/\1***MASKED***\3/' \

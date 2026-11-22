@@ -41,6 +41,17 @@ it("keeps the two complete mask() functions byte-identical", () => {
   expect(maskFunction(hooks[0][1])).toBe(maskFunction(hooks[1][1]));
 });
 
+for (const [hook, path] of hooks) {
+  it(`${hook} protects labelled notes and preserves public fields`, () => {
+    const input = ['title: "Field notes"', 'passphrase: "library copy"', "passwd: 'reading room'", "status: ready"];
+    const output = execFileSyncBounded("bash", ["-o", "pipefail", "-c", `${maskFunction(path)}\nmask`], {
+      input: input.join("\n"),
+      encoding: "utf8"
+    });
+    expect(output.split("\n")).toEqual([input[0], 'passphrase: "***MASKED***"', "passwd: '***MASKED***'", input[3]]);
+  });
+}
+
 const baselineShapes = [
   [
     "#291 closing element on the next line",
