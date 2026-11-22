@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { MASK, redactFragment } from "../packages/log-redaction/src/core.mjs";
+import { spawnSyncBounded } from "./tools/syncChild.js";
 
 /**
  * Step ②-3 of #249: the core's time against input length.
@@ -708,7 +709,7 @@ describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_
           );
         const values = [2, 4, 8].map((count) => "chapter".repeat(count));
         const input = values.map((value) => `Authorization: Basic ${value}`).join("\n");
-        const result = spawnSync("bash", ["-o", "pipefail", "-c", `${instrumented}\nmask`], {
+        const result = spawnSyncBounded("bash", ["-o", "pipefail", "-c", `${instrumented}\nmask`], {
           input,
           encoding: "utf8",
           timeout: 10_000

@@ -1007,7 +1007,10 @@ describe("session-archive secret masking", () => {
     // unbounded value would run to end of line -- F12's failure in a new place.
     const line = `grep -n "token: " src/*.ts`;
 
-    expect(runMask(mask, line)).toBe(`grep -n "token: ***MASKED*** src/*.ts`);
+    // The quote after "token: " closes the shell string and holds no value, so
+    // the line comes back unchanged. main masks that one quote character, and
+    // that is the only difference from main's output here.
+    expect(runMask(mask, line)).toBe(line);
     expect(
       runMask(mutate(withoutOriginalCollector(mask), DQ_CLOSE, String.raw`)*\"?/`, "the required closing quote"), line)
     ).toBe(`grep -n "token: "***MASKED***"`);
@@ -2978,6 +2981,15 @@ function withoutClientLoops(maskFn: string): string {
   return mutate(maskFn, block, "", "the mysql and redis-cli loops kept from main");
 }
 
+/** main's two quoted passwd/passphrase rules (double, then single quote), kept as on main. The bare fallback has no quote class after the label. */
+const QUOTED_PASSWD_LABEL = String.raw`(passwd|passphrase)['\"]?[=:[:space:]]+`;
+
+function withoutQuotedPasswdRules(maskFn: string): string {
+  const rules = maskFn.split("\n").filter((line) => line.trim().startsWith("-e") && line.includes(QUOTED_PASSWD_LABEL));
+  if (rules.length !== 2) throw new Error("expected main's two quoted passwd/passphrase rules in mask()");
+  return rules.reduce((fn, rule) => mutate(fn, `${rule}\n`, "", "main's quoted passwd/passphrase rules"), maskFn);
+}
+
 describe("session-archive masking: S1 retains the 2026-09-24 series", () => {
   let mask: string;
   beforeAll(async () => {
@@ -3072,10 +3084,12 @@ describe("session-archive masking: S1 retains the 2026-09-24 series", () => {
       `passwd=${PLACEHOLDER}`
     ];
     for (const line of lines) expect(runMask(mask, line), line).not.toContain(PLACEHOLDER);
+    // Three sed rules name passwd/passphrase: this bare fallback and main's two
+    // quoted-value rules kept after it. All three come out here.
     const rules = mask
       .split("\n")
       .filter((line) => line.trim().startsWith("-e") && line.includes("(passwd|passphrase)"));
-    expect(rules).toHaveLength(1);
+    expect(rules).toHaveLength(3);
     const without = rules.reduce((fn, rule) => fn.replace(`${rule}\n`, ""), withoutOriginalCollector(mask));
     for (const line of lines) expect(runMask(without, line), line).toContain(PLACEHOLDER);
   });
@@ -3110,7 +3124,10 @@ describe("session-archive masking: S1 retains the 2026-09-24 series", () => {
       const out = runMask(mask, line);
       expect(out, line).not.toContain(PLACEHOLDER);
       expect(out, line).not.toContain("two");
-      expect(runMask(withoutOriginalCollector(mask), line), line).toContain(PLACEHOLDER);
+      // Each layer on its own: main's quoted rules still mask without S1, and
+      // the value shows only once both are gone.
+      expect(runMask(withoutOriginalCollector(mask), line), line).not.toContain(PLACEHOLDER);
+      expect(runMask(withoutQuotedPasswdRules(withoutOriginalCollector(mask)), line), line).toContain(PLACEHOLDER);
     }
     expect(runMask(mask, shapes[0])).toBe(`gpg --passphrase "***MASKED***" --decrypt f`);
   });
