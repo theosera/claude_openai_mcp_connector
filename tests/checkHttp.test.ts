@@ -38,6 +38,19 @@ import { afterEach, describe, expect, it } from "vitest";
  * "prints the bearer line before the handshake fails" red, with no bearer line;
  * putting the differ WARN back among the surface warnings, printed only after a
  * successful handshake, turns only that same test red, with no WARN line.
+ *
+ * Mutations against the tests that keep endpoints apart ("keeps endpoints apart
+ * and does not fall back from a refused bearer"):
+ * - read the environment with two or more endpoints: the first test, both rows
+ *   of the line-break test, both rows of the HTTP-refusal test, and "stops on an
+ *   endpoint whose file has no bearer";
+ * - fall back to the file when the environment's bearer is refused: only the
+ *   test that runs the check through a parent process;
+ * - stop at the first endpoint that fails: the "first" row of the line-break
+ *   test, both rows of the HTTP-refusal test, and "stops on an endpoint whose
+ *   file has no bearer";
+ * - retry a refused request with the environment's bearer: only the two rows of
+ *   the HTTP-refusal test.
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -154,6 +167,55 @@ function runCheck(files: string[], bearerInEnvironment?: string): Promise<{ code
 /** The values from `values` that appear anywhere in `text`. */
 function leaked(text: string, values: string[]): string[] {
   return values.filter((value) => text.includes(value));
+}
+
+/** What check:http printed for the endpoint whose file is `file`, up to the next endpoint's heading. */
+function blockOf(output: string, file: string): string {
+  const start = output.indexOf(`== ${file} ==`);
+  if (start < 0) return "";
+  const next = output.indexOf("\n== ", start + 1);
+  return output.slice(start, next < 0 ? undefined : next);
+}
+
+/**
+ * Runs the check the way a launcher does: a parent process gets an explicit
+ * environment from the test (so nothing from the shell reaches it) and starts
+ * the check without passing an environment, so the check inherits the parent's.
+ */
+async function runThroughParent(
+  files: string[],
+  bearerInParent: string
+): Promise<{ code: number | null; output: string }> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-check-http-parent-"));
+  cleanups.push(() => fs.rm(dir, { recursive: true, force: true }));
+  const parent = path.join(dir, "parent.mjs");
+  await fs.writeFile(
+    parent,
+    [
+      'import { spawn } from "node:child_process";',
+      "const [script, ...args] = process.argv.slice(2);",
+      'spawn(process.execPath, [script, ...args], { stdio: "inherit" }).on("close", (code) => process.exit(code ?? 1));',
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  const env: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH,
+    HOME: process.env.HOME,
+    MCP_CHECK_TIMEOUT_MS: "5000",
+    [BEARER]: bearerInParent
+  };
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [parent, SCRIPT, ...files.flatMap((file) => ["--env", file])], {
+      cwd: repoRoot,
+      env,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let output = "";
+    child.stdout.on("data", (chunk: Buffer) => (output += chunk.toString("utf8")));
+    child.stderr.on("data", (chunk: Buffer) => (output += chunk.toString("utf8")));
+    child.on("close", (code) => resolve({ code, output }));
+  });
 }
 
 describe("check:http reads the bearer from the environment with a single --env", () => {
@@ -364,6 +426,102 @@ describe("check:http hides the bearer wherever an endpoint's reply quotes it", (
     expect(output).toContain(HIDDEN);
     expect(leaked(output, PIECES)).toEqual([]);
   });
+});
+
+describe("check:http keeps endpoints apart and does not fall back from a refused bearer", () => {
+  // Each test runs two endpoints, or one endpoint behind a parent process, and
+  // checks, for every endpoint, which bearer its stub received (and that it
+  // received one, where it should, so an empty result cannot pass by itself),
+  // what the output says, and that no eight characters of any value are in it.
+
+  it("checks each endpoint on its own file's bearer and ignores a broken one in the environment", async () => {
+    const interactive = await startStub();
+    const scan = await startStub();
+    const interactiveFile = await writeEndpointFile(interactive.port, FROM_FILE);
+    const scanFile = await writeEndpointFile(scan.port, FROM_OTHER_FILE);
+
+    const { code, output } = await runCheck([interactiveFile, scanFile], `${FROM_ENVIRONMENT}\n${FROM_ENVIRONMENT}`);
+
+    expect(code).toBe(0);
+    expect(interactive.seen.length).toBeGreaterThan(0);
+    expect(new Set(interactive.seen)).toEqual(new Set([`Bearer ${FROM_FILE}`]));
+    expect(scan.seen.length).toBeGreaterThan(0);
+    expect(new Set(scan.seen)).toEqual(new Set([`Bearer ${FROM_OTHER_FILE}`]));
+    expect(output).toContain(`bearer:   from ${interactiveFile}`);
+    expect(output).toContain(`bearer:   from ${scanFile}`);
+    expect(output).not.toContain("bearer:   from environment");
+    expect(output).not.toContain("contains a control character");
+    expect(leaked(output, PIECES)).toEqual([]);
+  });
+
+  it.each([
+    // dotenv turns `\n` and `\r` inside a double-quoted value into real line breaks.
+    ["the first", 0, `"${FROM_FILE}\\n${FROM_FILE}"`],
+    ["the last", 1, `"${FROM_OTHER_FILE}\\r\\n${FROM_OTHER_FILE}"`]
+  ])(
+    "stops on %s endpoint when its file's bearer holds a line break, and checks the other on its own bearer",
+    async (_, broken, brokenValue) => {
+      const good = [FROM_FILE, FROM_OTHER_FILE];
+      const stubs = [await startStub(), await startStub()];
+      const files = [
+        await writeEndpointFile(stubs[0].port, broken === 0 ? brokenValue : good[0]),
+        await writeEndpointFile(stubs[1].port, broken === 1 ? brokenValue : good[1])
+      ];
+      const other = 1 - broken;
+
+      const { code, output } = await runCheck(files, FROM_ENVIRONMENT);
+
+      expect(code).toBe(1);
+      expect(stubs[broken].seen).toEqual([]);
+      expect(blockOf(output, files[broken])).toContain(`${BEARER} from ${files[broken]} contains a control character`);
+      expect(stubs[other].seen.length).toBeGreaterThan(0);
+      expect(new Set(stubs[other].seen)).toEqual(new Set([`Bearer ${good[other]}`]));
+      expect(blockOf(output, files[other])).toContain(`bearer:   from ${files[other]}`);
+      expect(blockOf(output, files[other])).toContain("RESULT:   OK");
+      expect(leaked(output, PIECES)).toEqual([]);
+    }
+  );
+
+  it("refuses a broken bearer the check inherits from its parent, without falling back to the file", async () => {
+    const stub = await startStub();
+    const file = await writeEndpointFile(stub.port, FROM_FILE);
+
+    const { code, output } = await runThroughParent([file], `${FROM_ENVIRONMENT}\r\n${FROM_ENVIRONMENT}`);
+
+    expect(code).toBe(1);
+    expect(stub.seen).toEqual([]);
+    expect(output).toContain(`${BEARER} from the environment contains a control character`);
+    expect(output).not.toContain(`bearer:   from ${file}`);
+    expect(leaked(output, PIECES)).toEqual([]);
+  });
+
+  it.each([
+    [401, '{"error":"unauthorized"}'],
+    [403, '{"error":"insufficient_scope","scope":"vault.read"}']
+  ])(
+    "reports an HTTP %i from one endpoint that got only its own file's bearer, and checks the other on its own",
+    async (status, body) => {
+      const refusing = await startStub({ reply: () => ({ status, body }) });
+      const other = await startStub();
+      const refusingFile = await writeEndpointFile(refusing.port, FROM_FILE);
+      const otherFile = await writeEndpointFile(other.port, FROM_OTHER_FILE);
+
+      const { code, output } = await runCheck([refusingFile, otherFile], FROM_ENVIRONMENT);
+
+      expect(code).toBe(1);
+      expect(refusing.seen.length).toBeGreaterThan(0);
+      expect(new Set(refusing.seen)).toEqual(new Set([`Bearer ${FROM_FILE}`]));
+      expect(other.seen.length).toBeGreaterThan(0);
+      expect(new Set(other.seen)).toEqual(new Set([`Bearer ${FROM_OTHER_FILE}`]));
+      const refused = blockOf(output, refusingFile);
+      expect(refused).toContain(`HTTP ${status}`);
+      const sourceLine = refused.indexOf(`bearer:   from ${refusingFile}`);
+      expect(sourceLine).toBeGreaterThanOrEqual(0);
+      expect(sourceLine).toBeLessThan(refused.indexOf("FAIL:"));
+      expect(blockOf(output, otherFile)).toContain("RESULT:   OK");
+      expect(leaked(output, PIECES)).toEqual([]);
+    }
+  );
 });
 
 describe("the leak check can see a value", () => {
