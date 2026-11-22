@@ -9,7 +9,7 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
 1. `MCP_AUDIT_SUBDIR` は primary vault 配下の安全な相対パスに限定し、起動時に containment +
    symlink escape を検査 (`resolveInsideRoot` + `realpath` + `relativeToRoot`)。
    `MCP_HTTP_ALLOW_AUDIT_WRITE=1` だけでは subdir 未設定なら**起動拒否**。`loadConfig` は監査
-   subdir が `projects/` (create-root) と **disjoint** かを boot で assert。
+   subdir の設定パスが `projects/` および Skill の予約先と重ならないことを確認する。`AuditStore.init` は実パスでも `projects/` との分離を確認する。
    **★ 予約と tool 登録は別の決定 — 全 transport で独立 opt-in が要る。** `MCP_AUDIT_SUBDIR` は
    「このサブツリーを一般 write から予約する」だけ。audit tool を**登録**するのは HTTP =
    `MCP_HTTP_ALLOW_AUDIT_WRITE` / stdio = **`MCP_STDIO_ALLOW_AUDIT_WRITE`** (既定 off、
@@ -18,8 +18,7 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
    untrusted vault content を読む interactive セッションに append/CAS が生えた** (2 つとも
    plan/apply 無し・確認無しの single-call write なので、予約があっても直接 forge/clobber
    できる)。予約は `config.auditSubdir` → `createStore` 経由なので、**tool を外しても INV-9 は
-   効き続ける** — テストで両方 pin (`tests/stdio.test.ts` の "withholds the audit write tools"
-   と直後の予約テストが同じ env を踏む)。stdio 起動行は 3 状態を出す:
+   効き続ける** — テストで両方 pin (`tests/stdio.test.ts` の `withholds BOTH write surfaces` と `refuses a general document write into the reserved audit subtree` が非登録と予約をそれぞれ確認する)。stdio 起動行は 3 状態を出す:
    `audit=off` (subdir 無し = 予約なし) / `audit=reserved-only` (既定) / `audit=on`。
    `MCP_STDIO_ALLOW_AUDIT_WRITE=1` で subdir 未設定なら**起動拒否**。
 2. `append_audit_report` は `reports/<run_id>.md` に **create-only** (`0600`)。中身は先に `reports/` の
@@ -86,7 +85,7 @@ INV-9 の役割は**監査証跡の完全性** = 一般 write surface が監査�
    (INV-3 の「in-process ≠ cross-process」と同じ限り。防ぐなら on-disk lock が要る)。
 5. **一般 document write は監査サブツリーを対象にできない** (`KnowledgeStore.assertNotAuditReserved`)。
    予約チェックは `resolveForWrite` (create_document / exact-path apply の共通 choke) と
-   `applyPlannedUpdate` (update・**権威**) に置き、`planUpdate`/`validateCreateTarget` で早期 UX
+   `applyPlannedUpdateSerialized` (`applyPlannedUpdate` が直列化して呼ぶ、update の書き込み前検査) に置き、`planUpdate`/`validateCreateTarget` で早期 UX
    reject。**realpath 照合**で symlink/NFD/大文字小文字変種を無力化 (client 文字列だけで判定しない)。
    read (search/fetch) は除外しない — 監査ノートは fetch 可能に保ち、feedback-loop 対策は
    スキャナ側衛生に委ねる。

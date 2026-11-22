@@ -5,7 +5,7 @@ DCR + metadata discovery 必須**。`src/oauth/` の最小単一ユーザ AS。*
 
 1. **PKCE S256 必須** — `plain` を拒否 (`src/oauth/pkce.ts`、constant-time 照合、verifier の
    長さ/文字種を検証)。token 交換で verifier を challenge に照合できなければ `invalid_grant`。
-2. **authorization code は単回・短命・束縛** — CSPRNG 256-bit、TTL (既定 60s)、`consume` で
+2. **authorization code は単回・短命・束縛** — CSPRNG 256-bit、TTL (既定 60s)、`OAuthStore.consumeAuthorizationCode` で
    即削除 (再利用不可)、`client_id`/`redirect_uri`/`code_challenge` に束縛し token 時に再照合。
 3. **redirect_uri は exact-match + scheme 制限** — 登録済み値と完全一致のみ。`https` か
    loopback `http` のみ許可 (`isAllowedRedirectUri`) = open redirect 防止。不正 client/redirect は
@@ -22,8 +22,7 @@ DCR + metadata discovery 必須**。`src/oauth/` の最小単一ユーザ AS。*
    ⚠️ 60 秒は**上限**で固定ではない (`Math.min` で残 TTL に切り詰まる)。下の 7 を見よ)。token は **canonical resource `${issuer}/mcp`
    に audience-bound (RFC 8707)**。`/mcp` は static bearer **または** 「有効 access token かつ
    audience 一致」を受理 (`authenticate`)。401 時は `WWW-Authenticate: Bearer resource_metadata="…"`。
-   **scope enforcement**: granted scope = 要求 ∩ サーバ許可 (`vault.write` は document/Skill の
-   いずれかの write surface が有効な時のみ)。**`vault.read` を持たない token は `/mcp` で
+   **scope enforcement**: granted scope = 要求した scope があればサーバ許可との積集合、要求が空なら `vault.read`。`vault.write` は document・Skill・audit のいずれかの HTTP write surface が有効な場合に許可候補になる。**`vault.read` を持たない token は `/mcp` で
    `403` + RFC 6750 §3.1 `insufficient_scope` challenge で拒否**する (空の tool 一覧を 200 で
    返さない — 空 vault と区別が付かず、challenge が無いとクライアントは再認可できない)。
    **リクエストごとに** token scope と各 surface の flag を両方照合し、許可された tool だけを
@@ -41,6 +40,7 @@ DCR + metadata discovery 必須**。`src/oauth/` の最小単一ユーザ AS。*
    (change scan の F1)。DCR は redirect_uris 個数/長さ・client_name 長を制限。consent/login
    ページに `CSP frame-ancestors 'none'` + `X-Frame-Options: DENY` + `Referrer-Policy: no-referrer`。
    code/token/password を**ログに出さない**。
+   HTTP の `handleOAuthRoute` は登録、ログインの POST、refresh rotation に個別の回数制限を適用する。rotation は成功時だけ枠を消費する。上限で拒むときも `observeRefreshReplay` が既存の再提示を判定する。
 7. **state 永続化 (opt-in `MCP_OAUTH_STATE_FILE`) は hash-at-rest + 完全性検証 + fail-closed** —
    token は memory/disk とも **sha256(token) をキー**に保持 (state file に復元可能な secret を
    置かない)。file は atomic write (tmp+rename)・mode `0600`・dir `0700`。**HMAC-SHA256**
@@ -68,9 +68,10 @@ DCR + metadata discovery 必須**。`src/oauth/` の最小単一ユーザ AS。*
    間に link を差し込めない。⛔ **「link の先に書く」(案 b) を採らない** — 解いてから書くまでの窓を
    新しく開く (INV-1 と同じ種類)。代償: link で運用していた配置は更新後に起動しない (データは失わない)。
    親ディレクトリの link は従来どおり通る。auth code は
-   **永続化しない** (60s 単回)。**`rotateRefreshToken` の 3 アーム** (期限切れ / 未 rotate の
+   **永続化しない**（単回、寿命は `MCP_OAUTH_CODE_TTL`、既定 60 秒）。**`rotateRefreshToken` の主な保存経路** (期限切れ / 未 rotate の
    client_id 不一致 / 回転成功) は**除去・遷移を即 disk 反映**する。⛔ **全 write 経路の話ではない** —
    例えば `validateAccessToken` の期限切れ除去は save しない。
+   対応する refresh record が既になくても、有効な tombstone による失効処理で子孫を取り消した場合は保存を試みる。この経路で新しい token は発行しない。
    ⚠️ **単回性は維持していない** — 回転した refresh は 60 秒の replay grace の間わざと
    生き残る (上の 5)。**この 1 文は「即 disk 反映して単回性を再起動越しに維持」と書いていた**
    が、grace window が入った時点で後半だけが偽になった。**前半は主語を絞れば今も真。**

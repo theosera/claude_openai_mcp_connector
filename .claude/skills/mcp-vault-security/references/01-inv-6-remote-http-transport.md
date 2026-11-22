@@ -10,7 +10,7 @@ private vault を HTTP で公開する経路は新しい攻撃面。以下を**�
    照合は `src/httpAuth.ts` で**constant-time** (`timingSafeEqual`、両辺を sha256 で
    固定長化して length 差で早期 return しない)。`MCP_AUTH_TOKEN` 未設定なら
    `loadHttpConfig` が**起動拒否** (open endpoint を作らない)。不正/欠落は 401。
-2. **loopback bind 既定** — `MCP_HTTP_HOST` 既定 `127.0.0.1`。公開は明示トンネル経由のみ。
+2. **loopback bind 既定** — `MCP_HTTP_HOST` 既定 `127.0.0.1`。待受先は明示設定で変更できる。公開時に明示的なトンネルを使うのは運用上の規則。
    `0.0.0.0` を既定にしない。
 3. **DNS-rebinding 防御** — `src/httpServer.ts` の `rejectRebinding` が
    **エンドポイント境界で、era 分岐より前に**検査する (transport の deprecated option は使わない —
@@ -25,7 +25,7 @@ private vault を HTTP で公開する経路は新しい攻撃面。以下を**�
    は `loadHttpConfig` が自動追加)。検査対象は `/mcp` のみ。
 4. **read-only 既定 + per-request 解決** — write tool は対応する許可がないとき
    **registerTool 自体を呼ばない** (discover もさせない)。document write は `MCP_HTTP_ALLOW_WRITE`、
-   constrained Skill create は `MCP_HTTP_ALLOW_SKILL_WRITE` で独立して opt-in。後者だけでは一般
+   constrained Skill create は `MCP_HTTP_ALLOW_SKILL_WRITE`、監査の append / CAS は `MCP_HTTP_ALLOW_AUDIT_WRITE` で個別に opt-in。Skill または監査だけの許可では一般
    document write を出さない。stdio は `serveStdio` で両 era を同一 factory から提供するが、
    **「full」なのは二段階の document write だけ**で、legacy create (INV-3) / Skill (INV-8 item 1) /
    audit (INV-9 item 1) は**それぞれ独立の stdio opt-in**を要る。**ここに写しを置かない。**
@@ -41,7 +41,7 @@ private vault を HTTP で公開する経路は新しい攻撃面。以下を**�
    自プロセスを spawn した側で、面は定数 — pin と per-request が観測上同一。**対称性を理由に
    どちらかをもう一方へ合わせない** (stdio を per-request 化しない / HTTP に pin を戻さない)。
 5. **body サイズ上限** — `readBody` が `MAX_BODY_BYTES` を超えたら 413 (JSON / form 双方の入口)。
-6. token / vault 本文を**ログに出さない** (stderr の起動行は host:port と write 可否、それに
+6. token / vault 本文を**ログに出さない** (stderr の起動行は host:port と write 可否、OAuth の有効状態、それに
    OAuth 有効時だけ状態ごとの登録件数 `registrations=given:N,pending:N,unknown:N` のみ。#184:
    旧 state file から持ち込んだ `unknown` が枠を埋めていることは件数でしか見えない)。
    **件数以外 (client_id・redirect URI・token・パスワード) を起動行に足さない** —

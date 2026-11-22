@@ -18,18 +18,18 @@ allowed-tools: Read
 | ファイル | 節（元の見出し） | 大きさ |
 |---|---|---|
 | `references/00-intro.md` | 冒頭（最初の `## ` より前） | 519 B |
-| `references/01-inv-1-path-containment.md` | 不変条件 (invariants — 弱めない) ＞ INV-1 Path containment — 全アクセスは KNOWLEDGE_ROOT 配下 | 5,114 B |
-| `references/01-inv-2-frontmatter-allowlist.md` | 不変条件 ＞ INV-2 Frontmatter field allowlist — YAML injection 防止 | 6,867 B |
-| `references/01-inv-3-stale-safe-write.md` | 不変条件 ＞ INV-3 Two-step stale-safe write | 4,655 B |
-| `references/01-inv-4-public-private-separation.md` | 不変条件 ＞ INV-4 Public repo / private vault 分離 | 397 B |
+| `references/01-inv-1-path-containment.md` | 不変条件 (invariants — 弱めない) ＞ INV-1 Path containment — vault 内の文書アクセスは各 knowledge root 配下 | 5,739 B |
+| `references/01-inv-2-frontmatter-allowlist.md` | 不変条件 ＞ INV-2 Frontmatter field allowlist — YAML injection 防止 | 7,215 B |
+| `references/01-inv-3-stale-safe-write.md` | 不変条件 ＞ INV-3 Two-step stale-safe write | 5,277 B |
+| `references/01-inv-4-public-private-separation.md` | 不変条件 ＞ INV-4 Public repo / private vault 分離 | 480 B |
 | `references/01-inv-5-untrusted-vault-content.md` | 不変条件 ＞ INV-5 Untrusted vault content (prompt injection) | 920 B |
-| `references/01-inv-6-remote-http-transport.md` | 不変条件 ＞ INV-6 Remote HTTP transport — authn + 露出最小化 (fail-closed) | 4,979 B |
-| `references/01-inv-7-oauth-authorization-server.md` | 不変条件 ＞ INV-7 OAuth 2.1 authorization server (web client 用 / opt-in) | 8,995 B |
-| `references/01-inv-8-skill-bundle-creation.md` | 不変条件 ＞ INV-8 Constrained Skill bundle creation | 3,912 B |
-| `references/01-inv-9-audit-write-surface.md` | 不変条件 ＞ INV-9 Constrained audit write surface (監査証跡の完全性) | 9,898 B |
-| `references/02-code-map.md` | コードのどこ (file → 不変条件) | 44,000 B |
-| `references/03-tests.md` | テストで固定する (規約でなく実行可能な保証) | 16,564 B |
-| `references/04-pre-commit-review.md` | pre-commit レビューの発火 (CLAUDE.md 発火表の詳細) | 3,256 B |
+| `references/01-inv-6-remote-http-transport.md` | 不変条件 ＞ INV-6 Remote HTTP transport — authn + 露出最小化 (fail-closed) | 5,157 B |
+| `references/01-inv-7-oauth-authorization-server.md` | 不変条件 ＞ INV-7 OAuth 2.1 authorization server (web client 用 / opt-in) | 9,645 B |
+| `references/01-inv-8-skill-bundle-creation.md` | 不変条件 ＞ INV-8 Constrained Skill bundle creation | 4,277 B |
+| `references/01-inv-9-audit-write-surface.md` | 不変条件 ＞ INV-9 Constrained audit write surface (監査証跡の完全性) | 10,140 B |
+| `references/02-code-map.md` | コードのどこ (file → 不変条件) | 42,183 B |
+| `references/03-tests.md` | テストで固定する (規約でなく実行可能な保証) | 18,077 B |
+| `references/04-pre-commit-review.md` | pre-commit レビューの発火 (CLAUDE.md 発火表の詳細) | 3,443 B |
 | `references/05-references.md` | 参考 | 227 B |
 
 `## 不変条件` の見出しの行は INV-1 のファイルの頭にある。
@@ -43,7 +43,7 @@ allowed-tools: Read
 | 上のファイルを書く・直す・レビューする | ① `references/02-code-map.md` で、そのファイルの行だけを引く（1 つの表なので、全体を読まずにファイルの名で検索して当たる行を読む）② その行に挙がる INV の `references/01-inv-*.md` だけを読む |
 | どの INV に当たるか分かっているとき | 目次からその INV のファイルを直接読む |
 | テストを足す・直す（上のファイルのテスト） | `references/03-tests.md` と、当たる INV のファイル |
-| commit の前のレビュー（発火するか・どう回すか） | `references/04-pre-commit-review.md` |
+| ローカル commit 後・push 前のレビュー（発火するか・どう回すか） | `references/04-pre-commit-review.md` |
 | この skill の前提を確かめる | `references/00-intro.md` |
 
 ⚠️ どのファイルがどの INV に当たるかの正は `references/02-code-map.md` の行。この目次では決めない。

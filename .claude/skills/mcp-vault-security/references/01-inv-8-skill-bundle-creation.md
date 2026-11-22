@@ -23,10 +23,11 @@ Skill は将来の agent 指示として実行されるため、一般ノート�
    ⭕ HTTP 側は `documents=off` のまま **8 → 10** なので、INV-6 item 4 の「後者だけでは一般 document
    write を出さない」もワイヤで確認できている。
 2. 必ず `plan_skill_create` → bundle diff のユーザ承認 → `apply_planned_skill_create`。plan は
-   target を触らず patch state に proposal だけを保存する。
+   target を触らず patch state に proposal と vault の識別情報を保存する。apply は対象 root・ファイル集合・再計算した diff を検査し、公開直前にも root を照合する。
 3. 許可ファイルは `SKILL.md`、flat `references/<lowercase>.md`、`agents/openai.yaml` のみ。
    scripts/assets/nested references/任意パス/NUL/過大 bundle を拒否する。
 4. `SKILL.md` frontmatter は `name` と `description` だけを許可し、name は directory 名と一致。
+   `validateBundle` と `validatePlannedFiles` は `validateFileSet` で個別と合計のサイズを検査する。`validateSkillMarkdown` は解析前に frontmatter の終端・バイト数・行頭数を検査する。
 5. create-only: 既存 Skill は上書きしない。全ファイルを Skill root 内の一時 directory に
    exclusive create し、完成後に同一 filesystem の rename で atomic publish する。
 6. **★ reference files はサーバ所有 frontmatter を名乗れない** (`assertNoServerOwnedFrontmatter`)。

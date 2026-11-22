@@ -63,12 +63,16 @@ const BEARER = "MCP_AUTH_TOKEN";
  * The bearer check:http sends to one endpoint, and where it came from.
  *
  * With a single endpoint (one --env, or none and the default ./.env), a bearer
- * in the environment wins over the file's, in
- * the same order the server reads them, so the check keeps working once the
- * token is kept out of the file and handed to the server through the
- * environment. With two or more endpoints only each one's own file counts: one
- * environment value cannot belong to both the interactive and the scan
- * endpoint, and reading it would undo their separation.
+ * in the environment wins over the file's, in the same order the server reads
+ * them, so the check keeps working once the token is kept out of the file and
+ * handed to the server through the environment. With two or more endpoints only
+ * each one's own file counts: one environment value cannot belong to both the
+ * interactive and the scan endpoint, and reading it would undo their separation.
+ *
+ * A bearer that holds a control character is refused before it is sent: fetch
+ * rejects such a header value with an error that quotes the whole value, and
+ * the check prints that error on its FAIL line. The refusal names only where
+ * the value came from.
  *
  * Returns `{ token, source, warning }`. `source` is "environment" or the file's
  * path. `warning` is set when both hold a value and they differ; it names the
@@ -82,8 +86,38 @@ export function resolveBearer(env, envPath, endpointCount, processEnv = process.
       fromFile && fromFile !== fromEnvironment
         ? `${BEARER} in the environment differs from ${envPath}; using the environment.`
         : undefined;
-    return { token: fromEnvironment, source: "environment", warning };
+    return { token: sendable(fromEnvironment, "the environment"), source: "environment", warning };
   }
-  if (fromFile) return { token: fromFile, source: envPath, warning: undefined };
+  if (fromFile) return { token: sendable(fromFile, envPath), source: envPath, warning: undefined };
   throw new Error(`${BEARER} must be configured in ${envPath} or (with a single endpoint) the environment.`);
+}
+
+/** What `hideBearer` puts where the bearer was. */
+export const BEARER_HIDDEN = "[bearer hidden]";
+
+/**
+ * `text` with every copy of `token` replaced by `BEARER_HIDDEN`: as sent, and
+ * as it reads inside a JSON string, which is how a JSON reply quotes it back.
+ * With no token, `text` comes back unchanged.
+ */
+export function hideBearer(text, token) {
+  if (!token) return text;
+  let hidden = text;
+  for (const form of new Set([token, JSON.stringify(token).slice(1, -1)])) {
+    hidden = hidden.split(form).join(BEARER_HIDDEN);
+  }
+  return hidden;
+}
+
+/** The bearer, unless it holds a C0 control character or DEL; the error names `from`, never the value. */
+function sendable(token, from) {
+  for (const character of token) {
+    const code = character.codePointAt(0);
+    if (code < 0x20 || code === 0x7f) {
+      throw new Error(
+        `${BEARER} from ${from} contains a control character (a line break, for example); it was not sent.`
+      );
+    }
+  }
+  return token;
 }

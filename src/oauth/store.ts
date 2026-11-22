@@ -1542,15 +1542,32 @@ export class OAuthStore {
         mac,
         payload: payloadJson
       });
-      fs.mkdirSync(path.dirname(this.persistPath), { recursive: true, mode: 0o700 });
+      const dir = path.dirname(this.persistPath);
+      const created = fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const dirFd = fs.openSync(dir, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+      try {
+        const { uid, mode } = fs.fstatSync(dirFd);
+        if (uid !== process.geteuid?.()) throw new Error("OAuth state directory must belong to this account");
+        if ((mode & 0o7777) !== 0o700) {
+          if (created === undefined) {
+            // Narrow an existing directory only inside this account's private directory.
+            const enclosing = fs.lstatSync(path.dirname(dir));
+            const privateParent = enclosing.isDirectory() && enclosing.uid === uid && (enclosing.mode & 0o077) === 0;
+            const onlyRemovesAccess = (mode & 0o7000) === 0 && (mode & 0o700) === 0o700;
+            if (!privateParent || !onlyRemovesAccess) {
+              throw new Error("OAuth state requires a private directory");
+            }
+          }
+          fs.fchmodSync(dirFd, 0o700);
+        }
+      } finally {
+        fs.closeSync(dirFd);
+      }
       // A fresh, unpredictable name in the same directory, created exclusively
       // (#303) — the same naming as atomicWrite.ts. `wx` is O_CREAT | O_EXCL: an
       // entry already at the name, whatever it is, is refused rather than
       // written through, and the save fails with the state file left as it was.
-      const tmp = path.join(
-        path.dirname(this.persistPath),
-        `.${path.basename(this.persistPath)}.${crypto.randomUUID()}.tmp`
-      );
+      const tmp = path.join(dir, `.${path.basename(this.persistPath)}.${crypto.randomUUID()}.tmp`);
       const fd = fs.openSync(tmp, "wx", 0o600);
       ownedTemp = tmp;
       try {

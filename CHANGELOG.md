@@ -146,6 +146,25 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **`check:http` hides the bearer it chose in the error messages it prints.**
+  Every line it prints for an endpoint, what the endpoint sent back included,
+  shows `[bearer hidden]` where that endpoint's bearer was, both as sent and as
+  a JSON string quotes it, and no part of the value is left where a message is
+  cut short.
+- **The ops-log and session-archive hooks mask Claude Code session ids.** Both
+  copies of `mask()` gain three rules after every other one: a UUID (the shape
+  of a session id, which also names transcript, scratchpad and background-task
+  output paths), the eight-character job directory under `/.claude/jobs/`, and
+  the `session_` id of a session URL. Short words such as `session_id` stay
+  readable. The two copies stay byte-identical, and the canonical-baseline test
+  drops exactly these three lines before it compares hashes.
+- **`check:http` refuses a bearer that holds a control character.** fetch
+  rejects a header value with a line break in it, and its error quotes the whole
+  value, which the check printed on its `FAIL` line. A bearer could carry one
+  from the environment, or from a double-quoted `\n` in the endpoint's file,
+  which dotenv expands; the file's path existed before the check read the
+  environment. The check now stops before sending such a bearer and names only
+  where it came from.
 - **Tool arguments are bounded in element count** (CVE-2026-111768 in the MCP
   SDK). The SDK validated `tools/call` arguments against the input schema with
   no bound on their size, and the fixed `@modelcontextprotocol/server` ships the
