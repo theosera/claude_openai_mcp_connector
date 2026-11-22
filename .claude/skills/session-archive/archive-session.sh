@@ -925,8 +925,16 @@ mask() {
         return
       }
       if (q == "\"" || q == s1_apostrophe) {
-        # Preserve the original boundary for the downstream quoted-value rules.
-        if (s1_shell_closing[j] && (j == n || original_bytes[j + 1] ~ /^[[:space:];|&)}]$/)) return
+        if (s1_shell_closing[j] && (j == n || original_bytes[j + 1] ~ /^[[:space:];|&)}]$/)) {
+          # Only complete label arguments can belong to an empty trailing group.
+          if ((word == "passwd" || word == "passphrase") && original_bytes[at - 1] == q &&
+              (at == 2 || original_bytes[at - 2] ~ /^[[:space:];|&(]$/) &&
+              (q == "\"" ? s1_shell_double[at - 1] : s1_shell_single[at - 1]) == j) {
+            s1_empty_label_start[j] = at - 1
+            s1_has_empty_label = 1
+          }
+          return
+        }
         last = s1_quoted(j)
         if (last) {
           if (in_tag && original_bytes[last + 1] == "(") r2_tag_tail(last + 1)
@@ -956,6 +964,21 @@ mask() {
       last = s1_keyword_bare_end(j)
       s1_range(first, last)
       if (word != "passwd" && word != "passphrase") { s1_bare_start = first; s1_bare_end = last }
+    }
+    # A trailing label has no value in this command. Keep its closing quote
+    # out of the later compatibility match. All other boundaries stay intact.
+    function s1_finish_empty_labels(    i, c, empty) {
+      if (!s1_has_empty_label) return
+      empty = 1
+      for (i = n; i >= 1; i--) {
+        if (empty && (i in s1_empty_label_start)) {
+          s1_range(i, i)
+          i = s1_empty_label_start[i]
+        } else {
+          c = original_bytes[i]
+          if (c !~ /[[:space:]]/) empty = c ~ /^[;|&]$/
+        }
+      }
     }
     function s1_curl_alias(first, last,    j, c, name, suffix) {
       # The final path component may have an image tag or executable suffix.
@@ -1460,6 +1483,7 @@ mask() {
       array_record = s1_array_depth
       split("", s1_marks); split("", s1_protect); split("", s1_suppressed)
       split("", s1_double); split("", s1_single); split("", s1_words)
+      split("", s1_empty_label_start); s1_has_empty_label = 0
       split("", s1_paren_tails); split("", s1_scheme_ends)
       s1_paren_blank_first = n + 1; s1_paren_blank_last = 0
       split("", s1_escaped); split("", s1_dash); split("", s1_json_continuations); split("", s1_literal_newlines)
@@ -1603,6 +1627,7 @@ mask() {
       }
       s1_blank_first = n + 1; s1_blank_last = 0
       s1_keywords(0)
+      s1_finish_empty_labels()
       s1_emit()
     }
     # Byte widths for the renderer closing-whitespace union. Only a wholly
