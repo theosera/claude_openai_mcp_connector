@@ -1079,6 +1079,25 @@ describe("session-archive secret masking", () => {
     }
   });
 
+  // Main masks a value that follows a quoted label and comes before a later
+  // quote on the same line, so both hooks must too. A line with no label is the
+  // control.
+  it("masks the value after a quoted label and before a later quote, as main does", async () => {
+    const value = `${PLACEHOLDER}a`;
+    const lines = [
+      `echo "token: " ${value} "done"`,
+      `echo "passwd: " ${value} "x"`,
+      `printf "%s\\n" "machine h login u password " ${value} "# x"`,
+      `echo "API key: " ${value}; echo "ok"`,
+      `Set "password: " ${value} in "settings"`
+    ];
+    for (const path of [captureHookPath, hookPath]) {
+      const source = await shippedMask(path);
+      for (const line of lines) expect(runMask(source, line), line).not.toContain(PLACEHOLDER);
+      expect(runMask(source, `echo ${value}`)).toBe(`echo ${value}`);
+    }
+  });
+
   it("keeps the two shipped mask() copies byte-identical", async () => {
     // archive-session.sh says the ops-logging copy carries the same rules. A rule
     // added to one and not the other leaves that transport masking less.

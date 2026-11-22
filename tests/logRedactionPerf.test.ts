@@ -723,6 +723,41 @@ describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_
         }
         expect(result.stderr.trim().split("\n")).toEqual(values.map((value) => `${value.length} ${value.length} 1`));
       });
+
+      // Each line below goes through a step of mask() whose time grew with the
+      // square of the line before its fix. With the fix, doubling the line about
+      // doubles the time, as in the other doubling checks here.
+      const nearLinear = (label: string, make: (size: number) => string) => {
+        const small = make(64 * KiB);
+        const large = make(128 * KiB);
+        const pairs: [number, number][] = [];
+        for (let index = 0; index < PAIRS; index += 1) {
+          if (index % 2 === 0) {
+            const first = measure(small, label);
+            pairs.push([first, measure(large, label)]);
+          } else {
+            const second = measure(large, label);
+            pairs.push([measure(small, label), second]);
+          }
+        }
+        const smallMs = median(pairs.map(([time]) => time));
+        const largeMs = median(pairs.map(([, time]) => time));
+        const ratio = largeMs / smallMs;
+        const minimumRatio = growthRatio(pairs);
+        const limit = LIMIT ** (1 / DOUBLINGS);
+        console.log(JSON.stringify({ property: label, copy, pairs: PAIRS, smallMs, largeMs, ratio, minimumRatio }));
+        expect(ratio).toBeLessThan(limit);
+        expect(minimumRatio).toBeLessThan(limit);
+      };
+
+      it("keeps the opaque-run pass near linear as a long line doubles", () => {
+        nearLinear("opaque run", (size) => "=".repeat(size - 2) + " x");
+      });
+
+      it("keeps the scheme-value walk near linear as a long line doubles", () => {
+        const unit = "token\u3000";
+        nearLinear("scheme value", (size) => unit.repeat(Math.floor(size / unit.length)).padEnd(size));
+      });
     });
 
     const cases = [...ISSUE295_SHAPES, NUL_NORMALIZATION_SHAPE].map(
