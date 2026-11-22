@@ -62,7 +62,8 @@ const BEARER = "MCP_AUTH_TOKEN";
 const FROM_ENVIRONMENT = "x".repeat(32);
 const FROM_FILE = "y".repeat(32);
 const FROM_OTHER_FILE = "z".repeat(32);
-const ALL_VALUES = [FROM_ENVIRONMENT, FROM_FILE, FROM_OTHER_FILE];
+const FROM_THIRD_FILE = "w".repeat(32);
+const ALL_VALUES = [FROM_ENVIRONMENT, FROM_FILE, FROM_OTHER_FILE, FROM_THIRD_FILE];
 // Each value is one letter repeated, so these are what any eight characters cut
 // from one of them look like.
 const PIECES = ALL_VALUES.map((value) => value.slice(0, 8));
@@ -429,8 +430,8 @@ describe("check:http hides the bearer wherever an endpoint's reply quotes it", (
 });
 
 describe("check:http keeps endpoints apart and does not fall back from a refused bearer", () => {
-  // Each test runs two endpoints, or one endpoint behind a parent process, and
-  // checks, for every endpoint, which bearer its stub received (and that it
+  // Each test runs two or three endpoints, or one endpoint behind a parent process,
+  // and checks, for every endpoint, which bearer its stub received (and that it
   // received one, where it should, so an empty result cannot pass by itself),
   // what the output says, and that no eight characters of any value are in it.
 
@@ -499,9 +500,16 @@ describe("check:http keeps endpoints apart and does not fall back from a refused
     [401, '{"error":"unauthorized"}'],
     [403, '{"error":"insufficient_scope","scope":"vault.read"}']
   ])(
-    "reports an HTTP %i from one endpoint that got only its own file's bearer, and checks the other on its own",
+    "reports an HTTP %i from one endpoint that got only its own file's bearer, once, and checks the other on its own",
     async (status, body) => {
-      const refusing = await startStub({ reply: () => ({ status, body }) });
+      // Every POST the refusing endpoint answered, with the bearer it carried.
+      const answered: Array<[string, string]> = [];
+      const refusing = await startStub({
+        reply: (bearer, method) => {
+          answered.push([bearer, method]);
+          return { status, body };
+        }
+      });
       const other = await startStub();
       const refusingFile = await writeEndpointFile(refusing.port, FROM_FILE);
       const otherFile = await writeEndpointFile(other.port, FROM_OTHER_FILE);
@@ -509,8 +517,10 @@ describe("check:http keeps endpoints apart and does not fall back from a refused
       const { code, output } = await runCheck([refusingFile, otherFile], FROM_ENVIRONMENT);
 
       expect(code).toBe(1);
-      expect(refusing.seen.length).toBeGreaterThan(0);
-      expect(new Set(refusing.seen)).toEqual(new Set([`Bearer ${FROM_FILE}`]));
+      // One request in all, not only one bearer: the refused initialize is not
+      // sent again, even with the same bearer, and nothing follows it.
+      expect(refusing.seen).toEqual([`Bearer ${FROM_FILE}`]);
+      expect(answered).toEqual([[FROM_FILE, "initialize"]]);
       expect(other.seen.length).toBeGreaterThan(0);
       expect(new Set(other.seen)).toEqual(new Set([`Bearer ${FROM_OTHER_FILE}`]));
       const refused = blockOf(output, refusingFile);
@@ -522,6 +532,30 @@ describe("check:http keeps endpoints apart and does not fall back from a refused
       expect(leaked(output, PIECES)).toEqual([]);
     }
   );
+
+  it("checks the endpoint after a refused middle one, with three endpoints and a valid bearer in the environment", async () => {
+    const first = await startStub();
+    const middle = await startStub({ reply: () => ({ status: 401, body: '{"error":"unauthorized"}' }) });
+    const last = await startStub();
+    const firstFile = await writeEndpointFile(first.port, FROM_FILE);
+    const middleFile = await writeEndpointFile(middle.port, FROM_OTHER_FILE);
+    const lastFile = await writeEndpointFile(last.port, FROM_THIRD_FILE);
+
+    const { code, output } = await runCheck([firstFile, middleFile, lastFile], FROM_ENVIRONMENT);
+
+    expect(code).toBe(1);
+    expect(first.seen.length).toBeGreaterThan(0);
+    expect(new Set(first.seen)).toEqual(new Set([`Bearer ${FROM_FILE}`]));
+    expect(middle.seen).toEqual([`Bearer ${FROM_OTHER_FILE}`]);
+    expect(last.seen.length).toBeGreaterThan(0);
+    expect(new Set(last.seen)).toEqual(new Set([`Bearer ${FROM_THIRD_FILE}`]));
+    expect(blockOf(output, firstFile)).toContain("RESULT:   OK");
+    expect(blockOf(output, middleFile)).toContain("HTTP 401");
+    expect(blockOf(output, lastFile)).toContain(`bearer:   from ${lastFile}`);
+    expect(blockOf(output, lastFile)).toContain("RESULT:   OK");
+    expect(output).not.toContain("bearer:   from environment");
+    expect(leaked(output, PIECES)).toEqual([]);
+  });
 });
 
 describe("the leak check can see a value", () => {
