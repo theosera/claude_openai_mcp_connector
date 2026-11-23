@@ -1101,6 +1101,29 @@ describe("session-archive secret masking", () => {
     }
   });
 
+  // Main masks a value held in a later quoted string when the label before it
+  // is itself a closed shell string, also when a separator stands between them.
+  // Each hook gets its own test, so a red names the hook that lost the guard.
+  // A line with no label is the control.
+  for (const [hook, hookFile] of [
+    ["capture", captureHookPath],
+    ["archive", hookPath]
+  ] as const) {
+    it(`masks the value in a later quoted string after a closed quoted label, as main does: ${hook}`, async () => {
+      const value = "SYNTH_VALUE_01";
+      const lines = [
+        `echo "token: " "${value}"`,
+        `echo 'password:' '${value}'`,
+        `expect "Password:" { send "${value}\\r" }`,
+        `expect "Password: "; send "${value}\\r"`,
+        `f("password:", "${value}")`
+      ];
+      const source = await shippedMask(hookFile);
+      for (const line of lines) expect(runMask(source, line), line).not.toContain(value);
+      expect(runMask(source, `echo ${value}`)).toBe(`echo ${value}`);
+    });
+  }
+
   it("preserves public records and their spacing in both hooks", async () => {
     const text = "Build ready\nStatus\u3000complete\nReport\u00a0available";
     for (const path of [captureHookPath, hookPath]) {
