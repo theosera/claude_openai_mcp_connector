@@ -28,17 +28,17 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      # github/codeql-action is a GitHub-official action (github/* org); per the
-      # supply-chain policy, GitHub-official actions may use a major tag while
-      # third-party actions must be full-SHA pinned.
+      # Pinned to a full 40-char commit SHA (+ trailing version comment) like the
+      # other actions, so a re-tagged release can't swap the code under us.
+      # Dependabot (.github/dependabot.yml) bumps the SHA + comment together.
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
+        uses: github/codeql-action/init@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea  # v4.39.4
         with:
           languages: javascript-typescript
           # security-and-quality is a superset of the default security queries.
           queries: security-and-quality
 
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@v4
+        uses: github/codeql-action/analyze@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea  # v4.39.4
         with:
           category: "/language:javascript-typescript"
