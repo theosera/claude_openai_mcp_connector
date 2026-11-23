@@ -25,6 +25,37 @@ it.each(hooks)("%s masks an ordinary setting and preserves the public status", (
   expect(output.trimEnd()).toBe("password=***MASKED*** status=ready");
 });
 
+it.each(hooks)("%s indexes the nearest bounded field", (_hook, path) => {
+  const helpers =
+    maskFunction(path).match(
+      /^ {4}function (?:s1_field_separator|s1_index_delimited_fields)\([^\n]*\) \{[\s\S]*?^ {4}\}/gm
+    ) ?? [];
+  expect(helpers).toHaveLength(2);
+
+  // Positions describe parser metadata. Each record supplies one classification atom.
+  const program = `${helpers.join("\n")}
+    function s1_keyword_blank(at) { return at == 2 }
+    BEGIN {
+      n = 12
+      s1_shell_closing[1] = s1_shell_closing[12] = 1
+      s1_field_open[6] = s1_field_open[10] = 1
+      s1_words[6] = 8; s1_words[10] = 12
+    }
+    {
+      delete s1_field_end[1]
+      original_bytes[4] = $0
+      s1_index_delimited_fields()
+      print ((1 in s1_field_end) ? s1_field_end[1] : 0), (12 in s1_field_end)
+    }`;
+  const separators = [",", ":", "=", ";", "|", "&", "(", ")", "{", "}", "[", "]", "<", ">"];
+  const output = execFileSyncBounded("awk", [program], {
+    input: [...separators, "A"].join("\n"),
+    encoding: "utf8",
+    env: { ...process.env, LC_ALL: "C" }
+  });
+  expect(output.trimEnd().split("\n")).toEqual([...separators.map(() => "8 0"), "0 0"]);
+});
+
 // Run the shipped functions without either hooks destination/push machinery.
 // Both kinds reach the same mask(); capture flattens newlines only afterwards.
 for (const [hook, path] of hooks) {

@@ -717,6 +717,24 @@ mask() {
       text = text original_bytes[at + 2]
       return (text in s1_paren_blanks) ? 3 : 0
     }
+    function s1_field_separator(c) {
+      return c ~ /^[][(){}<>,;|&=:]$/
+    }
+    function s1_index_delimited_fields(    i, end, separated) {
+      # Index only complete fields in this record. Earlier boundaries share the same word end.
+      for (i = n; i >= 1; i--) {
+        if (i in s1_field_open) {
+          end = s1_words[i]
+          separated = 0
+        } else if (end && (i in s1_shell_closing)) {
+          if (separated && (s1_keyword_blank(i + 1) || s1_field_separator(original_bytes[i + 1])))
+            s1_field_end[i] = end
+        } else if (end && !separated && !(i in s1_escaped) && s1_field_separator(original_bytes[i])) {
+          separated = 1
+        }
+      }
+      s1_fields_indexed = 1
+    }
     function s1_keyword_word(at, limit,    c, spelling, word) {
       while (at <= n && length(word) < limit) {
         c = original_bytes[at]
@@ -926,6 +944,8 @@ mask() {
       }
       if (q == "\"" || q == s1_apostrophe) {
         if (s1_shell_closing[j] && word != "passwd" && word != "passphrase") {
+          if (!s1_fields_indexed) s1_index_delimited_fields()
+          if (j in s1_field_end) s1_range(j, s1_field_end[j])
           # These blank runs are disjoint. The shell-word ends are already indexed.
           nextword = j + 1
           while ((width = s1_keyword_blank(nextword))) nextword += width
@@ -1500,6 +1520,7 @@ mask() {
       s1_h0_active = index($0, "-u") || index($0, "-su")
       split("", s1_ticks); split("", s1_parens); split("", s1_stack)
       split("", s1_unclosed_parens); split("", s1_literal_substitution)
+      split("", s1_field_open); split("", s1_field_end); s1_fields_indexed = 0
       split("", s1_shell_single); split("", s1_shell_double)
       split("", s1_group_quotes); split("", s1_group_quote_starts); split("", s1_shell_closing)
       split("", s1_braces); split("", s1_brace_stack); s1_bare_end = 0
@@ -1563,6 +1584,7 @@ mask() {
       if (array_record) group_quote = s1_array_quote
       if (!s1_simple) for (i = 1; i <= ending; i++) {
         c = original_bytes[i]
+        if (group_quote_start && c == group_quote) s1_field_open[group_quote_start] = 1
         if (group_quote == s1_apostrophe) {
           if (c == "$" && original_bytes[i + 1] == "(") s1_literal_substitution[i + 1] = 1
           if (c == s1_apostrophe) { s1_shell_single[group_quote_start] = i; s1_shell_closing[i] = 1; group_quote = ""; group_quote_start = 0 }
