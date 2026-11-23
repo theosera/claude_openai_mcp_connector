@@ -1101,6 +1101,13 @@ describe("session-archive secret masking", () => {
     }
   });
 
+  it("preserves public records and their spacing in both hooks", async () => {
+    const text = "Build ready\nStatus\u3000complete\nReport\u00a0available";
+    for (const path of [captureHookPath, hookPath]) {
+      expect(runMask(await shippedMask(path), text)).toBe(text);
+    }
+  });
+
   it("keeps the two shipped mask() copies byte-identical", async () => {
     // archive-session.sh says the ops-logging copy carries the same rules. A rule
     // added to one and not the other leaves that transport masking less.

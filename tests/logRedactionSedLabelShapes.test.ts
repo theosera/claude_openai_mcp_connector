@@ -17,6 +17,14 @@ function maskFunction(path: string): string {
   return lines.slice(start, end + 1).join("\n");
 }
 
+it.each(hooks)("%s masks an ordinary setting and preserves the public status", (_hook, path) => {
+  const output = execFileSyncBounded("bash", ["-o", "pipefail", "-c", `${maskFunction(path)}\nmask`], {
+    input: "password=example status=ready",
+    encoding: "utf8"
+  });
+  expect(output.trimEnd()).toBe("password=***MASKED*** status=ready");
+});
+
 // Run the shipped functions without either hooks destination/push machinery.
 // Both kinds reach the same mask(); capture flattens newlines only afterwards.
 for (const [hook, path] of hooks) {

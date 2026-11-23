@@ -925,6 +925,16 @@ mask() {
         return
       }
       if (q == "\"" || q == s1_apostrophe) {
+        if (s1_shell_closing[j] && word != "passwd" && word != "passphrase") {
+          # These blank runs are disjoint. The shell-word ends are already indexed.
+          nextword = j + 1
+          while ((width = s1_keyword_blank(nextword))) nextword += width
+          if (nextword > j + 1 || original_bytes[j + 1] ~ /^[;|&)}]$/) {
+            # Reuse the quoted-value boundary when the next field is farther along.
+            if (original_bytes[nextword] != "\"" && original_bytes[nextword] != s1_apostrophe) nextword = s1_quoted(j)
+            if (nextword && s1_word_quoted(nextword)) s1_range(j, s1_words[nextword])
+          }
+        }
         if (s1_shell_closing[j] && (j == n || original_bytes[j + 1] ~ /^[[:space:];|&)}]$/)) {
           # Only complete label arguments can belong to an empty trailing group.
           if ((word == "passwd" || word == "passphrase") && original_bytes[at - 1] == q &&
