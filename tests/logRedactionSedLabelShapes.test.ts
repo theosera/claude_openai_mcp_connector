@@ -17,6 +17,45 @@ function maskFunction(path: string): string {
   return lines.slice(start, end + 1).join("\n");
 }
 
+it.each(hooks)("%s masks an ordinary setting and preserves the public status", (_hook, path) => {
+  const output = execFileSyncBounded("bash", ["-o", "pipefail", "-c", `${maskFunction(path)}\nmask`], {
+    input: "password=example status=ready",
+    encoding: "utf8"
+  });
+  expect(output.trimEnd()).toBe("password=***MASKED*** status=ready");
+});
+
+it.each(hooks)("%s indexes the nearest bounded field", (_hook, path) => {
+  const helpers =
+    maskFunction(path).match(
+      /^ {4}function (?:s1_field_separator|s1_index_delimited_fields)\([^\n]*\) \{[\s\S]*?^ {4}\}/gm
+    ) ?? [];
+  expect(helpers).toHaveLength(2);
+
+  // Positions describe parser metadata. Each record supplies one classification atom.
+  const program = `${helpers.join("\n")}
+    function s1_keyword_blank(at) { return at == 2 }
+    BEGIN {
+      n = 12
+      s1_shell_closing[1] = s1_shell_closing[12] = 1
+      s1_field_open[6] = s1_field_open[10] = 1
+      s1_words[6] = 8; s1_words[10] = 12
+    }
+    {
+      delete s1_field_end[1]
+      original_bytes[4] = $0
+      s1_index_delimited_fields()
+      print ((1 in s1_field_end) ? s1_field_end[1] : 0), (12 in s1_field_end)
+    }`;
+  const separators = [",", ":", "=", ";", "|", "&", "(", ")", "{", "}", "[", "]", "<", ">"];
+  const output = execFileSyncBounded("awk", [program], {
+    input: [...separators, "A"].join("\n"),
+    encoding: "utf8",
+    env: { ...process.env, LC_ALL: "C" }
+  });
+  expect(output.trimEnd().split("\n")).toEqual([...separators.map(() => "8 0"), "0 0"]);
+});
+
 // Run the shipped functions without either hooks destination/push machinery.
 // Both kinds reach the same mask(); capture flattens newlines only afterwards.
 for (const [hook, path] of hooks) {
@@ -40,6 +79,17 @@ for (const [hook, path] of hooks) {
 it("keeps the two complete mask() functions byte-identical", () => {
   expect(maskFunction(hooks[0][1])).toBe(maskFunction(hooks[1][1]));
 });
+
+for (const [hook, path] of hooks) {
+  it(`${hook} protects labelled notes and preserves public fields`, () => {
+    const input = ['title: "Field notes"', 'passphrase: "library copy"', "passwd: 'reading room'", "status: ready"];
+    const output = execFileSyncBounded("bash", ["-o", "pipefail", "-c", `${maskFunction(path)}\nmask`], {
+      input: input.join("\n"),
+      encoding: "utf8"
+    });
+    expect(output.split("\n")).toEqual([input[0], 'passphrase: "***MASKED***"', "passwd: '***MASKED***'", input[3]]);
+  });
+}
 
 const baselineShapes = [
   [
@@ -672,12 +722,12 @@ const nulCases = [
   [
     "compound attribute value",
     '<access_token a="NUL295BEFORE\0NUL295AFTER">NUL295BODY</access_token> KEEP295NUL\n',
-    "<access_token ***MASKED*** KEEP295NUL\n"
+    "<access_token ***MASKED***>***MASKED***</access_token> KEEP295NUL\n"
   ],
   [
     "namespaced attribute value",
     '<ns:token a="NUL295BEFORE\0NUL295AFTER">NUL295BODY</ns:token> KEEP295NUL\n',
-    "<ns:token ***MASKED*** KEEP295NUL\n"
+    "<ns:token ***MASKED***>***MASKED***</ns:token> KEEP295NUL\n"
   ],
   [
     "password input value",

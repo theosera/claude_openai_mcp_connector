@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { MASK, redactFragment } from "../packages/log-redaction/src/core.mjs";
+import { spawnSyncBounded } from "./tools/syncChild.js";
 
 /**
  * Step ②-3 of #249: the core's time against input length.
@@ -680,6 +681,85 @@ describe("the shipped masks' Issue 295 time over two doublings", { timeout: 180_
       run(text, phase);
       return performance.now() - start;
     };
+
+    describe(copy, () => {
+      it("bounds value-boundary checks by the number of value bytes", () => {
+        // Observe the shipped lookup on ordinary records. A second query inside
+        // the same span must return the same end without another boundary walk.
+        const instrumented = source
+          .replace(
+            "function s1_at(",
+            `function s1_at(at, text) {
+              if (measuring) checks++
+              return measured_at(at, text)
+            }
+            function measured_at(`
+          )
+          .replace(
+            "function s1_scheme_end(",
+            `function s1_scheme_end(at,    end, again) {
+              measuring = 1; checks = 0
+              end = measured_end(at)
+              again = measured_end(at + 1)
+              measuring = 0
+              print end - at, checks, (again == end) > "/dev/stderr"
+              return end
+            }
+            function measured_end(`
+          );
+        const values = [2, 4, 8].map((count) => "chapter".repeat(count));
+        const input = values.map((value) => `Authorization: Basic ${value}`).join("\n");
+        const result = spawnSyncBounded("bash", ["-o", "pipefail", "-c", `${instrumented}\nmask`], {
+          input,
+          encoding: "utf8",
+          timeout: 10_000
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(0);
+        const lines = result.stdout.split("\n");
+        expect(lines).toHaveLength(values.length);
+        for (const [index, value] of values.entries()) {
+          expect(lines[index]).toContain("***MASKED***");
+          expect(lines[index]).not.toContain(value);
+        }
+        expect(result.stderr.trim().split("\n")).toEqual(values.map((value) => `${value.length} ${value.length} 1`));
+      });
+
+      // Each line below goes through a step of mask() whose time grew with the
+      // square of the line before its fix. With the fix, doubling the line about
+      // doubles the time, as in the other doubling checks here.
+      const nearLinear = (label: string, make: (size: number) => string) => {
+        const small = make(64 * KiB);
+        const large = make(128 * KiB);
+        const pairs: [number, number][] = [];
+        for (let index = 0; index < PAIRS; index += 1) {
+          if (index % 2 === 0) {
+            const first = measure(small, label);
+            pairs.push([first, measure(large, label)]);
+          } else {
+            const second = measure(large, label);
+            pairs.push([measure(small, label), second]);
+          }
+        }
+        const smallMs = median(pairs.map(([time]) => time));
+        const largeMs = median(pairs.map(([, time]) => time));
+        const ratio = largeMs / smallMs;
+        const minimumRatio = growthRatio(pairs);
+        const limit = LIMIT ** (1 / DOUBLINGS);
+        console.log(JSON.stringify({ property: label, copy, pairs: PAIRS, smallMs, largeMs, ratio, minimumRatio }));
+        expect(ratio).toBeLessThan(limit);
+        expect(minimumRatio).toBeLessThan(limit);
+      };
+
+      it("keeps the opaque-run pass near linear as a long line doubles", () => {
+        nearLinear("opaque run", (size) => "=".repeat(size - 2) + " x");
+      });
+
+      it("keeps the scheme-value walk near linear as a long line doubles", () => {
+        const unit = "token\u3000";
+        nearLinear("scheme value", (size) => unit.repeat(Math.floor(size / unit.length)).padEnd(size));
+      });
+    });
 
     const cases = [...ISSUE295_SHAPES, NUL_NORMALIZATION_SHAPE].map(
       ([name, secret, make, preserve, hookSecret]) => [name, secret, make, preserve, hookSecret] as const
